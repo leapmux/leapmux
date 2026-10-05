@@ -99,16 +99,25 @@ export function useControlResponseHandling(
   let sendInFlight = false
   const planModeConfig = () => pluginFor(props.agent?.agentProvider)?.configuration?.planMode
 
-  // Track previous non-plan mode for Shift+Tab toggling.
-  let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'
+  // The non-plan mode each agent was last seen in, keyed by agent id, for the
+  // Shift+Tab toggle to return to.
+  //
+  // Keyed, because the panel serves one agent after another (`agentId` moves on
+  // a tab switch), and one agent's mode is not a value of another provider's
+  // axis: Claude's `acceptEdits` is not a Cline mode. An agent with no entry --
+  // one that loaded already in plan mode -- returns to its OWN provider's
+  // default, read when the toggle runs. A default read when the panel mounted
+  // was the literal 'default': a reload mounts the panel before the agent
+  // hydrates, so no provider was known yet, and Cline then received a mode that
+  // it does not have.
+  const previousNonPlanModes = new Map<string, string>()
   createEffect(() => {
     const pm = planModeConfig()
     if (!pm)
       return
     const mode = pm.currentMode(props.agent || {})
-    if (mode !== pm.planValue) {
-      previousNonPlanMode = mode
-    }
+    if (mode !== pm.planValue)
+      previousNonPlanModes.set(props.agentId, mode)
   })
   const togglePlanMode = () => {
     if (props.settingsLoading)
@@ -117,10 +126,12 @@ export function useControlResponseHandling(
     const onChange = props.onSettingChange
     if (!pm || !onChange)
       return
+    const agentId = props.agentId
     const currentMode = pm.currentMode(props.agent || {})
+    const previousNonPlanMode = previousNonPlanModes.get(agentId) ?? pm.defaultValue
     const decision = decidePlanModeToggle({ currentMode, planValue: pm.planValue, previousNonPlanMode })
     if (decision.updatePreviousNonPlanMode !== undefined)
-      previousNonPlanMode = decision.updatePreviousNonPlanMode
+      previousNonPlanModes.set(agentId, decision.updatePreviousNonPlanMode)
     onChange({ sets: { [pm.groupKey]: decision.nextMode } })
   }
 

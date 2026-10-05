@@ -91,7 +91,7 @@ export function McpContentList(props: {
 
 /**
  * Render a generic tool's arguments, returned blocks, structured data, and error.
- * The caller supplies the header.
+ * The caller supplies the header, usually through ToolMessageLayout with mcpToolCallDisplayName as the title.
  */
 export function GenericToolBody(props: {
   request: GenericToolRequest
@@ -101,7 +101,10 @@ export function GenericToolBody(props: {
   holdDisplay?: () => boolean
   context?: ToolResultRenderContext
   expanded?: () => boolean
-  /** The number of result images that precede this content list. */
+  /**
+   * The number of images of this message that precede the images of this body.
+   * A row that draws two generic bodies numbers the second body after the first, so no image gets two indexes.
+   */
   indexOffset?: number
   /** The name an image tab takes, when the caller holds a better one than the row. */
   title?: string
@@ -111,10 +114,11 @@ export function GenericToolBody(props: {
   const failed = () => props.status === 'failed'
   const structuredMetadata = () => props.result.structuredJsonRole === 'metadata' ? props.result.structuredJson : undefined
   const structuredOutput = () => props.result.structuredJsonRole !== 'metadata' ? props.result.structuredJson : undefined
-  const structuredText = (text: string, outputPreview: boolean): JSX.Element => (
+  // Read the accessor inside the JSX. A string read once here keeps its first value after the result changes.
+  const structuredText = (text: () => string, outputPreview: boolean): JSX.Element => (
     <>
       <div class={toolInputSummary}>Structured</div>
-      <McpTextView text={text} outputPreview={outputPreview} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} />
+      <McpTextView text={text()} outputPreview={outputPreview} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} />
     </>
   )
   return (
@@ -123,11 +127,11 @@ export function GenericToolBody(props: {
         <div class={toolInputSummary}>Arguments</div>
         <McpTextView text={argsText()} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
-      <Show when={structuredMetadata()}>{text => structuredText(text(), false)}</Show>
+      <Show when={structuredMetadata()}>{text => structuredText(text, false)}</Show>
       <Show when={genericContent(props.result).length > 0}>
         <McpContentList items={genericContent(props.result)} {...(props.indexOffset !== undefined ? { indexOffset: props.indexOffset } : {})} {...(props.title !== undefined ? { title: props.title } : {})} failed={failed()} {...(props.actions !== undefined ? { actions: props.actions } : {})} {...(props.holdDisplay !== undefined ? { holdDisplay: props.holdDisplay } : {})} {...(props.context !== undefined ? { context: props.context } : {})} expanded={expanded} />
       </Show>
-      <Show when={structuredOutput()}>{text => structuredText(text(), true)}</Show>
+      <Show when={structuredOutput()}>{text => structuredText(text, true)}</Show>
       <Show when={props.result.error}>
         <div class={toolResultError}><McpTextView outputPreview text={props.result.error!} expanded={expanded} {...(props.context !== undefined ? { context: props.context } : {})} /></div>
       </Show>

@@ -32,6 +32,15 @@ describe('ReadResultView', () => {
     expect(gutters).toEqual(['3ch', '3ch', '3ch', '3ch'])
   })
 
+  it('marks line text only when the caller states returned output', () => {
+    const lines = [{ num: 1, text: 'first' }, { num: 2, text: 'second' }]
+    const output = render(() => <ReadResultView lines={lines} premeasureMode outputPreview />)
+    expect([...output.container.querySelectorAll('[data-tool-output-preview]')].map(element => element.textContent)).toEqual(['first', 'second'])
+    const viewer = render(() => <ReadResultView lines={lines} premeasureMode />)
+    expect(viewer.container.textContent).toContain('first')
+    expect(viewer.container.querySelector('[data-tool-output-preview]')).toBeNull()
+  })
+
   it('sizes the gutter to one column when no row has a number', () => {
     const { container } = render(() => (
       <ReadResultView lines={[{ num: null, text: '…' }, { num: null, text: '…' }]} premeasureMode />

@@ -1,17 +1,10 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { render } from '@solidjs/testing-library'
+import { describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-import { toolCallFixture } from '~/test-support/toolCallFixture'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
+import { ToolMessage } from '../ToolMessage'
 import { questionRenderer } from './question'
 import { parsedCall } from './renderer'
-
-// jsdom does not provide ResizeObserver, which the shared layouts observe with.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver
-})
 
 describe('question renderer', () => {
   checkKindModule({
@@ -36,6 +29,18 @@ describe('question renderer', () => {
   it('heads one question with its sentence, not its caption', () => {
     expect(titleOf([{ header: 'Deploy', question: 'Which environment should the build reach?' }]))
       .toBe('Which environment should the build reach?')
+  })
+
+  it('marks the answers as returned output and leaves the question unmarked', () => {
+    const request = { questions: [{ header: 'Deploy', question: 'Which env?', options: [{ label: 'Staging' }] }] }
+    const answered = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { request, result: { answers: [{ header: 'Deploy', answer: 'Staging' }] } }))} />)
+    const outputs = answered.container.querySelectorAll('[data-tool-output-preview]')
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]?.textContent).toContain('Staging')
+    expect(outputs[0]?.textContent).not.toContain('Which env?')
+    const asking = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { status: 'in_progress', request }), 'request')} />)
+    expect(asking.container.textContent).toContain('Which env?')
+    expect(asking.container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
 
   it('heads several questions with their count', () => {

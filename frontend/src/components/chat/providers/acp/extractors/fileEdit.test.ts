@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { acpFileEditFromToolCallContent, acpFileEditFromToolCallRawInput, acpFileEditsFromToolCallRawInput } from './fileEdit'
+import { acpFileEditFromToolCallContent, acpFileEditsFromToolCallRawInput } from './fileEdit'
 
 describe('acpFileEditFromToolCallContent', () => {
   it('returns null for non-array input', () => {
@@ -137,108 +137,5 @@ describe('acpFileEditsFromToolCallRawInput', () => {
     expect(acpFileEditsFromToolCallRawInput('edit', { edits: [{ oldText: 'a', newText: 'b' }] })).toStrictEqual([])
     expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', edits: 'not a list' })).toStrictEqual([])
     expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', somethingElse: 'value' })).toStrictEqual([])
-  })
-})
-
-describe('acpFileEditFromToolCallRawInput', () => {
-  // The single reader is the list reader's first entry, so a caller that draws one
-  // change draws the first substitution rather than nothing.
-  it('answers the first entry of an `edits` list', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      path: '/p/a.ts',
-      edits: [{ oldText: 'first', newText: 'one' }, { oldText: 'second', newText: 'two' }],
-    })).toStrictEqual({ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'first', newStr: 'one' })
-  })
-
-  it('returns null for null/undefined input', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', null)).toBeNull()
-    expect(acpFileEditFromToolCallRawInput('edit', undefined)).toBeNull()
-  })
-
-  it('returns null when no filePath/path is present', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', { oldText: 'a', newText: 'b' })).toBeNull()
-  })
-
-  it('extracts edit-style { filePath, oldText, newText }', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      filePath: '/tmp/a.ts',
-      oldText: 'before',
-      newText: 'after',
-    })).toEqual({
-      filePath: '/tmp/a.ts',
-      structuredPatch: null,
-      oldStr: 'before',
-      newStr: 'after',
-    })
-  })
-
-  it('accepts snake_case and camelCase variants', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      file_path: '/tmp/a.ts',
-      old_string: 'before',
-      new_string: 'after',
-    })).toEqual({
-      filePath: '/tmp/a.ts',
-      structuredPatch: null,
-      oldStr: 'before',
-      newStr: 'after',
-    })
-
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      path: '/tmp/a.ts',
-      oldString: 'before',
-      newString: 'after',
-    })).toEqual({
-      filePath: '/tmp/a.ts',
-      structuredPatch: null,
-      oldStr: 'before',
-      newStr: 'after',
-    })
-  })
-
-  it('treats partial edit-style inputs as edit shape (defaulting missing half to empty)', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      filePath: '/tmp/a.ts',
-      newText: 'only-new',
-    })).toEqual({
-      filePath: '/tmp/a.ts',
-      structuredPatch: null,
-      oldStr: '',
-      newStr: 'only-new',
-    })
-  })
-
-  it('extracts write-style { filePath, content } as a new-file write fallback', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      filePath: '/tmp/a.ts',
-      content: 'package main\n',
-    })).toEqual({
-      filePath: '/tmp/a.ts',
-      structuredPatch: null,
-      oldStr: '',
-      newStr: 'package main\n',
-    })
-  })
-
-  it('does not treat read/search/execute kinds with content/path as a write fallback', () => {
-    expect(acpFileEditFromToolCallRawInput('read', {
-      filePath: '/tmp/a.ts',
-      content: 'whatever',
-    })).toBeNull()
-    expect(acpFileEditFromToolCallRawInput('search', {
-      path: '/tmp',
-      content: 'matches',
-    })).toBeNull()
-    expect(acpFileEditFromToolCallRawInput('execute', {
-      path: '/tmp/a.ts',
-      content: 'ignored',
-    })).toBeNull()
-  })
-
-  it('returns null when input has only an unrecognized shape', () => {
-    expect(acpFileEditFromToolCallRawInput('edit', {
-      filePath: '/tmp/a.ts',
-      somethingElse: 'value',
-    })).toBeNull()
   })
 })

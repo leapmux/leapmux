@@ -3,7 +3,7 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
-/** The role of structured execution metadata. An absent role identifies returned content. */
+/** The role of a structuredJson value. 'metadata' identifies source-defined execution metadata. An absent role identifies returned tool output. */
 export type StructuredJsonRole = 'metadata'
 
 /** A single Model Context Protocol (MCP) content item from the server. */
@@ -25,11 +25,14 @@ export interface McpCallFacts {
   tool: string
   /** Pretty-JSON arguments, when the wire carries them as a string. */
   argsJson?: string
-  /** Returned content blocks. Empty when no content arrives. */
+  /** Returned content blocks. Empty before the result arrives, when the call fails, or when the tool returns no content. */
   content: McpContentItem[]
-  /** Formatted JSON from structured output or source-defined execution metadata. */
+  /** Formatted JSON from structured output or source-defined execution metadata. Undefined when the source sends neither. */
   structuredJson?: string
-  /** Source-defined execution metadata stays distinct from structured tool output. */
+  /**
+   * Set 'metadata' when structuredJson holds source-defined execution metadata.
+   * The renderer draws that value before the returned output and does not mark it as output. Copy keeps its original order.
+   */
   structuredJsonRole?: StructuredJsonRole
   /** Error message when the call failed. */
   error?: string
@@ -58,8 +61,9 @@ export function mcpToolCallRequest(server: string, tool: string, args: Record<st
 
 /**
  * Split the server and tool in an `mcp__server__tool` identifier.
- * This spelling is a shared Model Context Protocol convention.
- * Return null when the prefix or either identifier is absent.
+ * This spelling is a shared Model Context Protocol convention. Claude Code and Reasonix both use it.
+ * Return null when the prefix is missing or the server or tool is empty.
+ * An empty part would label the row with no text, which states less than the raw identifier.
  */
 export function parseMcpToolName(name: string): { server: string, tool: string } | null {
   return splitPrefixedPair(name, MCP_TOOL_NAME_PREFIX, '__')
@@ -67,8 +71,9 @@ export function parseMcpToolName(name: string): { server: string, tool: string }
 
 /**
  * Split an identifier with its specified prefix and separator.
- * The tool retains every later separator.
- * Return null when the prefix, separator, server, or tool is absent.
+ * The tool retains every later separator: `mcp__github__search__repos` gives the server `github` and the tool `search__repos`.
+ * Reasonix calls this function directly with its capability prefix and a `/` separator.
+ * Return null when the prefix or separator is missing, or when the server or tool is empty.
  */
 export function splitPrefixedPair(id: string, prefix: string, separator: string): { server: string, tool: string } | null {
   if (!id.startsWith(prefix))

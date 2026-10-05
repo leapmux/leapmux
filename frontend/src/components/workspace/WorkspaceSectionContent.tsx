@@ -119,10 +119,25 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // sessionStorage write for all of them -- a per-instance signal wrote the
   // whole set back with no merge and erased every other instance's rows.
 
+  // The active workspace when it has a tab, and null otherwise. A memo, so the
+  // effect below runs only when this VALUE changes: another workspace becomes
+  // active, or the active one gains its first tab. `getTabsForWorkspace` reads
+  // one tab projection for every workspace, and it returns a new list whenever
+  // any tab changes -- an agent that reports its startup, a title, a git
+  // state. An effect that read the list directly expanded the active row again
+  // on each such change, and so undid the user's own collapse ("Collapse all",
+  // the chevron) a moment after it.
+  const activeWorkspaceWithTabs = createMemo((): string | null => {
+    const activeId = props.activeWorkspaceId
+    if (!activeId)
+      return null
+    return props.getTabsForWorkspace(activeId).length > 0 ? activeId : null
+  })
+
   // Auto-expand the active workspace when it changes (if it has tabs).
   createEffect(() => {
-    const activeId = props.activeWorkspaceId
-    if (activeId && props.getTabsForWorkspace(activeId).length > 0)
+    const activeId = activeWorkspaceWithTabs()
+    if (activeId)
       setWorkspacesExpanded([activeId], true)
   })
 

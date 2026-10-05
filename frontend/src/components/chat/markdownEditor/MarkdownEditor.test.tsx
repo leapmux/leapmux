@@ -580,6 +580,53 @@ describe('MarkdownEditor surface', () => {
     await waitFor(() => expect(seen.at(-1)?.trim()).toBe('Create blank-new.txt and raw.json'))
   })
 
+  /**
+   * An identifier is not markup either.
+   *
+   * The serializer escapes every `_` of ordinary text, so a typed
+   * `COMMANDCODE_MODE_CONTEXT` reached the agent as `COMMANDCODE\_MODE\_CONTEXT`.
+   * An underscore between two letters can neither open nor close emphasis, so the
+   * escape protects nothing. An emphasis that the reader built keeps its delimiters.
+   */
+  it('reports an identifier and an emphasis without the escape of the identifier', async () => {
+    const seen: string[] = []
+    let setContent: ((text: string) => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(setContent).toBeTypeOf('function'))
+    setContent?.('Keep COMMANDCODE_MODE_CONTEXT and _this_ emphasis in snake_case_name')
+    await waitFor(() => expect(seen.at(-1)?.trim()).toBe('Keep COMMANDCODE_MODE_CONTEXT and _this_ emphasis in snake_case_name'))
+  })
+
+  it('sends an identifier without the serializer escape', async () => {
+    const onSend = vi.fn()
+    let send: (() => void | Promise<void>) | undefined
+    saveDraft(DRAFT_KEY, 'Keep COMMANDCODE_MODE_CONTEXT before the native process restarts.', -1)
+    const { getByTestId } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key: DRAFT_KEY }}
+          onSend={onSend}
+          imperative={{ sendRef: fn => send = fn }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    const document = getByTestId('composer-editor').querySelector('.ProseMirror') as HTMLElement
+    await waitFor(() => expect(document).toHaveTextContent('COMMANDCODE_MODE_CONTEXT'))
+    await send?.()
+    expect(onSend).toHaveBeenCalledWith('Keep COMMANDCODE_MODE_CONTEXT before the native process restarts.')
+  })
+
   /** A backslash inside a code span is the reader's own, so it survives the send. */
   it('keeps a backslash that a code span holds', async () => {
     const seen: string[] = []

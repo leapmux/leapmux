@@ -111,8 +111,8 @@ describe('CommandResultBody output ownership', () => {
     expect(marked).toHaveLength(1)
     expect(marked[0]?.textContent).toContain('native first')
     expect(marked[0]?.textContent).not.toContain('Error (exit 7)')
-    if (expanded)
-      expect(marked[0]?.textContent).toContain('native last')
+    expect(container.textContent).toContain('Error (exit 7)')
+    expect(marked[0]?.textContent?.includes('native last')).toBe(expanded)
   })
 
   it('keeps the empty stream hint outside output ownership', () => {

@@ -77,29 +77,30 @@ export function CommandResultBody(props: {
   context?: ToolResultRenderContext
 }): JSX.Element {
   // Normalize carriage-return overwrites before removing leading blank lines.
-  // The body and toolbar reuse the same normalized command text.
+  // The body and the toolbar collapse check read the same memoized text, so the two cannot differ.
   const body = createMemo(() => normalizedCommandOutput(props.source))
   const normalized = createMemo(() => body().text)
   const expanded = () => getToolResultExpanded(props.context)
-  // Carriage-return normalization already limits process rows.
-  // Use that row threshold so ordinary collapse does not remove the retained tail or omission notice.
+  // Carriage-return normalization already limits the output to head rows, an ellipsis, and tail rows.
+  // Use that row threshold so ordinary collapse does not remove the retained tail or the ellipsis.
   const { display, isCollapsed } = useCollapsedLines({
     text: normalized,
     expanded,
     threshold: () => commandCollapseThreshold(body().hadCarriageReturns),
   })
-  // A declined call uses the refusal icon.
+  // A declined call uses the refusal icon, not the alert icon. A refusal is not a failure: the reader stopped the call.
   // A completed call can still report a failed process exit.
   // The icon and label must read that exit also.
   const exit = () => commandExit(props.source)
   const commandFailed = () => props.status === 'failed' || commandIsError(exit())
   const statusIcon = () => props.status === 'declined' ? Ban : props.status === 'cancelled' || commandFailed() ? CircleAlert : Check
   const statusLabel = () => commandStatusLabel(props.status, exit())
-  // Use the shared outcome vocabulary.
-  // The status-header condition must use the same success word as the label.
+  // Use the shared outcome vocabulary, not a literal.
+  // A success word that changed in only one place would hide the header for every failed command.
   const showStatusHeader = () => drawsOwnOutcome(props.context) && statusLabel() !== toolOutcomeLabel('succeeded')
 
   // A finished command with no output still needs a visible empty-output notice.
+  // Without it, the bubble of a successful command that wrote nothing is empty.
   // Include its duration, exit code, or signal when the source supplies one.
   const emptyOutputHint = createMemo(() => {
     if (normalized())

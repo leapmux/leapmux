@@ -40,7 +40,7 @@ export const questionRenderer: ToolKindRenderer<'question'> = {
   },
   result(call, view) {
     const text = answersMarkdown(call.result.answers)
-    return <Show when={text}>{answers => <CollapsibleContent kind="markdown-tool-result" text={answers()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}</Show>
+    return <Show when={text}>{answers => <CollapsibleContent outputPreview kind="markdown-tool-result" text={answers()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}</Show>
   },
   resultMeta(call) {
     return proseMeta({ text: answersMarkdown(call.result.answers), format: 'markdown' })

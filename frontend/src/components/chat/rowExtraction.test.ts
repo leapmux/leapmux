@@ -253,6 +253,39 @@ describe('extractChatRow user content', () => {
     expect(rowOf(extractChatRow(undefined, parsed({ content: '  ' }), { kind: 'user_content' })))
       .toEqual({ kind: 'hidden' })
   })
+
+  // A provider can classify its own native frame as `user_content`. Only the
+  // provider reads that frame, so the shared LeapMux reader must not answer for it.
+  it('lets a registered provider read its own user row', () => {
+    const plugin = pluginFor(AgentProvider.CLAUDE_CODE)
+    if (!plugin)
+      throw new Error('The registered fixture provider is absent.')
+    const native: ChatRow = { kind: 'user', text: 'the native prompt', attachments: [] }
+    const extract = vi.spyOn(plugin.transcript, 'extractRow').mockReturnValue(native)
+    try {
+      const resolved = parsed({ content: 'the LeapMux text' })
+      expect(rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, resolved, { kind: 'user_content' }))).toBe(native)
+      expect(extract).toHaveBeenCalledOnce()
+    }
+    finally {
+      extract.mockRestore()
+    }
+  })
+
+  it('reports a registered provider that reads no row for its user frame as unsupported', () => {
+    const plugin = pluginFor(AgentProvider.CLAUDE_CODE)
+    if (!plugin)
+      throw new Error('The registered fixture provider is absent.')
+    const extract = vi.spyOn(plugin.transcript, 'extractRow').mockReturnValue(null)
+    try {
+      const frame = { content: 'the LeapMux text' }
+      expect(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(frame), { kind: 'user_content' }))
+        .toMatchObject({ kind: 'unsupported', payload: frame })
+    }
+    finally {
+      extract.mockRestore()
+    }
+  })
 })
 
 /*

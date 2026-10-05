@@ -30,6 +30,8 @@ export function ReadResultView(props: {
   textSelectionActive?: () => boolean
   /** Row outside the near-viewport band: tokenize at low worker priority. */
   rowOffscreen?: () => boolean
+  /** When true, each line's text carries data-tool-output-preview. Set it only for returned tool output. */
+  outputPreview?: boolean
 }): JSX.Element {
   const display = createMemo(() => {
     const limited = limitTextLinesForDisplay<NumberedFileLine>(props.lines)
@@ -91,7 +93,7 @@ export function ReadResultView(props: {
               >
                 {line.num}
               </span>
-              <span class={codeViewContent}>
+              <span class={codeViewContent} data-tool-output-preview={props.outputPreview ? '' : undefined}>
                 <Show
                   when={tokens()}
                   fallback={line.text}

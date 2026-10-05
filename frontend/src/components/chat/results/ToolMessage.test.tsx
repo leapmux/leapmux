@@ -325,9 +325,13 @@ describe('ToolMessage output DOM ownership', () => {
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toContain(marker)
-    const text = container.textContent ?? ''
-    expect(text.indexOf(path)).toBeLessThan(text.lastIndexOf(marker))
-    expect(text.indexOf(metadataJson)).toBeLessThan(text.lastIndexOf(marker))
+    // The metadata and the path text can hold the marker too, so compare element positions, not text offsets.
+    const metadataBlock = [...container.querySelectorAll('div')].find(element => element.textContent === metadataJson)
+    const pathBlock = container.querySelector('[data-testid="tool-output-file-paths"]')
+    if (!metadataBlock || !pathBlock || !outputs[0])
+      throw new Error('The ownership fixture requires its metadata, path, and output blocks.')
+    expect(metadataBlock.compareDocumentPosition(outputs[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(pathBlock.compareDocumentPosition(outputs[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     expect(nativeOutputPathsPrecedePreview([container], [marker])).toBe(true)
     expect(toolCallMeta(row).copyableContent()).toBe(`${output}\n\n${metadataJson}`)
   })
@@ -353,8 +357,13 @@ describe('ToolMessage output DOM ownership', () => {
 
   it('marks failure prose and live native output without marking the outcome header', () => {
     const failed = render(() => <ToolMessage row={toolRow(toolCallFixture('execute', { status: 'failed', result: failedResult(marker) }))} />)
-    expect(failed.container.querySelector('[data-tool-output-preview]')?.textContent).toBe(marker)
+    const failedOutputs = failed.container.querySelectorAll('[data-tool-output-preview]')
+    expect(failedOutputs).toHaveLength(1)
+    expect(failedOutputs[0]?.textContent).toBe(marker)
+    expect(failed.container.textContent).toContain('Error')
     const live = render(() => <ToolMessage row={toolRow(toolCallFixture('execute', { status: 'in_progress' }))} progress={{ liveTail: () => ({ outputTail: marker }) }} />)
-    expect(live.container.querySelector('[data-tool-output-preview]')?.textContent).toBe(marker)
+    const liveOutputs = live.container.querySelectorAll('[data-tool-output-preview]')
+    expect(liveOutputs).toHaveLength(1)
+    expect(liveOutputs[0]?.textContent).toBe(marker)
   })
 })

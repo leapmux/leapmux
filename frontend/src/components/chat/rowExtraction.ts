@@ -138,7 +138,9 @@ export function extractChatRow(
     // LeapMux stores user messages as {content, attachments?} without a provider envelope.
     // Read them here even if the tab's provider metadata is absent during hydration.
     // The transcript and scroll rail must both receive that same user row.
-    if (category.kind === 'user_content') {
+    // A registered provider reads its own user row instead. It can classify a native frame
+    // as `user_content` too, and only that provider knows the shape of the frame.
+    if (category.kind === 'user_content' && !plugin) {
       const userRow = leapmuxUserRow(parsed.parentObject)
       return userRow ? row(userRow) : unsupported()
     }

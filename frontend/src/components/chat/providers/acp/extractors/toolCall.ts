@@ -1,3 +1,4 @@
+import type { FileEditDiff } from '../../../model/fileEditDiff'
 import type { ToolCall, ToolCallLifecycleFacts, ToolCallSpec, ToolCallSpecVariant } from '../../../model/toolCall'
 import type { ToolCallStatus } from '../../../model/toolCallStatus'
 import type { ToolKind } from '../../../model/toolKind'
@@ -103,8 +104,13 @@ export interface ACPToolFacts {
    *
    * The ONE answer to that question. A second field asked `status === 'completed'`
    * alone, which is false for a row the turn retained after the provider stopped
-   * sending -- so each builder that read it dropped the file content, the hits, the
-   * page or the diff of a call that had in fact finished.
+   * sending. Each builder that read that field dropped the payload of a call that
+   * in fact finished:
+   *
+   * - the file content,
+   * - the hits,
+   * - the page,
+   * - the diff.
    */
   finished: boolean
   /** The collected text of the call's content blocks. */
@@ -127,7 +133,7 @@ export interface ACPToolFacts {
  * so one shape satisfies all three.
  *
  * The lifecycle is NOT here. {@link acpSpecFor} owns it for every kind, so this
- * states the answer of a call that finished and let it stand.
+ * states the answer of a call that finished and lets it stand.
  */
 function acpGenericCard(facts: ACPToolFacts): { request: McpRequest, result: GenericToolResult } {
   const args = facts.args
@@ -156,8 +162,8 @@ function acpGenericCard(facts: ACPToolFacts): { request: McpRequest, result: Gen
 function acpArgumentsOnly<P extends ToolKind>(kind: P): ACPSpecEntry<P> {
   // The inner arrow states its OWN return type, although `ACPSpecEntry<P>` already
   // declares it. A contextual signature is not an annotated position, so without this
-  // the literal escapes the excess-property check -- the same hole every `build` above
-  // closes, one level down.
+  // the literal escapes the excess-property check -- the same hole every `build` in
+  // `ACP_SPEC_READERS` closes, one level down.
   return { build: (facts): ToolCallSpecVariant<P> => ({ kind, request: acpDefaultRequestFor(kind, facts), title: acpCallTitle(facts) }) }
 }
 
@@ -176,8 +182,8 @@ interface ACPSpecEntry<P extends ToolKind> {
    *
    * `execute` alone. Its renderer declares `statesOwnOutcome` for a result that
    * carries commands, and `ToolMessage` suppresses the shared error header for
-   * exactly that; the command body takes the call's status and is built to draw a
-   * failed command's own output beside its exit code. Replacing that with the
+   * exactly that; the command body takes the call's status and draws a failed
+   * command's own output beside its exit code. Replacing that with the
    * reason in words is what makes a row read `Error` where every other provider
    * reads `Error (exit 1)`.
    */
@@ -199,44 +205,64 @@ interface ACPSpecEntry<P extends ToolKind> {
  * again, which is the whole defect this table exists to remove.
  */
 function acpFileChangeParts(kind: 'edit' | 'write', facts: ACPToolFacts): { request: FileChangeRequest, result?: FileChangeResult } {
-  const args = facts.args
-
   // EVERY substitution the arguments state, and not the first one: a multi-edit asks
   // for several in one file, so a reader that took one drew a request that described
   // part of the call.
   //
-  // A change that DRAWS no diff is kept, for the reason `unnamedFileChange` states in
-  // `test-support/toolVocabulary.ts`: the row composes its header from this list at
+  // A change that DRAWS no diff is kept. The row composes its header from this list at
   // every state of the call, and `RequestedFileChanges` states the file on its own
-  // line for exactly a change with no body. Dropping it headed a failed edit with the
-  // word "Edit" and no file.
-  const changes = acpFileEditsFromToolCallRawInput(kind === 'write' ? 'write' : 'edit', args)
-    .map(source => ({ ...source, showLineNumbers: false }))
+  // line for exactly a change with no body. Dropping it left a failed edit that showed
+  // the word "Edit" and no file.
+  const changes = acpFileEditsFromToolCallRawInput(kind, facts.args)
   const sources = Array.isArray(facts.tool.content)
     ? facts.tool.content.flatMap((entry) => {
         const source = acpFileEditFromToolCallContent([entry])
         return fileEditHasDiff(source) ? [source] : []
       })
     : []
-  // A call may state its change as a CONTENT diff rather than input fields:
-  // Junie's `search_replace` reports `{type:'diff', path, oldText, newText}` and a
-  // `locations` path, with no rawInput at all. The row composes its header from
-  // the REQUEST at every state, so the content diff fills the request when the
-  // input states none -- a request with no change degrades the row and the
-  // renderer loses the diff.
-  const requestChanges = changes.length > 0
-    ? changes
-    : sources.map(source => ({ ...source, showLineNumbers: false }))
-  const request: FileChangeRequest = { changes: requestChanges }
+  const requested = acpRequestedFileChanges(kind, facts, changes, sources)
+  const request: FileChangeRequest = { changes: requested.map(source => ({ ...source, showLineNumbers: false })) }
   return sources.length > 0 ? { request, result: { changes: sources } } : { request }
+}
+
+/**
+ * The changes a file-change call ASKED for, from the first statement that holds one.
+ *
+ * 1. The arguments' own substitutions or body.
+ * 2. The call's CONTENT diffs that draw. A call may state its change that way rather
+ *    than in input fields: Junie's `search_replace` reports `{type:'diff', path,
+ *    oldText, newText}` and a `locations` path, with no rawInput at all.
+ * 3. The FILE alone, which the shared declared request keeps as a change with empty
+ *    sides. The arguments of a failed or refused call often state the path and
+ *    nothing to write, and {@link argsWithRecoveredPath} puts a path that only the
+ *    frame's `locations` list states into the arguments. Gemini CLI's refused
+ *    `write_file` is that case: the failed update replaces the proposed diff with the
+ *    refusal, and the file then stays only in `locations`.
+ *
+ * Each step exists because the row composes its header from the REQUEST at every
+ * state of the call. An empty list breaks the file-change invariant, `createToolCall`
+ * degrades the row to the uncategorized card, and the reader loses the kind and the
+ * file. A call that states no file anywhere still degrades, because no step can state
+ * one for it.
+ *
+ * The third step fabricates no diff. It states the file and the kind's own operation,
+ * and no text on either side.
+ */
+function acpRequestedFileChanges(kind: 'edit' | 'write', facts: ACPToolFacts, changes: FileEditDiff[], sources: FileEditDiff[]): FileEditDiff[] {
+  if (changes.length > 0)
+    return changes
+  if (sources.length > 0)
+    return sources
+  return acpDefaultRequestFor(kind, facts).changes
 }
 
 /**
  * Whether a file-family call still needs its result side to state the file.
  *
- * The typed request answers first, and the raw arguments answer after it: an edit
- * that states a path and no replacement text carries no drawable change, so its
- * `changes` list is empty while the arguments do state the file.
+ * The typed request answers first. The shared build states a change for every call
+ * whose arguments state a file, so for that build an empty list already means "no
+ * file". The raw arguments answer after it for a provider adapter, which builds its
+ * own request and can leave the list empty although the arguments state the file.
  */
 function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: ACPToolFacts): boolean {
   return request.changes.length === 0 && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS)
@@ -271,11 +297,15 @@ function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: 
  * literal, so each of the four builders that lifts one declares that `const`'s type too.
  * `toolTableEntriesAreAnnotated.test.ts` keeps both forms in place.
  *
- * The table is EXPORTED for its own cases in `createToolCall.test.ts`, which pin the three
- * statements no type makes: the keys are exactly `TOOL_KINDS`, each entry answers at
- * the key that states it, and every kind outside the provider's own readings fills the
- * shared declared request. The last one is the only mechanical check that
- * {@link ACP_TOOL_REQUEST_OVERRIDES} has not grown past its deviations.
+ * The table is EXPORTED for its own cases in `toolCall.test.ts`, which pin the
+ * three statements no type makes:
+ *
+ * - the keys are exactly `TOOL_KINDS`,
+ * - each entry answers at the key that states it,
+ * - every kind outside the provider's own readings fills the shared declared request.
+ *
+ * The last one is the only mechanical check against
+ * {@link ACP_TOOL_REQUEST_OVERRIDES} growing past its deviations.
  */
 export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
   execute: { ownsFailure: true, needsResult: request => !request.command, build: (facts): ToolCallSpecVariant<'execute'> => {
@@ -373,8 +403,8 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
   grep: { ...acpArgumentsOnly('grep'), needsResult: request => !request.pattern },
   web_search: { ...acpArgumentsOnly('web_search'), needsResult: request => !request.query },
   chart: acpArgumentsOnly('chart'),
-  // The PICTURES are the answer and they ride `call.images`, so the typed result
-  // states only a prompt the generator revised. It is stated all the same: a
+  // The PICTURES are the answer and they arrive on `call.images`, so the typed result
+  // states only a prompt the generator revised. State the prompt all the same: a
   // completed call with no result at all draws its header over an empty card.
   //
   // An `{}` here states no prompt, so {@link acpSpecFor} replaces it with the words
@@ -402,32 +432,6 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
 }
 
 /**
- * The shared default payload of ONE kind from the facts. Total over ToolKind.
- *
- * The LIFECYCLE ladder lives here rather than in the builders, so no kind can forget
- * a state of it. A call that has not finished carries no result; one that FAILED
- * answers the reason it stated in words; one that finished and stated no typed answer
- * takes the words it printed.
- *
- * The last step is what twenty kinds were missing. `ToolResult<K>` admits the
- * unparsed and the failed brand for EVERY kind, and no kind's own result declares
- * either word, so both are unambiguous wherever they land.
- *
- * A CANCELLED call is NOT a failure here, and it keeps whatever body the builder read.
- * The reader stopped the turn around a call that still ran, so the lines, the hits
- * and the diff that arrived are exactly what they asked to see. The reason branch
- * would replace all of it with the same text the row already prints, and the two rows
- * then differ in their bodies while both head `Interrupted`. ZCode, Pi, Claude and
- * Codex each key this branch on the PROVIDER's own error flag, so one lifecycle now
- * holds for every provider. The header is unaffected: `toolCallStatusOutcome` composes
- * it from the row's own status and never from the result.
- *
- * The last step also replaces a typed result that states NOTHING, which
- * {@link acpResultStatesNothing} defines. Otherwise a builder that answers `{}` puts
- * an empty typed result where the ladder can never reach, and the words the call
- * printed are lost -- `image` was that case at every one of its states.
- */
-/**
  * The payload with no result slot at all.
  *
  * The exact-optional rule spells "no result" as an ABSENT key, and the ladder needs
@@ -441,6 +445,45 @@ function withoutResult<P extends ToolKind>(spec: ToolCallSpecVariant<P>): ToolCa
   return result === undefined ? spec : rest
 }
 
+/**
+ * The shared default payload of ONE kind from the facts. Total over ToolKind.
+ *
+ * The LIFECYCLE ladder lives here rather than in the builders, so no kind can forget
+ * a state of it. An unfinished call carries no result. A FAILED call answers the
+ * reason it stated in words. A finished call that stated no typed answer takes the
+ * words it printed.
+ *
+ * The last step is what twenty kinds were missing. `ToolResult<K>` admits the
+ * unparsed and the failed brand for EVERY kind, and no kind's own result declares
+ * either word, so both are unambiguous wherever they land.
+ *
+ * A CANCELLED call is NOT a failure here, and it keeps whatever body the builder
+ * read. The reader stopped the turn around a call that still ran, so the payload
+ * that arrived is exactly what they asked to see:
+ *
+ * - the lines,
+ * - the hits,
+ * - the diff.
+ *
+ * The reason branch would replace all of it with the same text the row already
+ * prints, and the two rows then differ in their bodies while both show the
+ * `Interrupted` header. Four providers each read this branch from the PROVIDER's
+ * own error flag:
+ *
+ * - ZCode,
+ * - Pi,
+ * - Claude,
+ * - Codex.
+ *
+ * One lifecycle now holds for every provider. The header is unaffected:
+ * `toolCallStatusOutcome` composes it from the row's own status and never from
+ * the result.
+ *
+ * The last step also replaces a typed result that states NOTHING, which
+ * {@link acpResultStatesNothing} defines. Otherwise a builder that answers `{}` puts
+ * an empty typed result where the ladder can never reach, and the row loses the words
+ * the call printed -- `image` was that case at every one of its states.
+ */
 export function acpSpecFor<K extends ToolKind>(facts: ACPToolFacts, kind: K): { [P in K]: ToolCallSpecVariant<P> }[K] {
   const entry = ACP_SPEC_READERS[kind]
   const spec = entry.build(facts)
@@ -483,10 +526,16 @@ export function acpResultAvailable(facts: ACPToolFacts): boolean {
  *
  * The predicate is over the VALUES, never over the key count, and that is what makes
  * it safe. A result whose declared field is an empty list or an empty string is a
- * real answer -- `{ content: [] }`, `{ changes: [] }`, `{ items: [] }`,
- * `{ text: '', format: 'plain' }` -- and each of those renderers draws an empty state
- * of its own, from `TodoListBody`'s cleared list to `EMPTY_RESULT_NOTICE`. Each holds
- * a defined value, so none of them is empty here.
+ * real answer:
+ *
+ * - `{ content: [] }`,
+ * - `{ changes: [] }`,
+ * - `{ items: [] }`,
+ * - `{ text: '', format: 'plain' }`.
+ *
+ * Each of those renderers draws an empty state of its own, from `TodoListBody`'s
+ * cleared list to `EMPTY_RESULT_NOTICE`. Each holds a defined value, so none of them
+ * is empty here.
  *
  * Only a result whose fields are ALL optional can reach `true`, and `image` is the one
  * kind in `ToolResultByKind` whose shape is that: `{ revisedPrompt?: string }`. Every other
@@ -494,7 +543,7 @@ export function acpResultAvailable(facts: ACPToolFacts): boolean {
  * object there. `UnparsedToolResult` and `ToolFailureResult` each carry a brand and a `text`,
  * so neither reads as empty either.
  *
- * EXPORTED for its own cases in `createToolCall.test.ts`. No ACP builder answers an
+ * EXPORTED for its own cases in `toolCall.test.ts`. No ACP builder answers an
  * all-empty-but-present result today, so the exclusions this predicate rests on are
  * demonstrable here and nowhere else.
  */
@@ -550,10 +599,10 @@ export function acpBaseSpec(facts: ACPToolFacts): ToolCallSpec {
  *
  * The generic trio folds to `mcp`, and so does a KNOWN kind whose input is a scalar.
  * No typed request can be filled from one -- every typed reader indexes `args` -- so
- * such a call used to draw an empty request, a `read` with no path or an `execute`
- * with no command, and the argument the tool actually sent reached nobody. The
- * generic card states the whole argument as text, so the call degrades to it rather
- * than claiming a request the frame never carried.
+ * such a call used to draw its request empty: a `read` with no path or an `execute`
+ * with no command. The argument the tool actually sent reached nobody. The generic
+ * card states the whole argument as text, so the call degrades to it rather than
+ * claiming a request the frame never carried.
  *
  * An ADAPTER may still override the kind, and that is correct: a provider that knows
  * its own tool's scalar convention is the one layer allowed to read it.
@@ -577,7 +626,7 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
   // The generic trio folds to `mcp`: the uncategorized card states the server and
   // the tool, which a wrench and the word "Other" do not.
   // The request is REBUILT, not relabelled. `McpRequest` declares `server` and `tool`
-  // and `GenericToolRequest` declares neither, so stamping the new kind over the old
+  // and `GenericToolRequest` declares neither, so writing the new kind over the old
   // request asserted two fields that an adapter answering `{ kind: 'unspecified', request:
   // { args } }` never supplied -- and `mcpToolCallDisplayName` then drew the header
   // as the string `undefined`. The shared card states both, so the spread keeps them.
@@ -591,7 +640,7 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
   // undefined, so no strip is needed here.
   // The frame's TITLE is the call's own header word, which an execute row shows
   // when its description states none.
-  // Pictures ride the envelope for every kind whose result is TYPED; the generic
+  // Pictures arrive on the envelope for every kind whose result is TYPED; the generic
   // trio carries them inside `result.content` instead, which is what
   // `ToolCallBase.images` states. Attaching them here rather than per case is
   // why a `fetch` of an image URL or an `execute` that returned a screenshot
@@ -644,7 +693,7 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   // card's tool name.
   const rawKind = pickString(tool, 'kind')
   const wireKind = toolKind(rawKind || undefined)
-  // Read BEFORE the kind is chosen, because the kind now depends on it: a known kind
+  // Read this BEFORE choosing the kind, because the kind now depends on it: a known kind
   // whose input is a scalar cannot fill its typed request. The test itself needs no
   // kind, so there is no cycle.
   const scalarInput = hasScalarToolInput(tool)
@@ -652,10 +701,14 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   const kind = uncategorized ? 'mcp' as const : wireKind
   const { args, text: argsText } = acpToolInput(tool, kind)
   // Write the RECOVERED arguments back onto the frame, so every later read of the
-  // request key sees the path that came from `locations`. A NON-object input is left
+  // request key sees the path that came from `locations`. Keep a NON-object input
   // exactly as the tool sent it: overwriting it with `{}` is what used to lose a
-  // scalar, and `collectAcpToolText` reads that key for a bare string. Only the
-  // string case was excluded before, so a number, a boolean and an array were lost.
+  // scalar, and `collectAcpToolText` reads that key for a bare string. The old code
+  // excluded only the string case, so it lost the rest:
+  //
+  // - a number,
+  // - a boolean,
+  // - an array.
   if (isObject(tool[ACP_SUPPLEMENT_REQUEST.RawInput]) && tool[ACP_SUPPLEMENT_REQUEST.RawInput] !== args)
     tool = { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: args }
   const frameStatus = toolCallStatus(pickString(tool, 'status'))
@@ -785,8 +838,8 @@ export function acpRemapFacts(facts: ACPToolFacts, remap: { tool: Record<string,
  * things from it. A TYPED reader indexes it as an object (`args.filePath`), so a
  * scalar has no field to land in. The GENERIC card draws the whole argument as text,
  * whatever its JSON type. Separating the halves is what lets a scalar reach the
- * reader: it used to be replaced by `{}` and disappear, so a tool that sent one bare
- * string drew a card with no arguments at all.
+ * reader: the old code replaced one with `{}` and the scalar disappeared, so a tool
+ * that sent one bare string drew a card with no arguments at all.
  */
 interface NormalizedToolInput {
   /** The object a typed reader indexes. EMPTY when the tool sent no object. */
@@ -802,7 +855,7 @@ interface NormalizedToolInput {
  * A file tool that states no path in its own arguments often lists the file it touched
  * under `locations` instead. Exactly ONE distinct path there is the call's target.
  * Several paths are an ambiguity that this refuses to resolve, because picking one
- * would show a file that the call may not have touched.
+ * would show a file that the call possibly never touched.
  *
  * `prettifyArgsJson` is the ONE formatter, for the object form and the scalar form
  * alike: a bare string reformats to itself, so the generic card states the argument

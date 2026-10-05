@@ -31,7 +31,7 @@ export function WebFetchResultBody(props: {
     <div class={toolMessage}>
       <Show when={summary()}><div class={toolResultPrompt}>{summary()}</div></Show>
       <Show when={props.source.result}>
-        <CollapsibleContent kind="markdown-tool-result" text={props.source.result} isCollapsed={isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent outputPreview kind="markdown-tool-result" text={props.source.result} isCollapsed={isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
     </div>
   )

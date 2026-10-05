@@ -11,7 +11,7 @@ import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
 import { flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
-import { deferred } from '~/test-support/async'
+import { deferred, untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
 import { AuthProvider, useAuth } from './AuthContext'
@@ -51,7 +51,9 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-const mockResetTunnels = vi.fn<() => Promise<void>>()
+// A default resolution: closePooledChannels chains .catch onto the result, and
+// a test that never states a tunnel outcome must not crash the auth effect.
+const mockResetTunnels = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
 vi.mock('~/api/platformBridge', () => ({
   // ~/api/transport imports these from the same module at load time, so the
   // factory must provide them alongside the bridge under test.
@@ -878,17 +880,21 @@ describe('AuthContext storage namespace', () => {
     // earliest moment any consumer exists, and the one an effect-based
     // `setStorageAccount` would lose to.
     let seenWhileRendering: string | null | undefined
+    let captured!: AuthState
     function Guarded() {
       seenWhileRendering = storedKeyFor(KEY_BROWSER_PREFS)
       return null
     }
     function Gate() {
       const auth = useAuth()
+      captured = auth
       return <Show when={auth.isAuthenticated()}><Guarded /></Show>
     }
     render(() => <AuthProvider><Gate /></AuthProvider>)
 
-    await vi.waitFor(() => expect(seenWhileRendering).toBeDefined())
+    // `loading` goes false after the flush that publishes the identity, and
+    // that flush renders `Guarded`.
+    await untilTrue(() => !captured.loading())
     expect(seenWhileRendering).toBe('leapmux:u:alice:browser-prefs')
   })
 
@@ -901,17 +907,21 @@ describe('AuthContext storage namespace', () => {
     mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
 
     let seenWhileRendering: unknown
+    let captured!: AuthState
     function Guarded() {
       seenWhileRendering = loadBrowserPrefs().diffView
       return null
     }
     function Gate() {
       const auth = useAuth()
+      captured = auth
       return <Show when={auth.isAuthenticated()}><Guarded /></Show>
     }
     render(() => <AuthProvider><Gate /></AuthProvider>)
 
-    await vi.waitFor(() => expect(seenWhileRendering).toBeDefined())
+    // The hydration reads fake-indexeddb, which completes its requests on
+    // macrotasks. So wait for the end of the bootstrap, not for a poll window.
+    await untilTrue(() => !captured.loading())
     expect(seenWhileRendering).toBe('split')
   })
 
@@ -930,7 +940,7 @@ describe('AuthContext storage namespace', () => {
 
     const { auth } = renderWithAuthCapture()
 
-    await vi.waitFor(() => expect(auth().loading()).toBe(false))
+    await untilTrue(() => !auth().loading())
     expect(auth().isAuthenticated()).toBe(true)
     expect(auth().bootstrapError()).toBeNull()
     // Signed in, on defaults: the mirror is empty, which reads as "nothing
@@ -946,7 +956,8 @@ describe('AuthContext storage namespace', () => {
   it('does not publish an identity a newer one superseded mid-hydration', async () => {
     mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
-    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    await untilTrue(() => !auth().loading())
+    expect(screen.getByTestId('username')).toHaveTextContent('alice')
 
     const published: Array<string | undefined> = []
     const stop = createRoot((dispose) => {
@@ -976,7 +987,8 @@ describe('AuthContext storage namespace', () => {
   it('does not apply a superseded response\'s elevation window', async () => {
     mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
-    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    await untilTrue(() => !auth().loading())
+    expect(screen.getByTestId('username')).toHaveTextContent('alice')
     expect(auth().elevationExpiresAt()).toBeUndefined()
 
     // A refresh carrying an elevation, superseded mid-flight by a sign-out.
@@ -1000,7 +1012,8 @@ describe('AuthContext storage namespace', () => {
   it('keeps the namespace after a sign-out', async () => {
     mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
-    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    await untilTrue(() => !auth().loading())
+    expect(screen.getByTestId('username')).toHaveTextContent('alice')
 
     await auth().logout()
 
@@ -1017,7 +1030,7 @@ describe('AuthContext storage namespace', () => {
     mockGetCurrentUser.mockResolvedValue({ user: { id: '', username: 'nobody', isAdmin: false } })
     const { auth } = renderWithAuthCapture()
 
-    await vi.waitFor(() => expect(auth().loading()).toBe(false))
+    await untilTrue(() => !auth().loading())
     expect(auth().isAuthenticated()).toBe(false)
     expect(auth().bootstrapError()).toBeNull()
     expect(error).toHaveBeenCalled()

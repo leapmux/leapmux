@@ -1,4 +1,6 @@
+import type { GenericToolResult } from '../model/tools/generic'
 import { render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../model/mcpToolCall'
 import { genericResultCollapsible, genericResultCopyable, GenericToolBody } from './genericToolCall'
@@ -132,9 +134,29 @@ describe('GenericToolBody output ownership', () => {
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toBe('native-output-marker')
-    const text = container.textContent ?? ''
-    expect(text.indexOf(metadataJson)).toBeLessThan(text.lastIndexOf('native-output-marker'))
+    // The metadata text holds the output marker too, so compare element positions, not text offsets.
+    const metadataBlock = [...container.querySelectorAll('div')].find(element => element.textContent === metadataJson)
+    if (!metadataBlock || !outputs[0])
+      throw new Error('The ownership fixture requires its metadata block and its output block.')
+    expect(metadataBlock.compareDocumentPosition(outputs[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     expect(genericResultCopyable(result)).toBe(`native-output-marker\n\n${metadataJson}`)
+  })
+
+  it('keeps genuine structured output after returned content blocks', () => {
+    const result = { content: [{ type: 'text' as const, text: 'returned text' }], structuredJson: '{"count":0}' }
+    const { container } = render(() => <GenericToolBody request={{ args: {} }} result={result} status="completed" />)
+    expect([...container.querySelectorAll('[data-tool-output-preview]')].map(element => element.textContent)).toEqual(['returned text', '{"count":0}'])
+    expect(genericResultCopyable(result)).toBe('returned text\n\n{"count":0}')
+  })
+
+  it.each([undefined, 'metadata'] as const)('updates structured JSON with role %s when the result changes', (structuredJsonRole) => {
+    const role = structuredJsonRole !== undefined ? { structuredJsonRole } : {}
+    const [result, setResult] = createSignal<GenericToolResult>({ content: [], structuredJson: '{"count":0}', ...role })
+    const { container } = render(() => <GenericToolBody request={{ args: {} }} result={result()} status="completed" />)
+    expect(container.textContent).toContain('{"count":0}')
+    setResult({ content: [], structuredJson: '{"count":1}', ...role })
+    expect(container.textContent).toContain('{"count":1}')
+    expect(container.textContent).not.toContain('{"count":0}')
   })
 
   it('cannot certify arguments or explicit structured metadata when output is absent', () => {

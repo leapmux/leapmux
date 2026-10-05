@@ -5,6 +5,8 @@ import type { ControlRequest } from '~/stores/control.store'
 import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
+import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
+import { CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { AgentActivityState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
@@ -1336,6 +1338,147 @@ describe('submitResponse payload fault', () => {
     }
     finally {
       dispose()
+    }
+  })
+})
+
+// Shift+Tab leaves Plan for the mode the agent left it from. The panel serves
+// several agents in turn, and an agent can load already in Plan, so the target
+// must belong to the agent and fall back to ITS provider's default.
+describe('togglePlanMode', () => {
+  type AgentView = ControlResponseHandlingProps['agent']
+
+  function setupToggle(initial: { agentId: string, agent: AgentView, settingsLoading?: boolean }) {
+    const [agentId, setAgentId] = createSignal(initial.agentId)
+    const [agent, setAgent] = createSignal<AgentView>(initial.agent)
+    const onSettingChange = vi.fn()
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: useControlResponseHandling({
+        get agentId() { return agentId() },
+        get agent() { return agent() },
+        settingsLoading: initial.settingsLoading ?? false,
+        onSettingChange,
+        onSendMessage: vi.fn(),
+      }, createControlAnswerState(), () => undefined, vi.fn()),
+    }))
+    /** Show another agent in the panel, as a tab switch does. */
+    const show = (id: string, view: AgentView) => batch(() => {
+      setAgentId(id)
+      setAgent(view)
+    })
+    /** The mode the last toggle asked for. */
+    const lastRequestedMode = () => onSettingChange.mock.lastCall?.[0]?.sets.permissionMode
+    return { result, dispose, onSettingChange, setAgent, show, lastRequestedMode }
+  }
+
+  const cline = (permissionMode: string): AgentView => ({ agentProvider: AgentProvider.CLINE, optionValues: { permissionMode } })
+  const claude = (permissionMode: string): AgentView => ({ agentProvider: AgentProvider.CLAUDE_CODE, optionValues: { permissionMode } })
+
+  it('enters plan mode from the current mode', () => {
+    const toggle = setupToggle({ agentId: 'agent-claude', agent: claude(CLAUDE_MODE.AcceptEdits) })
+    try {
+      toggle.result.togglePlanMode()
+      expect(toggle.onSettingChange).toHaveBeenCalledExactlyOnceWith({ sets: { permissionMode: CLAUDE_MODE.Plan } })
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('returns to the mode the agent left plan mode from', () => {
+    const toggle = setupToggle({ agentId: 'agent-claude', agent: claude(CLAUDE_MODE.AcceptEdits) })
+    try {
+      toggle.result.togglePlanMode()
+      toggle.setAgent(claude(CLAUDE_MODE.Plan))
+      toggle.result.togglePlanMode()
+      expect(toggle.lastRequestedMode()).toBe(CLAUDE_MODE.AcceptEdits)
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('leaves plan mode for the provider default when the agent loads already in plan mode', () => {
+    // A reload mounts the panel before the agent hydrates, so the first read
+    // knows no provider at all.
+    const toggle = setupToggle({ agentId: 'agent-cline', agent: undefined })
+    try {
+      toggle.setAgent(cline(CLINE_PERMISSION_MODE.Plan))
+      toggle.result.togglePlanMode()
+      expect(toggle.onSettingChange).toHaveBeenCalledExactlyOnceWith({ sets: { permissionMode: CLINE_PERMISSION_MODE.Act } })
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('does not carry one agent\'s remembered mode to another agent', () => {
+    const toggle = setupToggle({ agentId: 'agent-claude', agent: claude(CLAUDE_MODE.AcceptEdits) })
+    try {
+      toggle.result.togglePlanMode()
+      toggle.setAgent(claude(CLAUDE_MODE.Plan))
+
+      toggle.show('agent-cline', cline(CLINE_PERMISSION_MODE.Plan))
+      toggle.result.togglePlanMode()
+
+      expect(toggle.lastRequestedMode()).toBe(CLINE_PERMISSION_MODE.Act)
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('keeps each agent\'s remembered mode across a switch to another agent and back', () => {
+    const toggle = setupToggle({ agentId: 'agent-claude', agent: claude(CLAUDE_MODE.AcceptEdits) })
+    try {
+      toggle.result.togglePlanMode()
+      toggle.setAgent(claude(CLAUDE_MODE.Plan))
+      toggle.show('agent-cline', cline(CLINE_PERMISSION_MODE.AutoApprove))
+      toggle.show('agent-claude', claude(CLAUDE_MODE.Plan))
+
+      toggle.result.togglePlanMode()
+
+      expect(toggle.lastRequestedMode()).toBe(CLAUDE_MODE.AcceptEdits)
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('remembers a mode the agent reached without the toggle', () => {
+    const toggle = setupToggle({ agentId: 'agent-cline', agent: cline(CLINE_PERMISSION_MODE.Act) })
+    try {
+      // The settings menu, not Shift+Tab, chose Auto-approve and then Plan.
+      toggle.setAgent(cline(CLINE_PERMISSION_MODE.AutoApprove))
+      toggle.setAgent(cline(CLINE_PERMISSION_MODE.Plan))
+      toggle.result.togglePlanMode()
+      expect(toggle.lastRequestedMode()).toBe(CLINE_PERMISSION_MODE.AutoApprove)
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('sends nothing before the provider is known', () => {
+    const toggle = setupToggle({ agentId: 'agent-cline', agent: undefined })
+    try {
+      toggle.result.togglePlanMode()
+      expect(toggle.onSettingChange).not.toHaveBeenCalled()
+    }
+    finally {
+      toggle.dispose()
+    }
+  })
+
+  it('sends nothing while the settings load', () => {
+    const toggle = setupToggle({ agentId: 'agent-cline', agent: cline(CLINE_PERMISSION_MODE.Plan), settingsLoading: true })
+    try {
+      toggle.result.togglePlanMode()
+      expect(toggle.onSettingChange).not.toHaveBeenCalled()
+    }
+    finally {
+      toggle.dispose()
     }
   })
 })

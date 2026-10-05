@@ -179,4 +179,28 @@ describe('CollapsibleContent output ownership', () => {
     expect(container.textContent).toBe('same marker')
     expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
+
+  it.each([
+    { kind: 'pre', text: 'same marker' },
+    { kind: 'ansi-or-pre', text: 'same marker' },
+    { kind: 'ansi-or-pre', text: '\x1B[31msame marker\x1B[0m' },
+    { kind: 'markdown', text: 'same marker' },
+    { kind: 'markdown-tool-result', text: 'same marker' },
+    { kind: 'json', text: '{"same":"marker"}' },
+  ] as const)('does not mark kind $kind text $text without output ownership', ({ kind, text }) => {
+    for (const outputPreview of [false, undefined]) {
+      const { container, unmount } = render(() => <CollapsibleContent {...(outputPreview !== undefined ? { outputPreview } : {})} kind={kind} text={text} display={text} isCollapsed={false} />)
+      expect(container.textContent).toContain(kind === 'json' ? 'same' : 'same marker')
+      expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
+      unmount()
+    }
+  })
+
+  it('marks styled output in premeasure mode', () => {
+    const text = '\x1B[31mnative output\x1B[0m'
+    const { container } = render(() => <CollapsibleContent outputPreview kind="ansi-or-pre" text={text} display={text} isCollapsed={false} context={{ premeasureMode: true }} />)
+    const outputs = container.querySelectorAll('[data-tool-output-preview]')
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]?.textContent).toBe('native output')
+  })
 })

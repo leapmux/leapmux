@@ -114,6 +114,21 @@ describe('ComposerStatusBar', () => {
     expect(screen.getByTestId('composer-mode-trigger')).toHaveTextContent('chat')
   })
 
+  it('draws the Act and Plan axis of DeepSeek Harness as the mode chip', () => {
+    // DeepSeek Harness has two mode-like axes: Act and Plan (`permissionMode`),
+    // and the permission preset (`permissions`). The mode chip follows the first axis.
+    // A user then sees the Plan mode without opening the menu.
+    renderBar(agent({
+      agentProvider: AgentProvider.DEEPSEEK_HARNESS,
+      optionGroups: [
+        group('permissionMode', 'Mode', ['act', 'plan'], 'plan'),
+        group('permissions', 'Permissions', ['read-only', 'workspace-write'], 'workspace-write'),
+      ],
+    } as Partial<AgentInfo>))
+
+    expect(screen.getByTestId('composer-mode-trigger')).toHaveTextContent('plan')
+  })
+
   it('draws the effort chip from the provider-declared effort axis', () => {
     // Goose reports its reasoning axis under its own id, and the chip follows it.
     renderBar(agent({

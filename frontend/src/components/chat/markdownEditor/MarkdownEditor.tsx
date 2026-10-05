@@ -15,7 +15,6 @@ import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { errorText } from '~/styles/shared.css'
-import { unescapeAutolinkDots } from './autolinkDotEscape'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
@@ -24,6 +23,7 @@ import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
 import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
+import { stripNeedlessEscapes } from './needlessEscapes'
 import { decidePasteHandling } from './pasteDecision'
 import { decideSendFocus } from './sendFocus'
 
@@ -444,7 +444,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         const serializer = ctx.get(serializerCtx)
         const view = ctx.get(editorViewCtx)
         initialDocument = view.state.doc
-        text = unescapeAutolinkDots(serializer(view.state.doc)).trim()
+        text = stripNeedlessEscapes(serializer(view.state.doc)).trim()
       })
     }
     catch {
@@ -785,7 +785,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // re-serializes for the same reason; this is the same path for a draft.
       try {
         editor.action((ctx: Ctx) => {
-          emitDocument(unescapeAutolinkDots(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)))
+          emitDocument(stripNeedlessEscapes(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)))
         })
       }
       catch {

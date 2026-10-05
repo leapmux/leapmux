@@ -23,7 +23,10 @@ import { canHighlightBySize } from './collapse'
 export type CollapsibleContentKind = 'ansi-or-pre' | 'pre' | 'markdown' | 'markdown-tool-result' | 'json'
 
 export interface CollapsibleContentProps {
-  /** Identify returned output without marking arguments or metadata. */
+  /**
+   * When true, the displayed text element carries data-tool-output-preview.
+   * Set it only for returned tool output. Never set it for arguments, headers, properties, or metadata.
+   */
   outputPreview?: boolean
   /**
    * The original body text supplies ANSI detection.
@@ -41,7 +44,7 @@ export interface CollapsibleContentProps {
   isCollapsed: boolean
   /** Body kind. See {@link CollapsibleContentKind}. */
   kind: CollapsibleContentKind
-  /** Markdown/ANSI render capability; premeasure mode skips worker/Shiki work while preserving block layout. */
+  /** The Markdown and ANSI render context. In premeasure mode, the component skips worker and Shiki work and keeps the block layout. */
   context?: MarkdownRenderContext
 }
 
@@ -52,6 +55,7 @@ export interface CollapsibleContentProps {
  */
 export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element {
   const collapsedClass = () => props.isCollapsed ? ` ${toolResultCollapsed}` : ''
+  const outputPreviewAttribute = () => props.outputPreview ? '' : undefined
   const slice = () => props.display ?? props.text
   const safeDisplay = createMemo(() => limitTextForDisplay(slice()))
   const safeText = () => safeDisplay().text
@@ -100,25 +104,25 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
     <>
       <Switch>
         <Match when={props.kind === 'markdown'}>
-          <div class={`${markdownContent}${collapsedClass()}`} data-tool-output-preview={props.outputPreview ? '' : undefined} ref={cachedInnerHtml(markdownSliceHtml)} />
+          <div class={`${markdownContent}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()} ref={cachedInnerHtml(markdownSliceHtml)} />
         </Match>
         <Match when={props.kind === 'markdown-tool-result'}>
           {/* Normal Markdown bodies render in full. The shared Markdown guard changes
               an unsafe body to a limited plain-text display before parsing. */}
-          <div class={`${toolResultContent}${collapsedClass()}`} data-tool-output-preview={props.outputPreview ? '' : undefined} ref={cachedInnerHtml(markdownFullHtml)} />
+          <div class={`${toolResultContent}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()} ref={cachedInnerHtml(markdownFullHtml)} />
         </Match>
         <Match when={props.kind === 'json'}>
           {/* The token surface receives only the safe display text. */}
           <JsonContent />
         </Match>
         <Match when={props.kind === 'pre'}>
-          <div class={`${toolResultContentPre}${collapsedClass()}`} data-tool-output-preview={props.outputPreview ? '' : undefined}>{safeText()}</div>
+          <div class={`${toolResultContentPre}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()}>{safeText()}</div>
         </Match>
         <Match when={renderedAnsiHtml()}>
-          {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} data-tool-output-preview={props.outputPreview ? '' : undefined} ref={cachedInnerHtml(html)} />}
+          {html => <div class={`${toolResultContentAnsi}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()} ref={cachedInnerHtml(html)} />}
         </Match>
         <Match when={props.kind === 'ansi-or-pre'}>
-          <div class={`${toolResultContentPre}${collapsedClass()}`} data-tool-output-preview={props.outputPreview ? '' : undefined}>{ansiPlainText()}</div>
+          <div class={`${toolResultContentPre}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()}>{ansiPlainText()}</div>
         </Match>
       </Switch>
       <Show when={!props.isCollapsed && rawDisplayLimited()}>

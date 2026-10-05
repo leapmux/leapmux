@@ -15,6 +15,7 @@ import {
   resetStorageAccountForTests,
   setStorageAccountForTests,
 } from '~/lib/browserStorage'
+import { untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { resetSystemInfoMock } from '~/test-support/systemInfoMock'
@@ -141,10 +142,16 @@ async function seedDeviceTierFor(userId: string, prefs: BrowserPreferences) {
   resetStorageAccountForTests()
 }
 
-/** Render, and wait for the auth bootstrap to answer. */
+/**
+ * Render, and wait for the auth bootstrap to answer.
+ *
+ * A restored session hydrates the account's rows from fake-indexeddb, which
+ * completes its requests on macrotasks. So wait for the end of the bootstrap,
+ * not for a poll window.
+ */
 async function renderBootstrapped() {
   const app = renderApp()
-  await waitFor(() => expect(app.auth().loading()).toBe(false))
+  await untilTrue(() => !app.auth().loading())
   return app
 }
 

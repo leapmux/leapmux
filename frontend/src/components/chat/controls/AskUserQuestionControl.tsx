@@ -341,7 +341,10 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     return false
   }
 
-  /** Save current editor text to customTexts for the current page (if non-empty). */
+  /**
+   * Save the editor text into customTexts for the current page.
+   * An EMPTY editor saves too, so an answer that the user deleted stays deleted.
+   */
   const saveEditorToCurrentPage = () => {
     const editor = props.editorContentRef?.()
     if (!editor)
@@ -385,9 +388,11 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   //
   // The `catch` stays. A bare `finally` would let the rejection escape, and
   // handleYolo calls this with `void`, which makes it an unhandled rejection.
-  const handleSubmit = async () => {
+  //
+  // This sends answerState as it is. A caller that holds editor text saves it
+  // first: see handleSubmit and handleYolo.
+  const submitAnswers = async () => {
     startSubmitting()
-    saveEditorToCurrentPage()
     try {
       await props.onSubmitAnswers()
     }
@@ -397,6 +402,11 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     finally {
       stopSubmitting()
     }
+  }
+
+  const handleSubmit = async () => {
+    saveEditorToCurrentPage()
+    await submitAnswers()
   }
 
   const handleStop = async () => {
@@ -412,18 +422,24 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     }
   }
 
+  /**
+   * Fill every unanswered page with the recommended-option answer, then submit.
+   *
+   * The editor is saved FIRST. Unsaved editor text is the current page's answer,
+   * so the fill must see it and keep it. A save after the fill writes the editor
+   * into the current page again, and an empty editor then erases the answer that
+   * the fill just wrote. That is why this submits through submitAnswers and not
+   * through handleSubmit, which saves the editor again.
+   */
   const handleYolo = () => {
+    saveEditorToCurrentPage()
     const qs = questions()
     for (let i = 0; i < qs.length; i++) {
       if (!isPageAnsweredWithOption(props.answerState, i, qs[i])) {
         props.answerState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
       }
     }
-    // Auto-submit after filling unanswered questions
-    // Need to use setTimeout to let the state settle before reading it
-    setTimeout(() => {
-      void handleSubmit()
-    }, 0)
+    void submitAnswers()
   }
 
   return (

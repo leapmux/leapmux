@@ -1,4 +1,4 @@
-import type { ToolCallVariant, ToolResult } from '../../../model/toolCall'
+import type { ToolCall, ToolCallVariant, ToolResult } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import type { ACPToolCallAdapter } from './toolCall'
 import { describe, expect, it } from 'vitest'
@@ -17,7 +17,7 @@ import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { resolveMessageForRendering } from '../../registry'
 import { input } from '../../testUtils'
 import { classifyACPMessage } from '../classification'
-import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultAvailable, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage } from './toolCall'
+import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultAvailable, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage, resolveACPToolCall } from './toolCall'
 
 /**
  * `typedResult` takes `{ kind, result }` with the result key omitted when the call
@@ -53,9 +53,9 @@ describe('result wrapper resolution (ACP)', () => {
   })
 
   /**
-   * `in` walks the prototype chain, so a protocol key the AGENT named `toString` reads
+   * `in` walks the prototype chain, so a protocol key the AGENT spelled `toString` reads
    * as "the frame already carries it" for every plain object, and the whole resolve
-   * answered unchanged -- discarding a merge it had already built. The worker's map
+   * answered unchanged -- discarding a merge it already built. The worker's map
    * lookup has no prototype chain, so the two sides did not compute the same predicate.
    */
   it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])('merges a protocol key named %s', (key) => {
@@ -168,9 +168,9 @@ describe('a wire kind the shared tables do not know', () => {
     expect(call().label).toBe('Frobnicate')
   })
 
-  // The protocol's own `other` is not a title. A call headed "other" states less
-  // than one headed "Tool", and the wire word reached the header while nothing
-  // caught it.
+  // The protocol's own `other` is not a title. A call with the header "other" states
+  // less than one with the header "Tool", and the wire word reached the header while
+  // nothing caught it.
   it('never titles a call with the bare wire word', () => {
     const untitled = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'bare', kind: 'other', status: 'pending' }, undefined, undefined)
     expect(untitled.title).toBe('Tool')
@@ -234,7 +234,7 @@ describe('a call whose frame states no kind', () => {
     ...extra,
   }, undefined, undefined)
 
-  it('names the uncategorized card after the frame title, with no label', () => {
+  it('takes the tool word of the uncategorized card from the frame title, with no label', () => {
     const untyped = call()
     expect(untyped.kind).toBe('mcp')
     expect(untyped.label).toBeUndefined()
@@ -248,8 +248,8 @@ describe('a call whose frame states no kind', () => {
     expect(toolCallDisplayName(empty)).toBe('a_later_tool')
   })
 
-  // The branch the fix must keep: a kind word LeapMux does not know still names
-  // the card and the header.
+  // The branch the fix must keep: a kind word LeapMux does not know still supplies
+  // the card's tool word and the header.
   it('still states a kind word that LeapMux does not know', () => {
     const unknown = call({ kind: 'switch_mode_x' })
     expect(unknown.label).toBe('Switch mode x')
@@ -258,8 +258,8 @@ describe('a call whose frame states no kind', () => {
 })
 
 // Cursor's `switch_mode` is the one Agent Client Protocol kind the shared tables
-// name no tool for. Its answer is the sentence the switch wrote, drawn as the prose
-// the kind reads.
+// state no tool word for. Its answer is the sentence the switch wrote, drawn as the
+// prose the kind reads.
 describe('the protocol mode switch', () => {
   const call = (status = 'completed') => acpToolCall({
     sessionUpdate: 'tool_call_update',
@@ -291,9 +291,9 @@ describe('the protocol mode switch', () => {
 // shared collector would answer nothing for that row and must not erase the
 // adapter's answer.
 //
-// The adapter states the `image` kind, exactly as Cursor's own does. A picture rides
-// the call for a kind whose result is TYPED; the generic trio carries none of its own
-// (invariant I6), because its pictures ride the content blocks of its result.
+// The adapter states the `image` kind, exactly as Cursor's own does. A picture arrives
+// on the call for a kind whose result is TYPED; the generic trio carries none of its
+// own (invariant I6), because its pictures arrive in the content blocks of its result.
 describe('the images one tool call carries', () => {
   const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
   const call = { sessionUpdate: 'tool_call_update', toolCallId: 'img', status: 'completed', kind: 'other' }
@@ -305,7 +305,7 @@ describe('the images one tool call carries', () => {
     expect(row.images).toEqual([{ filePath: '/repo/made.png' }])
   })
 
-  // The card's own blocks ride its RESULT, and the shared image derivation reads
+  // The card's own blocks arrive in its RESULT, and the shared image derivation reads
   // them there: an image tab addresses the picture without the call listing it.
   it('collects the protocol blocks into the card the shared build draws', () => {
     const row = acpToolCall(withBlock, undefined, undefined)
@@ -397,9 +397,14 @@ describe('the shared ACP lifecycle', () => {
   })
 
   // A call the reader STOPPED is not a fault, so the ladder leaves its body where it
-  // is. The reason branch used to replace whatever the builder produced, which cost a
-  // partial read its lines, a partial search its hits and a partial edit its diff --
-  // and the two rows then differ in their bodies while both head `Interrupted`.
+  // is. The reason branch used to replace whatever the builder produced:
+  //
+  // - a partial read lost its lines,
+  // - a partial search lost its hits,
+  // - a partial edit lost its diff.
+  //
+  // The two rows then differed in their bodies while both showed the `Interrupted`
+  // header.
   it('keeps the words a cancelled call printed rather than restating them as a reason', () => {
     const call = row({ status: 'cancelled', ...answered })
     expect(call.status).toBe('cancelled')
@@ -428,7 +433,11 @@ describe('the shared ACP lifecycle', () => {
   // it costs the reader nothing: `parsedCall` strips the brand, so the card draws
   // exactly as it does for the empty result slot this case used to pin. Without it
   // the draft breaks I2 and `createToolCall` degrades the whole row to the uncategorized
-  // card, which drops the kind, the header and the request body the build did read.
+  // card, which drops what the build did read:
+  //
+  // - the kind,
+  // - the header,
+  // - the request body.
   it('marks a finished call incomplete when it supplied no answer', () => {
     const call = row({ status: 'completed' })
     expect(call.kind).toBe('task')
@@ -446,7 +455,7 @@ describe('the shared ACP lifecycle', () => {
     expect(call.result).toBeUndefined()
   })
 
-  // The command body is BUILT to draw a failed command: it takes the call's status and
+  // The command body DRAWS a failed command itself: it takes the call's status and
   // states the exit code beside the output. Replacing that with the reason in words is
   // what makes a row read "Error" where every other provider reads "Error (exit 1)".
   it('leaves a failed execute call its own command output', () => {
@@ -465,7 +474,7 @@ describe('the shared ACP lifecycle', () => {
   // An EMPTY typed result is one the ladder can replace. `image` answers `{}` at every
   // state of the call, and `imageRenderer.result` draws only `revisedPrompt` -- so a
   // generation that printed words and produced no picture lost those words, whether it
-  // finished, failed or was stopped. The rule lives in the ladder rather than in the
+  // finished, failed or stopped. The rule lives in the ladder rather than in the
   // builder, which is what keeps the lifecycle out of all thirty builders.
   function imageRow(tool: Record<string, unknown>) {
     return acpToolCall({ ...frame, ...tool }, facts => acpSpecFor(facts, 'image'), undefined)
@@ -490,7 +499,12 @@ describe('the shared ACP lifecycle', () => {
 
   // A row the turn RETAINED reads as still running in its own status, and the
   // completion is the only place that says otherwise. Every reader that asked the
-  // status alone dropped the file content, the hits, the page and the diff.
+  // status alone dropped the payload:
+  //
+  // - the file content,
+  // - the hits,
+  // - the page,
+  // - the diff.
   it('does not invent a result for a retained call that never sent a result update', () => {
     const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
@@ -507,15 +521,15 @@ describe('the shared ACP lifecycle', () => {
   // The outcome mapping runs ONE way: it completes a frame that never reported an
   // end of its own, and it never retracts the word a frame DID report. A frame
   // that states `failed` beside a COMPLETE completion is the more specific
-  // statement, and overriding it worded a failed row as a clean finish.
+  // statement, and overriding it made a failed row read as a clean finish.
   it.each([
     ['failed', 'failed'],
     ['cancelled', 'cancelled'],
     ['completed', 'completed'],
-  ] as const)('keeps the frame own terminal status %s over the outcome mapping', (stated, expected) => {
+  ] as const)('keeps the final status %s that the frame states over the outcome mapping', (stated, expected) => {
     const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
-      toolCallId: 'tc-terminal',
+      toolCallId: 'tc-final',
       kind: 'read',
       status: stated,
       rawInput: { path: '/p/a.ts' },
@@ -528,10 +542,15 @@ describe('the shared ACP lifecycle', () => {
 /**
  * The predicate the ladder's last step rests on, and the answers it must NOT give.
  *
- * It reads the VALUES and never the key count. An empty list, an empty string and a
- * `false` are each a real answer that a renderer draws an empty state for, so a rule
- * that folded them into "states nothing" would replace a to-do list somebody cleared
- * and a search that matched nothing with the words beside them.
+ * It reads the VALUES and never the key count. Each of these is a real answer that a
+ * renderer draws an empty state for:
+ *
+ * - an empty list,
+ * - an empty string,
+ * - a `false`.
+ *
+ * A rule that folded them into "states nothing" would replace a to-do list somebody
+ * cleared and a search that matched nothing with the words beside them.
  */
 describe('acpResultStatesNothing', () => {
   it('reads an object with no stated field as one that states nothing', () => {
@@ -574,7 +593,7 @@ describe('the file-change requests the arguments state', () => {
     return call.kind === 'delete' || call.kind === 'move' ? call.request.changes : []
   }
 
-  it('names the file a delete asks to remove', () => {
+  it('states the file a delete asks to remove', () => {
     expect(request('delete', { file_path: '/p/gone.ts' })).toEqual([
       { filePath: '/p/gone.ts', operation: 'delete', oldStr: '', newStr: '', structuredPatch: null },
     ])
@@ -584,25 +603,25 @@ describe('the file-change requests the arguments state', () => {
     ['source_path', 'destination_path'],
     ['sourcePath', 'destinationPath'],
     ['old_path', 'new_path'],
-  ])('names both files a move asks for, spelled %s and %s', (from, to) => {
+  ])('states both files a move asks for, spelled %s and %s', (from, to) => {
     expect(request('move', { [from]: '/p/a.ts', [to]: '/p/b.ts' })).toEqual([
       { filePath: '/p/b.ts', previousPath: '/p/a.ts', operation: 'move', oldStr: '', newStr: '', structuredPatch: null },
     ])
   })
 
-  it('names the one file a half-stated move carries', () => {
+  it('states the one file a half-stated move carries', () => {
     expect(request('move', { source_path: '/p/a.ts' })).toEqual([
       { filePath: '/p/a.ts', previousPath: undefined, operation: 'move', oldStr: '', newStr: '', structuredPatch: null },
     ])
   })
 
-  it('states no change when the arguments name no file', () => {
+  it('states no change when the arguments state no file', () => {
     expect(request('delete', {})).toEqual([])
     expect(request('move', {})).toEqual([])
   })
 
   // The result row exists to state the file. Once the request does, it is not needed.
-  it('stops asking for the result once the request names the file', () => {
+  it('stops asking for the result once the request states the file', () => {
     const frame = { sessionUpdate: 'tool_call', toolCallId: 'tc-13', kind: 'delete', status: 'pending' }
     expect(acpToolCallNeedsResult({ ...frame, rawInput: {} }, undefined)).toBe(true)
     expect(acpToolCallNeedsResult({ ...frame, rawInput: { path: '/p/gone.ts' } }, undefined)).toBe(false)
@@ -610,7 +629,7 @@ describe('the file-change requests the arguments state', () => {
 
   // An edit that asks for several substitutions in one file states each of them. The
   // builder read one root pair alone, so a `multi_edit` opened with an empty list and
-  // a header that could name no file at all.
+  // a header that could state no file at all.
   it('states every substitution a multi-edit asks for', () => {
     const changes = acpToolCall({
       sessionUpdate: 'tool_call',
@@ -627,8 +646,9 @@ describe('the file-change requests the arguments state', () => {
   })
 
   // A change that draws NO diff still states the file, which is the only thing the
-  // header needs. Dropping it headed a failed edit with the word "Edit" and nothing.
-  it('keeps the file of an edit whose arguments state no replacement text', () => {
+  // header needs. Dropping it left a failed edit that showed the word "Edit" and
+  // nothing.
+  it('keeps the file of an edit whose two sides are equal', () => {
     const call = acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'tc-15',
@@ -641,13 +661,96 @@ describe('the file-change requests the arguments state', () => {
 })
 
 /**
+ * A file change whose frame states the FILE and no change to draw.
+ *
+ * The arguments of a failed or refused call often state the path alone, or the frame
+ * lists the file under `locations` alone. The file is then the one fact the row can
+ * state about the call. The request keeps it as a change with the path and empty
+ * sides, so the row keeps:
+ *
+ * - its kind,
+ * - its file,
+ * - its status,
+ * - its reason.
+ *
+ * Without that change the list is empty, `createToolCall` refuses the draft
+ * (`a-file-change-states-no-file`), and the row becomes the uncategorized card.
+ */
+describe('a file change that states its file alone', () => {
+  const failure = [{ type: 'content', content: { type: 'text', text: 'Permission denied.' } }]
+  const pathOnly = (operation: 'edit' | 'add') => [{ filePath: '/p/file.ts', operation, oldStr: '', newStr: '', structuredPatch: null, showLineNumbers: false }]
+  const fileChanges = (call: ToolCall) => call.kind === 'edit' || call.kind === 'write' ? call.request.changes : []
+
+  it.each([
+    ['edit', 'edit'],
+    ['write', 'add'],
+  ] as const)('keeps the file of a running %s whose arguments state the path alone', (kind, operation) => {
+    const call = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'path-only', kind, status: 'pending', rawInput: { path: '/p/file.ts' } }, undefined, undefined)
+    expect(call.degradation).toBeUndefined()
+    expect(call.kind).toBe(kind)
+    expect(fileChanges(call)).toStrictEqual(pathOnly(operation))
+  })
+
+  // The frame a refusal sends: the file is in `locations`, and the content holds the
+  // reason alone.
+  it('keeps the kind, the file and the reason of a failed edit that lists its file alone', () => {
+    const call = acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'path-only', kind: 'edit', status: 'failed', locations: [{ path: '/p/file.ts' }], content: failure }, undefined, undefined)
+    expect(call.degradation).toBeUndefined()
+    expect(call.kind).toBe('edit')
+    expect(call.status).toBe('failed')
+    expect(fileChanges(call)).toStrictEqual(pathOnly('edit'))
+    expect(call.result).toStrictEqual(failedResult('Permission denied.'))
+  })
+
+  // A refused call reaches the browser as two frames. The opening frame carries the
+  // PROPOSED diff, and the failed update replaces the content with the reason. The
+  // joined call states the file and no diff, because the file took no change.
+  it('states no diff for a failed edit whose opening frame proposed one', () => {
+    const opening = { sessionUpdate: 'tool_call', toolCallId: 'proposed', kind: 'edit', status: 'pending', title: 'Edit file.ts', content: [{ type: 'diff', path: '/p/file.ts', oldText: 'proposedBefore', newText: 'proposedAfter' }], locations: [{ path: '/p/file.ts' }] }
+    const ending = { sessionUpdate: 'tool_call_update', toolCallId: 'proposed', kind: 'edit', status: 'failed', content: failure }
+    const call = acpToolCall(resolveACPToolCall(ending, opening), undefined, undefined)
+    expect(call.degradation).toBeUndefined()
+    expect(call.kind).toBe('edit')
+    expect(fileChanges(call)).toStrictEqual(pathOnly('edit'))
+    expect(call.result).toStrictEqual(failedResult('Permission denied.'))
+  })
+
+  it('answers a completed edit that states its file alone with the words it printed', () => {
+    const call = acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'path-only', kind: 'edit', status: 'completed', rawInput: { filePath: '/p/file.ts' }, content: [{ type: 'content', content: { type: 'text', text: 'No change was needed.' } }] }, undefined, undefined)
+    expect(call.degradation).toBeUndefined()
+    expect(call.kind).toBe('edit')
+    expect(fileChanges(call)).toStrictEqual(pathOnly('edit'))
+    expect(call.result).toStrictEqual(unparsedResult('No change was needed.'))
+  })
+
+  // The request already states the file, so the result row is not necessary to state it.
+  it.each(['edit', 'write'])('stops asking for the result once the %s request states its file', (kind) => {
+    const frame = { sessionUpdate: 'tool_call', toolCallId: 'path-only', kind, status: 'pending' }
+    expect(acpToolCallNeedsResult({ ...frame, rawInput: {} }, undefined)).toBe(true)
+    expect(acpToolCallNeedsResult({ ...frame, rawInput: { path: '/p/file.ts' } }, undefined)).toBe(false)
+  })
+
+  // The limit of the rule. A frame that identifies no ONE file still degrades, because
+  // the row must not state a file that the call possibly did not touch.
+  it.each([
+    ['no file', {}],
+    ['two listed files', { locations: [{ path: '/p/a.ts' }, { path: '/p/b.ts' }] }],
+  ])('degrades a failed edit that states %s', (_case, frame) => {
+    const call = acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'no-file', kind: 'edit', status: 'failed', content: failure, ...frame }, undefined, undefined)
+    expect(call.kind).toBe('other')
+    expect(call.degradation).toStrictEqual({ fault: 'a-file-change-states-no-file', originalKind: 'edit' })
+    expect(call.result).toStrictEqual(failedResult('Permission denied.'))
+  })
+})
+
+/**
  * ONE spelling of the mode switch's arguments, shared by the builder and the table.
  *
- * `ACP_DEFAULT_REQUESTS` is total over `ToolKind`, so it held an entry for this kind
- * -- and the builder spelled its own request instead, so that entry was unreachable.
- * The two then disagreed: the entry read `mode` and `target`, the builder read `mode`
- * and `targetModeId`. No test could see the disagreement, and a reader who corrected
- * the table changed nothing. The builder now calls the table, which reads all three.
+ * The shared request table (`DEFAULT_TOOL_REQUESTS`) is total over `ToolKind`, so it
+ * holds an entry for this kind. The builder calls that entry, which reads all three
+ * keys. A builder that spells its own request makes the entry unreachable, and the two
+ * readings then disagree with no test to see it: one reads `mode` and `target`, the
+ * other `mode` and `targetModeId`.
  *
  * `target` is a separate FACT from `mode`, not a second spelling of it:
  * `switchModeRenderer` draws the worktree it identifies AFTER the mode, so folding it
@@ -684,7 +787,7 @@ describe('the mode switch request', () => {
     expect(requestOf({ mode: 'worktree', target: 'feature-branch' })).toEqual({ mode: 'worktree', target: 'feature-branch' })
   })
 
-  it('states no mode for a switch whose arguments name none', () => {
+  it('states no mode for a switch whose arguments state none', () => {
     expect(requestOf({})).toEqual({ mode: undefined, target: undefined })
   })
 })
@@ -799,20 +902,27 @@ const SHARED_ARGUMENT_PROBE: Record<string, unknown> = {
  *
  * TWO sources, and the list holds both: `agent` and `think` come from
  * `ACP_TOOL_REQUEST_OVERRIDES`, and the other nine spell their request inside the
- * builder -- the four that read a protocol field the shared table has no key for, the
- * two file-change kinds that read the diff out of `rawInput`, and the generic trio,
- * whose card states a server and a tool that no argument carries.
+ * builder:
+ *
+ * - the four that read a protocol field the shared table has no key for,
+ * - the two file-change kinds that read the diff out of `rawInput`,
+ * - the generic trio, whose card states a server and a tool that no argument
+ *   carries.
  */
 const ACP_OWN_REQUEST_KINDS = ['unspecified', 'agent', 'edit', 'execute', 'fetch', 'mcp', 'other', 'read', 'search', 'think', 'write'] as const
 
 /**
  * Every other kind, which takes the shared declared request.
  *
- * Three of them are pinned by MEMBERSHIP alone: `question` answers the constant
- * `{ questions: [] }`, `todo` answers `{ items: [] }` and `wait` answers
- * `{ durationMs: undefined }`, so a hand-written builder that answered the same
- * constant is indistinguishable from the shared one by value. What the list still
- * states is that each kind delegates at all.
+ * Three of them are pinned by MEMBERSHIP alone:
+ *
+ * - `question` answers the constant `{ questions: [] }`,
+ * - `todo` answers `{ items: [] }`,
+ * - `wait` answers `{ durationMs: undefined }`.
+ *
+ * A hand-written builder that answered the same constant is indistinguishable from
+ * the shared one by value. What the list still states is that each kind delegates
+ * at all.
  */
 const ACP_SHARED_REQUEST_KINDS = [
   'agents',
@@ -840,14 +950,17 @@ const ACP_SHARED_REQUEST_KINDS = [
  * The builder table: one entry for each kind, checked against that kind's own request.
  *
  * Totality is the mapped type's, so a new `ToolKind` is a compile error at the table.
- * These cases pin the three statements no type makes: the keys are exactly
- * `TOOL_KINDS` at RUNTIME, each entry answers at the key that states it, and every kind
- * outside the deviation list fills the shared declared request.
+ * These cases pin the three statements no type makes:
  *
- * The third one is the only mechanical check that `ACP_TOOL_REQUEST_OVERRIDES` has not
- * grown past its deviations. No type can do that job: an entry that reads `args` alone
- * satisfies a slot supplying `args` and the facts, so a spread of the shared table --
- * or one stray key that shadows a kind -- compiles and simply draws a different card.
+ * - the keys are exactly `TOOL_KINDS` at RUNTIME,
+ * - each entry answers at the key that states it,
+ * - every kind outside the deviation list fills the shared declared request.
+ *
+ * The third one is the only mechanical check against `ACP_TOOL_REQUEST_OVERRIDES`
+ * growing past its deviations. No type can do that job: an entry that reads `args`
+ * alone satisfies a slot supplying `args` and the facts, so a spread of the shared
+ * table -- or one stray key that shadows a kind -- compiles and simply draws a
+ * different card.
  *
  * The builders are read DIRECTLY rather than through `acpSpecFor`, because the
  * lifecycle ladder sits above them and states the result. The request is what these
@@ -894,9 +1007,14 @@ describe('ACP_SPEC_READERS', () => {
  * A tool INPUT the protocol carries as a scalar rather than as an object.
  *
  * `rawInput` is whatever the agent sent. Most daemons send an object, and the typed
- * readers need one -- but the schema permits a bare string, a number or a boolean, and
- * a normalization that answered `{}` for those threw the argument away. The row then
- * headed an uncategorized card over an empty request while the only thing the call
+ * readers need one -- but the schema permits a scalar:
+ *
+ * - a bare string,
+ * - a number,
+ * - a boolean.
+ *
+ * A normalization that answered `{}` for those threw the argument away. The row then
+ * showed an uncategorized card over an empty request while the only thing the call
  * stated sat in the frame.
  *
  * The arguments therefore travel as two fields: `args` for the object a typed reader
@@ -932,7 +1050,7 @@ describe('a scalar ACP tool input', () => {
   })
 
   // The three cases below read a LIVE row. The typed request is what they ask about,
-  // and a row that has not answered is the state that admits no result -- so the case
+  // and a row that did not answer yet is the state that admits no result -- so the case
   // states the input it is about and nothing else.
   it('still fills a typed field from an object input', () => {
     const call = acpToolCall(
