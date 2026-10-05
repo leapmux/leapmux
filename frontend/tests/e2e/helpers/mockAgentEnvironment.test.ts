@@ -324,6 +324,18 @@ describe('createMockAgentEnvironment', () => {
     expect(env.AGENT_CLI_CREDENTIAL_STORE).toBe('memory')
   })
 
+  it('creates each private directory that a provider storage or data variable points at', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    // A spec that asserts a private path needs the directory before the agent writes to it.
+    // A spec that runs first on a shard sees no earlier agent write.
+    for (const name of ['ZCODE_STORAGE_DIR', 'KIRO_DATA_DIR', 'GROK_FILE_LOCK_SLOT_DIR'] as const) {
+      const path = env[name]
+      expect(path, name).toBeDefined()
+      expect(path!.startsWith(`${directory}/`), `${name} lies inside the run directory`).toBe(true)
+      expect(existsSync(path!) && statSync(path!).isDirectory(), `${name} exists as a directory`).toBe(true)
+    }
+  })
+
   it('writes Codex, Pi, Reasonix, and ZCode provider files', async () => {
     const realHomeDir = join(directory, 'real-home')
     const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210', { realHomeDir })

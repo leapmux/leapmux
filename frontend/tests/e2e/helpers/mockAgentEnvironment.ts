@@ -461,7 +461,10 @@ export async function createMockAgentEnvironment(
   // MiMo keeps its data, configuration, state and cache under one root. It must be
   // an absolute path, because MiMo refuses to start with a relative one.
   const mimoHome = join(runDir, 'mimocode-home')
-  for (const directory of [codexHome, piAgentDir, reasonixHome, join(gooseRoot, 'config'), zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, junieAgentsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
+  // A spec that asserts a private path needs the directory before an agent writes to it,
+  // so the environment creates each directory that one of its variables points at.
+  const providerStorageDirs = [join(runDir, 'zcode-storage'), join(runDir, 'kiro-data'), join(runDir, 'grok-lock-slots')]
+  for (const directory of [...providerStorageDirs, codexHome, piAgentDir, reasonixHome, join(gooseRoot, 'config'), zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, junieAgentsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
     mkdirSync(directory, { recursive: true })
 
   // macOS zsh's system login profile rebuilds PATH. Reapply the private shims
