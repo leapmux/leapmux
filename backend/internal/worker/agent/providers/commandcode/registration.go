@@ -27,6 +27,9 @@ func Registration() agent.Registration {
 		DefaultModels:       registrationModels(),
 		OptionGroups:        []*leapmuxv1.AvailableOptionGroup{permissionModeGroup},
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
+		// The effort tiers belong to the model, and CMD_LOCAL_ONLY empties the
+		// static gateway catalog, so DefaultModels cannot carry this answer.
+		ManagesEffort: true,
 		PermissionDefaults: agent.PermissionDefaults{
 			NewSession: map[string]string{agent.OptionIDPermissionMode: contracts.CommandCodePermissionModeDefault},
 			Fallback:   contracts.CommandCodePermissionModeDefault,

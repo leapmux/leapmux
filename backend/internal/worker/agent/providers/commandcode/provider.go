@@ -62,11 +62,6 @@ func (commandcodeProvider) Classify(raw json.RawMessage) agent.NotificationClass
 	return agent.NotificationClassification{}
 }
 
-func (commandcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	// The native boundary reports model turns. Worker metadata owns the tool count.
-	return 0, false
-}
-
 func (commandcodeProvider) ExtractTodoEvent(_ string, content []byte, readRequest func() []byte) (todoevents.Event, bool) {
 	event, err := eventFromFrame(content)
 	if err != nil || event.Type != contracts.CommandCodeEventToolCompleted || readRequest == nil {

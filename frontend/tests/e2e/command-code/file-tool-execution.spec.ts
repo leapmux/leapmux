@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { nativeToolResultAt, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
@@ -52,8 +53,13 @@ commandCodeTest('reads and changes actual native files and preserves the native 
       expect(editResult).toContain('the replacement keeps the file’s original punctuation style.')
     expect(readFileSync(file)).toEqual(Buffer.from(scenario.after))
     expect(readFileSync(created)).toEqual(Buffer.from(written))
-    await expect(messageContents(page).filter({ hasText: `Edited ${file} (1 replacement)` }).first()).toContainText(scenario.nativeAfter)
-    await page.reload()
-    await expect(messageContents(page).filter({ hasText: `Edited ${file} (1 replacement)` }).first()).toContainText(scenario.nativeAfter)
+    // The result view shows three rows until it expands, and the snippet follows the header and the blank row.
+    const editBubble = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${editId}"][data-tool-row-role="result"]:visible`)
+    for (const reloaded of [false, true]) {
+      if (reloaded)
+        await page.reload()
+      await expandNativeResultView(editBubble)
+      await expect(messageContents(page).filter({ hasText: `Edited ${file} (1 replacement)` }).first()).toContainText(scenario.nativeAfter)
+    }
   }
 })

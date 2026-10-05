@@ -21,3 +21,14 @@ export function commandCodeToolCatalog(request: MockModelRequestRecord): string[
     throw new Error('The native Command Code catalog repeats an attached tool.')
   return [...attached, ...deferred]
 }
+
+/**
+ * Read the names of the tool schemas that one native `load_tools` result loaded.
+ *
+ * The native tool answers a `select:<name>` request with a fuzzy search that keeps the best match of each name
+ * (Command Code 1.74.1, createSearchToolsTool). A name that the catalog lacks can load a tool with another name,
+ * so a lookup proves that a tool is absent only when no loaded name equals it.
+ */
+export function commandCodeLoadedToolNames(result: string): string[] {
+  return [...result.matchAll(/^### (\S+)$/gm)].map(match => match[1]!)
+}

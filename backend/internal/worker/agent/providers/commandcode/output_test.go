@@ -117,6 +117,28 @@ func TestNativeToolSpanKeepsItsConnectorOrder(t *testing.T) {
 	assert.Equal(t, "call", messages[1].SpansOpenAtPersist[0].SpanID)
 }
 
+func TestNativeTurnEndSuppliesItsToolCount(t *testing.T) {
+	a, sink := testAgent(t)
+	a.startTurn("turn_1")
+	feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
+	a.startTurn("turn_2")
+	feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call", "toolName": "shell_command", "input": map[string]string{"command": "native command"}})
+	feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "call", "toolName": "shell_command", "result": []map[string]string{{"type": "text", "text": "native output"}}})
+	feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_2", "stopReason": "end_turn"})
+
+	var counts []int32
+	for _, message := range sink.Messages() {
+		if !message.TurnEnd {
+			continue
+		}
+		content := agent.MessageContent{Original: message.Content, Supplemental: message.SupplementalContent, Metadata: message.Metadata}
+		count, ok := commandcodeProvider{}.TurnEndToolUses(agent.ResolveMessageContent(commandcodeProvider{}, content))
+		require.True(t, ok, "a native turn end must state its tool count, including zero")
+		counts = append(counts, count)
+	}
+	assert.Equal(t, []int32{0, 1}, counts)
+}
+
 func TestCommandCodeTurnFrames(t *testing.T) {
 	agenttest.AssertTurnFrames(t, []agenttest.TurnFrameCase{
 		{Name: "native turn starts", Line: `{"jsonrpc":"2.0","method":"turn/started","params":{"turnId":"native-turn"}}`, Moves: true},
