@@ -5510,8 +5510,8 @@
       },
       "command-code": {
         "support": "supported",
-        "userNote": "The model list holds the models that the Command Code service offers to your account and the models that you declare with your own keys. A model switch can restart the session and resets the effort to Auto.",
-        "detailNote": "The native session/set_model RPC applies model changes. The native bundle lists 86 selectable gateway models. The live catalog omits them in local-only mode and includes native BYOK declarations. Gateway choices require Command Code service access. The native set_model call refuses a BYOK model that the live gateway list omits, so LeapMux restarts the session. The model switch resets the effort to Auto, so the relaunch passes no --effort.",
+        "userNote": "The model list holds the models that the Command Code service offers to your account and the models that you declare with your own keys. A model switch can restart the session. It keeps the effort when the new model offers it, and it resets the effort to Auto otherwise.",
+        "detailNote": "The native session/set_model RPC applies model changes. The native bundle lists 86 selectable gateway models. The live catalog omits them in local-only mode and includes native BYOK declarations. Gateway choices require Command Code service access. The native set_model call refuses a BYOK model that the live gateway list omits, so LeapMux restarts the session. A model switch keeps the effort when the live catalog lists the new model and offers the tier. When the catalog omits the model (local-only mode) or lacks the tier, the switch resets the effort to Auto, and the relaunch passes no --effort. After startup, LeapMux confirms the launch effort through session/set_effort, because the host can report another effort in its first state.",
         "spec": "frontend/tests/e2e/command-code/model.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
