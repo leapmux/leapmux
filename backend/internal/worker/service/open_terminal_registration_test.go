@@ -138,3 +138,76 @@ func TestOpenTerminal_ReleasesTheStartupOfAQuakeOpenThatLosesTheRace(t *testing.
 	assert.Len(t, rows, 1)
 	drainAllInFlight(svc)
 }
+
+// A startup ends in this order: the Manager registers the PTY, then the registry
+// drops the entry. shellIsLive reads the registry first and the shell second, so
+// the answer finds the entry, or the shell, or both. Read in the other order, it
+// can find neither: the shell is absent at the early read, and the entry is gone
+// at the late read. The caller then closes the row of a shell that runs.
+//
+// The probe stands for the read of the shell. It states what the Manager held at
+// its own read. When the case says so, the startup ends as the probe returns.
+func TestShellIsLive_ReadsTheRegistryBeforeTheShell(t *testing.T) {
+	t.Parallel()
+
+	const id = "terminal-1"
+	for _, tc := range []struct {
+		name string
+		// startup says what the registry holds when the answer begins.
+		startup startupKind
+		// endsAfterProbe says whether the startup ends as the probe returns.
+		endsAfterProbe bool
+		// shellAtProbe is the answer of the Manager at the read of the shell.
+		shellAtProbe bool
+		want         bool
+	}{
+		{"a startup in flight with no shell yet", startupInFlight, false, false, true},
+		{"a startup that ends with its shell right after the shell read", startupInFlight, true, false, true},
+		{"a startup that ends with its shell before the shell read", startupInFlight, true, true, true},
+		{"no startup and a running shell", startupNone, false, true, true},
+		{"no startup and no shell", startupNone, false, false, false},
+		{"a failed startup and no shell", startupFailed, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, _, _ := setupTestService(t)
+			var handle *startupEntry
+			switch tc.startup {
+			case startupInFlight:
+				handle = svc.TerminalStartup.begin(id, func() {})
+				require.NotNil(t, handle)
+			case startupFailed:
+				handle = svc.TerminalStartup.begin(id, func() {})
+				require.NotNil(t, handle)
+				svc.TerminalStartup.fail(handle, "spawn failed")
+			case startupNone:
+			}
+			probes := 0
+			live := svc.shellIsLive(id, func() bool {
+				probes++
+				if tc.endsAfterProbe {
+					defer svc.TerminalStartup.succeed(id, handle)
+				}
+				return tc.shellAtProbe
+			})
+
+			assert.LessOrEqual(t, probes, 1, "the answer must ask for the shell at most once")
+			assert.Equal(t, tc.want, live)
+			if handle != nil {
+				svc.TerminalStartup.abandon(handle)
+				svc.TerminalStartup.cancelAndClear(id, keepWorktreeOnClose)
+			}
+			requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
+		})
+	}
+}
+
+// startupKind says what the startup registry holds for one id.
+type startupKind int
+
+const (
+	startupNone startupKind = iota
+	startupInFlight
+	startupFailed
+)

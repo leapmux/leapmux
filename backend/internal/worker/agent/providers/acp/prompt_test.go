@@ -208,6 +208,122 @@ func TestLiveTextAfterTheLoadReplyIsKept(t *testing.T) {
 	assert.Equal(t, []string{"text:LATE", "text:NEW"}, assembledTexts(t, sink.Messages()))
 }
 
+// bufferedSessionUpdates is the number of session/update notifications that the
+// base holds back while startup runs.
+func bufferedSessionUpdates(b *Base) int {
+	b.sessionUpdates.mu.Lock()
+	defer b.sessionUpdates.mu.Unlock()
+	return len(b.sessionUpdates.pending)
+}
+
+// A chunk that the agent writes right after its session/load reply is live
+// output. The reader can buffer it before the handshake goroutine wakes from the
+// reply. So the mark that separates the replay from live output cannot wait for
+// that goroutine. The trap on the timer of the load request parks the goroutine
+// as it leaves the request, with the chunk already buffered. The case with no
+// replay puts the live chunk first in the buffer.
+func TestLiveTextRightAfterTheLoadReplyIsKept(t *testing.T) {
+	t.Parallel()
+	for name, replay := range map[string][]string{
+		"after a replay":    {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "OLD"))},
+		"after no replay":   nil,
+		"after two replays": {string(acptest.Chunk("stored-1", contracts.ACPUpdateUserMessageChunk, "OLDPROMPT")), string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "OLD"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			stopTimer := clock.Trap().TimerStop(providerkit.AwaitResponseTimerTag, MethodSessionLoad)
+			t.Cleanup(stopTimer.Close)
+			peer := &handshakePeer{
+				linesBefore: map[string][]string{
+					MethodSessionLoad:   replay,
+					MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
+				},
+				linesAfter: map[string][]string{
+					MethodSessionLoad: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "LIVE"))},
+				},
+			}
+			rig := newHandshakeRig(t, peer, Hooks{}, clock, func(method string) json.RawMessage {
+				switch method {
+				case MethodInitialize:
+					return json.RawMessage(`{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`)
+				case MethodSessionPrompt:
+					return json.RawMessage(`{"stopReason":"end_turn"}`)
+				default:
+					return json.RawMessage(`{}`)
+				}
+			})
+			type handshakeResult struct {
+				session *SessionResult
+				err     error
+			}
+			handshook := make(chan handshakeResult, 1)
+			go func() {
+				session, err := rig.handshake(
+					agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+					SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad})
+				handshook <- handshakeResult{session, err}
+			}()
+
+			ctx := testutil.DeadlineContext(t)
+			parked := stopTimer.MustWait(ctx)
+			testutil.RequireEventually(t, func() bool { return bufferedSessionUpdates(rig.base) == len(replay)+1 },
+				"the reader buffers the replay and the live chunk while the handshake goroutine waits")
+			parked.MustRelease(ctx)
+			var result handshakeResult
+			select {
+			case result = <-handshook:
+			case <-ctx.Done():
+				require.FailNow(t, "the handshake never ended")
+			}
+			require.NoError(t, result.err)
+			require.Equal(t, "stored-1", result.session.SessionID)
+
+			b := rig.base
+			b.finishSessionUpdates()
+			require.NoError(t, b.SendInput("NEXT", nil))
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+			assert.Equal(t, []string{"text:LIVE", "text:NEW"}, assembledTexts(t, rig.sink.Messages()),
+				"the replay below the reply stores nothing, and the chunk after it stores a segment")
+		})
+	}
+}
+
+// session/resume sends no replay, so every conversation update that arrives
+// before its reply is live output. OpenCode and Kilo forward the output of each
+// client of a session, and an update of such a client can arrive in that window.
+// Only session/load has a replay to drop.
+func TestUpdatesBeforeTheResumeReplyAreLiveOutput(t *testing.T) {
+	t.Parallel()
+	peer := &handshakePeer{linesBefore: map[string][]string{
+		MethodSessionResume: {
+			string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "OTHERCLIENT")),
+		},
+		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
+	}}
+	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
+		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionResume},
+		func(method string) json.RawMessage {
+			switch method {
+			case MethodInitialize:
+				return json.RawMessage(`{"protocolVersion":1}`)
+			case MethodSessionPrompt:
+				return json.RawMessage(`{"stopReason":"end_turn"}`)
+			default:
+				return json.RawMessage(`{}`)
+			}
+		})
+	require.Equal(t, "stored-1", session.SessionID)
+	b.finishSessionUpdates()
+	require.NoError(t, b.SendInput("NEXT", nil))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+	assert.Equal(t, []string{"text:OTHERCLIENT", "text:NEW"}, assembledTexts(t, sink.Messages()),
+		"a resume has no replay, so the update before its reply persists")
+}
+
 // A chunk that trails the end of a turn reaches no turn. It is a segment of its
 // own, and the next prompt does not start with it. A thought is the same.
 func TestPromptDoesNotInheritATrailingSegment(t *testing.T) {

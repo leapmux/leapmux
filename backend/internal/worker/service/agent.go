@@ -1634,7 +1634,7 @@ type agentStartupSnapshot struct {
 // its startup registry entry, if the registry holds one, and whether its process
 // runs. It is the whole runtime input of deriveAgentStatus.
 //
-// Build it with sampleAgentLiveness. The ORDER of the two reads decides whether
+// Build it with sampleAgentLiveness. The ORDER of the reads decides whether
 // the pair can contradict itself. A startup ends in this order: the Manager
 // registers the process, then the registry drops the entry. Read the registry
 // first and the process second. The sample then holds the entry, or the process,
@@ -1642,6 +1642,12 @@ type agentStartupSnapshot struct {
 // process is absent at the early read, and the entry is gone at the late read.
 // The agent then reads INACTIVE although its startup ended with a running
 // process.
+//
+// A process replacement begins in the opposite order: it claims its entry
+// (see relaunchHold), and then it stops the old process. A sample that read no
+// entry and then read no process can hold neither, because the replacement
+// began between the two reads. So a sample that found neither reads the
+// registry once more. That read finds the entry of the replacement.
 type agentLiveness struct {
 	// startup is nil when the registry holds no entry.
 	startup *agentStartupSnapshot
@@ -1649,14 +1655,26 @@ type agentLiveness struct {
 }
 
 // sampleAgentLiveness reads the startup registry for agentID, then calls
-// processRuns. It calls processRuns exactly once, and after the registry read.
-// See agentLiveness for why the order is fixed.
+// processRuns. It calls processRuns exactly once, and after the first registry
+// read. When both reads found nothing, it reads the registry once more. See
+// agentLiveness for why the order is fixed and why the last read exists.
 func (svc *Service) sampleAgentLiveness(agentID string, processRuns func() bool) agentLiveness {
-	var startup *agentStartupSnapshot
-	if status, startupError, startupMessage, tracked := svc.AgentStartup.status(agentID); tracked {
-		startup = &agentStartupSnapshot{status: status, startupError: startupError, startupMessage: startupMessage}
+	startup := svc.readAgentStartup(agentID)
+	running := processRuns()
+	if startup == nil && !running {
+		startup = svc.readAgentStartup(agentID)
 	}
-	return agentLiveness{startup: startup, running: processRuns()}
+	return agentLiveness{startup: startup, running: running}
+}
+
+// readAgentStartup reads the startup registry entry of agentID. It returns nil
+// when the registry holds none.
+func (svc *Service) readAgentStartup(agentID string) *agentStartupSnapshot {
+	status, startupError, startupMessage, tracked := svc.AgentStartup.status(agentID)
+	if !tracked {
+		return nil
+	}
+	return &agentStartupSnapshot{status: status, startupError: startupError, startupMessage: startupMessage}
 }
 
 // agentLivenessOf is sampleAgentLiveness for the process that feeds the agent in
@@ -2313,10 +2331,10 @@ func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan 
 }
 
 // failAgentStartup is the common tail for every failure after the sync
-// prologue: rolls back any partial git-mode mutation, persists the
-// error, broadcasts STARTUP_FAILED, and marks the registry failed. The
-// shared `failStartup` enforces the ordering (DB before broadcast
-// before registry) so observers see a durable final state.
+// prologue. It rolls back any partial git-mode mutation, persists the
+// error, marks the registry failed, and broadcasts STARTUP_FAILED. The
+// shared `failStartup` enforces this order (persist, registry,
+// broadcast), so an observer reads a durable final state.
 func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.GitRepoStatus, h *startupEntry) {
 	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus, h))
 }
@@ -3260,15 +3278,14 @@ func (r clearRecovery) launchContext() context.Context {
 	return r.ctx
 }
 
-// closeRaced reports whether a close ended the claim of this recovery. Such a
-// launch failed because of the close, not on its own, so it records no startup
-// failure.
-func (r clearRecovery) closeRaced(svc *Service) bool {
+// interruption reports which lifecycle event, if any, ended the claim of this
+// recovery. Such a launch failed because of that event, not on its own, so it
+// records no startup failure. A close beats an archive, as interruptionOf states.
+func (r clearRecovery) interruption(svc *Service) startupInterruption {
 	if r.handle == nil {
-		return false
+		return interruptionNone
 	}
-	_, raced := svc.AgentStartup.dispositionOf(r.handle)
-	return raced
+	return svc.AgentStartup.interruptionOf(r.handle, false, false)
 }
 
 // end retires the claim after a launch that produced a running process. The
@@ -3317,10 +3334,11 @@ func (r clearRecovery) finish(svc *Service) {
 //
 // Without it the agent reads INACTIVE for the whole gap: the old process is gone,
 // the new one is not registered, and the registry is the only source of STARTING.
-// The hold starts while the old process still runs, and a running process reads
-// ACTIVE before the registry, so the status never leaves ACTIVE except for
-// STARTING. It follows the order of OpenAgent, which registers before it writes
-// the row.
+// The hold starts while the old process still runs. A reader that finds a
+// running process reports ACTIVE. A reader that finds none finds the entry,
+// because sampleAgentLiveness reads the registry again when both of its reads
+// found nothing. So the status never leaves ACTIVE except for STARTING. It
+// follows the order of OpenAgent, which registers before it writes the row.
 //
 // A hold changes the status that a reader derives, and nothing else. It cancels
 // nothing: the launch of a replacement keeps its own context, and
@@ -3336,7 +3354,18 @@ type relaunchHold struct {
 // nothing when another startup, a failed startup, or a close already holds the
 // id. In those cases the holder's own state already keeps the agent from reading
 // INACTIVE, or the tab is going away.
+//
+// It claims nothing once Shutdown began, either. A claim adds one to the
+// in-flight count that Shutdown's WaitForInFlight joins, and an add to a
+// WaitGroup that a Wait already joins is a misuse of the WaitGroup. The handlers
+// that reach a hold do not refuse a request in that state, as the handlers that
+// open a tab do (see refuseIfShuttingDown). The replacement runs without a hold.
+// A reader can then read INACTIVE in the gap, and that is acceptable because the
+// Worker is about to exit.
 func (svc *Service) holdRelaunch(agentID string, provider leapmuxv1.AgentProvider) relaunchHold {
+	if svc.shuttingDown.Load() {
+		return relaunchHold{}
+	}
 	handle := svc.AgentStartup.beginReplacement(agentID)
 	if handle == nil {
 		return relaunchHold{}
@@ -3454,11 +3483,19 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	confirmedSettings, err := svc.mintAndLaunch(recovery.launchContext(), "clear", launchOptions, sink, svc.startAgent)
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
-		if recovery.closeRaced(svc) {
+		switch recovery.interruption(svc) {
+		case interruptionClosed:
 			// The close cancelled the launch. The tab is going away, so this
 			// is not a startup failure to record.
 			recovery.abandon(svc)
 			return nil, errAgentClosedDuringLaunch
+		case interruptionArchived:
+			// The archive cancelled the launch. Archival is not a startup
+			// failure: the tab and its rows survive, and the agent keeps the
+			// failure that it had before this clear.
+			recovery.abandon(svc)
+			return nil, errAgentArchivedDuringLaunch
+		case interruptionNone:
 		}
 		// A launch can state its new session and then fail. Forget that
 		// session also, so that no cold start resumes a session that no

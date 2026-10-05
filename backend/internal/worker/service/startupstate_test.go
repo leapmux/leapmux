@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1018,4 +1019,121 @@ func TestStartupCore_ReplacementRefusesAnIDThatIsHeld(t *testing.T) {
 			core.WaitForInFlight()
 		})
 	}
+}
+
+// beginEndedStartup claims id as the startup of an open does, and ends the claim
+// as runAgentStartup does before its tail. The entry leaves the map, and the
+// goroutine of the startup still runs, so it did not return. cancelled reports
+// whether the context of that startup ended.
+func beginEndedStartup(t *testing.T, core *startupCore, id string) (open *startupEntry, cancelled *bool) {
+	t.Helper()
+	cancelled = new(bool)
+	open = core.begin(id, func() { *cancelled = true })
+	require.NotNil(t, open)
+	core.succeed(id, open)
+	return open, cancelled
+}
+
+// A process replacement claims the id while the goroutine of an earlier startup
+// still runs its tail. A close reaches both. The goroutine of the startup reads
+// the disposition of the close from its own entry, and a caller that joined the
+// replacement reads it from the entry of the replacement.
+func TestStartupCore_ACloseReachesTheStartupBehindAReplacement(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement, "an ended startup leaves the id free for a replacement")
+
+	core.cancelAndClear("tab-1", removeWorktreeOnClose)
+
+	disposition, raced := core.dispositionOf(open)
+	assert.True(t, raced, "the goroutine of the startup that ended must learn that a close landed")
+	assert.Equal(t, removeWorktreeOnClose, disposition)
+	disposition, raced = core.dispositionOf(replacement)
+	assert.True(t, raced, "a caller that joined the replacement must learn that a close landed")
+	assert.Equal(t, removeWorktreeOnClose, disposition)
+	assert.True(t, *openCancelled, "a close ends the context of every startup that it reaches")
+
+	core.abandon(replacement)
+	core.finishEntry(open)
+	requireStartupsReleased(t, &core)
+}
+
+// An archive stops the startup behind a replacement too, and the caller waits
+// for both before it clears the runtime state of the tab. The wait ends only
+// after the goroutine of the earlier startup returned.
+func TestStartupCore_AnArchiveStopsAndWaitsForTheStartupBehindAReplacement(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestStartupCore(t)
+		open, _ := beginEndedStartup(t, &core, "tab-1")
+		replacement := core.beginReplacement("tab-1")
+		require.NotNil(t, replacement)
+
+		archived := core.cancelForArchive("tab-1")
+
+		require.Same(t, replacement, archived, "the archive resolves the newest claim of the id")
+		assert.True(t, core.archiveStopped(open), "the goroutine of the startup that ended must learn that an archive landed")
+		core.abandon(replacement)
+		waited := make(chan struct{})
+		go func() {
+			core.waitForFinished(archived)
+			close(waited)
+		}()
+		synctest.Wait()
+		select {
+		case <-waited:
+			require.FailNow(t, "the wait ended while the goroutine of the earlier startup still ran")
+		default:
+		}
+
+		core.finishEntry(open)
+		synctest.Wait()
+		select {
+		case <-waited:
+		default:
+			require.FailNow(t, "the wait did not end after every claim of the id returned")
+		}
+		requireStartupsReleased(t, &core)
+	})
+}
+
+// The end of a replacement hands the id back to the startup behind it, which
+// still runs its tail. A close or an archive that lands afterwards must find
+// that startup, and no claim of the id may outlive its goroutine.
+func TestStartupCore_AReplacementThatEndsLeavesTheStartupBehindItReachable(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, _ := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement)
+	core.abandon(replacement)
+
+	assert.Same(t, open, core.cancelForArchive("tab-1"), "the startup that still runs its tail must stay reachable")
+
+	core.finishEntry(open)
+	assert.Nil(t, core.cancelForArchive("tab-1"), "a startup that returned is not reachable")
+	requireStartupsReleased(t, &core)
+}
+
+// The goroutine of the earlier startup can return before the replacement ends.
+// The replacement then holds the id alone, and its own end leaves nothing behind.
+func TestStartupCore_ClaimsOfOneIDThatReturnOutOfOrderLeaveNothingBehind(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, _ := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement)
+
+	core.finishEntry(open)
+	assert.Same(t, replacement, core.cancelForArchive("tab-1"), "the replacement still holds the id")
+	core.abandon(replacement)
+
+	assert.Nil(t, core.cancelForArchive("tab-1"))
+	requireStartupsReleased(t, &core)
 }

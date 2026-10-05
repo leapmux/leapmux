@@ -69,6 +69,59 @@ func TestSampleAgentLiveness_ReadsTheRegistryBeforeTheProcess(t *testing.T) {
 	}
 }
 
+// A process replacement claims its hold BEFORE it stops the old process. A reader
+// that read the registry before the claim and reads the process after the stop
+// finds no entry and no process, and it reads INACTIVE for an agent that is
+// restarting. The sample therefore reads the registry again when both reads found
+// nothing. The probe stands for the read of the process: it runs the events that
+// happen between the two reads, and then it states what the Manager holds.
+func TestSampleAgentLiveness_ReadsStartingForAReplacementThatBeginsDuringTheSample(t *testing.T) {
+	t.Parallel()
+
+	const id = "agent-1"
+	for _, tc := range []struct {
+		name string
+		// duringProbe runs the replacement between the two reads. It returns
+		// the answer of the Manager at the read of the process.
+		duringProbe func(t *testing.T, svc *Service) bool
+		wantStatus  leapmuxv1.AgentStatus
+	}{
+		{"a replacement that claims its hold and stops the old process", func(t *testing.T, svc *Service) bool {
+			hold := svc.holdRelaunch(id, holdTestProvider)
+			require.NotNil(t, hold.handle)
+			t.Cleanup(hold.release)
+			return false
+		}, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING},
+		{"a replacement that ends with its new process", func(t *testing.T, svc *Service) bool {
+			hold := svc.holdRelaunch(id, holdTestProvider)
+			require.NotNil(t, hold.handle)
+			hold.release()
+			return true
+		}, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE},
+		{"a replacement that gives up and leaves no process", func(t *testing.T, svc *Service) bool {
+			hold := svc.holdRelaunch(id, holdTestProvider)
+			require.NotNil(t, hold.handle)
+			hold.release()
+			return false
+		}, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, _, _ := setupTestService(t)
+			probes := 0
+			live := svc.sampleAgentLiveness(id, func() bool {
+				probes++
+				return tc.duringProbe(t, svc)
+			})
+
+			assert.Equal(t, 1, probes, "the sample must ask for the process exactly once")
+			status, _, _ := deriveAgentStatus(&db.Agent{ID: id}, live)
+			assert.Equal(t, tc.wantStatus, status)
+		})
+	}
+}
+
 // A failed startup keeps its error and its message in the sample, so a reader
 // that builds the reply from the sample reports the same STARTUP_FAILED that the
 // registry reports.

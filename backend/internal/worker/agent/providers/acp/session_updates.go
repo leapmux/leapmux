@@ -15,11 +15,12 @@ type acpSessionUpdates struct {
 	buffering bool
 	// pending holds the params of each buffered notification, copied from the reader's line.
 	pending []json.RawMessage
-	// replayCutoff is the length of pending at the moment the resume's session
-	// reply arrived, or -1 when the buffered stream covers no load reply. The
-	// Agent Client Protocol sends a loaded session's history before that reply,
-	// and the Worker already stores that history as its own transcript, so the
-	// buffered conversation below the cutoff is replay, not live output.
+	// replayCutoff is the length of pending at the moment the reader routed the
+	// session/load reply, or -1 when the buffered stream covers no load reply.
+	// The Agent Client Protocol sends a loaded session's history before that
+	// reply, and the Worker already stores that history as its own transcript,
+	// so the buffered conversation below the cutoff is replay, not live output.
+	// session/resume sends no replay, so it sets no cutoff.
 	replayCutoff int
 }
 
@@ -31,8 +32,9 @@ func (b *Base) beginSessionUpdates() {
 }
 
 // markSessionReplayCutoff records which part of the buffered stream preceded the
-// session reply of a resume. Call it once the reply arrived, while buffering is
-// still on, so no buffered line can slip past the mark.
+// session/load reply. Call it on the reader goroutine as it routes the reply
+// (see Base.SendRequestObserved), while buffering is still on. The reader has
+// buffered no later line at that point, so no live line can fall below the mark.
 func (b *Base) markSessionReplayCutoff() {
 	b.sessionUpdates.mu.Lock()
 	if b.sessionUpdates.buffering && b.sessionUpdates.replayCutoff < 0 {

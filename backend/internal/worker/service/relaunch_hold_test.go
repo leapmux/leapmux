@@ -95,6 +95,28 @@ func TestHoldRelaunch_RefusesWhileACloseHoldsTheID(t *testing.T) {
 	requireStartupsReleased(t, &svc.AgentStartup.startupCore)
 }
 
+// A hold adds one to the in-flight count that Shutdown's WaitForInFlight joins.
+// Adding to a WaitGroup that a Wait already joins is a misuse of the WaitGroup,
+// and none of the handlers that reach a hold refuses a request once Shutdown
+// began. The hold therefore claims nothing after Shutdown began, like the
+// handlers that open a tab. A refused hold is the zero value, and the
+// replacement runs without it.
+func TestHoldRelaunch_ClaimsNothingOnceShutdownBegan(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	svc.shuttingDown.Store(true)
+
+	hold := svc.holdRelaunch("agent-1", holdTestProvider)
+
+	assert.Nil(t, hold.handle, "a hold must not claim the id once Shutdown began")
+	_, _, _, tracked := svc.AgentStartup.status("agent-1")
+	assert.False(t, tracked, "a refused hold must leave no entry")
+	assert.NotPanics(t, hold.release)
+	assert.NotPanics(t, hold.settle)
+	requireStartupsReleased(t, &svc.AgentStartup.startupCore)
+}
+
 // A close retires the entry of the startup that it finds, without waiting for the
 // holder. The holder's release must then leave the registry consistent and the
 // in-flight count at zero, and it must not remove an entry that a later startup

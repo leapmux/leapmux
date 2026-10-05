@@ -1662,6 +1662,8 @@ func sendStreamError(sender channel.ResponseWriter, code codes.Code, msg string)
 // registry use it: an explicit error is a better answer than a tab whose
 // process is about to be killed unannounced, and it is what makes Shutdown's
 // documented "no new requests" precondition true rather than merely asserted.
+// holdRelaunch claims a startup entry too. It reads shuttingDown itself, because
+// the requests that reach it still run during Shutdown.
 func (svc *Service) refuseIfShuttingDown(sender channel.ResponseWriter) bool {
 	if !svc.shuttingDown.Load() {
 		return false

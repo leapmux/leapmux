@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -27,6 +28,10 @@ type handshakePeer struct {
 	// its answer to that method: what an agent sends while it handles the
 	// request. The peer only reads it.
 	linesBefore map[string][]string
+	// linesAfter holds, for each method, the lines that the peer writes right
+	// after its answer to that method: what an agent sends once it handled the
+	// request. The peer only reads it.
+	linesAfter map[string][]string
 }
 
 // recorded returns the requests that the peer read so far, in order.
@@ -36,16 +41,28 @@ func (p *handshakePeer) recorded() []agenttest.RecordedRequest {
 	return append([]agenttest.RecordedRequest(nil), p.requests...)
 }
 
-// runHandshakeForTest runs startACPHandshake against peer, with hooks applied
-// as Start applies them. The peer reads each request from the stdin of the
-// base, records it, writes the lines that peer.linesBefore holds for its
-// method, and then writes the result that respond returns for that method to
-// the stdout of the base.
+// handshakeRig is the fake process that startACPHandshake talks to. The peer
+// reads each request from the stdin of the base and records it. Then it writes
+// these items to the stdout of the base, in this order:
+//
+//   - The lines that peer.linesBefore holds for the method of the request.
+//   - The result that respond returns for that method.
+//   - The lines that peer.linesAfter holds for that method.
 //
 // The fake process is an exec.Cmd that never starts. At the end of the test its
 // stdout closes, and the reader then records the exit as a real exit does,
 // because the Wait of a command that never started returns at once.
-func runHandshakeForTest(t *testing.T, peer *handshakePeer, hooks Hooks, opts agent.Options, sessionConfig SessionConfig, respond func(method string) json.RawMessage) (*Base, *agenttest.ControlSink, *SessionResult) {
+type handshakeRig struct {
+	base   *Base
+	sink   *agenttest.ControlSink
+	hooks  Hooks
+	stdout io.ReadCloser
+}
+
+// newHandshakeRig builds the fake process and starts its peer. A nil clock
+// selects the real clock of the process. A test that passes a mock clock can
+// trap the timer of a request and stop the handshake goroutine at that point.
+func newHandshakeRig(t *testing.T, peer *handshakePeer, hooks Hooks, clock quartz.Clock, respond func(method string) json.RawMessage) *handshakeRig {
 	t.Helper()
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -59,6 +76,7 @@ func runHandshakeForTest(t *testing.T, peer *handshakePeer, hooks Hooks, opts ag
 		Ctx:         ctx,
 		Cancel:      cancel,
 		ProcessDone: exited,
+		Clock:       clock,
 	})
 	sink := &agenttest.ControlSink{}
 	b.sink = agent.NewProviderServices(sink)
@@ -90,6 +108,11 @@ func runHandshakeForTest(t *testing.T, peer *handshakePeer, hooks Hooks, opts ag
 			if _, err := stdoutWriter.Write(append(reply, '\n')); err != nil {
 				return
 			}
+			for _, line := range peer.linesAfter[request.Method] {
+				if _, err := stdoutWriter.Write([]byte(line + "\n")); err != nil {
+					return
+				}
+			}
 		}
 	}()
 	t.Cleanup(func() {
@@ -105,12 +128,27 @@ func runHandshakeForTest(t *testing.T, peer *handshakePeer, hooks Hooks, opts ag
 			t.Error("the reader never recorded the exit of the fake process")
 		}
 	})
+	return &handshakeRig{base: b, sink: sink, hooks: hooks, stdout: stdoutReader}
+}
 
-	initParams, err := acpStandardInitParams(&hooks)
+// handshake runs startACPHandshake against the peer, with the hooks applied as
+// Start applies them.
+func (r *handshakeRig) handshake(opts agent.Options, sessionConfig SessionConfig) (*SessionResult, error) {
+	initParams, err := acpStandardInitParams(&r.hooks)
+	if err != nil {
+		return nil, err
+	}
+	return r.base.startACPHandshake(r.stdout, io.NopCloser(strings.NewReader("")), opts, initParams, sessionConfig)
+}
+
+// runHandshakeForTest runs startACPHandshake against peer, on a rig with the
+// real clock. See handshakeRig for what the peer writes.
+func runHandshakeForTest(t *testing.T, peer *handshakePeer, hooks Hooks, opts agent.Options, sessionConfig SessionConfig, respond func(method string) json.RawMessage) (*Base, *agenttest.ControlSink, *SessionResult) {
+	t.Helper()
+	rig := newHandshakeRig(t, peer, hooks, nil, respond)
+	session, err := rig.handshake(opts, sessionConfig)
 	require.NoError(t, err)
-	session, err := b.startACPHandshake(stdoutReader, io.NopCloser(strings.NewReader("")), opts, initParams, sessionConfig)
-	require.NoError(t, err)
-	return b, sink, session
+	return rig.base, rig.sink, session
 }
 
 // The handshake reads the initialize response once, before it opens the

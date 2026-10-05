@@ -110,6 +110,38 @@ type startupEntry struct {
 	// rollback and cleanup work. Archival waits on it before it permits an
 	// unarchive resume to register replacement resources for the same tab.
 	finished chan struct{}
+	// enclosing is the claim of this id whose goroutine still ran when this entry
+	// claimed the id, or nil. An entry leaves the map at succeed, fail or a
+	// close, and its goroutine returns later. A later claim can therefore find
+	// the id free while the goroutine of the earlier claim runs its tail. A
+	// process replacement does so on the goroutine of the open that it follows.
+	// A close or an archive that reaches this entry must reach that goroutine
+	// too, and an archive waits for it. claim sets the field once, before it
+	// publishes the entry, and nothing changes it afterwards.
+	enclosing *startupEntry
+}
+
+// hasFinished reports whether the goroutine of this claim returned. finishEntry
+// closes `finished` while it holds startupCore.mu, so a caller that holds the
+// lock reads a state that finishEntry cannot change at the same time.
+func (e *startupEntry) hasFinished() bool {
+	select {
+	case <-e.finished:
+		return true
+	default:
+		return false
+	}
+}
+
+// unfinishedEnclosing returns the nearest enclosing claim whose goroutine did not
+// return, or nil. The caller holds startupCore.mu.
+func (e *startupEntry) unfinishedEnclosing() *startupEntry {
+	for enclosing := e.enclosing; enclosing != nil; enclosing = enclosing.enclosing {
+		if !enclosing.hasFinished() {
+			return enclosing
+		}
+	}
+	return nil
 }
 
 // release closes e.done, so every awaitInFlight waiting on this startup stops
@@ -146,8 +178,12 @@ func (e *startupEntry) stopEviction() {
 // work so callers — test cleanups and future graceful-shutdown paths —
 // observe the filesystem and DB in a quiescent state.
 type startupCore struct {
-	mu       sync.Mutex
-	entries  map[string]*startupEntry
+	mu      sync.Mutex
+	entries map[string]*startupEntry
+	// inflight holds the newest claim of each id whose goroutine did not return
+	// (see finishEntry). The claims behind it are reachable through
+	// startupEntry.enclosing. A close and an archive reach, through this map, a
+	// goroutine whose entry left `entries`.
 	inflight map[string]*startupEntry
 	// closeInProgress prevents a new start after close cancels the old one
 	// but before close stamps the row under the lifecycle lock.
@@ -331,6 +367,7 @@ func (r *startupCore) claim(id string, cancel context.CancelFunc, mode claimMode
 		done:         make(chan struct{}),
 		finished:     make(chan struct{}),
 		replacement:  mode.replacement,
+		enclosing:    r.inflight[id],
 	}
 	r.entries[id] = entry
 	r.inflight[id] = entry
@@ -415,14 +452,22 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 // The entry carries no other cleanup: its close disposition lives on the handle
 // the goroutine is about to drop, so the garbage collector takes the entry with
 // that handle.
+//
+// When the entry is the newest claim of its id, the slot goes back to the nearest
+// claim behind it whose goroutine still runs, so a close that lands later still
+// reaches that goroutine. The slot is empty when no such claim exists.
 func (r *startupCore) finishEntry(entry *startupEntry) {
 	if entry != nil {
 		r.mu.Lock()
+		close(entry.finished)
 		if r.inflight[entry.id] == entry {
-			delete(r.inflight, entry.id)
+			if behind := entry.unfinishedEnclosing(); behind != nil {
+				r.inflight[entry.id] = behind
+			} else {
+				delete(r.inflight, entry.id)
+			}
 		}
 		r.mu.Unlock()
-		close(entry.finished)
 	}
 	r.wg.Done()
 }
@@ -581,6 +626,13 @@ func (r *startupCore) cancelForArchive(id string) *startupEntry {
 // already FAILED, because fail() installed a different entry under the same id
 // and the close's worktree decision belongs on that one; an archive must not,
 // because a failed startup owns no process for it to stop.
+//
+// The entry that answers is not the only claim that the caller must reach. The
+// goroutine of an earlier claim can still run its tail behind it (see
+// startupEntry.enclosing), and that goroutine reads the stamp from its own entry.
+// So the body stamps and cancels the entry and every enclosing claim whose
+// goroutine did not return. It returns the entry that answered, and
+// waitForFinished follows the same links.
 func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*startupEntry)) *startupEntry {
 	r.mu.Lock()
 	var entry *startupEntry
@@ -590,27 +642,38 @@ func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*
 	if entry == nil {
 		entry = r.inflight[id]
 	}
+	var reached []*startupEntry
 	if entry != nil {
-		stamp(entry)
+		reached = append(reached, entry)
+		for behind := entry.unfinishedEnclosing(); behind != nil; behind = behind.unfinishedEnclosing() {
+			reached = append(reached, behind)
+		}
+		for _, claim := range reached {
+			stamp(claim)
+		}
 		if r.entries[id] == entry {
 			delete(r.entries, id)
 			entry.release()
 		}
 	}
 	r.mu.Unlock()
-	if entry == nil {
-		return nil
-	}
-	entry.stopEviction()
-	if entry.cancel != nil {
-		entry.cancel()
+	for _, claim := range reached {
+		claim.stopEviction()
+		if claim.cancel != nil {
+			claim.cancel()
+		}
 	}
 	return entry
 }
 
+// waitForFinished blocks until the goroutine of entry returned, and the goroutine
+// of every claim behind it. The links never change after a claim set them, so no
+// lock is needed.
 func (r *startupCore) waitForFinished(entry *startupEntry) {
-	if entry != nil && entry.finished != nil {
-		<-entry.finished
+	for ; entry != nil; entry = entry.enclosing {
+		if entry.finished != nil {
+			<-entry.finished
+		}
 	}
 }
 

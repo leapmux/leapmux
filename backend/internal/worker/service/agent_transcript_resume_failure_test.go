@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -437,6 +438,48 @@ func TestARecoveringClearIsAStartupThatACloseCancels(t *testing.T) {
 	assert.True(t, row.ClosedAt.Valid)
 	assert.NotContains(t, row.StartupError, context.Canceled.Error(),
 		"the cancelled launch recorded a startup failure for a closed tab")
+	assert.Equal(t, []string{refusedResumeSessionID, ""}, launches.ids())
+}
+
+// TestARecoveringClearIsNoStartupFailureWhenAnArchiveCancelsIt is the archive
+// twin of the close case. An archive cancels the launch through the claim, as a
+// close does. Archival is not a startup failure: the tab and its rows survive,
+// and the agent keeps the failure that it had before the clear. A failure that
+// the cancelled launch recorded would do three things:
+//
+//   - Replace the failure of the agent with "context canceled".
+//   - State that failure in a notification.
+//   - Refuse the input of the user after the unarchive.
+func TestARecoveringClearIsNoStartupFailureWhenAnArchiveCancelsIt(t *testing.T) {
+	t.Parallel()
+
+	svc, agentID, _, launches := openRefusedNativeResume(t)
+	launched := make(chan context.Context, 1)
+	launches.answerWith(func(launchCtx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		launched <- launchCtx
+		<-launchCtx.Done()
+		return nil, launchCtx.Err()
+	})
+	archived := make(chan context.Context, 1)
+	go func() {
+		// stopArchivedTabs cancels each startup first, as this does.
+		launchCtx := <-launched
+		svc.AgentStartup.cancelForArchive(agentID)
+		archived <- launchCtx
+	}()
+
+	failure := enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, "/clear")
+
+	assert.ErrorIs(t, (<-archived).Err(), context.Canceled, "the archive did not reach the launch of the recovering clear")
+	assert.Equal(t, errAgentArchivedDuringLaunch.Error(), failure, "the clear must report the archive, not the cancelled launch")
+	_, _, _, tracked := svc.AgentStartup.status(agentID)
+	assert.False(t, tracked, "the cancelled launch recorded a startup failure for an archived tab")
+	row := requireAgentRow(t, svc, agentID)
+	assert.NotContains(t, row.StartupError, context.Canceled.Error(),
+		"the cancelled launch replaced the failure of the agent")
+	assert.Contains(t, row.StartupError, refusedResumeSessionID, "the agent must keep the failure that it had before the clear")
+	assert.Empty(t, findNotificationsByType(readAllNotifications(t, svc.Queries, agentID), contracts.NotificationTypeAgentError),
+		"the cancelled launch stored a failure note for an archived tab")
 	assert.Equal(t, []string{refusedResumeSessionID, ""}, launches.ids())
 }
 

@@ -1707,19 +1707,27 @@ func (b *Base) startACPHandshake(
 
 	// 2. Send session request (resume or new).
 	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
-	sessionResp, err := b.SendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
+	// The reply of session/load separates its replay from live output: the
+	// history that the agent sends before this reply is conversation the Worker
+	// already stores, so the drain at the end of startup drops it (see
+	// acpSessionUpdates). The reader sets the mark as it routes the reply. It
+	// buffers each later line at once, and this goroutine wakes later. This
+	// goroutine cannot tell a live line from a replayed one.
+	//
+	// session/resume sends no replay, so every update that arrives before its
+	// reply is live output. OpenCode and Kilo forward the output of each client
+	// of a session, and that output can arrive in this window.
+	var observeReply func(json.RawMessage, error)
+	if opts.ResumeSessionID != "" && sessionMethod == MethodSessionLoad {
+		observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
+	}
+	sessionResp, err := b.SendRequestObserved(sessionMethod, json.RawMessage(sessionParams), timeout, observeReply)
 	if err != nil {
 		cleanup()
 		if opts.ResumeSessionID != "" {
 			return nil, b.FormatStartupError(sessionMethod, providerkit.ResumeFailedError(opts.ResumeSessionID, err))
 		}
 		return nil, b.FormatStartupError(sessionMethod, err)
-	}
-	// The reply of a resume separates its replay from live output: the history a
-	// peer sends before this reply is conversation the Worker already stores, so
-	// the drain at the end of startup drops it (see acpSessionUpdates).
-	if opts.ResumeSessionID != "" && sessionMethod == sessionCfg.ResumeMethod {
-		b.markSessionReplayCutoff()
 	}
 
 	// 3. Parse the common session fields.

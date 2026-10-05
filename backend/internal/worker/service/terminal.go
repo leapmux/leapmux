@@ -1547,11 +1547,24 @@ func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
 // a terminal TAB, so there is no way out but to close every tab in the
 // directory.
 func (svc *Service) quakeShellIsLive(terminalID string) bool {
-	if svc.Terminals.IsRunning(terminalID) {
+	return svc.shellIsLive(terminalID, func() bool { return svc.Terminals.IsRunning(terminalID) })
+}
+
+// shellIsLive reports whether the shell of terminalID runs or is about to run:
+// a startup that is in flight and has not failed says that it is about to, and
+// shellRuns says that it runs. It calls shellRuns at most once.
+//
+// The order of the two reads is fixed. A startup ends in this order: the Manager
+// registers the PTY, then the registry drops the entry. The answer reads the
+// registry first and the shell second, so it finds the entry, or the shell, or
+// both. Read in the other order, it can find neither, and the caller then closes
+// the row of a shell that runs. See agentLiveness for the same rule.
+func (svc *Service) shellIsLive(terminalID string, shellRuns func() bool) bool {
+	status, _, _, inFlight := svc.TerminalStartup.status(terminalID)
+	if inFlight && status != leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
 		return true
 	}
-	status, _, _, inFlight := svc.TerminalStartup.status(terminalID)
-	return inFlight && status != leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED
+	return shellRuns()
 }
 
 // adoptExistingQuakeTerminal answers the caller with the directory's existing
