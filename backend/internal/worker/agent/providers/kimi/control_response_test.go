@@ -104,14 +104,18 @@ func TestKimiResolvePermission(t *testing.T) {
 		assert.Equal(t, map[string]any{"decision": "rejected"}, nativeResponse(t, res.Content))
 	})
 
-	for name, fields := range map[string]map[string]any{
-		"a scope the server does not offer":    {"scope": "forever"},
-		"a choice a permission does not offer": {"choice": "Approach A"},
+	for name, tc := range map[string]struct {
+		fields map[string]any
+		reason string
+	}{
+		"a scope the server does not offer":    {map[string]any{"scope": "forever"}, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, "forever")},
+		"a choice a permission does not offer": {map[string]any{"choice": "Approach A"}, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, "Approach A")},
 	} {
 		t.Run(name+" is withheld", func(t *testing.T) {
 			t.Parallel()
-			res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "allow", fields), nil)
-			assert.True(t, res.Withhold)
+			res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "allow", tc.fields), nil)
+			require.True(t, res.Withhold)
+			assert.EqualError(t, res.Refusal(), tc.reason)
 		})
 	}
 
@@ -164,7 +168,8 @@ func TestKimiResolvePlan(t *testing.T) {
 	t.Run("an option the plan did not offer is withheld", func(t *testing.T) {
 		t.Parallel()
 		res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "allow", map[string]any{"choice": "Approach C"}), nil)
-		assert.True(t, res.Withhold)
+		require.True(t, res.Withhold)
+		assert.EqualError(t, res.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, "Approach C"))
 	})
 
 	t.Run("a revision request carries the feedback", func(t *testing.T) {
@@ -186,13 +191,15 @@ func TestKimiResolvePlan(t *testing.T) {
 	t.Run("a plan option on a refusal is withheld", func(t *testing.T) {
 		t.Parallel()
 		res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "deny", map[string]any{"choice": "Approach A"}), nil)
-		assert.True(t, res.Withhold)
+		require.True(t, res.Withhold)
+		assert.EqualError(t, res.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, "Approach A"))
 	})
 
 	t.Run("a plan takes no session scope", func(t *testing.T) {
 		t.Parallel()
 		res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "allow", map[string]any{"scope": "session"}), nil)
-		assert.True(t, res.Withhold)
+		require.True(t, res.Withhold)
+		assert.EqualError(t, res.Refusal(), "a plan review takes no session scope")
 	})
 }
 

@@ -34,13 +34,15 @@ kimiTest.describe('Kimi Code session goal', () => {
       await openGoalMenu(page)
       await goalAction(page, 'resume').click()
       await expectGoalStatus(page, 'active')
-      await modelScript.releaseGate(first)
+      // The pause aborted the held first turn: a paused goal must not keep
+      // working, so its gate holds no waiter any more. The resume starts a new
+      // turn, which the replacement fallback holds at its own gate.
       await modelScript.waitForGate(second)
       expect((await modelScript.status()).requests.length).toBeGreaterThan(1)
+      await modelScript.releaseGate(second)
       await openGoalMenu(page)
       await goalAction(page, 'clear').click()
       await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-      await modelScript.releaseGateIfHeld(second)
       await waitForAgentIdle(page)
     }
     finally {

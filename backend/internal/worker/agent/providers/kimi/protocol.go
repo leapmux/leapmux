@@ -22,6 +22,15 @@ const kimiBinaryName = "kimi"
 // whose `web` command is a different program.
 var kimiMinimumVersion = kimiVersion{major: 2}
 
+// kimiNoAutoUpdateEnv turns off the update that Kimi Code starts from main(): a
+// native (single-file) install swaps in a payload that an earlier TUI run staged,
+// and starts again, before it reads a command, so `kimi --version` and `kimi web`
+// both take that path. The TUI also downloads a payload, and installs a
+// package-manager release, unless the switch says otherwise. `1`, `true`, `yes`
+// and `on` turn it off. The shell wrapper states it after the user's profile, for
+// both launches (see probeKimiVersion and startServer).
+const kimiNoAutoUpdateEnv = "KIMI_CODE_NO_AUTO_UPDATE=1"
+
 // kimiServerArgs start the kap-server.
 //
 //   - `--no-open` is required: the server opens a browser tab by default.

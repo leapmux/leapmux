@@ -129,7 +129,8 @@ func TestKimiUpdateSettings(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-text", agent.OptionIDEffort: "high"})
 		assert.Equal(t, optionmap.Map{agent.OptionIDModel: "kimi-text"}, result.ConfirmedOptions())
-		assert.NotContains(t, lastProfile(t, rig), "thinking")
+		assert.Equal(t, map[string]any{"model": "kimi-text", "thinking": "off"}, lastProfile(t, rig),
+			"the refused level is not sent; the model switch clears the level the old model ran")
 	})
 
 	t.Run("plan mode on and off keeps the permission mode under it", func(t *testing.T) {
@@ -142,6 +143,24 @@ func TestKimiUpdateSettings(t *testing.T) {
 		result = rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDPermissionMode: contracts.KimiModeAuto})
 		assert.Equal(t, map[string]any{"plan_mode": false, "permission_mode": "auto"}, lastProfile(t, rig))
 		assert.Equal(t, contracts.KimiModeAuto, result.ConfirmedOptions()[agent.OptionIDPermissionMode])
+	})
+
+	t.Run("a model switch on Auto clears the level the old model ran", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTestRig(t, agent.Options{})
+		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-text"})
+		assert.Equal(t, map[string]any{"model": "kimi-text", "thinking": "off"}, lastProfile(t, rig),
+			"the server keeps the previous model's level unless the switch restates it")
+		assert.Equal(t, optionmap.Map{agent.OptionIDModel: "kimi-text"}, result.ConfirmedOptions())
+	})
+
+	t.Run("a model switch on Auto restates the configured level", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDModel, "kimi-text")})
+		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-k2"})
+		assert.Equal(t, map[string]any{"model": "kimi-k2", "thinking": "medium"}, lastProfile(t, rig),
+			"Auto stands for the level the user's configuration states")
+		assert.Equal(t, optionmap.Map{agent.OptionIDModel: "kimi-k2"}, result.ConfirmedOptions())
 	})
 
 	t.Run("switching back to Auto sends the configured level", func(t *testing.T) {
@@ -177,7 +196,7 @@ func TestKimiUpdateSettings(t *testing.T) {
 		rig.fake.reply("GET "+kimiSessionPath(rig.sessionID(), "/status"), fakeKapReply{HTTPStatus: 500, Code: 50000, Msg: "status down"})
 		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-text"})
 		assert.True(t, result.AppliedLive)
-		assert.Equal(t, map[string]any{"model": "kimi-text"}, lastProfile(t, rig), "the write went out")
+		assert.Equal(t, map[string]any{"model": "kimi-text", "thinking": "off"}, lastProfile(t, rig), "the write went out")
 		assert.Empty(t, result.ConfirmedOptions(), "nothing proves what the server runs now")
 		assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[agent.OptionIDModel].State)
 		assert.Equal(t, refreshes, rig.sink.SettingsRefreshCount(), "nothing unconfirmed is persisted")
@@ -194,11 +213,12 @@ func TestKimiUpdateSettings(t *testing.T) {
 		assert.Equal(t, map[string]any{"permission_mode": "yolo"}, lastProfile(t, rig), "the empty model changes nothing")
 	})
 
-	t.Run("switching to Auto on a model that cannot think sends no level", func(t *testing.T) {
+	t.Run("switching to Auto on a model that cannot think clears the level", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDEffort, "high")})
 		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-text", agent.OptionIDEffort: agent.EffortAuto})
-		assert.Equal(t, map[string]any{"model": "kimi-text"}, lastProfile(t, rig), "a model that cannot think takes no level")
+		assert.Equal(t, map[string]any{"model": "kimi-text", "thinking": "off"}, lastProfile(t, rig),
+			"a model that cannot think takes no level, and the previous model's level must not leak")
 		assert.Equal(t, "kimi-text", result.ConfirmedOptions()[agent.OptionIDModel])
 		assert.NotContains(t, result.SurfacedOptions, agent.OptionIDEffort, "the model has no effort axis")
 	})

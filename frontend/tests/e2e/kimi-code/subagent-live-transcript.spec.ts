@@ -24,6 +24,17 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
     })
   })
 
+  // A reminder follows the task as the last user turn of a child request, so the rule matches the task in the body.
+  kimiTest('shows a native child file result only in the running child tab', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: KIMI,
+      childWhen: { system: SUBAGENT_SYSTEM, body: 'CHILD_LIVE_READ_TASK' },
+      childTask: 'Read the assigned file for CHILD_LIVE_READ_TASK.',
+      parentTask: 'Delegate the live child file read.',
+      toolProof: { workingDir: authenticatedKimiWorkspace.workingDir },
+    })
+  })
+
   // The child's command would stop at a banner under Always Ask. The routing,
   // not the approval, is the subject here.
   kimiTest.beforeEach(async ({ authenticatedKimiWorkspace, page }) => {

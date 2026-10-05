@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -72,24 +73,24 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 	var request kimiStoredRequest
 	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
 		slog.Warn("kimi stored control request does not decode", "request_id", ctx.RequestID, "error", err)
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
 		slog.Warn("kimi control response carried no decision", "request_id", ctx.RequestID)
-		result.Withhold = true
+		result.Refuse(agent.RefusalNoDecision)
 		return result
 	}
 	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
 		slog.Warn("kimi control response addressed another request", "answered", requestID, "stored", ctx.RequestID)
-		result.Withhold = true
+		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	allow := behavior == agent.ControlBehaviorAllow
 	var fields contracts.KimiDecisionFields
 	if err := json.Unmarshal(kimiInnerResponse(ctx.ResponseContent), &fields); err != nil {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnreadableAnswer)
 		return result
 	}
 	choice := agent.DecodeControlChoice(ctx.ResponseContent)
@@ -97,9 +98,9 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 	var native any
 	switch request.Type {
 	case contracts.KimiEventApprovalRequested:
-		reply, ok := kimiApprovalReply(request, allow, message, choice, fields.Scope)
-		if !ok {
-			result.Withhold = true
+		reply, refusal := kimiApprovalReply(request, allow, message, choice, fields.Scope)
+		if refusal != "" {
+			result.Refuse(refusal)
 			return result
 		}
 		switch request.ToolInputDisplay.Kind {
@@ -134,32 +135,33 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 		}
 		if !kimiAnswersFit(request, fields.Answers) {
 			slog.Warn("kimi question answer does not fit its question", "request_id", ctx.RequestID)
-			result.Withhold = true
+			result.Refuse("the answers do not fit the questions of the request")
 			return result
 		}
 		native = contracts.KimiQuestionReply{Answers: fields.Answers, Method: kimiQuestionMethod}
 	default:
 		slog.Warn("kimi stored control request is not an approval or a question", "request_id", ctx.RequestID, "type", request.Type)
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
 	content, err := kimiControlResponseContent(ctx.RequestID, native)
 	if err != nil {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnencodableReply)
 		return result
 	}
 	result.Content = content
 	return result
 }
 
-// kimiApprovalReply builds the body of one approval decision.
+// kimiApprovalReply builds the body of one approval decision. The second result
+// is the reason the reader sees for a refusal, empty when the reply stands.
 //
 // The choice is a label the request offered: a plan's own option, `Revise` or
 // `Reject and Exit` for a plan, or a permission mode for a goal start. One the
 // request did not offer is refused rather than sent, because the server would
 // take an unknown label for a plain decision and do something the user did not
 // pick.
-func kimiApprovalReply(request kimiStoredRequest, allow bool, message, choice, scope string) (contracts.KimiApprovalReply, bool) {
+func kimiApprovalReply(request kimiStoredRequest, allow bool, message, choice, scope string) (contracts.KimiApprovalReply, string) {
 	reply := contracts.KimiApprovalReply{Decision: contracts.KimiDecisionRejected}
 	if allow {
 		reply.Decision = contracts.KimiDecisionApproved
@@ -168,17 +170,20 @@ func kimiApprovalReply(request kimiStoredRequest, allow bool, message, choice, s
 	}
 	if choice != "" {
 		if !kimiChoiceOffered(request, allow, choice) {
-			return contracts.KimiApprovalReply{}, false
+			return contracts.KimiApprovalReply{}, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, choice)
 		}
 		reply.SelectedLabel = choice
 	}
 	if allow && scope != "" {
-		if scope != contracts.KimiApprovalScopeSession || request.ToolInputDisplay.Kind == contracts.KimiDisplayPlanReview {
-			return contracts.KimiApprovalReply{}, false
+		if scope != contracts.KimiApprovalScopeSession {
+			return contracts.KimiApprovalReply{}, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, scope)
+		}
+		if request.ToolInputDisplay.Kind == contracts.KimiDisplayPlanReview {
+			return contracts.KimiApprovalReply{}, "a plan review takes no session scope"
 		}
 		reply.Scope = scope
 	}
-	return reply, true
+	return reply, ""
 }
 
 // kimiChoiceOffered reports whether a request offers choice for a decision of

@@ -104,6 +104,7 @@ func probeKimiVersion(ctx context.Context, opts agent.Options, spec launch.Spec,
 		LoginShell: opts.LoginShell,
 		Launch:     spec,
 		BaseArgs:   []string{"--version"},
+		SetEnv:     []string{kimiNoAutoUpdateEnv},
 		WorkingDir: opts.WorkingDir,
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)

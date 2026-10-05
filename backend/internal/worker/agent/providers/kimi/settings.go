@@ -300,13 +300,17 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 	}
 	want := kimiSettingsFromOptions(have, valid)
 	config := a.profileConfig(want, &have)
-	if want.effort == agent.EffortAuto && have.effort != agent.EffortAuto {
-		// Auto sends no level at launch. Switching BACK to it must send one, or the
-		// server would keep the level the user left. The level sent is the one the
-		// user's configuration states for the model.
-		if level := a.autoThinking(want.model); level != "" {
-			config[kimiConfigThinking] = level
+	if _, stated := config[kimiConfigThinking]; !stated && want.effort == agent.EffortAuto &&
+		(have.effort != agent.EffortAuto || want.model != have.model) {
+		// Auto sends no level at launch. But the server keeps the level it runs: the
+		// one the user left when the axis returns to Auto, or the previous model's
+		// when only the model changes. Restate what Auto stands for, or the stale
+		// level leaks into the requests of a model that takes none.
+		level := a.autoThinking(want.model)
+		if level == "" {
+			level = kimiThinkingOff
 		}
+		config[kimiConfigThinking] = level
 	}
 
 	if len(config) > 0 {

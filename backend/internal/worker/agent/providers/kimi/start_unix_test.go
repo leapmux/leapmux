@@ -364,3 +364,19 @@ func runFakeKimiVersion(scenario string) int {
 	fmt.Println(version)
 	return 0
 }
+
+// Kimi Code installs a staged native update, and re-executes itself, from main()
+// before it parses a command, so `kimi --version` and `kimi web` both take that
+// path in a native (single-file) install. It stops for a true
+// KIMI_CODE_NO_AUTO_UPDATE (`1`, `true`, `yes` or `on`). The launch runs the
+// program twice, for the version and for the server, so both runs must carry the
+// pin after the user's profile.
+func TestLaunchPinsTheUpdaterOffForTheVersionProbeAndTheServer(t *testing.T) {
+	agenttest.RequireLaunchPins(t, agenttest.LaunchProbe{
+		Binary:  kimiBinaryName,
+		Start:   Start,
+		Pins:    []string{"KIMI_CODE_NO_AUTO_UPDATE=1"},
+		Answers: map[string]string{"--version": "kimi-code 2.1.1"},
+		Runs:    2,
+	})
+}

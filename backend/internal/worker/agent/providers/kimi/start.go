@@ -44,6 +44,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		LoginShell: opts.LoginShell,
 		Launch:     spec,
 		BaseArgs:   kimiServerArgs,
+		SetEnv:     []string{kimiNoAutoUpdateEnv},
 		WorkingDir: opts.WorkingDir,
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
