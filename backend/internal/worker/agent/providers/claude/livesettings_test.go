@@ -450,6 +450,113 @@ func TestUpdateSettings_ModelChange(t *testing.T) {
 	assert.Equal(t, "sonnet", a.model, "model should be updated from get_settings response")
 }
 
+// modelSwitchFlags runs one UpdateSettings against a mock CLI whose unpinned effort follows the
+// model (see GO_HELPER_MODEL_DEFAULT_EFFORT), and returns the agent, the result, and the
+// apply_flag_settings payloads that the CLI received. The agent starts on opus[1m] with the held
+// effort, as the startup readback of an unpinned session would have left it.
+func modelSwitchFlags(t *testing.T, heldEffort string, options map[string]string, mutate func(*Agent)) (*Agent, agent.SettingsApplyResult, []map[string]any) {
+	t.Helper()
+	recordPath := filepath.Join(t.TempDir(), "flags.jsonl")
+	a := newTestAgentWithControlProtocolEnv(t,
+		"GO_HELPER_RECORD_REQUESTS="+recordPath,
+		"GO_HELPER_MODEL_DEFAULT_EFFORT=opus[1m]=xhigh,sonnet=low")
+	t.Cleanup(func() { stopTestAgent(a) })
+	a.effort = heldEffort
+	if mutate != nil {
+		mutate(a)
+	}
+	result := a.UpdateSettings(options)
+	return a, result, readRecordedFlagSettings(t, recordPath)
+}
+
+// TestUpdateSettings_ModelSwitchKeepsTheHeldEffort is the regression guard for the Opus-to-Sonnet
+// switch of a session whose effort is not pinned in the CLI. The CLI reports the default effort of
+// its current model for such a session, so LeapMux holds the value that Opus reports (xhigh) but the
+// CLI keeps no xhigh to carry across. The worker keeps the held effort because Sonnet offers it, so
+// the request carries xhigh next to the model. A request that carried only the model left the CLI
+// on Sonnet's own default, and the readback then replaced the kept xhigh with that default.
+func TestUpdateSettings_ModelSwitchKeepsTheHeldEffort(t *testing.T) {
+	t.Parallel()
+
+	a, result, sent := modelSwitchFlags(t, agent.EffortXHigh,
+		map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortXHigh}, nil)
+
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, "sonnet", a.model)
+	assert.Equal(t, agent.EffortXHigh, a.effort, "the CLI runs the held effort on the new model")
+	require.NotNil(t, result.Settlements[agent.OptionIDEffort].Value)
+	assert.Equal(t, agent.EffortXHigh, *result.Settlements[agent.OptionIDEffort].Value, "the confirmed effort is the kept one")
+	require.Len(t, sent, 1, "the model and the effort travel in one request")
+	assert.Equal(t, "sonnet", sent[0]["model"])
+	assert.Equal(t, agent.EffortXHigh, sent[0]["effortLevel"], "the kept effort is pinned for the session")
+	assert.NotContains(t, sent[0], "ultracode", "a plain level has no ultracode key")
+}
+
+// TestUpdateSettings_ModelSwitchKeepsUltracode pins the same rule for Ultracode, which the CLI
+// models as a pinned xhigh plus the ultracode boolean.
+func TestUpdateSettings_ModelSwitchKeepsUltracode(t *testing.T) {
+	t.Parallel()
+
+	_, result, sent := modelSwitchFlags(t, EffortUltracode,
+		map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: EffortUltracode}, nil)
+
+	require.True(t, result.AppliedLive)
+	require.Len(t, sent, 1)
+	assert.Equal(t, "sonnet", sent[0]["model"])
+	assert.Equal(t, agent.EffortXHigh, sent[0]["effortLevel"])
+	assert.Equal(t, true, sent[0]["ultracode"])
+}
+
+// TestUpdateSettings_ModelSwitchPinsNoEffortWithoutAConcreteHeldEffort covers the cases in which
+// there is nothing to pin: an automatic effort leaves the choice to the CLI, a request without an
+// effort states none, an unchanged model changes nothing, and a session that hides the model and
+// effort controls takes no effort push.
+func TestUpdateSettings_ModelSwitchPinsNoEffortWithoutAConcreteHeldEffort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		held    string
+		options map[string]string
+		mutate  func(*Agent)
+	}{
+		{
+			name:    "an automatic effort",
+			held:    agent.EffortAuto,
+			options: map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortAuto},
+		},
+		{
+			name:    "a request without an effort",
+			held:    agent.EffortXHigh,
+			options: map[string]string{agent.OptionIDModel: "sonnet"},
+		},
+		{
+			name:    "an unchanged model",
+			held:    agent.EffortXHigh,
+			options: map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: agent.EffortXHigh, OptionFastMode: FastModeOn},
+		},
+		{
+			name:    "a session that hides the model and effort controls",
+			held:    agent.EffortXHigh,
+			options: map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortXHigh},
+			mutate:  func(a *Agent) { a.thirdPartyFromSettings = true },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, result, sent := modelSwitchFlags(t, tc.held, tc.options, tc.mutate)
+
+			require.True(t, result.AppliedLive)
+			for _, settings := range sent {
+				assert.NotContains(t, settings, "effortLevel")
+				assert.NotContains(t, settings, "ultracode")
+			}
+		})
+	}
+}
+
 func TestUpdateSettings_FlagReadbackFailureIsUnresolved(t *testing.T) {
 	t.Parallel()
 
@@ -1439,7 +1546,20 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 			if v, ok := state["model"].(string); ok {
 				model = v
 			}
+			// A session that holds no pinned effortLevel reports the default effort of
+			// its CURRENT model, so the reported value moves with a model switch.
+			// GO_HELPER_MODEL_DEFAULT_EFFORT lists the `model=effort` defaults. A
+			// pinned effortLevel (an apply_flag_settings key) wins over the default.
+			// Verified against Claude Code 2.1.289 with an isolated-HOME probe: an
+			// unpinned Opus session at xhigh reports Sonnet's own default after
+			// apply_flag_settings {model:"sonnet"}, and xhigh after
+			// {model:"sonnet", effortLevel:"xhigh"}.
 			effort := "high"
+			for _, pair := range strings.Split(os.Getenv("GO_HELPER_MODEL_DEFAULT_EFFORT"), ",") {
+				if name, level, ok := strings.Cut(pair, "="); ok && name == model {
+					effort = level
+				}
+			}
 			if v, ok := state["effortLevel"].(string); ok {
 				effort = v
 			}

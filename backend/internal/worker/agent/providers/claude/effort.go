@@ -61,8 +61,9 @@ func (r effortResolver) reconcileStartupFlags(model, effort string) map[string]i
 // omitted path (skipLevel "") sent no effort and so has no ultracode to clear.
 // (clearUltracode is thus fully determined by skipLevel, not a separate knob.)
 // Returns nil when there is nothing to apply (auto/empty resolution, or the level
-// already matches skipLevel). Shared by reconcileStartupFlags and reconcileOmittedLaunch
-// so the two can't drift on the ultracode-combo and auto-passthrough rules.
+// already matches skipLevel). Shared by reconcileStartupFlags, reconcileOmittedLaunch,
+// and pinFlagSettings so the three can't drift on the ultracode-combo and
+// auto-passthrough rules.
 func (r effortResolver) reconciledEffortFlags(model, effort, skipLevel string) map[string]interface{} {
 	if r.launchRunsUltracode(model, effort) {
 		return ultracodeFlagSettings()
@@ -98,6 +99,29 @@ func (r effortResolver) reconcileOmittedLaunch(model, effort string) map[string]
 	}
 	// Launch sent no --effort, so there is no launch level to match against (skipLevel
 	// ""), which also signals there is no launch-sent ultracode boolean to clear.
+	return r.reconciledEffortFlags(model, effort, "")
+}
+
+// pinFlagSettings returns the apply_flag_settings keys that pin effort for model on the
+// running CLI session: the effortLevel that the --effort launch flag would carry, or the
+// xhigh+ultracode combo. It returns nil when a launch of model+effort would send no
+// --effort: an automatic or empty effort, the account-default placeholder, and a model that
+// the catalog knows has no effort axis.
+//
+// A session that launched without --effort holds no pinned level. The CLI then reports the
+// default effort of its CURRENT model, so the level that LeapMux holds for such a session
+// is the level that the CLI reported, and it does not follow a model switch. Verified
+// against Claude Code 2.1.289 with an isolated-HOME probe: an unpinned Opus session that
+// reports xhigh reports Sonnet's own default after apply_flag_settings {model:"sonnet"},
+// and xhigh after {model:"sonnet", effortLevel:"xhigh"}. A pinned level survives the
+// switch, and the CLI clamps it at resolution when the new model lacks it.
+//
+// UpdateSettings calls this on a model switch that carries an effort equal to the held
+// one, because updateFlagSettings then has no delta to send.
+func (r effortResolver) pinFlagSettings(model, effort string) map[string]interface{} {
+	if r.launchOmitsEffort(model, effort) {
+		return nil
+	}
 	return r.reconciledEffortFlags(model, effort, "")
 }
 
@@ -162,10 +186,13 @@ func claudeEffortFlagSettings(newEffort, curEffort string) map[string]interface{
 // xhigh to "high" for models that don't offer it (e.g. sonnet -> "high", its
 // default), so the pinned level is always one the target model can run.
 //
-// The UI resets effort to auto on a model change and restarts (IsEffortAutoTransition
-// short-circuits UpdateSettings before this runs), so today this whole branch only
-// matters for non-UI/raw callers; it is defensive so such a caller can't strand an
-// unsupported effortLevel on the live session.
+// The worker keeps a held effort that the new model offers, so the UI sends the model
+// together with that effort, and UpdateSettings pins it through pinFlagSettings when
+// this method has no delta to send. The worker resets an effort that the new model does
+// not offer to auto and restarts (IsEffortAutoTransition short-circuits UpdateSettings
+// before this runs). So the model-only branch above matters for non-UI/raw callers that
+// state no effort; it is defensive so such a caller can't strand an unsupported
+// effortLevel on the live session.
 func (r effortResolver) updateFlagSettings(targetModel, newEffort, curEffort string) map[string]interface{} {
 	if targetModel == agent.DefaultModelSentinel {
 		// A session stuck on the unresolved account-default sentinel (the degraded path

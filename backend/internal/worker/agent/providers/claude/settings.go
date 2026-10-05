@@ -187,21 +187,31 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	flagSettings := map[string]interface{}{}
 	changedFlagOptionIDs := make([]string, 0, len(claudeFlagOptionIDs))
 
-	if reqModel != "" && reqModel != curModel {
+	modelChanged := reqModel != "" && reqModel != curModel
+	if modelChanged {
 		flagSettings["model"] = reqModel
 		changedFlagOptionIDs = append(changedFlagOptionIDs, agent.OptionIDModel)
 	}
 	// Resolve the requested effort against the model it will run under (the new model
 	// when this update also switches model) so a combined model+effort change can't
 	// push an unsupported effort -- e.g. {model:"sonnet", ultracode:true} -- to the
-	// CLI. The UI sends single-field updates, so this only bites non-UI/raw callers,
-	// but it keeps the live path consistent with buildModelEffortArgs's launch-time
+	// CLI. It keeps the live path consistent with buildModelEffortArgs's launch-time
 	// downgrade.
 	targetModel := curModel
 	if reqModel != "" {
 		targetModel = reqModel
 	}
-	effortSettings := a.effortResolver().updateFlagSettings(targetModel, reqEffort, curEffort)
+	resolver := a.effortResolver()
+	effortSettings := resolver.updateFlagSettings(targetModel, reqEffort, curEffort)
+	// The worker keeps a held effort across a model switch when the new model offers it, so
+	// reqEffort then equals curEffort and the delta above is empty. A session that launched
+	// without --effort holds no pinned level, and the CLI would run the new model's own
+	// default instead of the held effort. Pin the held effort in the same request. A session
+	// that hides the model and effort controls takes no effort push (see
+	// reconcileStartupEffortFlags).
+	if len(effortSettings) == 0 && modelChanged && !a.hidesModelEffortUI() {
+		effortSettings = resolver.pinFlagSettings(targetModel, reqEffort)
+	}
 	if len(effortSettings) > 0 {
 		maps.Copy(flagSettings, effortSettings)
 		changedFlagOptionIDs = append(changedFlagOptionIDs, agent.OptionIDEffort)

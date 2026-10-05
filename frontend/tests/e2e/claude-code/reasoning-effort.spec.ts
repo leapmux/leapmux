@@ -218,4 +218,42 @@ test.describe('Agent Settings', () => {
     expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'medium' } })
     await expectAssistantAnswer(page, { answer: /Claude answered after the round trip\./ })
   })
+
+  // A new session pins no effort: the CLI chooses the level of its model. The menu shows that level, and a
+  // model switch must keep it. The CLI would otherwise choose the default of the new model, and the user
+  // would see the effort change although only the model changed.
+  test('a model switch keeps the level that the CLI chose for an automatic session', async ({ authenticatedWorkspace, page, modelScript }) => {
+    void authenticatedWorkspace // fixture trigger
+    const trigger = settingsBar(page)
+    await expect(trigger).toBeVisible()
+    const effortChecked = (tier: string) => page.locator(`[data-testid="effort-${tier}"] input[type="radio"]`)
+
+    await chooseSettingsOption(page, 'model-sonnet')
+    await expectSettingsChip(page, 'Sonnet')
+    await waitForSettingsIdle(page)
+    // Auto restarts the agent without --effort. Sonnet then runs at its own default, Medium.
+    await chooseSettingsOption(page, 'effort-auto')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page, 'effort')
+    await expect(effortChecked('medium')).toBeChecked()
+    await page.keyboard.press('Escape')
+
+    // Fable defaults to High, so a switch that keeps Medium differs from a switch that takes the default.
+    await chooseSettingsOption(page, 'model-fable[1m]')
+    await expectSettingsChip(page, 'Fable')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page, 'effort')
+    await expect(effortChecked('medium')).toBeChecked()
+    await expect(effortChecked('high')).not.toBeChecked()
+    await page.keyboard.press('Escape')
+
+    await modelScript.queue({ text: 'Claude answered on Fable.' })
+    await sendMessage(page, modelScript.prompt('Reply once after the switch to Fable.'))
+    const status = await modelScript.waitForSteps()
+    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({
+      model: expect.stringMatching(/^claude-fable-/),
+      output_config: { effort: 'medium' },
+    })
+    await expectAssistantAnswer(page, { answer: /Claude answered on Fable\./ })
+  })
 })
