@@ -3,11 +3,9 @@ package mimo
 import (
 	"fmt"
 	"log/slog"
-	"syscall"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // mimoAbortGrace is how long an abort has to end its turn before the worker
@@ -54,8 +52,16 @@ func (a *Agent) Interrupt() error {
 // signal to it, so a signal to the script alone leaves the server running as
 // an orphan. The process group holds both, and SIGTERM to the group ends the
 // server at once: it closes on SIGTERM, and it does not end when its stdin
-// closes. Process.Stop then closes stdin and waits for the exit, and its
-// fallback kills whatever the group still holds.
+// closes. Process.Stop sends that signal (mimoStopSignal), then closes stdin
+// and waits for the exit, and its fallback kills whatever the group still
+// holds.
+//
+// Process.Stop records the process tree BEFORE the signal. MiMo runs each bash
+// command in a session of its own and leaves it running when the server ends,
+// so the group signal never reaches the command, and after the server exits
+// only that record ties the command to this agent. A signal sent ahead of
+// Process.Stop would end the server before the record, and the command would
+// outlive the agent.
 //
 // The stream is cancelled BEFORE the signal, so it does not connect again to a
 // server that is going away. Thus no idle event can end the turn, and
@@ -64,9 +70,6 @@ func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	if a.streamCancel != nil {
 		a.streamCancel()
-	}
-	if err := procutil.SignalProcessGroup(a.Cmd(), syscall.SIGTERM); err != nil {
-		slog.Debug("mimo signal the server group", "agent_id", a.AgentID(), "error", err)
 	}
 	a.Process.Stop()
 	if a.rpc.endpoint != nil {

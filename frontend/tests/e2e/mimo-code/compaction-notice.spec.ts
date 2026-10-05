@@ -1,11 +1,19 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expectCompactionNotice } from '../helpers/compaction'
 import { exerciseManualCompaction } from '../helpers/manualCompaction'
-import { expectNoCompactionNotice } from '../helpers/unsupportedCompaction'
+import { waitForAgentIdle } from '../helpers/ui'
 import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
 
 mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
 
-mimoTest('proves native context compaction without a completed compaction notice', async ({ page, modelScript, leapmuxServer, authenticatedMiMoWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedMiMoWorkspace.workspaceId, provider: AgentProvider.MIMO_CODE }
-  await expectNoCompactionNotice(context, { relatedProof: () => exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Write a continuation summary that will allow you' }) })
+// MiMo Code 0.1.15 sends its compaction part twice: once when the compaction
+// starts, and once when it ends, with the summary in the part's projection. The
+// worker persists both as notifications, and the transcript folds the start
+// into the end, which it draws as the completed notice.
+mimoTest('proves native context compaction and keeps the completed compaction notice after reload', async ({ page, modelScript, authenticatedMiMoWorkspace }) => {
+  void authenticatedMiMoWorkspace
+  await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Write a continuation summary that will allow you' })
+  await expectCompactionNotice(page)
+  await page.reload()
+  await waitForAgentIdle(page)
+  await expectCompactionNotice(page)
 })

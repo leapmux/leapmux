@@ -22,6 +22,7 @@ mimoTest('classifies real native controls and proves the missing editor-requests
     classify: mimoExtractControl,
     nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
+      outputGate: operation.outputGate,
       decision: 'allow',
       beforeDecision: async (banner) => {
         await operation.beforeDecision()

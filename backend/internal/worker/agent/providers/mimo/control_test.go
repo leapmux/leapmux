@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -289,7 +291,7 @@ func TestParseControlAnswer(t *testing.T) {
 			want:    mimoAnswer{requestID: "r1", permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject}}},
 		{name: "an unknown option is refused", kind: controlPermission,
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"outcome":{"outcome":"selected","optionId":"forever"}}}`),
-			err:     "unknown permission option"},
+			err:     agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, "forever")},
 		{name: "a permission answer with no option is refused", kind: controlPermission,
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{}}`), err: "states no option"},
 		{name: "answers answer a question", kind: controlQuestion,
@@ -312,7 +314,7 @@ func TestParseControlAnswer(t *testing.T) {
 		{name: "answers do not answer a plan", kind: controlPlan, content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"answers":[["Yes"]]}}`),
 			err: "takes an allow or a deny"},
 		{name: "an unknown behavior is refused", kind: controlPermission,
-			content: []byte(`{"response":{"request_id":"r1","response":{"behavior":"maybe"}}}`), err: "unknown behavior"},
+			content: []byte(`{"response":{"request_id":"r1","response":{"behavior":"maybe"}}}`), err: agent.RefusalNoDecision},
 		{name: "an accepted elicitation answers MiMo's Accept", kind: controlQuestion,
 			content: elicitationEnvelope("r1", contracts.MCPElicitationActionAccept),
 			want:    mimoAnswer{requestID: "r1", answers: [][]string{{elicitationAnswerAccept}}, elicitation: true}},
@@ -471,7 +473,7 @@ func TestElicitationAnswerToAnOrdinaryQuestionIsRefused(t *testing.T) {
 	feed(a, questionAskedEvent(t, "que_1", testSessionID))
 
 	err := a.SendRawInput(elicitationEnvelope("mimo-question:que_1", contracts.MCPElicitationActionAccept))
-	assert.ErrorContains(t, err, `does not offer "Accept"`)
+	assert.ErrorContains(t, err, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, "Accept"))
 	assert.Empty(t, server.requestsTo("POST /question/que_1/reply"))
 	assert.Len(t, a.controls, 1, "the question still waits for an answer")
 }
@@ -558,9 +560,10 @@ func TestAnswerFitsRequest(t *testing.T) {
 
 	twoQuestions := `{"type":"question.asked","properties":{"questions":[` +
 		`{"options":[{"label":"Accept"}]},{"options":[{"label":"Accept"}]}]}}`
-	assert.ErrorContains(t, answerFitsRequest(accept, []byte(twoQuestions)), `does not offer "Accept"`,
+	assert.ErrorContains(t, answerFitsRequest(accept, []byte(twoQuestions)),
+		agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, "Accept"),
 		"an elicitation asks one question, so two questions are an ordinary question form")
-	assert.ErrorContains(t, answerFitsRequest(accept, []byte(`nope`)), "read the stored request")
+	assert.ErrorContains(t, answerFitsRequest(accept, []byte(`nope`)), agent.RefusalUnreadableRequest)
 }
 
 func TestControlKindOfPayload(t *testing.T) {

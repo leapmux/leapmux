@@ -4,12 +4,10 @@ import { expect } from '@playwright/test'
 import { mimoExtractControl } from '../../../src/components/chat/providers/mimo/extractControl'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { findBinary } from '../helpers/binaryOnPath'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
-import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-import { hubSpawnEnv } from '../helpers/server'
+import { exerciseNativeWorkspaceTrustLimit, projectConfigurationWorker } from '../helpers/nativeWorkspaceTrustLimit'
 
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 
@@ -30,6 +28,7 @@ mimoTest('classifies real native controls and proves the missing workspace-trust
     classify: mimoExtractControl,
     nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
+      outputGate: operation.outputGate,
       decision: 'allow',
       beforeDecision: async (banner) => {
         await operation.beforeDecision()
@@ -42,11 +41,8 @@ mimoTest('classifies real native controls and proves the missing workspace-trust
 
 mimoTest('loads project instructions without a workspace trust decision', async ({ page, modelScript, leapmuxServer, authenticatedMiMoWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedMiMoWorkspace.workspaceId, provider: AgentProvider.MIMO_CODE }
-  const executable = findBinary('mimo', hubSpawnEnv(leapmuxServer.agentEnv))
-  if (!executable)
-    throw new Error('The installed MiMo executable is absent.')
   await exerciseNativeWorkspaceTrustLimit(context, {
-    worker: { launch: { binaryName: 'mimo', executable, holdWhen: ['serve'], lazy: false }, workerEnvironment: () => ({ MIMOCODE_DISABLE_PROJECT_CONFIG: 'false' }) },
+    worker: projectConfigurationWorker(leapmuxServer.agentEnv, { binaryName: 'mimo', holdWhen: ['serve'], lazy: false }, 'MIMOCODE_DISABLE_PROJECT_CONFIG'),
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
         const instructions = join(directory, 'native-project-instructions.md')

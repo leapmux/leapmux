@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"syscall"
 	"time"
 
 	"github.com/coder/quartz"
@@ -19,6 +20,10 @@ var _ agent.StartFunc = Start
 
 // mimoServeArgs start MiMo's server on a loopback port the server picks.
 var mimoServeArgs = []string{"serve", "--hostname", "127.0.0.1", "--port", "0"}
+
+// mimoStopSignal ends the server. The server does not end when its stdin
+// closes, and it ends at once on SIGTERM. See Agent.Stop.
+const mimoStopSignal = syscall.SIGTERM
 
 // errCredentialRefused reports that the server refused the credential the
 // worker gave it. The worker pins the credential in the process environment, and
@@ -52,6 +57,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		LoginShell:   opts.LoginShell,
 		Launch:       spec,
 		StripEnvKeys: mimoStripEnvKeys,
+		SetEnv:       []string{mimoDisableAutoUpdateEnv},
 		BaseArgs:     mimoServeArgs,
 		WorkingDir:   opts.WorkingDir,
 	})
@@ -63,7 +69,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 	a := newAgentState(agent.NewModelProgressResetSink(sink), mimoRPC{timeout: opts.EffectiveAPITimeout()}, opts.WorkingDir, quartz.NewReal())
-	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)
+	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, StopSignal: mimoStopSignal}, pipes, ctx, cancel)
 	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}

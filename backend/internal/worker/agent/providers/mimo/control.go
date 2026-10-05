@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -474,7 +475,8 @@ type mimoJSONRPCAnswer struct {
 
 // readControlAnswer reads one browser answer to a stored request of kind, and
 // checks it against that request. Both the answer check and the reply read here,
-// so the two cannot accept different answers.
+// so the two cannot accept different answers. Its error is the reason the reader
+// sees for the refusal.
 func readControlAnswer(kind mimoControlKind, payload, content []byte) (mimoAnswer, error) {
 	answer, err := parseControlAnswer(kind, content)
 	if err != nil {
@@ -504,7 +506,7 @@ func answerFitsRequest(answer mimoAnswer, payload []byte) error {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(payload, &stored); err != nil {
-		return fmt.Errorf("read the stored request: %w", err)
+		return errors.New(agent.RefusalUnreadableRequest)
 	}
 	word := answer.answers[0][0]
 	if questions := stored.Properties.Questions; len(questions) == 1 {
@@ -514,7 +516,7 @@ func answerFitsRequest(answer mimoAnswer, payload []byte) error {
 			}
 		}
 	}
-	return fmt.Errorf("the question does not offer %q", word)
+	return errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, word))
 }
 
 // parseElicitationAnswer reads the answer that the browser's shared elicitation
@@ -559,7 +561,7 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 		answer := mimoAnswer{requestID: requestID}
 		switch {
 		case behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny:
-			return mimoAnswer{}, fmt.Errorf("unknown behavior %q", behavior)
+			return mimoAnswer{}, errors.New(agent.RefusalNoDecision)
 		case kind == controlPermission && behavior == agent.ControlBehaviorAllow:
 			answer.permission = mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyOnce}
 		case kind == controlPermission:
@@ -584,7 +586,7 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 	}
 	var envelope mimoJSONRPCAnswer
 	if err := json.Unmarshal(content, &envelope); err != nil {
-		return mimoAnswer{}, fmt.Errorf("decode the answer: %w", err)
+		return mimoAnswer{}, errors.New(agent.RefusalUnreadableAnswer)
 	}
 	answer := mimoAnswer{requestID: requestID}
 	switch kind {
@@ -601,7 +603,7 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 		case contracts.MiMoPermissionReplyOnce, contracts.MiMoPermissionReplyAlways, contracts.MiMoPermissionReplyReject:
 			answer.permission = mimoPermissionReplyBody{Reply: outcome.OptionID}
 		default:
-			return mimoAnswer{}, fmt.Errorf("unknown permission option %q", outcome.OptionID)
+			return mimoAnswer{}, errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, outcome.OptionID))
 		}
 	case controlQuestion:
 		switch {

@@ -21,4 +21,19 @@ mimoTest.describe('MiMo Code subagent registry', () => {
       parentTask: 'Delegate the live child task.',
     })
   })
+
+  // The general actor reads its file with the native read tool, which the default read rule allows.
+  // MiMo tags the read with the actor ID of the child, so the parent transcript never holds it.
+  mimoTest('shows a native child file result only in the running child tab', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
+    const workingDir = authenticatedMiMoWorkspace.workingDir
+    if (!workingDir)
+      throw new Error('The live child file proof requires the working directory of the native agent.')
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.MIMO_CODE,
+      childWhen: { user: '^Read the assigned file in the live child' },
+      childTask: 'Read the assigned file in the live child.',
+      parentTask: 'Delegate the live child file read.',
+      toolProof: { workingDir },
+    })
+  })
 })

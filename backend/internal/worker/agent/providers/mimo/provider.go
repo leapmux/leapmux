@@ -73,13 +73,13 @@ func (mimoProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 	res := agent.DefaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
 		// The request is gone, so there is nothing to send the answer to.
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	kind, ok := controlKindOfPayload(ctx.RequestPayload)
 	if !ok {
 		slog.Warn("mimo control response names an unreadable request", "request_id", ctx.RequestID)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	if kind == controlPlan {
@@ -87,13 +87,15 @@ func (mimoProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 	}
 	answer, err := readControlAnswer(kind, ctx.RequestPayload, ctx.ResponseContent)
 	if err != nil {
+		// The error IS the reason the reader sees: readControlAnswer words each
+		// failure for the banner, and the same text goes to the log.
 		slog.Warn("mimo control response does not fit its request", "request_id", ctx.RequestID, "error", err)
-		res.Withhold = true
+		res.Refuse(err.Error())
 		return res
 	}
 	if ctx.RequestID != "" && answer.requestID != ctx.RequestID {
 		slog.Warn("mimo control response addressed another request", "answered", answer.requestID, "stored", ctx.RequestID)
-		res.Withhold = true
+		res.Refuse(agent.RefusalOtherRequest)
 	}
 	return res
 }

@@ -10,9 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +47,14 @@ const (
 	scenarioNoListen       = "no-listen"
 	scenarioCatalogRefused = "catalog-refused"
 	scenarioCreateRefused  = "create-refused"
+	// scenarioHeldTool also starts one long command in a session of its own,
+	// as MiMo's bash tool does, and leaves it running when the server ends.
+	scenarioHeldTool = "held-tool"
 )
+
+// heldToolPIDFile is the file in the record directory where scenarioHeldTool
+// writes the PID of its held command.
+const heldToolPIDFile = "held-tool.pid"
 
 // helperRecord is what the helper states about how it was started.
 type helperRecord struct {
@@ -116,6 +126,23 @@ func TestHelperProcessMiMoServe(*testing.T) {
 	if err != nil {
 		os.Exit(4)
 	}
+	if scenario == scenarioHeldTool {
+		// MiMo starts each bash command with `detached: true`, which puts it in a
+		// session of its own, so a signal to the server's group never reaches it.
+		held := exec.Command("sleep", "600")
+		held.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := held.Start(); err != nil {
+			os.Exit(5)
+		}
+		// Written aside and renamed, so a reader never sees a partial PID.
+		pidFile := filepath.Join(recordDir, heldToolPIDFile)
+		if err := os.WriteFile(pidFile+".tmp", []byte(strconv.Itoa(held.Process.Pid)), 0o600); err != nil {
+			os.Exit(6)
+		}
+		if err := os.Rename(pidFile+".tmp", pidFile); err != nil {
+			os.Exit(7)
+		}
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM)
 	go func() {
@@ -146,12 +173,12 @@ func installFakeMiMo(t *testing.T, scenario string) string {
 // installWrappedFakeMiMo is installFakeMiMo behind a launcher that does what
 // MiMo's Node script does: it runs the server as a CHILD and forwards no
 // signal to it.
-func installWrappedFakeMiMo(t *testing.T) string {
+func installWrappedFakeMiMo(t *testing.T, scenario string) string {
 	t.Helper()
 	recordDir := t.TempDir()
 	binDir := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\n%s=%q %s=%q %q -test.run=TestHelperProcessMiMoServe -- \"$@\" &\nwait $!\n",
-		helperScenarioEnv, scenarioServe, helperRecordEnv, recordDir, os.Args[0])
+		helperScenarioEnv, scenario, helperRecordEnv, recordDir, os.Args[0])
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, mimoBinaryName), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(helperWantEnv, "1")
@@ -327,7 +354,7 @@ func TestStartFailsWhenTheServerCannotCreateASession(t *testing.T) {
 // MiMo's launcher is a Node script that runs the real server as a child and
 // forwards no signal. Stop must end both, or the server outlives the agent.
 func TestStopEndsTheWholeProcessGroup(t *testing.T) {
-	recordDir := installWrappedFakeMiMo(t)
+	recordDir := installWrappedFakeMiMo(t, scenarioServe)
 	sink := &agenttest.Sink{}
 	provider, err := Start(t.Context(), startOptions(t), agent.NewProviderServices(sink))
 	require.NoError(t, err)
@@ -345,4 +372,52 @@ func TestStopEndsTheWholeProcessGroup(t *testing.T) {
 	default:
 		t.Error("Stop waits for the event stream to end")
 	}
+}
+
+// MiMo runs each bash command in a session of its own, and the server leaves the
+// command running when it ends on SIGTERM. The command then belongs to no
+// process group that a signal reaches, so Stop must record it as the agent's
+// process BEFORE the signal ends its parent. Otherwise the command outlives the
+// agent, as the held tool of mimo-code/close-an-agent.spec.ts did.
+func TestStopEndsADetachedToolThatTheServerLeavesRunning(t *testing.T) {
+	recordDir := installWrappedFakeMiMo(t, scenarioHeldTool)
+	sink := &agenttest.Sink{}
+	provider, err := Start(t.Context(), startOptions(t), agent.NewProviderServices(sink))
+	require.NoError(t, err)
+	a := provider.(*Agent)
+
+	var held procutil.ProcessIdentity
+	waitFor(t, func() bool {
+		raw, err := os.ReadFile(filepath.Join(recordDir, heldToolPIDFile))
+		if err != nil {
+			return false
+		}
+		pid, err := strconv.Atoi(string(raw))
+		if err != nil {
+			return false
+		}
+		identity, known := procutil.IdentifyProcess(pid)
+		held = identity
+		return known
+	}, "the server starts its held command")
+	t.Cleanup(func() { _, _ = held.Kill() })
+	group, err := syscall.Getpgid(held.PID)
+	require.NoError(t, err)
+	require.Equal(t, held.PID, group, "the held command leads a process group of its own")
+
+	a.Stop()
+	_ = a.Wait()
+	waitFor(t, func() bool { return !held.Runs() }, "the held command ends with the agent")
+}
+
+// MiMo Code upgrades its own install (curl, npm, pnpm or bun) from the check that
+// its TUI starts one second after it opens, unless MIMOCODE_DISABLE_AUTOUPDATE is
+// `true` or `1`. `mimo serve` never starts that check, but a `mimo` that the
+// agent's own tool starts inherits the environment, so the launch pins the switch
+// after the user's profile. The `autoupdate` key of MIMOCODE_CONFIG_CONTENT cannot
+// carry it: the check reads only the global config files.
+func TestStartPinsTheUpdaterOff(t *testing.T) {
+	agenttest.RequireLaunchPins(t, agenttest.LaunchProbe{
+		Binary: mimoBinaryName, Start: Start, Pins: []string{"MIMOCODE_DISABLE_AUTOUPDATE=1"},
+	})
 }

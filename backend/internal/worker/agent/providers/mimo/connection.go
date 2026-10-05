@@ -53,6 +53,15 @@ const (
 	envSkipPermissions   = "MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS"
 )
 
+// mimoDisableAutoUpdateEnv turns off the upgrade of MiMo's own install (curl, npm,
+// pnpm or bun). MiMo runs it from the check that its TUI starts one second after
+// it opens, and never from `mimo serve`; the variable reaches a `mimo` that the
+// agent's own tool starts. `true` and `1` turn it off. The `autoupdate` key of
+// MIMOCODE_CONFIG_CONTENT cannot carry the switch, because the check reads only
+// the global config files. The server's own `POST /global/upgrade` route has no
+// switch. The shell wrapper states the pin after the user's profile.
+const mimoDisableAutoUpdateEnv = "MIMOCODE_DISABLE_AUTOUPDATE=1"
+
 // mimoStripEnvKeys are the inherited variables that the launch removes. The
 // shell wrapper removes them after the login profile runs, so a profile that
 // exports one cannot put it back.
