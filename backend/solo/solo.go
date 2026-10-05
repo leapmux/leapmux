@@ -976,11 +976,11 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 				// re-register a fresh identity below.
 				slog.Warn("saved worker not found in DB, re-registering", "worker_id", s.WorkerID)
 			} else {
-				// A transient store failure (e.g. sqlite "database is locked"
-				// racing another writer at startup) is NOT a deletion. Treating it
-				// as one would discard the saved WorkerID and re-register a brand-new
-				// identity, orphaning every workspace and tab still pointed at the old
-				// worker. Fail the launch so a retry can find the row intact.
+				// A transient store failure (for example a disk I/O error) is NOT
+				// a deletion. Treating it as one would discard the saved WorkerID
+				// and re-register a brand-new identity, orphaning every workspace
+				// and tab still pointed at the old worker. Fail the launch so a
+				// retry can find the row intact.
 				return nil, fmt.Errorf("look up saved worker %q owner: %w", s.WorkerID, dbErr)
 			}
 		} else {

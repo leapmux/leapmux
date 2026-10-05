@@ -296,14 +296,14 @@ func (w *Watcher) renewalLoop(loopCtx context.Context) {
 			err := w.lease.renewIfStale(loopCtx)
 			w.lease.mu.Unlock()
 			// Only a lease-fatal error (a rival holder, or a local-budget expiry)
-			// stops the watcher; renew and recover already
-			// signaled it on w.errors so the server fences. A transient store
-			// error (SQLITE_BUSY, a brief network failure) leaves the still-valid lease
-			// intact -- log and retry on the next tick instead of silently killing
-			// the watcher (which would leave the Hub serving with revocations no
+			// stops the watcher; renew and recover already signaled it on
+			// w.errors so the server fences. A transient store error (a disk I/O
+			// error, a brief network failure) leaves the still-valid lease intact
+			// -- log and retry on the next tick instead of silently killing the
+			// watcher (which would leave the Hub serving with revocations no
 			// longer applied). A lease that merely LAPSED is likewise not fatal:
-			// recover re-takes it, which is what carries a suspended
-			// laptop across its sleep.
+			// recover re-takes it, which is what carries a suspended laptop
+			// across its sleep.
 			if errorsIsLeaseFatal(err) {
 				w.cancelLoop()
 				return

@@ -6,7 +6,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -14,8 +13,6 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	sqlite3 "modernc.org/sqlite"
-	sqlitelib "modernc.org/sqlite/lib"
 )
 
 // sqliteStore implements store.Store backed by SQLite.
@@ -182,52 +179,20 @@ func (c *sqliteConn) inTx() bool {
 	return ok
 }
 
-// withTransaction runs `fn` in one transaction, starting over when SQLite
-// refuses the write for contention.
+// withTransaction runs `fn` in one transaction, or inside the transaction that
+// `c` already holds.
 //
-// `fn` MUST be safe to run again. A refused transaction rolls back whole, so
-// nothing it wrote survives, and the retry re-reads everything it read. A `fn`
-// that accumulates into state OUTSIDE the transaction has to reset that state at
-// its own start rather than append to it.
-//
-// The 60-second `busy_timeout` this database opens with does NOT cover these
-// two. That handler waits for a lock; it is never invoked for a deferred
-// transaction whose snapshot went stale under another writer (BUSY_SNAPSHOT), or
-// for one that cannot upgrade a read to a write (BUSY). SQLite returns
-// immediately in both cases, and only the application can start over -- which is
-// why `worker/inputqueue` carries the same retry around its own accept.
-//
-// Without this, a workspace delete racing another writer failed the whole RPC
-// with `delete workspace: database is locked`, surfaced as a 500.
+// The transaction takes the write lock at its BEGIN (`sqlitedb.Open` sets
+// `_txlock=immediate`), and BEGIN waits for another writer's lock without a
+// practical limit. So contention only delays `fn`: no other writer can commit
+// between its reads and its writes, and SQLite cannot refuse its first write.
+// TestRunInTransaction_HoldsWriteIntentBeforeItsReads pins this. A deferred
+// transaction lost that race and failed a workspace delete with
+// `delete workspace: database is locked`, a 500, which no restart repaired.
 func (c *sqliteConn) withTransaction(ctx context.Context, fn func(tx *sqliteConn) error) error {
 	if c.inTx() {
 		return fn(c)
 	}
-	for attempt := 0; ; attempt++ {
-		err := c.runTransaction(ctx, fn)
-		if err == nil || attempt == sqliteBusyRetries || !isSQLiteBusy(err) {
-			return err
-		}
-	}
-}
-
-// sqliteBusyRetries bounds the restarts above. Contention here is one writer
-// losing a race, so the next attempt almost always wins; a run of losses this
-// long is a different problem and the caller has to hear about it.
-const sqliteBusyRetries = 5
-
-// isSQLiteBusy reports whether SQLite refused this transaction for contention
-// rather than for anything the caller did wrong.
-func isSQLiteBusy(err error) bool {
-	var sqliteErr *sqlite3.Error
-	if !errors.As(err, &sqliteErr) {
-		return false
-	}
-	code := sqliteErr.Code()
-	return code == sqlitelib.SQLITE_BUSY || code == sqlitelib.SQLITE_BUSY_SNAPSHOT
-}
-
-func (c *sqliteConn) runTransaction(ctx context.Context, fn func(tx *sqliteConn) error) error {
 	tx, err := c.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)

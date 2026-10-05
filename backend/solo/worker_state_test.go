@@ -120,15 +120,15 @@ func TestLoadOrCreateWorkerState_UnknownWorkerReRegisters(t *testing.T) {
 	assert.Equal(t, "w-new", readState(t, path).WorkerID, "the new state must be persisted")
 }
 
-// A transient store failure (e.g. sqlite "database is locked" racing another writer
-// at startup) is NOT a missing worker. Treating it as one would discard the saved
-// WorkerID and re-register a brand-new identity, orphaning every workspace and tab
-// still pointed at the old worker. The launch must fail so a retry finds the row
-// intact -- only store.ErrNotFound re-registers.
+// A transient store failure (for example a disk I/O error) is NOT a missing
+// worker. Treating it as one would discard the saved WorkerID and re-register a
+// brand-new identity, orphaning every workspace and tab still pointed at the old
+// worker. The launch must fail so a retry finds the row intact -- only
+// store.ErrNotFound re-registers.
 func TestLoadOrCreateWorkerState_TransientLookupErrorDoesNotReRegister(t *testing.T) {
 	dir := t.TempDir()
 	path := writeState(t, dir, soloState{WorkerID: "w1", AuthToken: "tok", RegisteredBy: "real-owner"})
-	transient := errors.New("database is locked")
+	transient := errors.New("disk I/O error")
 	reg := &fakeRegistrar{
 		ownerErr:  transient,
 		adminID:   "admin-1",
@@ -268,7 +268,7 @@ func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
 
 	t.Run("a non-not-found admin lookup failure is not", func(t *testing.T) {
 		t.Parallel()
-		boom := errors.New("database is locked")
+		boom := errors.New("disk I/O error")
 		reg := &fakeRegistrar{adminErr: boom}
 		_, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(dir, "locked.json"), t.TempDir())
 		require.Error(t, err)

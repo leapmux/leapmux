@@ -1054,7 +1054,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				func(owner userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
 					// Use the cancellable stream ctx, not bgCtx: a client cancel
 					// frame during a slow/large snapshot must retire the stream
-					// rather than waiting out the SQLite busy timeout.
+					// rather than wait for a SQLite lock, a wait with no
+					// practical limit (`sqlitedb.Open`).
 					snapshot, err := svc.TabPayloads.SnapshotForOwner(ctx, owner)
 					if err != nil {
 						return nil

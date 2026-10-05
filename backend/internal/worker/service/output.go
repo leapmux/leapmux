@@ -376,16 +376,16 @@ func (h *OutputHandler) CancelBackgroundCtx() {
 // It carries NO DEADLINE, deliberately. Every caller reaches it from the agent's
 // stdout-parse goroutine, so a stalled database blocks that goroutine and the
 // agent parses no further output. Two facts make a deadline the worse trade.
-// The store opens SQLite with busy_timeout=60s, so lock contention -- the stall
-// that actually happens -- already resolves or fails on its own. And a caller
-// here only LOGS a refused write, so a deadline that fires on a slow but working
-// database drops a close or a status update for good, and the row then reads
-// Running for the life of the agent. That is the failure the registry exists to
-// prevent, traded for a hang nobody has observed.
+// Lock contention, the stall that actually happens, ends when the other writer
+// commits its short transaction, and SQLite waits for that without a practical
+// limit (`sqlitedb.Open`). And a caller here only LOGS a refused write, so a
+// deadline that fires on a slow but working database drops a close or a status
+// update for good, and the row then reads Running for the life of the agent.
+// That is the failure the registry exists to prevent, traded for a hang nobody
+// has observed.
 //
-// The case a deadline would cover is a stall SQLite cannot time out, such as a
-// hung filesystem. Add one only with a limit ABOVE the busy timeout, so no
-// statement that beats SQLite's own wait can lose to it.
+// The case a deadline would cover is a stall that never ends, such as a hung
+// filesystem.
 func (h *OutputHandler) bgTaskCtx() context.Context {
 	if h.shutdownCtx != nil {
 		return h.shutdownCtx

@@ -376,8 +376,8 @@ func lapsedWatcher(rev store.RevocationEventStore, leaseDuration time.Duration) 
 
 // A store that cannot answer the reacquisition must NOT fence the Hub. The
 // lease merely lapsed, so the right response is to try again on the next tick --
-// killing the process over a SQLITE_BUSY would reintroduce the outage this
-// recovery path exists to remove.
+// killing the process over a transient store error would reintroduce the outage
+// this recovery path exists to remove.
 func TestRecoverRetriesAfterATransientStoreFailure(t *testing.T) {
 	rev := &recoverEvents{reacquireErr: errors.New("database is locked")}
 	w := lapsedWatcher(rev, time.Hour)

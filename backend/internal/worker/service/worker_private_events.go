@@ -235,7 +235,8 @@ func (b *PrivateEventsBus) SnapshotAndSubscribe(
 	// issues a SQLite query on a context with no deadline. Every publisher takes
 	// the read lock, so one subscriber's query stalled every other client's tab
 	// renames and file-tab events on that worker for its duration -- bounded only
-	// by the connection pool and a 60s busy timeout. The sibling decision in
+	// by the connection pool, because SQLite waits for a lock without a
+	// practical limit (`sqlitedb.Open`). The sibling decision in
 	// crdt.Manager backgrounds an analogous DB lookup for exactly this reason.
 	var snapshot []*leapmuxv1.WorkerPrivateEvent
 	if snapshotFn != nil {

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -915,37 +914,17 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 
 // Accept records the transcript for a dispatch that reached the agent.
 //
-// It takes write intent before reading the prepared item. The provider already
-// accepted the input, so a concurrent writer must not invalidate a read
-// snapshot and leave its transcript uncertain.
-func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (transcript AcceptedTranscript, snapshot Snapshot, err error) {
-	conn, err := s.db.Conn(ctx)
+// It holds write intent before it reads the prepared item: the transaction
+// takes the write lock at its BEGIN, as every write transaction of a database
+// that `sqlitedb.Open` opened does. The provider already accepted the input, so
+// a concurrent writer must not invalidate a read snapshot and leave its
+// transcript uncertain. TestStoreAcceptTakesWriteIntentBeforeItsReads pins this.
+func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (AcceptedTranscript, Snapshot, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	started, committed := false, false
-	defer func() {
-		if started && !committed {
-			if _, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK"); rollbackErr != nil {
-				err = errors.Join(err, fmt.Errorf("roll back input acceptance: %w", rollbackErr))
-			}
-		}
-		if closeErr := conn.Close(); closeErr != nil {
-			if committed {
-				slog.Warn("could not release accepted input connection", "error", closeErr)
-			} else {
-				err = errors.Join(err, fmt.Errorf("release input acceptance connection: %w", closeErr))
-			}
-		}
-		if err != nil {
-			transcript, snapshot = AcceptedTranscript{}, Snapshot{}
-		}
-	}()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return AcceptedTranscript{}, Snapshot{}, err
-	}
-	started = true
-	tx := db.DBTX(conn)
+	defer func() { _ = tx.Rollback() }()
 	item, attachments, found, err := getItem(ctx, tx, prepared.Item.AgentID, prepared.Item.ID, true)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
@@ -1023,14 +1002,13 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 			return AcceptedTranscript{}, Snapshot{}, err
 		}
 	}
-	snapshot, err = snapshotTx(ctx, tx, item.AgentID)
+	snapshot, err := snapshotTx(ctx, tx, item.AgentID)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := tx.Commit(); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	committed = true
 	return AcceptedTranscript{
 		ID: item.ID, AgentID: item.AgentID, Seq: item.ReservedSeq,
 		Content: compressed, ContentCompression: compression,

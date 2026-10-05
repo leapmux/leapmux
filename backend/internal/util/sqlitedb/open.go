@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -25,8 +26,9 @@ type Config struct {
 	MmapSize  int // Memory-mapped I/O size in bytes. 0 = disabled.
 }
 
-// Open opens a SQLite database at the given path and configures it for
-// concurrent use (WAL mode, foreign keys enabled).
+// Open opens a SQLite database that this program owns and configures it for
+// concurrent use: WAL mode, foreign keys, write transactions that take the
+// write lock at BEGIN, and a lock wait without a practical limit (see buildDSN).
 // Use ":memory:" for an in-memory database (useful for testing).
 func Open(path string, cfg Config) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", buildDSN(path, cfg))
@@ -64,11 +66,12 @@ func Open(path string, cfg Config) (*sql.DB, error) {
 
 // readOnlyBusyTimeoutMs is how long a read-only connection waits for a lock.
 //
-// Far shorter than Open's 60s, because the databases OpenReadOnly serves are
-// FOREIGN: a coding-agent CLI owns them and can hold a write transaction for as
-// long as it likes. This connection is on the path of an interactive dialog, so
-// it must give up quickly and report no sessions rather than hold the dialog
-// open behind another program's transaction.
+// Open waits for a lock without a practical limit (ownBusyTimeoutMs), and this
+// one must not, because the databases OpenReadOnly serves are FOREIGN: a
+// coding-agent CLI owns them and can hold a write transaction for as long as it
+// likes. This connection is on the path of an interactive dialog, so it must
+// give up quickly and report no sessions rather than hold the dialog open
+// behind another program's transaction.
 const readOnlyBusyTimeoutMs = 2000
 
 // OpenReadOnly opens a SQLite database that this program does NOT own, for
@@ -127,10 +130,33 @@ func buildReadOnlyDSN(path string) string {
 	return u.String()
 }
 
+// ownBusyTimeoutMs is how long a connection to a database this program owns
+// waits for a lock: the largest value SQLite accepts, about 24.8 days, because
+// SQLite has no setting for a wait without a limit.
+//
+// Every writer of such a database is this program, and each one holds the lock
+// for one short local transaction. A limit therefore only turns a slow writer
+// into a failed operation, and no caller can do better than wait. The cost is a
+// self-deadlock: code that holds a write transaction and waits for a write on a
+// second pooled connection now hangs rather than failing after a limit. Such
+// code is a defect either way.
+const ownBusyTimeoutMs = math.MaxInt32
+
 // buildDSN constructs a SQLite DSN with pragma parameters applied via the
 // connection string so they take effect on every pooled connection.
 // It uses the file: URI scheme to safely separate the path from query
 // parameters, avoiding issues if the path contains special characters.
+//
+// `_txlock=immediate` makes every write transaction take the write lock at its
+// BEGIN, and the busy timeout above then covers the wait for it. The driver
+// leaves a read-only transaction (`sql.TxOptions{ReadOnly: true}`) deferred, so
+// readers stay concurrent with the writer. A deferred write transaction is the
+// mode to avoid. It reads under a snapshot and upgrades the snapshot at its
+// first write, and SQLite refuses that upgrade at once (SQLITE_BUSY, or
+// SQLITE_BUSY_SNAPSHOT when another writer committed in between) whenever
+// another connection holds or took the lock. SQLite never calls the busy
+// handler for that refusal, so no timeout and no immediate restart can wait it
+// out.
 //
 // `_time_format=sqlite` is critical: it instructs the modernc driver to
 // serialize time.Time values as `YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM` (a
@@ -140,13 +166,13 @@ func buildReadOnlyDSN(path string) string {
 // the two values fall on the same calendar day.
 func buildDSN(path string, cfg Config) string {
 	if path == ":memory:" {
-		return ":memory:?_pragma=foreign_keys(1)&_time_format=sqlite"
+		// One connection serves an in-memory database, so nothing contends for
+		// its lock. It still takes the same transaction mode, so a test on it
+		// runs the transactions that production runs.
+		return ":memory:?_pragma=foreign_keys(1)&_txlock=immediate&_time_format=sqlite"
 	}
 
-	// 60s busy_timeout: high enough to never trigger during normal
-	// operation, but still acts as a safety net against stuck transactions.
-	// Request-scoped contexts provide the real timeout boundary.
-	pragmas := "_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite"
+	pragmas := "_pragma=busy_timeout(" + strconv.Itoa(ownBusyTimeoutMs) + ")&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate&_time_format=sqlite"
 	if cfg.CacheSize != 0 {
 		pragmas += "&_pragma=cache_size(" + strconv.Itoa(cfg.CacheSize) + ")"
 	}
