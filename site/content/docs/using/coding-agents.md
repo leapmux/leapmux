@@ -19,6 +19,8 @@ LeapMux integrates {{< agent-provider-count >}} coding-agent providers. It detec
 
 {{< agent-logos >}}
 
+LeapMux turns off the self-update of each agent CLI that offers a switch for it in the environment, so an update does not replace a CLI while a session uses it. Update a CLI with its own installer or package manager between sessions.
+
 All {{< agent-provider-count >}} providers support chat and streamed tool calls. The [feature matrix](#feature-matrix) shows approval requests and native model context on resume. The Goals & To-dos sidebar appears when an agent has a to-do list or a session goal. Each provider offers its own models and settings. Prompt style varies also.
 
 ## Opening a new agent
@@ -255,8 +257,9 @@ Oh My Pi shows its goal. Start or change that goal from Oh My Pi itself. These p
 - Claude Code.
 - Goose.
 - Kilo.
-- Qwen Code.
 - Grok Build.
+
+Qwen Code receives goal changes through its goal control, not as messages. A change takes effect at once, also while a goal round runs. Grok Build runs a whole goal inside one turn, so LeapMux sends its goal messages to the agent at once and not through the input queue.
 
 Kiro receives a new goal as a message. Each such message enters the agent's input queue and uses a turn.
 
