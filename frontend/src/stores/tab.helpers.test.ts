@@ -5,6 +5,7 @@ import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { __resetProviderRegistryForTest, registerProvider } from '~/components/chat/providers/registry'
+import { resolvedCurrent } from '~/components/chat/settingsGroups'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -342,6 +343,34 @@ describe('agentTabToInfo model-dependent option groups', () => {
     const effort = groups.find(g => g.id === 'effort')
     expect(effort?.options.map(o => o.id)).not.toContain('xhigh')
     expect(effort?.defaultValue).toBe('high')
+  })
+
+  // The worker keeps the stored effort on a model switch when the new model offers it, and resets
+  // it to auto otherwise. These two cases pin what the effort control shows in the meantime.
+  it('keeps the carried-over effort selected when the new model offers it', () => {
+    const sonnetWithXhigh = [effortGroup(['auto', 'high', 'xhigh', 'max'], 'high'), thinkingGroup('Adaptive')]
+    const catalog = [
+      create(AvailableOptionGroupSchema, {
+        id: 'model',
+        label: 'Model',
+        order: 10,
+        mutable: true,
+        currentValue: 'opus[1m]',
+        options: [opt('sonnet', 'Sonnet', sonnetWithXhigh), opt('opus[1m]', 'Opus', opusSub)],
+      }),
+      ...opusSub,
+      permissionGroup,
+    ]
+    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalog })
+
+    expect(resolvedCurrent(groups, { model: 'sonnet', effort: 'xhigh' }, 'effort')).toBe('xhigh')
+  })
+
+  it('shows the default tier of the new model when it lacks the carried-over effort', () => {
+    // The worker stores auto here, and the new model resolves auto to its default tier.
+    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalogFor('opus[1m]') })
+
+    expect(resolvedCurrent(groups, { model: 'sonnet', effort: 'xhigh' }, 'effort')).toBe('high')
   })
 
   it('keeps existing dependent groups when the optimistic model is not a listed option', () => {

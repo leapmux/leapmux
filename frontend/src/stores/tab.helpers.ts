@@ -446,8 +446,9 @@ export function mruSteerableAgentTab<T extends Tab>(tabs: readonly T[]): T | und
  * Swap the model-dependent groups (effort, and Claude's extended-thinking group
  * whose enabled label is "Adaptive" vs "On" per model) for the ones the selected
  * model carries in its `subGroups`. This lets an optimistic model switch update
- * those groups instantly, instead of waiting for the worker's relaunch
- * round-trip (a model change resets effort to auto, which forces a relaunch).
+ * those groups instantly, instead of waiting for the worker's answer. The worker
+ * keeps the effort when the new model offers it. It resets the effort to auto
+ * otherwise, which can force a relaunch.
  *
  * The dependent group ids are the union across every model's sub_groups, so a
  * model that omits one (Haiku has no effort group) correctly drops it. Returns a
@@ -526,9 +527,9 @@ function projectOptionGroups(base: AvailableOptionGroup[], values: Record<string
     // effectiveCurrent helper). This projects the RAW optimistic value; the panel and trigger
     // additionally CLAMP/validate an out-of-list value (currentValueOrDefault / effortValid),
     // so during an in-flight model switch the effort group's projected currentValue may briefly
-    // be a tier the new model doesn't offer (e.g. xhigh left over from Opus after switching to
-    // Sonnet) -- every consumer that surfaces it guards against that itself. Reuse the existing
-    // reference when nothing changed (DOM stability).
+    // be a tier the new model doesn't offer (e.g. high left over from a reasoning model after
+    // switching to a model that does not reason) -- every consumer that surfaces it guards
+    // against that itself. Reuse the existing reference when nothing changed (DOM stability).
     const next = effectiveCurrent(values, g)
     if (next === g.currentValue)
       return g

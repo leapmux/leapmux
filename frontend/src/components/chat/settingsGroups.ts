@@ -186,10 +186,12 @@ export function valueValidForGroup(optionGroups: AvailableOptionGroup[] | undefi
  * The current value if the group still offers it, else the group's default.
  * Guards a select from rendering with no selection during an optimistic model
  * switch, where the effort can briefly be a tier the new model doesn't offer
- * (e.g. "ultracode"/"xhigh" left over from Opus after switching to Sonnet). The
- * group's default is the new model's default tier, which is also what the backend
- * settles on (it resets effort to auto, and the relaunched session resolves auto
- * to that default) -- so this fallback matches the settled value, no flash.
+ * (e.g. "ultracode" left over from Opus after switching to a model that lacks it).
+ * The backend keeps a tier that the new model offers, so only a tier that the new
+ * model lacks reaches this fallback. The group's default is the new model's default
+ * tier, which is also what the backend settles on for that case (it resets effort to
+ * auto, and the session resolves auto to that default) -- so this fallback matches
+ * the settled value, no flash.
  *
  * When the group reports no concrete default (a transient empty default on the
  * first handshake for a model), the effort group falls back to EFFORT_AUTO -- the
