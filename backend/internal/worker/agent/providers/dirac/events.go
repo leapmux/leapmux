@@ -54,19 +54,20 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 // handleSessionUpdate reads each update of a Dirac session before the base
 // draws it. It returns true for an update that it consumes.
 //
-// Dirac 0.5.17 replays a loaded session's history after its session/load
-// reply: cli/src/acp/AcpAgent.ts subscribes the session, awaits
-// replayLoadedSessionHistory, and only then returns the response, and the
-// journal emitter flushes the replayed notifications behind the reply on the
-// wire. All of that arrives while no prompt runs. The Worker already stores the
-// transcript of the session it reopened, so an idle conversation update of the
-// current session is that replay and draws nothing. Upstream HEAD loads a
-// session without replay, so this rule and its comment retire together with
-// 0.5.17.
+// Dirac 0.5.17 replays the history of a loaded session after its session/load
+// reply. In cli/src/acp/AcpAgent.ts, loadSession subscribes the session and
+// awaits replayLoadedSessionHistory. Only then does it return the response.
+// The journal emitter flushes the replayed notifications behind the reply on
+// the wire. All of them arrive while no prompt runs.
 //
-// Like Gemini's replay rule, this is no completion boundary: a prompt that
-// starts before the replay ends receives the rest of the replay as its own
-// output, and nothing can separate the two.
+// The Worker already stores the transcript of the session that it reopened.
+// An idle conversation update of the current session is therefore that replay,
+// and it draws nothing. Upstream HEAD loads a session without replay, so this
+// rule and its comment retire together with 0.5.17.
+//
+// This rule cannot find the end of the replay, and the Gemini rule cannot
+// either. A prompt that starts before the replay ends receives the rest of the
+// replay as its own output. Nothing can separate the two.
 func (a *Agent) handleSessionUpdate(sessionID string, _ agent.ProviderServices, update json.RawMessage) bool {
 	if a.PromptActive() || !a.IsCurrentSession(sessionID) {
 		return false

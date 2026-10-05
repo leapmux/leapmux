@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -333,13 +332,7 @@ func TestGrokFailedPromptStatesTheNativeCause(t *testing.T) {
 	require.NoError(t, a.SendInput("Run the native model error probe.", nil))
 	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
 
-	var texts []string
-	for _, notification := range sink.Notifications() {
-		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
-			text, _ := notification[contracts.NotificationFieldError].(string)
-			texts = append(texts, text)
-		}
-	}
+	texts := agenttest.AgentErrorTexts(sink.Notifications())
 	require.Len(t, texts, 1)
 	assert.Contains(t, texts[0], "invalid_request_error: NATIVEERRORprobe123")
 }

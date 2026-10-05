@@ -230,12 +230,12 @@ func TestKiroDisplayErrorOfAFailedPromptWaitsForThePromptError(t *testing.T) {
 	a.HandleOutput(turnStart(t))
 
 	a.HandleOutput(displayError(t, kiroThrottleMessage))
-	assert.Empty(t, errorTexts(sink), "the error waits for the end of the turn")
+	assert.Empty(t, agenttest.AgentErrorTexts(sink.Notifications()), "the error waits for the end of the turn")
 	a.HandleOutput(turnEnd(t, kiroStopError))
-	assert.Empty(t, errorTexts(sink), "the error waits for the end of the prompt")
+	assert.Empty(t, agenttest.AgentErrorTexts(sink.Notifications()), "the error waits for the end of the prompt")
 
 	failPrompt(a, kiroThrottleMessage)
-	assert.Equal(t, []string{"prompt failed: json-rpc error -32000: " + kiroThrottleMessage}, errorTexts(sink),
+	assert.Equal(t, []string{"prompt failed: json-rpc error -32000: " + kiroThrottleMessage}, agenttest.AgentErrorTexts(sink.Notifications()),
 		"the prompt's own error states the same text, so the reader reads it once")
 }
 
@@ -251,7 +251,7 @@ func TestKiroDisplayErrorOfAPromptWithAnotherErrorReachesTheTranscript(t *testin
 
 	failPrompt(a, "Internal error")
 
-	assert.Equal(t, []string{kiroThrottleMessage, "prompt failed: json-rpc error -32000: Internal error"}, errorTexts(sink))
+	assert.Equal(t, []string{kiroThrottleMessage, "prompt failed: json-rpc error -32000: Internal error"}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 // A prompt that answers a result with the stop reason `error` writes no
@@ -266,7 +266,7 @@ func TestKiroDisplayErrorOfAPromptThatReturnsAnErrorResultReachesTheTranscript(t
 
 	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"error"}`), nil)
 
-	assert.Equal(t, []string{kiroThrottleMessage}, errorTexts(sink))
+	assert.Equal(t, []string{kiroThrottleMessage}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 // A prompt that the reader stopped writes no failure note, so a display error
@@ -280,7 +280,7 @@ func TestKiroDisplayErrorOfAStoppedPromptReachesTheTranscript(t *testing.T) {
 
 	failPrompt(a, "The operation was cancelled")
 
-	assert.Equal(t, []string{kiroThrottleMessage}, errorTexts(sink))
+	assert.Equal(t, []string{kiroThrottleMessage}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 func TestKiroDisplayErrorOfAPromptThatEndedWellReachesTheTranscript(t *testing.T) {
@@ -292,7 +292,7 @@ func TestKiroDisplayErrorOfAPromptThatEndedWellReachesTheTranscript(t *testing.T
 	a.HandleOutput(displayError(t, "MCP server weather needs authorization."))
 	a.HandleOutput(turnEnd(t, "end_turn"))
 
-	assert.Equal(t, []string{"MCP server weather needs authorization."}, errorTexts(sink))
+	assert.Equal(t, []string{"MCP server weather needs authorization."}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 func TestKiroSecondDisplayErrorOfAPromptReleasesTheFirst(t *testing.T) {
@@ -302,10 +302,10 @@ func TestKiroSecondDisplayErrorOfAPromptReleasesTheFirst(t *testing.T) {
 
 	a.HandleOutput(displayError(t, "first"))
 	a.HandleOutput(displayError(t, "second"))
-	assert.Equal(t, []string{"first"}, errorTexts(sink), "only the last error can be the prompt's failure")
+	assert.Equal(t, []string{"first"}, agenttest.AgentErrorTexts(sink.Notifications()), "only the last error can be the prompt's failure")
 
 	a.HandleOutput(turnEnd(t, kiroStopError))
-	assert.Equal(t, []string{"first"}, errorTexts(sink))
+	assert.Equal(t, []string{"first"}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 // A display error that arrives before the execution of the prompt starts --
@@ -318,10 +318,10 @@ func TestKiroDisplayErrorBeforeTheTurnStartStaysHeld(t *testing.T) {
 
 	a.HandleOutput(displayError(t, "MCP server weather failed to connect."))
 	a.HandleOutput(turnStart(t))
-	assert.Empty(t, errorTexts(sink))
+	assert.Empty(t, agenttest.AgentErrorTexts(sink.Notifications()))
 	a.HandleOutput(turnEnd(t, "end_turn"))
 
-	assert.Equal(t, []string{"MCP server weather failed to connect."}, errorTexts(sink))
+	assert.Equal(t, []string{"MCP server weather failed to connect."}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 // A prompt that fails before its execution starts states its own error, and
@@ -337,7 +337,7 @@ func TestKiroPromptThatFailsBeforeItsTurnStatesItsErrorOnce(t *testing.T) {
 	a.HandleOutput(turnStart(t))
 	a.HandleOutput(turnEnd(t, "end_turn"))
 
-	assert.Equal(t, []string{"prompt failed: json-rpc error -32000: " + kiroThrottleMessage}, errorTexts(sink),
+	assert.Equal(t, []string{"prompt failed: json-rpc error -32000: " + kiroThrottleMessage}, agenttest.AgentErrorTexts(sink.Notifications()),
 		"the next prompt finds no error of the last one")
 }
 
@@ -347,7 +347,7 @@ func TestKiroDisplayErrorOutsideAPromptReachesTheTranscriptAtOnce(t *testing.T) 
 
 	a.HandleOutput(displayError(t, "MCP server weather failed to connect."))
 
-	assert.Equal(t, []string{"MCP server weather failed to connect."}, errorTexts(sink))
+	assert.Equal(t, []string{"MCP server weather failed to connect."}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 func TestKiroDisplayErrorOfAnAgentTurnIsNotHeld(t *testing.T) {
@@ -359,7 +359,7 @@ func TestKiroDisplayErrorOfAnAgentTurnIsNotHeld(t *testing.T) {
 	a.HandleOutput(displayError(t, "The model call failed."))
 	a.HandleOutput(turnEnd(t, kiroStopError))
 
-	assert.Equal(t, []string{"The model call failed."}, errorTexts(sink), "no prompt response reports the failure of Kiro's own turn")
+	assert.Equal(t, []string{"The model call failed."}, agenttest.AgentErrorTexts(sink.Notifications()), "no prompt response reports the failure of Kiro's own turn")
 }
 
 func TestKiroDisplayErrorFallsBackToItsType(t *testing.T) {
@@ -371,7 +371,7 @@ func TestKiroDisplayErrorFallsBackToItsType(t *testing.T) {
 	}))
 	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindDisplayError, "displayError": map[string]any{}}))
 
-	assert.Equal(t, []string{"ServiceThrottleError"}, errorTexts(sink), "an error with no text at all states nothing")
+	assert.Equal(t, []string{"ServiceThrottleError"}, agenttest.AgentErrorTexts(sink.Notifications()), "an error with no text at all states nothing")
 }
 
 func TestKiroMaxTokensStopStatesTheLimit(t *testing.T) {

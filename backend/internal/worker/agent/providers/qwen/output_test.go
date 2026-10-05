@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -25,8 +26,8 @@ func metaChunk(t *testing.T, text string, meta map[string]any) []byte {
 func assembledTexts(sink *agenttest.Sink) []string {
 	var texts []string
 	for _, message := range sink.Messages() {
-		kind, text, ok := decodeAssembledText(message.Content)
-		if ok && kind == "text" {
+		kind, text, _, ok := agenttest.DecodeAssembledMessage(message.Content)
+		if ok && kind == agent.AssembledMessageKindText {
 			texts = append(texts, text)
 		}
 	}

@@ -429,19 +429,6 @@ func startFakeKiroWith(t *testing.T, sessionModel string, fakeEnv []string, opts
 	return a, sink, requests, strings.TrimSpace(string(args))
 }
 
-// agentErrorTexts returns the error of every agent error notification that a
-// plain sink recorded.
-func agentErrorTexts(sink *agenttest.Sink) []string {
-	var out []string
-	for _, notification := range sink.LeapMuxNotifications() {
-		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
-			text, _ := notification[contracts.NotificationFieldError].(string)
-			out = append(out, text)
-		}
-	}
-	return out
-}
-
 // A Kiro process that exits during a compaction answers nothing. The request
 // then fails, which drops the compaction and ends its turn, and a stopped
 // agent states no error.
@@ -459,7 +446,7 @@ func TestStartKiroCompactionOfAStoppedAgentEndsQuietly(t *testing.T) {
 		return a.compaction.id == 0
 	}, 30*time.Second, time.Millisecond)
 	assert.False(t, a.PromptActive())
-	assert.Empty(t, agentErrorTexts(sink))
+	assert.Empty(t, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
 }
 
 // A prompt that the model service throttles ends with a JSON-RPC error that
@@ -489,7 +476,7 @@ func TestStartKiroStatesTheReasonOfAFailedPrompt(t *testing.T) {
 			require.NoError(t, a.SendInput("Say hello.", nil))
 			require.Eventually(t, func() bool { return !a.PromptActive() }, 30*time.Second, 10*time.Millisecond)
 
-			assert.Equal(t, tc.wantMessages, agentErrorTexts(sink))
+			assert.Equal(t, tc.wantMessages, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
 		})
 	}
 }

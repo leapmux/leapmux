@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -98,16 +97,9 @@ func TestGrokGoalCommandRefusalReachesTheTranscript(t *testing.T) {
 
 	_, err := a.PerformGoalAction(agent.GoalActionClear, "")
 	require.NoError(t, err, "the refusal arrives after the command left")
-	testutil.RequireEventually(t, func() bool { return len(sink.Notifications()) > 0 })
+	testutil.RequireEventually(t, func() bool { return len(agenttest.AgentErrorTexts(sink.Notifications())) > 0 })
 
-	var texts []string
-	for _, notification := range sink.Notifications() {
-		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
-			text, _ := notification[contracts.NotificationFieldError].(string)
-			texts = append(texts, text)
-		}
-	}
-	assert.Equal(t, []string{`/goal clear failed: json-rpc error -32603: Internal error: {"message":"session is closing"}`}, texts)
+	assert.Equal(t, []string{`/goal clear failed: json-rpc error -32603: Internal error: {"message":"session is closing"}`}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 // A command that the agent cannot write fails at once and reaches the caller.
@@ -118,7 +110,22 @@ func TestGrokGoalCommandOfAStoppedAgentFails(t *testing.T) {
 	a.SetStoppedForTest(true)
 
 	_, err := a.PerformGoalAction(agent.GoalActionPause, "")
-	require.Error(t, err)
+	require.EqualError(t, err, "agent is stopped")
+	assert.Empty(t, requestsFor(requests(), "session/prompt"))
+}
+
+// An agent with no session cannot name a session in the command, so it fails at
+// once with the plain cause and sends nothing.
+func TestGrokGoalCommandOfAnAgentWithNoSessionFails(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
+	advertiseCommands(t, a, "goal")
+	a.SetSessionIDForTest("")
+
+	_, err := a.PerformGoalAction(agent.GoalActionPause, "")
+
+	require.EqualError(t, err, "agent has no active session")
+	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), "session/prompt"))
 }
 

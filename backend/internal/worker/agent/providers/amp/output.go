@@ -299,16 +299,16 @@ func (a *Agent) handleUserLine(raw []byte) {
 	}
 }
 
-// handleResultLine ends the process's work. Amp prints `result` once, just
-// before it exits: after stdin closed and the agent went idle, after an error
-// ended the session, or after a signal. So the result ends whatever turn ran,
-// and the next message starts a new process.
+// handleResultLine ends the work of the process. Amp prints `result` once, just
+// before it exits. It prints it after stdin closed and the agent went idle,
+// after an error ended the session, or after a signal. So the result ends
+// whatever turn ran, and the next message starts a new process.
 //
-// The user's stop is a note on the turn (turnState.interruptRequested), and the
-// note says only that the agent sent the signal. The `result` says why the
+// The stop of the user is a note on the turn (turnState.interruptRequested).
+// The note says only that the agent sent the signal. The `result` says why the
 // process ended, and the two can differ. Amp prints the same cancel `result` for
-// each signal, whatever the process was doing, so the `result` of a stop does not
-// tell a finished turn from an aborted one (probed on 0.0.1791074829):
+// each signal, whatever the process was doing. So the `result` of a stop does
+// not tell a finished turn from an aborted one (probed on 0.0.1791074829):
 //
 //   - A turn that finished before Amp read the signal ended at its end_turn
 //     message already, and the note went with the turn. The cancel `result` that
@@ -318,9 +318,9 @@ func (a *Agent) handleUserLine(raw []byte) {
 //     into an interruption.
 //   - Every other stop prints the cancel wording, and the turn is interrupted.
 //
-// An error that ended a turn the user did not stop asks the exit handler to
+// An error that ended a turn that the user did not stop asks the exit handler to
 // resume the thread at once. The transcript states an error with no turn
-// running, unless it answers the agent's own signal. A success with no turn
+// running, unless it answers the signal of the agent. A success with no turn
 // running (the answer to closing stdin) states nothing.
 func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	if proc != nil {

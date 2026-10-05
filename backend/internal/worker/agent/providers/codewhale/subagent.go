@@ -325,14 +325,16 @@ type agentRunEvent struct {
 //
 // Codewhale 0.10.0 answers the route from a fresh load of its run ledger. That
 // load marks every live run as interrupted by a process restart
-// (SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart),
-// and it appends one event that states the interruption. The ledger on disk
-// keeps the live status. The verdict never describes a child that a watcher
-// follows: the agent starts a watcher only for a start that its own runtime
-// reports live (the event stream begins after the latest event of the thread),
-// and the stop of the agent ends every watcher. So the event before the verdict
-// states the status of the run. A record with no such event states a run that
-// has no later status than its start, which is running.
+// (SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart).
+// It also appends one event that states the interruption. The ledger on disk
+// keeps the live status.
+//
+// The verdict never describes a child that a watcher follows. The agent starts a
+// watcher only for a start that its own runtime reports live. The event stream
+// begins after the latest event of the thread. The stop of the agent ends every
+// watcher. So the event before the verdict states the status of the run. A
+// record with no such event states a run that has no later status than its
+// start, which is running.
 func (r agentRunRecord) liveStatus() string {
 	if r.Status != agentRunStatusInterrupted || r.LatestMessage != agentRunRestartReason {
 		return r.Status

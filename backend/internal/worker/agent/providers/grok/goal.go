@@ -87,21 +87,22 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 }
 
 // sendGoalCommand sends one `/goal` command to Grok as a prompt of its own,
-// outside the base's one-prompt slot, so it never waits for the running turn.
-// Grok queues it behind that turn and runs it before the next round of a goal.
+// outside the one-prompt slot of the base. The command never waits for the
+// running turn. Grok queues it behind that turn and runs it before the next
+// round of a goal.
 //
-// The command carries no prompt id of LeapMux's, so the queue notification
-// that starts it opens it as a turn of Grok's own (handleQueueChanged), and its
-// turn_completed ends that turn. When it starts while a prompt of LeapMux's
-// waits for its response, the base queues the command's turn behind that
-// prompt, which is the order in which Grok answers the two. The response of
-// the command only states a refusal: Grok answers the command's own reply
+// The command carries no prompt id of LeapMux. The queue notification that
+// starts it therefore opens it as a turn of Grok (handleQueueChanged), and its
+// turn_completed ends that turn. Suppose it starts while a prompt of LeapMux
+// waits for its response. The base then queues the turn of the command behind
+// that prompt. This is the order in which Grok answers the two. The response of
+// the command states only a refusal. Grok writes the reply to the command
 // inside its turn.
 //
 // acp.Base.SendPromptDetached is impossible here. It runs the PromptParams hook
-// (adjustPromptParams), which states an id and makes the command a prompt of
-// LeapMux's. handleQueueChanged then opens no turn for it, and the reader sees
-// an idle agent while Grok runs the goal.
+// (adjustPromptParams). The hook states an id and makes the command a prompt of
+// LeapMux. handleQueueChanged then opens no turn for it, and the reader sees an
+// idle agent while Grok runs the goal.
 func (a *Agent) sendGoalCommand(command string) error {
 	return a.WithSessionID(func(sessionID string) error {
 		// A prompt of the base refuses a stopped agent in the same words.

@@ -135,7 +135,7 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 		}
 		if !kimiAnswersFit(request, fields.Answers) {
 			slog.Warn("kimi question answer does not fit its question", "request_id", ctx.RequestID)
-			result.Refuse("the answers do not fit the questions of the request")
+			result.Refuse(agent.RefusalAnswersDoNotFit)
 			return result
 		}
 		native = contracts.KimiQuestionReply{Answers: fields.Answers, Method: kimiQuestionMethod}

@@ -417,11 +417,21 @@ func TestEffortResolver_GenuinelyEffortlessModelStaysEmpty(t *testing.T) {
 }
 
 // TestClaudeFallbackDisplayName covers S6: a "[1m]" model id with no CLI displayName
-// renders as "X (1M context)" instead of the raw "X[1m]".
+// renders as "X (1M context)" instead of the raw "X[1m]". A model that the static catalog
+// lists keeps the name of its row, because the 1M window is the only window that the CLI
+// offers for it: the picker and the read-only readout then show one label for one id.
 func TestClaudeFallbackDisplayName(t *testing.T) {
-	assert.Equal(t, "Opus (1M context)", claudeFallbackDisplayName("opus[1m]"))
+	for _, row := range claudeCodeAvailableModels {
+		if is1MContextVariant(row.Id) {
+			assert.Equal(t, row.DisplayName, claudeFallbackDisplayName(row.Id), "the readout of %s matches its static row", row.Id)
+		}
+	}
+	assert.Equal(t, "Opus", claudeFallbackDisplayName("opus[1m]"))
 	assert.Equal(t, "Opus", claudeFallbackDisplayName("opus"))
-	assert.Equal(t, "Fable (1M context)", claudeFallbackDisplayName("fable[1m]"))
+	assert.Equal(t, "Fable", claudeFallbackDisplayName("fable[1m]"))
+	// A 1M variant that the static catalog lacks has a standard-context sibling, so the
+	// suffix tells the two apart, as the live CLI words it ("Sonnet (1M context)").
+	assert.Equal(t, "Sonnet (1M context)", claudeFallbackDisplayName("sonnet[1m]"))
 	// A decorated 1M marker is sized at 1M by claudeContextWindowForValue, so the
 	// fallback name must agree (detect via is1MContextVariant, not a literal "[1m]"
 	// suffix) instead of falling through to a garbled "Fable[1m Beta]".
@@ -437,7 +447,7 @@ func TestClaudeFallbackDisplayName(t *testing.T) {
 		{Value: "opus[1m]", SupportsEffort: true, SupportedEffortLevels: []string{"high", "xhigh"}},
 	}, nil))["opus[1m]"]
 	require.NotNil(t, got)
-	assert.Equal(t, "Opus (1M context)", got.DisplayName, "missing displayName falls back to the [1m]-aware name")
+	assert.Equal(t, "Opus", got.DisplayName, "missing displayName falls back to the name of the static row")
 }
 
 // Canonical CLI effort-level vectors the model fixtures reuse: xhigh-capable models

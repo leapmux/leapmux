@@ -155,10 +155,10 @@ func (a *Agent) onAskUser(env *droidEnvelope) {
 	questionPayload := make([]map[string]any, 0, len(params.Questions))
 	for _, q := range params.Questions {
 		questionPayload = append(questionPayload, map[string]any{
-			"index":       q.Index,
-			"question":    q.Question,
-			"options":     q.Options,
-			"multiSelect": q.MultiSelect,
+			contracts.DroidAskUserFieldIndex:       q.Index,
+			contracts.DroidAskUserFieldQuestion:    q.Question,
+			contracts.DroidAskUserFieldOptions:     q.Options,
+			contracts.DroidAskUserFieldMultiSelect: q.MultiSelect,
 		})
 	}
 	a.Mu.Lock()
@@ -173,11 +173,11 @@ func (a *Agent) onAskUser(env *droidEnvelope) {
 	a.Mu.Unlock()
 
 	payload, err := json.Marshal(map[string]any{
-		"type":       contracts.DroidRequestTypeAskUser,
-		"requestId":  requestID,
-		"rpcId":      env.ID,
-		"toolCallId": params.ToolCallID,
-		"questions":  questionPayload,
+		"type":                                contracts.DroidRequestTypeAskUser,
+		"requestId":                           requestID,
+		"rpcId":                               env.ID,
+		contracts.DroidAskUserFieldToolCallID: params.ToolCallID,
+		contracts.DroidAskUserFieldQuestions:  questionPayload,
 	})
 	if err != nil {
 		a.respond(env.ID, droidCancelledAskUser())
@@ -233,16 +233,19 @@ type droidStoredQuestion struct {
 	Question string `json:"question"`
 }
 
-// droidResolveControlResponse turns the browser's decision into Droid's own
-// answer body. An absent request leaves the response bytes alone, and a
-// malformed request withholds the response: the two rules the shared suites pin.
+// droidResolveControlResponse turns the browser's decision into the answer body
+// of Droid. The shared suites pin two rules:
 //
-// A decision that Droid cannot take as stated is also withheld, and the refusal
-// states why, so the reader sees the reason and can answer again:
+//   - An absent request leaves the response bytes alone.
+//   - A malformed request withholds the response.
 //
-//   - a behavior other than allow and deny;
-//   - an option that the request did not offer, or that contradicts the behavior;
-//   - answers that do not match the questions one to one.
+// The function also withholds a decision that Droid cannot take as stated. The
+// refusal states why, so the reader sees the reason and can answer again. The
+// function withholds these decisions:
+//
+//   - A behavior other than allow and deny.
+//   - An option that the request did not offer, or that contradicts the behavior.
+//   - Answers that do not match the questions one to one.
 func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	if len(ctx.RequestPayload) == 0 {
 		return agent.ControlResponseResolution{Content: ctx.ResponseContent}
@@ -310,15 +313,16 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 }
 
 // droidPermissionReply builds the reply to a permission request. Its error is
-// the reason the reader sees for the refusal.
+// the reason that the reader sees for a refusal.
 //
 // Allow becomes proceed_once and deny becomes cancel, unless the decision states
-// its own `selectedOption`. An option other than cancel must be one that the
-// request offered: Factory's SDK refuses to send an unoffered option, and
-// cancels the request instead. cancel needs no offer, because it is the reply
-// that Droid's own client sends for every failure. proceed_edit is refused even
-// when offered: Droid's reply schema requires `editedSpecContent` beside it, and
-// the worker sends no edited spec.
+// its own `selectedOption`. The request must have offered any option other than
+// cancel. Factory's SDK refuses to send an option that the request did not
+// offer, and it cancels the request instead. A cancel needs no offer, because it
+// is the reply that Droid's own client sends for every failure. The worker
+// refuses proceed_edit even when the request offered it. Droid's reply schema
+// requires `editedSpecContent` beside proceed_edit, and the worker sends no
+// edited spec.
 func droidPermissionReply(offered []string, allow bool, decision json.RawMessage) (droidPermissionResult, error) {
 	var stated struct {
 		SelectedOption string `json:"selectedOption"`
@@ -356,6 +360,14 @@ func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision jso
 	return droidAskUserResult{Answers: answers}, nil
 }
 
+// droidDecidedAnswer is one answer of the browser's decision. Pointers tell an
+// absent field from a zero value: an answer with no index or no text identifies
+// no question.
+type droidDecidedAnswer struct {
+	Index  *int    `json:"index"`
+	Answer *string `json:"answer"`
+}
+
 // droidAnswersInQuestionOrder pairs each answer of the browser's decision with
 // its question by Droid's own index, and lists the answers in the order of the
 // questions, with the index and the words of each question.
@@ -365,13 +377,9 @@ func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision jso
 // of questions, and Droid's own client refuses an unknown or repeated index.
 func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.RawMessage) ([]droidAskUserAnswer, error) {
 	var stated struct {
-		// Pointers tell an absent field from a zero value: an answer with no
-		// index or no text identifies no question, and an absent list answers
-		// none.
-		Answers *[]struct {
-			Index  *int    `json:"index"`
-			Answer *string `json:"answer"`
-		} `json:"answers"`
+		// A pointer tells an absent list from an empty one: an absent list
+		// answers none.
+		Answers *[]droidDecidedAnswer `json:"answers"`
 	}
 	if err := json.Unmarshal(decision, &stated); err != nil {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)

@@ -126,8 +126,11 @@ func TestNativeCancellationClosesTheTurnAsInterrupted(t *testing.T) {
 // LeapMux stored is a transcript row: the prompt that the parent agent gave the child.
 // Source: `@deepseek-ai/dsh` 0.2.0-rc.2, probed on a live child. A client prompt carries
 // `rpcId` (dsh-api-session-controller prompt, dsh-subagent), and the parent prompt does not.
-// The native process also injects the instruction file and the runtime context as user messages.
-func TestChildUserMessagesStoreOnlyThePromptThatLeapMuxDidNotStore(t *testing.T) {
+// The parent agent sends a later input to a continuable child with `send_message`. The native
+// process stores it as a user message with the source kind `agent-message` (dsh-subagent
+// continuation-messages createAgentMessage), and LeapMux stores it nowhere else. The native
+// process also injects the instruction file and the runtime context as user messages.
+func TestChildUserMessagesStoreOnlyTheInputThatLeapMuxDidNotStore(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
@@ -135,7 +138,9 @@ func TestChildUserMessagesStoreOnlyThePromptThatLeapMuxDidNotStore(t *testing.T)
 		stored bool
 	}{
 		{"the prompt of the parent agent", `{"kind":"user"}`, true},
+		{"a message that the parent agent sent", `{"kind":"agent-message","form":"relay","senderSessionId":"native-root"}`, true},
 		{"a prompt that a client sent", `{"kind":"user","rpcId":"request-1"}`, false},
+		{"an agent message that carries a client request id", `{"kind":"agent-message","form":"relay","senderSessionId":"native-root","rpcId":"request-1"}`, false},
 		{"the instruction file", `{"kind":"agent-instructions","form":"instructions","baseline":true}`, false},
 		{"the runtime context", `{"kind":"runtime-context","form":"snapshot","sections":[]}`, false},
 		{"a settled subagent notice", `{"kind":"subagent-settled","form":"notice"}`, false},

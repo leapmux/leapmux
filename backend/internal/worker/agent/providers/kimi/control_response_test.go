@@ -355,10 +355,13 @@ func TestKimiResolveQuestion(t *testing.T) {
 			"a kind the server lacks":    map[string]any{"q_0": map[string]any{"kind": "maybe"}},
 			"multi_with_other on single": map[string]any{"q_0": map[string]any{"kind": "multi_with_other", "option_ids": []string{}, "other_text": "x"}},
 		} {
-			assert.True(t, answer(t, answers).Withhold, name)
+			res := answer(t, answers)
+			assert.True(t, res.Withhold, name)
+			assert.EqualError(t, res.Refusal(), agent.RefusalAnswersDoNotFit, name)
 		}
 		res := resolve(t, "question_1", kimiStoredQuestion, browserAnswer(t, "question_1", "allow", nil), nil)
 		assert.True(t, res.Withhold, "an approval with no answers answers nothing")
+		assert.EqualError(t, res.Refusal(), agent.RefusalAnswersDoNotFit)
 	})
 
 	t.Run("a refusal with no reason dismisses the question and sends nothing", func(t *testing.T) {

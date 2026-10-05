@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -51,16 +50,6 @@ func sessionUpdate(t *testing.T, sessionID, update string) json.RawMessage {
 	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "update": json.RawMessage(update)})
 	require.NoError(t, err)
 	return params
-}
-
-// decodeAssembled reads one assembled-message envelope.
-func decodeAssembled(content []byte) (kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion, ok bool) {
-	var envelope map[string]string
-	if json.Unmarshal(content, &envelope) != nil || envelope[contracts.AssembledMessageFieldType] != contracts.AssembledMessageType {
-		return "", "", "", false
-	}
-	return agent.AssembledMessageKind(envelope[contracts.AssembledMessageFieldKind]), envelope[contracts.AssembledMessageFieldText],
-		agent.MessageCompletion(envelope[contracts.AssembledMessageFieldCompletion]), true
 }
 
 // registryProbeSink wraps the services of a test agent. It records each child
@@ -146,7 +135,7 @@ func assembledTexts(t *testing.T, messages []agenttest.Message) []string {
 	t.Helper()
 	var texts []string
 	for _, message := range messages {
-		kind, text, _, ok := decodeAssembled(message.Content)
+		kind, text, _, ok := agenttest.DecodeAssembledMessage(message.Content)
 		if !ok {
 			continue
 		}
@@ -604,7 +593,7 @@ func TestChildRoute_AnIncompleteSpawnReleasesItsChildAgent(t *testing.T) {
 	assert.Equal(t, []string{"child-of-call-spawn"}, probe.releasedChildren(), "the closed row releases its child agent once")
 	messages := sink.Child("child-of-call-spawn").Messages()
 	require.Len(t, messages, 1)
-	_, text, completion, isText := decodeAssembled(messages[0].Content)
+	_, text, completion, isText := agenttest.DecodeAssembledMessage(messages[0].Content)
 	require.True(t, isText)
 	assert.Equal(t, "Child speaks.", text)
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion, "the child text ends with the stop")
@@ -670,7 +659,7 @@ func TestChildSession_TheAgentsMessagesOpenAndContinueTheChildTranscript(t *test
 	child := sink.Child("child-of-step-session")
 	var rows []string
 	for _, message := range child.Messages() {
-		if _, text, _, ok := decodeAssembled(message.Content); ok {
+		if _, text, _, ok := agenttest.DecodeAssembledMessage(message.Content); ok {
 			rows = append(rows, "agent:"+text)
 			continue
 		}
@@ -849,7 +838,7 @@ func TestFinishAllChildConversations_EndsEveryChildAsAStop(t *testing.T) {
 
 	messages := sink.Child("child-of-call-a").Messages()
 	require.Len(t, messages, 1)
-	_, text, completion, ok := decodeAssembled(messages[0].Content)
+	_, text, completion, ok := agenttest.DecodeAssembledMessage(messages[0].Content)
 	require.True(t, ok)
 	assert.Equal(t, "cut off", text)
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion)

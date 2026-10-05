@@ -550,7 +550,7 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 		}
 		answers, valid := answersFromResponse(response, payload.Request)
 		if !valid {
-			return codewhaleReplyFrame{}, "", "the answers do not fit the questions of the request"
+			return codewhaleReplyFrame{}, "", agent.RefusalAnswersDoNotFit
 		}
 		frame.Answers = answers
 		return frame, "", ""

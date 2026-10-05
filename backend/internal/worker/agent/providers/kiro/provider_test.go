@@ -120,20 +120,30 @@ func TestKiroScopedAlwaysAcceptKeepsTheOtherMetadata(t *testing.T) {
 func TestKiroScopedAlwaysOptionIsWithheldWhenKiroDidNotOfferItsOwn(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name     string
-		offered  []string
-		optionID string
+		name      string
+		offered   []string
+		optionID  string
+		kiroOwnID string
 	}{
 		// Kiro offers always-accept only for an implicit ask whose rule can
 		// persist, and always-reject only for an ask whose rule can persist.
-		{name: "an allow with no always-accept", offered: []string{"accept", "reject", contracts.KiroPermissionOptionAlwaysReject}, optionID: contracts.KiroScopedPermissionOptionAlwaysAcceptWorkspace},
-		{name: "a deny with no always-reject", offered: []string{"accept", contracts.KiroPermissionOptionAlwaysAccept, "reject"}, optionID: contracts.KiroScopedPermissionOptionAlwaysRejectUser},
+		{
+			name: "an allow with no always-accept", offered: []string{"accept", "reject", contracts.KiroPermissionOptionAlwaysReject},
+			optionID: contracts.KiroScopedPermissionOptionAlwaysAcceptWorkspace, kiroOwnID: contracts.KiroPermissionOptionAlwaysAccept,
+		},
+		{
+			name: "a deny with no always-reject", offered: []string{"accept", contracts.KiroPermissionOptionAlwaysAccept, "reject"},
+			optionID: contracts.KiroScopedPermissionOptionAlwaysRejectUser, kiroOwnID: contracts.KiroPermissionOptionAlwaysReject,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			payload := kiroRequestPayload(t, kiroPermissionMethod, withWorkspaceRoot(permissionParams(tc.offered...), "/w"))
 
-			assert.True(t, resolveKiro(t, payload, selectedReply(t, tc.optionID, nil)).Withhold)
+			result := resolveKiro(t, payload, selectedReply(t, tc.optionID, nil))
+
+			assert.True(t, result.Withhold)
+			assert.EqualError(t, result.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO, tc.kiroOwnID))
 		})
 	}
 }
@@ -153,7 +163,9 @@ func TestKiroWorkspaceAlwaysOptionIsWithheldWithNoWorkspaceRoot(t *testing.T) {
 			payload := kiroRequestPayload(t, kiroPermissionMethod, params)
 
 			for _, optionID := range []string{contracts.KiroScopedPermissionOptionAlwaysAcceptWorkspace, contracts.KiroScopedPermissionOptionAlwaysRejectWorkspace} {
-				assert.True(t, resolveKiro(t, payload, selectedReply(t, optionID, nil)).Withhold, optionID)
+				result := resolveKiro(t, payload, selectedReply(t, optionID, nil))
+				assert.True(t, result.Withhold, optionID)
+				assert.EqualError(t, result.Refusal(), "the request states no workspace root for a workspace-scoped answer", optionID)
 			}
 			for _, optionID := range []string{contracts.KiroScopedPermissionOptionAlwaysAcceptUser, contracts.KiroScopedPermissionOptionAlwaysRejectUser} {
 				assert.False(t, resolveKiro(t, payload, selectedReply(t, optionID, nil)).Withhold,
@@ -172,7 +184,9 @@ func TestKiroScopedAlwaysAcceptWithUnreadableMetadataIsWithheld(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.True(t, resolveKiro(t, payload, selectedReply(t, contracts.KiroScopedPermissionOptionAlwaysAcceptUser, meta)).Withhold)
+			result := resolveKiro(t, payload, selectedReply(t, contracts.KiroScopedPermissionOptionAlwaysAcceptUser, meta))
+			assert.True(t, result.Withhold)
+			assert.EqualError(t, result.Refusal(), agent.RefusalUnencodableReply)
 		})
 	}
 }
@@ -185,7 +199,10 @@ func TestKiroScopedAlwaysAcceptWithAMetadataThatIsNotAnObjectIsWithheld(t *testi
 	reply := []byte(`{"jsonrpc":"2.0","id":"` + kiroStoredRequestID + `","result":{"outcome":{"outcome":"selected","optionId":"` +
 		contracts.KiroScopedPermissionOptionAlwaysAcceptUser + `"},"_meta":"x"}}`)
 
-	assert.True(t, resolveKiro(t, payload, reply).Withhold)
+	result := resolveKiro(t, payload, reply)
+
+	assert.True(t, result.Withhold)
+	assert.EqualError(t, result.Refusal(), agent.RefusalUnencodableReply)
 }
 
 // A stored request whose options LeapMux cannot read offers no option that a
@@ -196,7 +213,10 @@ func TestKiroScopedAnswerToAnUnreadableRequestIsWithheld(t *testing.T) {
 	params["options"] = "always-accept"
 	payload := kiroRequestPayload(t, kiroPermissionMethod, params)
 
-	assert.True(t, resolveKiro(t, payload, selectedReply(t, contracts.KiroScopedPermissionOptionAlwaysAcceptUser, nil)).Withhold)
+	result := resolveKiro(t, payload, selectedReply(t, contracts.KiroScopedPermissionOptionAlwaysAcceptUser, nil))
+
+	assert.True(t, result.Withhold)
+	assert.EqualError(t, result.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO, contracts.KiroPermissionOptionAlwaysAccept))
 }
 
 // The rewrite reads the outcome of a result. A reply that carries none, or an

@@ -271,6 +271,11 @@ func TestClaudeStoredSessions_FirstPromptFollowsTheCLI(t *testing.T) {
 		Filename: "notes.txt", MIMEType: "text/plain", Data: []byte("line one\nline two\n"), Kind: agent.AttachmentKindText,
 	})
 	image := map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+	attachedNotes := func(body string) string {
+		return providerkit.BuildInlineTextAttachmentBlock(agent.ClassifiedAttachment{
+			Filename: "notes.md", MIMEType: "text/markdown", Data: []byte(body), Kind: agent.AttachmentKindText,
+		})
+	}
 
 	cases := []struct {
 		name  string
@@ -283,6 +288,44 @@ func TestClaudeStoredSessions_FirstPromptFollowsTheCLI(t *testing.T) {
 				claudeUserContentRecord(t, dir, claudeTextBlocks(notes, "Summarize the notes."), nil),
 			},
 			want: "Summarize the notes.",
+		},
+		// LeapMux writes an attached text file as a block of its own, ahead of the prompt.
+		// The CLI scans the whole text of a block for its command tags, and the body of a
+		// file can quote them. A tag decides what a block is only when the block opens with it.
+		{
+			name: "a shell tag inside an attached file does not become the title",
+			lines: []string{
+				claudeUserContentRecord(t, dir, claudeTextBlocks(attachedNotes("Run <bash-input>ls</bash-input> in the CLI."), "Summarize the notes."), nil),
+			},
+			want: "Summarize the notes.",
+		},
+		{
+			name: "a slash command tag inside an attached file is no fallback title",
+			lines: []string{
+				claudeUserContentRecord(t, dir, claudeTextBlocks(attachedNotes("Type <command-name>/review</command-name> to start.")), nil),
+			},
+			want: "",
+		},
+		{
+			name: "a slash command tag inside an attached file does not beat the prompt",
+			lines: []string{
+				claudeUserContentRecord(t, dir, claudeTextBlocks(attachedNotes("Type <command-name>/review</command-name> to start."), "Summarize the notes."), nil),
+			},
+			want: "Summarize the notes.",
+		},
+		{
+			name: "a slash command block that opens with its name tag supplies the fallback title",
+			lines: []string{
+				claudeUserContentRecord(t, dir, "<command-name>/review</command-name>\n<command-args>the diff</command-args>", nil),
+			},
+			want: "/review",
+		},
+		{
+			name: "a prompt that quotes a shell tag stays the prompt",
+			lines: []string{
+				claudeUserContentRecord(t, dir, claudeTextBlocks("Why does <bash-input>ls</bash-input> print nothing?"), nil),
+			},
+			want: "Why does <bash-input>ls</bash-input> print nothing?",
 		},
 		{
 			name: "two attached files and an image before the prompt do not become the title",

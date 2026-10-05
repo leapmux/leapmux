@@ -172,6 +172,10 @@ const (
 // `is_error: false` as a finished turn. That rule is impossible here, because it
 // would read each stop of CodeBuddy as a finished turn. A failure writes
 // `subtype: error_during_execution` and `is_error: true`, with no reason.
+//
+// A CodeBuddy before 2.158.0 writes no `terminal_reason`. A stop on that CLI
+// therefore ends as a finished turn. No other field states the abort, and the
+// provider keeps no table of CLI versions.
 func (r *resultMessage) statesAbortedTurn() bool {
 	return r.TerminalReason == codebuddyTerminalReasonAbortedStreaming ||
 		r.TerminalReason == codebuddyTerminalReasonAbortedTools

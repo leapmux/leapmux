@@ -247,6 +247,7 @@ func TestQuestionAnswerWithAnUnaddressedAnswerIsWithheld(t *testing.T) {
 	} {
 		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored, ResponseContent: neutralResponse(t, "user_input:q1", response)})
 		assert.True(t, res.Withhold, name)
+		assert.EqualError(t, res.Refusal(), agent.RefusalAnswersDoNotFit, name)
 	}
 }
 
@@ -255,14 +256,18 @@ func TestControlResponseForAnotherRequestIsWithheld(t *testing.T) {
 	a, sink := newTestAgent(t, nil)
 	a.HandleOutput(approvalEvent(2, "ap1", "call_1", contracts.CodewhaleToolBash))
 	stored := sink.LastPublishedControl().Payload
-	for name, content := range map[string][]byte{
-		"another request's id": neutralResponse(t, "approval:other", map[string]any{"behavior": "allow"}),
-		"an unknown behavior":  neutralResponse(t, "approval:ap1", map[string]any{"behavior": "maybe"}),
-		"not an envelope":      []byte(`{"decision":"allow"}`),
+	for name, tc := range map[string]struct {
+		content []byte
+		reason  string
+	}{
+		"another request's id": {neutralResponse(t, "approval:other", map[string]any{"behavior": "allow"}), agent.RefusalOtherRequest},
+		"an unknown behavior":  {neutralResponse(t, "approval:ap1", map[string]any{"behavior": "maybe"}), agent.RefusalNoDecision},
+		"not an envelope":      {[]byte(`{"decision":"allow"}`), agent.RefusalNoDecision},
 	} {
-		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored, ResponseContent: content})
+		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored, ResponseContent: tc.content})
 		assert.True(t, res.Withhold, name)
-		assert.Equal(t, content, res.Content, name)
+		assert.Equal(t, tc.content, res.Content, name)
+		assert.EqualError(t, res.Refusal(), tc.reason, name)
 	}
 	// A stored payload that holds no runtime event names no route.
 	res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{
@@ -270,6 +275,7 @@ func TestControlResponseForAnotherRequestIsWithheld(t *testing.T) {
 		ResponseContent: neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"}),
 	})
 	assert.True(t, res.Withhold)
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest)
 }
 
 func TestSendRawInputRefusesAFrameItCannotRoute(t *testing.T) {
@@ -536,6 +542,7 @@ func TestAControlResponseToAStoredEventItCannotAddressIsWithheld(t *testing.T) {
 	} {
 		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored(event), ResponseContent: allow})
 		assert.True(t, res.Withhold, name)
+		assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest, name)
 	}
 }
 

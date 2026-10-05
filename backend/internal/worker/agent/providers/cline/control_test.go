@@ -1,8 +1,10 @@
 package cline
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"testing"
 	"time"
@@ -521,6 +523,7 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "  "}),
 	})
 	assert.True(t, res.Withhold, "an empty answer is not an answer")
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableAnswer)
 
 	res = resolveControlResponse(agent.ControlResponseContext{
 		RequestID: "q1", RequestPayload: stored,
@@ -539,31 +542,83 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", nil),
 	})
 	assert.True(t, res.Withhold, "an answer that states no answer field is not an answer")
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableAnswer)
 }
 
+// withheldCase is an answer that resolveControlResponse withholds. reason is
+// the sentence that the browser shows. detail is the cause that the worker log
+// states, which tells the cases apart when one reason covers several.
+type withheldCase struct {
+	name   string
+	ctx    agent.ControlResponseContext
+	reason string
+	detail string
+}
+
+func withheldCases(t *testing.T) []withheldCase {
+	t.Helper()
+	good := storedApproval(t, "a1", "editor")
+	return []withheldCase{
+		{"no decision", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: []byte(`{"response":{"request_id":"a1","response":{}}}`)},
+			agent.RefusalNoDecision, "the answer states neither allow nor deny"},
+		{"another request", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: browserDecision(t, "a2", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalOtherRequest, "the answer is for request a2, and the stored request is a1"},
+		{"a stored id that differs", agent.ControlResponseContext{RequestID: "a9", RequestPayload: good, ResponseContent: browserDecision(t, "a9", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalUnreadableRequest, "the stored approval states id a1, and its request key is a9"},
+		{"an event that is not a request", agent.ControlResponseContext{RequestID: "a1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventAssistantFinished, map[string]any{}), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalUnreadableRequest, "the stored event " + contracts.ClineEventAssistantFinished + " is not a request"},
+		{"a capability that is not a question", agent.ControlResponseContext{RequestID: "c1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "c1", "capabilityName": capabilitySwitchToActMode}), ResponseContent: browserDecision(t, "c1", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalUnreadableRequest, "the stored capability request is " + capabilitySwitchToActMode + ", not a question"},
+		{"an approval with no id", agent.ControlResponseContext{RequestID: "a1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, map[string]any{}), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalUnreadableRequest, "the stored approval states no id"},
+		{"no stored request", agent.ControlResponseContext{RequestID: "a1", ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalUnreadableRequest, "the stored request is empty"},
+		{"a stored request that is not JSON", agent.ControlResponseContext{RequestID: "a1", RequestPayload: []byte(`not json`), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
+			agent.RefusalUnreadableRequest, "the stored request does not decode"},
+		{"a decision that is neither allow nor deny", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: browserDecision(t, "a1", "ask", "", nil)},
+			agent.RefusalNoDecision, "the answer states neither allow nor deny"},
+		{"a response that is not JSON", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: []byte(`not json`)},
+			agent.RefusalNoDecision, "the answer states neither allow nor deny"},
+		{"a question keyed by another id", agent.ControlResponseContext{RequestID: "q9", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "q1", "capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q9", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})},
+			agent.RefusalUnreadableRequest, "the stored capability request states id q1, and its request key is q9"},
+		{"a question with no id", agent.ControlResponseContext{RequestID: "q1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})},
+			agent.RefusalUnreadableRequest, "the stored capability request states no id"},
+		{"an answer with no text", agent.ControlResponseContext{RequestID: "q1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "q1", "capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "  "})},
+			agent.RefusalUnreadableAnswer, "the answer to the question states no text"},
+	}
+}
+
+// Each refusal states the cause that the browser shows to the reader. A stored
+// request whose own id differs from its request key is a stored request that
+// LeapMux cannot trust, not an answer for another request.
 func TestResolveControlResponseWithholdsWhatItCannotRead(t *testing.T) {
 	t.Parallel()
-	good := storedApproval(t, "a1", "editor")
-	for _, tc := range []struct {
-		name string
-		ctx  agent.ControlResponseContext
-	}{
-		{"no decision", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: []byte(`{"response":{"request_id":"a1","response":{}}}`)}},
-		{"another request", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: browserDecision(t, "a2", agent.ControlBehaviorAllow, "", nil)}},
-		{"a stored id that differs", agent.ControlResponseContext{RequestID: "a9", RequestPayload: good, ResponseContent: browserDecision(t, "a9", agent.ControlBehaviorAllow, "", nil)}},
-		{"an event that is not a request", agent.ControlResponseContext{RequestID: "a1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventAssistantFinished, map[string]any{}), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)}},
-		{"a capability that is not a question", agent.ControlResponseContext{RequestID: "c1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "c1", "capabilityName": capabilitySwitchToActMode}), ResponseContent: browserDecision(t, "c1", agent.ControlBehaviorAllow, "", nil)}},
-		{"an approval with no id", agent.ControlResponseContext{RequestID: "a1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, map[string]any{}), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)}},
-		{"no stored request", agent.ControlResponseContext{RequestID: "a1", ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)}},
-		{"a decision that is neither allow nor deny", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: browserDecision(t, "a1", "ask", "", nil)}},
-		{"a response that is not JSON", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: []byte(`not json`)}},
-		{"a question keyed by another id", agent.ControlResponseContext{RequestID: "q9", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "q1", "capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q9", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})}},
-		{"a question with no id", agent.ControlResponseContext{RequestID: "q1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})}},
-	} {
+	for _, tc := range withheldCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.True(t, resolveControlResponse(tc.ctx).Withhold)
+			res := resolveControlResponse(tc.ctx)
+			assert.True(t, res.Withhold)
+			assert.EqualError(t, res.Refusal(), tc.reason)
 		})
+	}
+}
+
+// Several causes share one reason for the reader, so the worker log is the only
+// place that tells them apart. A support report that quotes the banner needs the
+// log line of the same refusal. The test replaces the process-wide logger, so it
+// cannot run in parallel.
+func TestResolveControlResponseLogsTheCauseOfEachRefusal(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	for _, tc := range withheldCases(t) {
+		logged.Reset()
+		res := resolveControlResponse(tc.ctx)
+		require.True(t, res.Withhold, tc.name)
+		line := logged.String()
+		assert.Contains(t, line, "cline control response withheld", tc.name)
+		assert.Contains(t, line, tc.detail, tc.name)
 	}
 }
 

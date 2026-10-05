@@ -85,7 +85,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			}
 		}
 	case contracts.DeepseekHarnessEventUserMessage:
-		if stream.childAgentID != "" && isUnstoredChildPrompt(event.Data) {
+		if stream.childAgentID != "" && isUnstoredChildInput(event.Data) {
 			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
 		}
 	case contracts.DeepseekHarnessEventToolCall:
@@ -225,27 +225,38 @@ func (s *sessionStream) setContextWindow(window int64) {
 	}
 }
 
-// nativeUserSourceKind is the source kind of a message that a person or a parent agent wrote.
-// The native process also injects the instruction file, the runtime context and notices as user
-// messages, and each of those has another kind.
-const nativeUserSourceKind = "user"
+// Source kinds of a native user message that the Worker stores in a child tab. A person or the
+// parent agent wrote each one. The native process also injects the instruction file, the runtime
+// context and notices as user messages, and each of those has another kind.
+const (
+	// nativeUserSourceKind is a prompt: the task that the parent agent gave the child, or a
+	// prompt that a client sent.
+	nativeUserSourceKind = "user"
+	// nativeAgentMessageSourceKind is a later input that the parent agent sent to a continuable
+	// child with `send_message`.
+	nativeAgentMessageSourceKind = "agent-message"
+)
 
-// isUnstoredChildPrompt reports whether a native user message of a child Session is a prompt
-// that LeapMux stored nowhere else. The root Session stores no native user message, because
-// LeapMux stores the message of the reader itself. A child reports every input as a native
-// user message, so the Worker keeps one only when nothing at LeapMux stored it: the prompt that
-// the parent agent gave the child. A prompt that a client sent carries `rpcId`, and the native
-// process is private to this Worker, so each such prompt is one that LeapMux stored already.
-// A message that states no readable source is not a prompt that LeapMux can attribute.
+// isUnstoredChildInput reports whether a native user message of a child Session is an input that
+// LeapMux stored nowhere else. The root Session stores no native user message, because LeapMux
+// stores the message of the reader itself. A child reports every input as a native user message.
+// The Worker therefore keeps one only when nothing at LeapMux stored it: the task that the parent
+// agent gave the child, and each message that the parent sent later. A prompt that a client sent
+// carries `rpcId`, and the native process is private to this Worker, so LeapMux stored each such
+// prompt already. A message that states no readable source is not an input that LeapMux can
+// attribute.
 // Source: `@deepseek-ai/dsh` 0.2.0-rc.2 (dsh-api-session-controller prompt, dsh-subagent).
-func isUnstoredChildPrompt(data []byte) bool {
+func isUnstoredChildInput(data []byte) bool {
 	var message struct {
 		Source struct {
 			Kind  string `json:"kind"`
 			RPCID string `json:"rpcId"`
 		} `json:"source"`
 	}
-	return json.Unmarshal(data, &message) == nil && message.Source.Kind == nativeUserSourceKind && message.Source.RPCID == ""
+	if json.Unmarshal(data, &message) != nil || message.Source.RPCID != "" {
+		return false
+	}
+	return message.Source.Kind == nativeUserSourceKind || message.Source.Kind == nativeAgentMessageSourceKind
 }
 
 func nativeTurnCompletion(raw []byte) agent.MessageCompletion {

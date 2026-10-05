@@ -48,8 +48,8 @@ func rawUpdate(t *testing.T, update string) []byte {
 func childTexts(child *agenttest.Sink) []string {
 	var texts []string
 	for _, message := range child.Messages() {
-		if kind, text, ok := decodeAssembledText(message.Content); ok {
-			texts = append(texts, kind+":"+text)
+		if kind, text, _, ok := agenttest.DecodeAssembledMessage(message.Content); ok {
+			texts = append(texts, string(kind)+":"+text)
 		}
 	}
 	return texts

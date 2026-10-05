@@ -68,8 +68,9 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		// model. Surface it (and a concrete effort, when set) as READ-ONLY groups so
 		// `remote agent get`/list and the UI show what's running instead of a blank --
 		// the model isn't user-changeable here, so the groups are non-mutable. The model
-		// name is humanized (claudeFallbackDisplayName) so the readout matches the
-		// selectable catalog's friendly names rather than showing the raw bracketed id.
+		// name is humanized (claudeFallbackDisplayName) so the readout shows the
+		// friendly name of the static catalog row, or a derived name for a model
+		// with no row, rather than the raw bracketed id.
 		groups = append(groups, providerkit.ReadOnlyModelAndEffortGroups(model, claudeFallbackDisplayName(model), effort)...)
 	}
 

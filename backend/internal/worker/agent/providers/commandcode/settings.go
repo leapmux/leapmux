@@ -24,6 +24,11 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 }
 
 // UpdateSettings applies native RPC setters or requests a native session restart for permission changes.
+//
+// The effort `auto` is no native tier: the host refuses it as an unknown
+// effort, and Start sends no `--effort` for it. So `auto` sends no setter. The
+// confirmed state of the host states the real effort. The host cannot drop an
+// effort that it holds, so `auto` over a held effort needs a relaunch.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
@@ -40,7 +45,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		{agent.OptionIDModel, methodSetModel, "model"}, {agent.OptionIDEffort, methodSetEffort, "effort"},
 	} {
 		value := options[choice.id]
-		if value == "" {
+		if value == "" || (choice.id == agent.OptionIDEffort && value == agent.EffortAuto) {
 			continue
 		}
 		if _, err := a.request(choice.method, map[string]string{choice.field: value}, a.APITimeout()); err != nil {
@@ -54,6 +59,12 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	}
 	if err != nil {
 		slog.Warn("confirm the Command Code settings", "error", err)
+		return agent.RestartRequiredSettings(options)
+	}
+	a.Mu.Lock()
+	heldEffort := a.effort
+	a.Mu.Unlock()
+	if options[agent.OptionIDEffort] == agent.EffortAuto && heldEffort != "" {
 		return agent.RestartRequiredSettings(options)
 	}
 	return a.SettingsSnapshot()

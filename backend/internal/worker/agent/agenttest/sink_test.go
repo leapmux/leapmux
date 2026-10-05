@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -578,4 +579,47 @@ func TestSink_LookupBackgroundTaskCallsCountsEveryRead(t *testing.T) {
 	_, _, _, err = failing.LookupBackgroundTask("row-1")
 	require.ErrorIs(t, err, unreadable)
 	assert.Equal(t, 1, failing.LookupBackgroundTaskCalls("row-1"), "a read that fails is counted")
+}
+
+func TestAgentErrorTexts(t *testing.T) {
+	t.Parallel()
+	errorNote := func(text any) map[string]interface{} {
+		return map[string]interface{}{
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: text,
+		}
+	}
+	status := map[string]interface{}{
+		contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
+		contracts.NotificationFieldText: "not an error",
+	}
+
+	assert.Empty(t, AgentErrorTexts(nil), "no notification gives no text")
+	assert.Equal(t, []string{"first", "", "third"},
+		AgentErrorTexts([]map[string]interface{}{errorNote("first"), status, errorNote(7), errorNote("third")}),
+		"the helper keeps the order, skips other types, and gives an empty string for an error that is not text")
+}
+
+func TestDecodeAssembledMessage(t *testing.T) {
+	t.Parallel()
+	content, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindReasoning, "thought", agent.MessageCompletionInterrupted)
+	require.NoError(t, err)
+
+	kind, text, completion, ok := DecodeAssembledMessage(content)
+
+	require.True(t, ok)
+	assert.Equal(t, agent.AssembledMessageKindReasoning, kind)
+	assert.Equal(t, "thought", text)
+	assert.Equal(t, agent.MessageCompletionInterrupted, completion)
+
+	for name, other := range map[string]string{
+		"not json":       `{`,
+		"another type":   `{"type":"assistant","kind":"text","text":"x"}`,
+		"a json array":   `[]`,
+		"a non-string":   `{"type":"` + contracts.AssembledMessageType + `","kind":1}`,
+		"an empty value": ``,
+	} {
+		_, _, _, ok := DecodeAssembledMessage([]byte(other))
+		assert.False(t, ok, name)
+	}
 }

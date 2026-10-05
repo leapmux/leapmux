@@ -1618,29 +1618,139 @@ func TestZCodePlanFlag_AModeEventOfAnotherSessionIsIgnored(t *testing.T) {
 	assert.Equal(t, 0, sink.SettingsRefreshCount())
 }
 
-// DeferPlanExitMode stores the mode an approved plan exit chose. ZCode's
-// session/setMode turns the plan flag off, so the mode cannot go out before the
-// approved ExitPlanMode ran: the first SessionModeChanged that reports the flag
-// OFF is the moment ZCode finished the exit, and the mode goes out right then.
-func TestZCodeDeferPlanExitModeAppliesTheModeWhenTheExitTurnsTheFlagOff(t *testing.T) {
+func TestParseZCodeModeSourceReadsOnlyAString(t *testing.T) {
 	t.Parallel()
 
-	stdin := &zcodeRecordedStdin{}
+	for raw, want := range map[string]string{
+		`"tool"`:    zcodeModeSourceTool,
+		`"command"`: "command",
+		``:          "",
+		`null`:      "",
+		`7`:         "",
+		`{"a":1}`:   "",
+	} {
+		assert.Equal(t, want, parseZCodeModeSource(json.RawMessage(raw)), "raw %q", raw)
+	}
+}
+
+// zcodeExitEvent is the SessionModeChanged event of the ExitPlanMode tool: the plan flag
+// goes off, and the native mode stays as it was.
+func zcodeExitEvent(mode string) zcodeModeChangedPayload {
+	return zcodeModeChangedPayload{
+		Mode: mode, PlanEnabled: false,
+		PreviousMode: contracts.ZCodeModeBuild, PreviousPlanEnabled: true,
+		Source: "tool", ToolCallID: "call-exit",
+	}
+}
+
+// zcodeAgentInPlanMode is a test agent whose session runs in plan mode, in the native
+// mode build.
+func zcodeAgentInPlanMode(t *testing.T, stdin *zcodeRecordedStdin) *Agent {
+	t.Helper()
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	answerZCodeRequest(t, a, stdin, MethodSetMode, `{}`)
 	a.Mu.Lock()
-	a.sessionID = "zcode-test-session"
 	a.planEnabled = true
 	a.planObserved = true
 	a.mode = contracts.ZCodeModeBuild
 	a.Mu.Unlock()
+	return a
+}
+
+// DeferPlanExitMode stores the mode an approved plan exit chose. ZCode's
+// session/setMode turns the plan flag off, so the mode cannot go out before the
+// approved ExitPlanMode ran: the first SessionModeChanged of the exit tool that reports
+// the flag OFF is the moment ZCode finished the exit, and the mode goes out right then.
+func TestZCodeDeferPlanExitModeAppliesTheModeWhenTheExitTurnsTheFlagOff(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := zcodeAgentInPlanMode(t, stdin)
+	answerZCodeRequest(t, a, stdin, MethodSetMode, `{}`)
 
 	a.DeferPlanExitMode(contracts.ZCodeModeYolo)
-	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false)
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodeExitEvent(contracts.ZCodeModeBuild)))
 
 	request := waitZCodeRequest(t, stdin, MethodSetMode)
 	assert.Contains(t, string(request.Params), contracts.ZCodeModeYolo,
 		"the deferred mode goes to the session the exit just left")
+}
+
+// The stored mode belongs to the approved exit. The user can ask for a mode of their own
+// while the session still runs in plan mode, for example after the exit failed before it
+// turned the flag off: the chip sends session/setMode, and ZCode reports a flag-off event
+// of the source `command`. That later choice stands. The stored mode is dropped, and it
+// goes out in no request.
+func TestZCodeDeferPlanExitModeIsNotReleasedByAFlagOffRequestOfTheUser(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{"command", ""} {
+		t.Run("source "+source, func(t *testing.T) {
+			t.Parallel()
+			a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
+
+			// The approval chose Bypass. The approved exit never reports.
+			a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+			// The user picks Build.
+			exitMode := a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false, source)
+
+			assert.Empty(t, exitMode, "the flag-off request of the user is not the approved exit")
+			a.Mu.Lock()
+			pending := a.pendingExitMode
+			a.Mu.Unlock()
+			assert.Empty(t, pending, "the later choice of the user drops the stored mode, so no later event can fire it")
+			assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a), "the session stays in the mode that the user chose")
+		})
+	}
+}
+
+// A mode event releases the stored mode only for the exit tool with the flag turned off,
+// and only when the exit left the session in another native mode than the stored one.
+func TestZCodeDeferPlanExitModeIsReleasedOnlyByTheExitTool(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		mode        string
+		planEnabled bool
+		source      string
+		want        string
+	}{
+		{name: "the exit tool turns the flag off", mode: contracts.ZCodeModeBuild, source: "tool", want: contracts.ZCodeModeYolo},
+		{name: "the exit already landed in the stored mode", mode: contracts.ZCodeModeYolo, source: "tool"},
+		{name: "a tool event that leaves the flag on", mode: contracts.ZCodeModeBuild, planEnabled: true, source: "tool"},
+		{name: "a flag-off command", mode: contracts.ZCodeModeBuild, source: "command"},
+		{name: "a flag-off event that states no source", mode: contracts.ZCodeModeBuild},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
+			a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+
+			assert.Equal(t, tc.want, a.handleZCodeModeChanged(tc.mode, tc.planEnabled, tc.source))
+
+			a.Mu.Lock()
+			pending := a.pendingExitMode
+			a.Mu.Unlock()
+			assert.Empty(t, pending, "each mode event consumes the stored mode")
+		})
+	}
+}
+
+// An approval with no choice carries the default of the plan banner, which is build. A
+// session that entered plan mode from edit keeps edit under plan mode. The exit event
+// reports edit, and the stored default then replaces it, so the session ends in build.
+func TestZCodeDeferPlanExitModeOfTheBannerDefaultReplacesTheNativeModeOfPlanMode(t *testing.T) {
+	t.Parallel()
+
+	a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
+	a.Mu.Lock()
+	a.mode = contracts.ZCodeModeEdit
+	a.Mu.Unlock()
+
+	a.DeferPlanExitMode((zcodeProvider{}).PlanModePermissionMode(agent.PlanModeControlExit))
+	exitMode := a.handleZCodeModeChanged(contracts.ZCodeModeEdit, false, zcodeModeSourceTool)
+
+	assert.Equal(t, contracts.ZCodeModeBuild, exitMode)
 }
 
 // The exit itself can land in the mode the approval chose, so the deferred value
@@ -1649,18 +1759,12 @@ func TestZCodeDeferPlanExitModeAppliesTheModeWhenTheExitTurnsTheFlagOff(t *testi
 func TestZCodeDeferPlanExitModeSendsNothingWhenTheExitLandsInTheChosenMode(t *testing.T) {
 	t.Parallel()
 
-	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.Mu.Lock()
-	a.sessionID = "zcode-test-session"
-	a.planEnabled = true
-	a.planObserved = true
-	a.mode = contracts.ZCodeModeBuild
-	a.Mu.Unlock()
+	a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
 
 	a.DeferPlanExitMode(contracts.ZCodeModeBuild)
-	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false)
+	exitMode := a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false, zcodeModeSourceTool)
 
+	assert.Empty(t, exitMode)
 	a.Mu.Lock()
 	pending := a.pendingExitMode
 	a.Mu.Unlock()
@@ -1695,21 +1799,52 @@ func TestZCodeDeferPlanExitModeSendsAtOnceWhenTheExitAlreadyRan(t *testing.T) {
 func TestZCodeDeferPlanExitModeIsClearedByEnteringPlanModeAgain(t *testing.T) {
 	t.Parallel()
 
-	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.Mu.Lock()
-	a.sessionID = "zcode-test-session"
-	a.planEnabled = true
-	a.planObserved = true
-	a.mode = contracts.ZCodeModeBuild
-	a.Mu.Unlock()
+	a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
 
 	a.DeferPlanExitMode(contracts.ZCodeModeYolo)
-	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, true)
-	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false)
+	assert.Empty(t, a.handleZCodeModeChanged(contracts.ZCodeModeBuild, true, zcodeModeSourceTool))
+	assert.Empty(t, a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false, zcodeModeSourceTool),
+		"the later exit has no stored mode to release")
 
 	a.Mu.Lock()
 	pending := a.pendingExitMode
 	a.Mu.Unlock()
 	assert.Empty(t, pending, "the session that re-entered plan mode drops the stale exit mode")
+}
+
+// The approved exit runs inside the turn that asked for it. A turn that ends with the
+// stored mode still unreleased had no exit that the mode belongs to, so the end of the
+// turn drops it. A background turn says nothing about the exit of the user's turn.
+func TestZCodeDeferPlanExitModeIsDroppedWhenTheUsersTurnEnds(t *testing.T) {
+	t.Parallel()
+
+	pendingAfter := func(t *testing.T, a *Agent) string {
+		t.Helper()
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return a.pendingExitMode
+	}
+
+	t.Run("a user turn", func(t *testing.T) {
+		t.Parallel()
+		a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
+		a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+
+		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{}`))
+
+		assert.Empty(t, pendingAfter(t, a))
+	})
+
+	t.Run("a background turn", func(t *testing.T) {
+		t.Parallel()
+		a := zcodeAgentInPlanMode(t, &zcodeRecordedStdin{})
+		a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+		a.Mu.Lock()
+		a.backgroundTurn = true
+		a.Mu.Unlock()
+
+		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{}`))
+
+		assert.Equal(t, contracts.ZCodeModeYolo, pendingAfter(t, a))
+	})
 }

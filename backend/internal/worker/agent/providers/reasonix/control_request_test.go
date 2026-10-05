@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -29,11 +28,9 @@ func (s *controlOrderSink) PublishControlRequest(request agent.ControlRequest) e
 func assembledTexts(messages []agenttest.Message) []string {
 	var texts []string
 	for _, message := range messages {
-		var envelope map[string]string
-		if json.Unmarshal(message.Content, &envelope) != nil || envelope[contracts.AssembledMessageFieldType] != contracts.AssembledMessageType {
-			continue
+		if kind, text, _, ok := agenttest.DecodeAssembledMessage(message.Content); ok {
+			texts = append(texts, string(kind)+":"+text)
 		}
-		texts = append(texts, envelope[contracts.AssembledMessageFieldKind]+":"+envelope[contracts.AssembledMessageFieldText])
 	}
 	return texts
 }

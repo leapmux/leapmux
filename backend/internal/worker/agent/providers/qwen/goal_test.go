@@ -172,7 +172,8 @@ func TestQwenGoalActionFailures(t *testing.T) {
 	}
 }
 
-// An action that the provider does not list sends no control request.
+// An action that the provider does not list sends no request: it does not read
+// the goal either, because the read serves an action that Qwen can run.
 func TestQwenGoalActionRefusesAnUnknownAction(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, qwenGoalPeer(`{"goalId":"g-1","revision":1,"status":"active"}`))
@@ -182,7 +183,38 @@ func TestQwenGoalActionRefusesAnUnknownAction(t *testing.T) {
 
 	assert.ErrorIs(t, err, agent.ErrGoalControlUnsupported)
 	syncPeer(t, a)
+	assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/get"))
 	assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/control"))
+}
+
+// An agent that cannot carry the action fails at once with the plain cause, as
+// a prompt of the base does. Qwen would answer a request with no session id
+// with a protocol error that hides the cause.
+func TestQwenGoalActionOfAnAgentWithNoLiveSessionFailsAtOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		prepare func(a *Agent)
+		wantErr string
+	}{
+		{name: "a stopped agent", prepare: func(a *Agent) { a.SetStoppedForTest(true) }, wantErr: "agent is stopped"},
+		{name: "an agent with no session", prepare: func(a *Agent) { a.SetSessionIDForTest("") }, wantErr: "agent has no active session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newQwenAgent(t, nil, qwenGoalPeer(`{"goalId":"g-1","revision":1,"status":"active"}`))
+			advertiseCommands(t, a, "goal")
+			tc.prepare(a)
+
+			_, err := a.PerformGoalAction(agent.GoalActionPause, "")
+
+			// The action awaits each request that it sends, so the peer
+			// recorded one before the call returned.
+			require.EqualError(t, err, tc.wantErr)
+			assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/get"))
+			assert.Empty(t, requestsFor(requests(), "qwen/control/session/goal/control"))
+		})
+	}
 }
 
 func TestQwenGoalStatusMapping(t *testing.T) {

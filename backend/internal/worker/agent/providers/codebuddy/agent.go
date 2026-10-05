@@ -213,18 +213,18 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // codebuddySteerOutcome maps the answer of CodeBuddy to a steer request (its
 // steer handler q4 in 2.160.0) to the error that the input queue of the worker
 // reads:
-//   - steered:true: the drain holds the steer for the running turn. The steer
+//   - steered:true. The drain holds the steer for the running turn. The steer
 //     succeeds.
-//   - steered:false with the reason "idle" or "stale": the turn that the steer
+//   - steered:false with the reason "idle" or "stale". The turn that the steer
 //     was for is over. ErrNoActiveTurn makes the queue send the input as the
 //     next turn.
-//   - steered:false with any other reason, or with none: CodeBuddy refuses the
-//     content. It refuses a steer whose text starts with a slash command, and a
-//     steer with no text. ErrSteeringUnsupported makes the queue send the input
-//     as the next turn, where a slash command runs.
-//   - An error answer: CodeBuddy refused the request before its drain took the
-//     steer, so the steer fails with the message of CodeBuddy.
-//   - No answer, or an answer that states no outcome: the drain may hold the
+//   - steered:false with any other reason, or with none. CodeBuddy refuses the
+//     content. It refuses a steer whose text starts with a slash command. It
+//     refuses a steer with no text. ErrSteeringUnsupported makes the queue send
+//     the input as the next turn, where a slash command runs.
+//   - An error answer. CodeBuddy refused the request before its drain took the
+//     steer. The steer fails with the message of CodeBuddy.
+//   - No answer, or an answer that states no outcome. The drain may hold the
 //     steer, so a resend could duplicate it. ErrDeliveryUncertain makes the
 //     queue ask before it sends the input again.
 func codebuddySteerOutcome(resp codebuddyControlResult, err error) error {

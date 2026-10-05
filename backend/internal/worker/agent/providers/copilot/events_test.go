@@ -356,6 +356,26 @@ func TestNativeCopilotToolCountRestartsForTheNextTurn(t *testing.T) {
 	assert.Zero(t, count, "the second turn used no tool")
 }
 
+// A context clear or a goal clear replaces the session while a run is in flight. The calls
+// that the outgoing session counted belong to it, so the first turn of the replacement
+// starts from zero. Otherwise a text-only turn would state the old count and ring the
+// completion sound.
+func TestNativeCopilotToolCountDoesNotSurviveAReplacedSession(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotToolStart(t, "", "bash-1", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotToolStart(t, "", "bash-2", contracts.CopilotToolBash))
+
+	a.forgetNativeSessionState("")
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	count, ok := copilotTurnEndToolUses(t, sink)
+	require.True(t, ok, "a turn without tools states an explicit zero")
+	assert.Zero(t, count, "the new session used no tool")
+}
+
 // A stop reaches the same sweep, so a card does not survive the process that drew it.
 func TestNativeCopilotStopClosesAToolThatNeverCompleted(t *testing.T) {
 	t.Parallel()

@@ -132,8 +132,8 @@ func (a *Agent) runUnderNativeSession(work func()) {
 //
 // A turn the replacement inherits would latch the agent busy for good, because no idle
 // event can reach a session that no longer exists. A child transcript, an open tool
-// call and a pending control request belong to that session too, and its event
-// subscriptions die with it.
+// call, the tool count of the turn and a pending control request belong to that
+// session too, and its event subscriptions die with it.
 //
 // The caller holds sessionMu for writing, so no input and no setting change can reach
 // the session while this runs.
@@ -145,6 +145,9 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 	// every row this sweep writes carries the session that produced it.
 	a.clearNativeChildren()
 	a.clearNativeControls()
+	// The tool calls that the outgoing turn counted end with that turn, so the first
+	// turn of the replacement starts from zero.
+	a.turnToolUses = 0
 	if nextSessionID != "" {
 		a.stateMu.Lock()
 		a.sessionID = nextSessionID

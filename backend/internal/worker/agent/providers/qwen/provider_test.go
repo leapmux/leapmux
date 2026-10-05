@@ -114,17 +114,24 @@ func TestQwenPlanApprovalReplies(t *testing.T) {
 	}
 }
 
+// Each refusal states the cause that the browser shows to the reader, so a
+// reason that moves to another branch fails here.
 func TestQwenPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
-	for name, response := range map[string][]byte{
-		"another request":  decision(t, "jsonrpc:6", agent.ControlBehaviorAllow, ""),
-		"no request id":    decision(t, "", agent.ControlBehaviorAllow, ""),
-		"unknown behavior": decision(t, qwenStoredRequestID, "maybe", ""),
-		"not json":         []byte(`{`),
+	for name, tc := range map[string]struct {
+		response []byte
+		reason   string
+	}{
+		"another request":  {response: decision(t, "jsonrpc:6", agent.ControlBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
+		"no request id":    {response: decision(t, "", agent.ControlBehaviorAllow, ""), reason: agent.RefusalNoDecision},
+		"unknown behavior": {response: decision(t, qwenStoredRequestID, "maybe", ""), reason: agent.RefusalNoDecision},
+		"not json":         {response: []byte(`{`), reason: agent.RefusalNoDecision},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.True(t, resolveWith(t, planApprovalPayload, response, nil).Withhold)
+			result := resolveWith(t, planApprovalPayload, tc.response, nil)
+			assert.True(t, result.Withhold)
+			assert.EqualError(t, result.Refusal(), tc.reason)
 		})
 	}
 }
@@ -137,7 +144,9 @@ func TestQwenPlanApprovalWithNoStoredIDWithholdsTheAnswer(t *testing.T) {
 	require.NotEqual(t, planApprovalPayload, payload)
 	require.True(t, isPlanApproval(json.RawMessage(payload)), "the request is still the plan approval")
 	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
-		assert.True(t, resolveWith(t, payload, decision(t, qwenStoredRequestID, behavior, ""), nil).Withhold, behavior)
+		result := resolveWith(t, payload, decision(t, qwenStoredRequestID, behavior, ""), nil)
+		assert.True(t, result.Withhold, behavior)
+		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, behavior)
 	}
 }
 

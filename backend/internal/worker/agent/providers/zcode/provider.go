@@ -105,15 +105,17 @@ func (zcodeProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 	}
 }
 
-// PlanModePermissionMode gives ZCode's own two mode words. LeapMux's axis for ZCode is
-// plan/build/edit/yolo, where `plan` is ZCode's plan flag. An approved ExitPlanMode
-// turns the flag off and the session continues in the native mode that it kept under
-// plan mode. That native mode is `build` unless the user entered plan mode from
-// another mode, and `build` is the mode that the frontend plugin already declares as
-// the plan banner's default. When the native mode differs, the agent reports the real
-// one when ZCode reports the exit (handleZCodeModeChanged). Claude's `acceptEdits` is not a
-// value `session/setMode` accepts, and a session told that word stays where it was
-// while the settings bar claims otherwise.
+// PlanModePermissionMode gives ZCode's own two mode words. The axis of LeapMux for
+// ZCode is plan/build/edit/yolo, where `plan` is the plan flag of ZCode. An approved
+// ExitPlanMode turns the flag off, and the session keeps the native mode that it had
+// under plan mode. LeapMux then applies the mode that the plan banner chose. The
+// banner default is `build`: the frontend plugin declares it, and this method
+// returns it. An approval with no choice therefore ends in `build`, also for a
+// session that entered plan mode from `edit`. The exit event reports `edit` first
+// (handleZCodeModeChanged), and the deferred mode replaces it (DeferPlanExitMode).
+// Claude's `acceptEdits` is not a value that `session/setMode` accepts. A session
+// that receives that word stays where it was, while the settings bar claims
+// otherwise.
 func (zcodeProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
 	switch kind {
 	case agent.PlanModeControlEnter:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,20 +13,24 @@ import (
 
 // Qwen states the whole goal on the `_meta.goalState` of a message after every
 // change. The report is the source of truth for the card, so LeapMux does not
-// observe the actions it sends.
+// observe the actions that it sends.
 //
-// LeapMux changes the goal through Qwen's goal control, a request beside the
-// conversation: `qwen/control/session/goal/control` takes the requests that
-// Qwen's own `/goal` command hands to its goal runtime (`create`, `replace`,
-// `pause`, `resume`, `clear`), and `qwen/control/session/goal/get` reads the
-// goal that a request must name. Each action takes effect at once, also while
-// a goal round runs: Qwen cancels the running round itself.
+// LeapMux changes the goal through the goal control of Qwen. The goal control
+// is a request beside the conversation:
 //
-// A `/goal` prompt is no route. Qwen starts the next round of a goal the moment
-// the round before it ends, so the worker never finds the agent idle while the
-// goal runs, and a prompt that waits in the worker's queue reaches Qwen only
-// after the goal stopped by itself. Qwen then refuses a pause: "Only an active
-// Goal can be paused".
+//   - `qwen/control/session/goal/control` takes the requests that the `/goal`
+//     command of Qwen hands to its goal runtime: `create`, `replace`, `pause`,
+//     `resume` and `clear`.
+//   - `qwen/control/session/goal/get` reads the goal that a request must name.
+//
+// Each action takes effect at once, also while a goal round runs. Qwen cancels
+// the running round itself.
+//
+// A `/goal` prompt cannot carry an action. Qwen starts the next round of a goal
+// when the previous round ends. The worker therefore never finds the agent idle
+// while the goal runs. A prompt that waits in the queue of the worker reaches
+// Qwen only after the goal stopped by itself. Qwen then refuses a pause: "Only
+// an active Goal can be paused".
 const (
 	qwenGoalAdvertisedCommand = "goal"
 	qwenGoalGetMethod         = "qwen/control/session/goal/get"
@@ -55,9 +60,10 @@ func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 // PerformGoalAction changes Qwen's goal through its goal control, and queues
 // nothing: the goal state then reports what Qwen did. It reads the current goal
 // first, because every request but `create` names the goal and the revision it
-// acts on, as Qwen's own `/goal` command does.
+// acts on, as Qwen's own `/goal` command does. An action that
+// SupportedGoalActions does not list sends no request at all.
 func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
-	if !a.HasAvailableCommand(qwenGoalAdvertisedCommand) {
+	if !slices.Contains(a.SupportedGoalActions(), action) {
 		return agent.GoalOutcome{}, agent.ErrGoalControlUnsupported
 	}
 	objective = strings.TrimSpace(objective)
@@ -65,6 +71,14 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 		return agent.GoalOutcome{}, fmt.Errorf("qwen goal: an objective is required")
 	}
 	err := a.WithSessionID(func(sessionID string) error {
+		// A prompt of the base refuses these two cases in the same words.
+		// Qwen would answer a request with no session id with a protocol error.
+		if a.IsStopped() {
+			return fmt.Errorf("agent is stopped")
+		}
+		if sessionID == "" {
+			return fmt.Errorf("agent has no active session")
+		}
 		current, err := a.readNativeGoal(sessionID)
 		if err != nil {
 			return err

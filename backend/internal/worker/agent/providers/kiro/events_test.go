@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // notification encodes one Kiro notification.
@@ -28,7 +29,7 @@ func TestKiroSessionNotifyStatesTheStepMessage(t *testing.T) {
 	}))
 
 	assert.Equal(t, []string{"reviewer: Found three failing tests."}, statusTexts(sink))
-	assert.Equal(t, []string{"The build broke."}, errorTexts(sink))
+	assert.Equal(t, []string{"The build broke."}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 func TestKiroSessionNotifyOfAnotherSessionOrWithoutTextStatesNothing(t *testing.T) {
@@ -50,7 +51,7 @@ func TestKiroSessionNotifyErrorStatesItsAgent(t *testing.T) {
 		"sessionId": kiroTestSession, "message": " The build broke. ", "severity": "error", "agentName": " wf-coder ",
 	}))
 
-	assert.Equal(t, []string{"wf-coder: The build broke."}, errorTexts(sink))
+	assert.Equal(t, []string{"wf-coder: The build broke."}, agenttest.AgentErrorTexts(sink.Notifications()))
 	assert.Empty(t, statusTexts(sink))
 }
 
@@ -149,7 +150,7 @@ func TestKiroCustomAgentConfigErrorStatesThePath(t *testing.T) {
 		"sessionId": kiroTestSession, "path": ".kiro/agents/reviewer.json", "error": "unexpected token ",
 	}))
 
-	assert.Equal(t, []string{"Kiro could not read the agent .kiro/agents/reviewer.json: unexpected token"}, errorTexts(sink))
+	assert.Equal(t, []string{"Kiro could not read the agent .kiro/agents/reviewer.json: unexpected token"}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 func TestKiroPolicyErrorStatesEachRule(t *testing.T) {
@@ -168,7 +169,7 @@ func TestKiroPolicyErrorStatesEachRule(t *testing.T) {
 	assert.Equal(t, []string{
 		"Kiro permission rules: ~/.kiro/policy.json: unknown action",
 		"Kiro permission rules: bad glob",
-	}, errorTexts(sink))
+	}, agenttest.AgentErrorTexts(sink.Notifications()))
 }
 
 func TestKiroOtherExtensionNotificationsReachNoTranscript(t *testing.T) {

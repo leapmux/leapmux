@@ -374,27 +374,6 @@ func TestQwenConcurrentSteersReachQwenOnceInOrder(t *testing.T) {
 	}
 }
 
-// decodeAssembledText reads one assembled-message row: its kind and its text.
-func decodeAssembledText(content []byte) (kind, text string, ok bool) {
-	var envelope map[string]string
-	if json.Unmarshal(content, &envelope) != nil || envelope[contracts.AssembledMessageFieldType] != contracts.AssembledMessageType {
-		return "", "", false
-	}
-	return envelope[contracts.AssembledMessageFieldKind], envelope[contracts.AssembledMessageFieldText], true
-}
-
-// agentErrorTexts returns the text of each agent error note, in order.
-func agentErrorTexts(sink *agenttest.ControlSink) []string {
-	var texts []string
-	for _, notification := range sink.Notifications() {
-		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
-			text, _ := notification[contracts.NotificationFieldError].(string)
-			texts = append(texts, text)
-		}
-	}
-	return texts
-}
-
 // Qwen Code 0.24.7 answers a prompt whose model request failed with the ACP
 // SDK's internal error, and states the cause only in the error's data. The
 // probe against a mock that answered HTTP 400 read
@@ -412,7 +391,7 @@ func TestQwenFailedPromptStatesTheNativeCause(t *testing.T) {
 	require.NoError(t, a.SendInput("Run the native model error probe.", nil))
 	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
 
-	texts := agentErrorTexts(sink)
+	texts := agenttest.AgentErrorTexts(sink.Notifications())
 	require.Len(t, texts, 1)
 	assert.Contains(t, texts[0], "400 NATIVEERRORprobe123")
 }

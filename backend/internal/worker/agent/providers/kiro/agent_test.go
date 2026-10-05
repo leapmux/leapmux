@@ -122,18 +122,6 @@ func statusTexts(sink *agenttest.ControlSink) []string {
 	return out
 }
 
-// errorTexts returns the error of every agent error notification.
-func errorTexts(sink *agenttest.ControlSink) []string {
-	var out []string
-	for _, notification := range sink.Notifications() {
-		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
-			text, _ := notification[contracts.NotificationFieldError].(string)
-			out = append(out, text)
-		}
-	}
-	return out
-}
-
 // countNotifications counts the notifications of one type.
 func countNotifications(sink *agenttest.ControlSink, notificationType string) int {
 	count := 0
@@ -348,7 +336,7 @@ func TestKiroCompactContextStatesAFailedRequest(t *testing.T) {
 	require.NoError(t, a.CompactContext())
 	waitForIdle(t, a)
 
-	errs := errorTexts(sink)
+	errs := agenttest.AgentErrorTexts(sink.Notifications())
 	require.Len(t, errs, 1)
 	assert.Contains(t, errs[0], "Kiro could not compact the context")
 	assert.Contains(t, errs[0], "not found")
@@ -611,7 +599,7 @@ func TestKiroCompactContextStatesAnUnreadableReply(t *testing.T) {
 	require.NoError(t, a.CompactContext())
 	waitForIdle(t, a)
 
-	errs := errorTexts(sink)
+	errs := agenttest.AgentErrorTexts(sink.Notifications())
 	require.Len(t, errs, 1)
 	assert.Contains(t, errs[0], "Kiro answered the compaction with an unreadable reply")
 }

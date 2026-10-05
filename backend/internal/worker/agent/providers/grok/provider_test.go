@@ -97,18 +97,44 @@ func TestGrokPlanApprovalReplies(t *testing.T) {
 	}
 }
 
+// Each refusal states the cause that the browser shows to the reader, so a
+// reason that moves to another branch fails here.
 func TestGrokPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
-	for name, response := range map[string][]byte{
-		"another request":  neutralDecision(t, "jsonrpc:6", agent.ControlBehaviorAllow, ""),
-		"no request id":    neutralDecision(t, "", agent.ControlBehaviorAllow, ""),
-		"unknown behavior": neutralDecision(t, grokStoredRequestID, "maybe", ""),
-		"not json":         []byte(`{`),
+	for name, tc := range map[string]struct {
+		response []byte
+		reason   string
+	}{
+		"another request":  {response: neutralDecision(t, "jsonrpc:6", agent.ControlBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
+		"no request id":    {response: neutralDecision(t, "", agent.ControlBehaviorAllow, ""), reason: agent.RefusalNoDecision},
+		"unknown behavior": {response: neutralDecision(t, grokStoredRequestID, "maybe", ""), reason: agent.RefusalNoDecision},
+		"not json":         {response: []byte(`{`), reason: agent.RefusalNoDecision},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.True(t, resolve(t, contracts.GrokMethodExitPlanMode, response).Withhold)
+			result := resolve(t, contracts.GrokMethodExitPlanMode, tc.response)
+			assert.True(t, result.Withhold)
+			assert.EqualError(t, result.Refusal(), tc.reason)
 		})
+	}
+}
+
+// A stored request that states no id has no request that a reply could answer.
+func TestGrokPlanApprovalOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "method": contracts.GrokMethodExitPlanMode,
+		"params": map[string]any{"sessionId": grokTestSession},
+	})
+	require.NoError(t, err)
+	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
+		result := grokProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+			RequestID:       grokStoredRequestID,
+			RequestPayload:  payload,
+			ResponseContent: neutralDecision(t, grokStoredRequestID, behavior, ""),
+		})
+		assert.True(t, result.Withhold, behavior)
+		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, behavior)
 	}
 }
 
@@ -200,7 +226,9 @@ func TestGrokFolderTrustWithholdsAnUnreadableAnswer(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.True(t, resolve(t, contracts.GrokMethodFolderTrust, response).Withhold)
+			result := resolve(t, contracts.GrokMethodFolderTrust, response)
+			assert.True(t, result.Withhold)
+			assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableAnswer)
 		})
 	}
 }

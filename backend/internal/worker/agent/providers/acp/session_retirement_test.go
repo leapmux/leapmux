@@ -621,7 +621,7 @@ func TestACPClearContextReleasesTheChildAgentsOfTheOutgoingRows(t *testing.T) {
 	assert.Equal(t, []string{"child-of-call_background"}, probe.releasedChildren())
 	messages := sink.Child("child-of-call_background").Messages()
 	require.Len(t, messages, 1)
-	_, text, completion, ok := decodeAssembled(messages[0].Content)
+	_, text, completion, ok := agenttest.DecodeAssembledMessage(messages[0].Content)
 	require.True(t, ok)
 	assert.Equal(t, "Half done.", text)
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion, "the clear stopped the child")
@@ -645,7 +645,7 @@ func TestACPClearContextEndsAChildThatTheRegistryResolved(t *testing.T) {
 
 	messages := sink.Child("child-of-call_old").Messages()
 	require.Len(t, messages, 1)
-	_, text, completion, ok := decodeAssembled(messages[0].Content)
+	_, text, completion, ok := agenttest.DecodeAssembledMessage(messages[0].Content)
 	require.True(t, ok)
 	assert.Equal(t, "Cut off.", text)
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion)

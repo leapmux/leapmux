@@ -292,6 +292,20 @@ var (
 	claudeBashInput   = regexp.MustCompile(`<bash-input>([\s\S]*?)</bash-input>`)
 )
 
+// claudeCommandBlock and claudeBashBlock match a block that OPENS with a tag that
+// the CLI writes for a command that the user typed: a slash command opens with
+// its message or its name, and a shell command opens with its input. The tag
+// decides what a block is only when it opens the block. Another block that opens
+// with a tag is context, and the text of such a block can quote these tags. An
+// attached file does: LeapMux writes it as a block of its own ahead of the prompt.
+// The transcript reader of the CLI reads its shell command block the same way
+// (`^<bash-input>`, 2.1.289). Its title reader scans a whole block, and it would
+// take the body of the attached file as the title.
+var (
+	claudeCommandBlock = regexp.MustCompile(`^<command-(?:message|name)>`)
+	claudeBashBlock    = regexp.MustCompile(`^<bash-input>`)
+)
+
 func (p *claudeFirstPrompt) take(rec claudeTranscriptRecord) {
 	if p.found || rec.Type != "user" || rec.IsMeta || rec.IsCompactSummary {
 		return
@@ -318,14 +332,16 @@ func (p *claudeFirstPrompt) read(text string) (string, bool) {
 	if text == "" {
 		return "", false
 	}
-	if match := claudeCommandName.FindStringSubmatch(text); match != nil {
-		if p.commandFallback == "" {
+	if claudeCommandBlock.MatchString(text) {
+		if match := claudeCommandName.FindStringSubmatch(text); match != nil && p.commandFallback == "" {
 			p.commandFallback = match[1]
 		}
 		return "", false
 	}
-	if match := claudeBashInput.FindStringSubmatch(text); match != nil {
-		return "! " + strings.TrimSpace(match[1]), true
+	if claudeBashBlock.MatchString(text) {
+		if match := claudeBashInput.FindStringSubmatch(text); match != nil {
+			return "! " + strings.TrimSpace(match[1]), true
+		}
 	}
 	if claudeContextMarkup.MatchString(text) {
 		return "", false

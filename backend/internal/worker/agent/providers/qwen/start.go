@@ -31,13 +31,13 @@ const qwenNoRelaunchEnv = "QWEN_CODE_NO_RELAUNCH=1"
 // into one hold, reports on its own cadence, and is ordered with no update.
 const qwenDisableCronEnv = "QWEN_CODE_DISABLE_CRON=1"
 
-// qwenSkipUpdateCheckEnv turns off Qwen's check for a newer release, and the
-// install that follows it. Qwen starts both from its interactive UI, three
-// seconds after the first paint, and never from `--acp`; the variable reaches a
-// `qwen` that the agent's own shell tool starts (QWEN_CODE_CLI). Only the exact
-// value `true` counts, and the `_ONCE` in the name is the spelling that Qwen's own
-// relaunch step gives the same variable. It stops no `/update` command that a user
-// types.
+// qwenSkipUpdateCheckEnv turns off the check of Qwen for a newer release, and
+// the install that follows the check. Qwen starts both from its interactive UI,
+// three seconds after the first paint. Qwen never starts them from `--acp`. The
+// variable reaches a `qwen` that the shell tool of the agent starts
+// (QWEN_CODE_CLI). Qwen reads only the exact value `true`. The name ends in
+// `_ONCE` because the relaunch step of Qwen gives the same variable that
+// spelling. The variable stops no `/update` command that a user types.
 const qwenSkipUpdateCheckEnv = "QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true"
 
 // Start starts a Qwen Code ACP agent process and performs the handshake.

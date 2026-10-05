@@ -70,6 +70,9 @@ const (
 	RefusalOtherRequest = "the answer is for a different request"
 	// RefusalUnencodableReply: the reply to the agent cannot be encoded.
 	RefusalUnencodableReply = "LeapMux cannot encode the reply to the agent"
+	// RefusalAnswersDoNotFit: the answers of a question request do not match the
+	// questions of the stored request.
+	RefusalAnswersDoNotFit = "the answers do not fit the questions of the request"
 )
 
 // RefusalUnofferedOption states that a provider did not offer an option, in the

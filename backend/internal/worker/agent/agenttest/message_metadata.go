@@ -7,7 +7,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+// DecodeAssembledMessage reads the content of an assembled-message row, the
+// envelope that agent.MarshalAssembledMessage writes. ok is false for content
+// of any other shape.
+func DecodeAssembledMessage(content []byte) (kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion, ok bool) {
+	var envelope map[string]string
+	if json.Unmarshal(content, &envelope) != nil || envelope[contracts.AssembledMessageFieldType] != contracts.AssembledMessageType {
+		return "", "", "", false
+	}
+	return agent.AssembledMessageKind(envelope[contracts.AssembledMessageFieldKind]), envelope[contracts.AssembledMessageFieldText],
+		agent.MessageCompletion(envelope[contracts.AssembledMessageFieldCompletion]), true
+}
 
 // TurnToolUseCounts reads explicit tool counts from recorded turn-end metadata.
 func TurnToolUseCounts(t *testing.T, messages []Message) []int {

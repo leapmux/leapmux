@@ -742,7 +742,7 @@ func childTextCompletion(t *testing.T, child *agenttest.Sink) agent.MessageCompl
 	t.Helper()
 	var completions []agent.MessageCompletion
 	for _, message := range child.Messages() {
-		if _, _, completion, ok := decodeAssembled(message.Content); ok {
+		if _, _, completion, ok := agenttest.DecodeAssembledMessage(message.Content); ok {
 			completions = append(completions, completion)
 		}
 	}

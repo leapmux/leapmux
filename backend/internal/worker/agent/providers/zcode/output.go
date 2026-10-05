@@ -350,6 +350,12 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 	if !background && toolCallCount > 0 {
 		a.TurnToolUses = int(toolCallCount)
 	}
+	if !background {
+		// The approved exit runs inside the turn that asked for it. A stored plan-exit
+		// mode that the turn end finds was never released, and no later event is its
+		// exit.
+		a.pendingExitMode = ""
+	}
 	a.backgroundTurn = false
 	a.Mu.Unlock()
 	// Deferred, for two reasons at once. It runs on EVERY path, including the
@@ -878,6 +884,9 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// cannot fail the decode for the cases above.
 		Mode        json.RawMessage `json:"mode"`
 		PlanEnabled json.RawMessage `json:"planEnabled"`
+		// Source tells which part of ZCode changed the mode. It stays raw for the
+		// same reason as the two fields above.
+		Source json.RawMessage `json:"source"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -903,7 +912,9 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		}
 		a.persistZCodeAssistantMessage(event, *payload.Content)
 	case isModeChange:
-		a.handleZCodeModeChanged(mode, planEnabled)
+		if exitMode := a.handleZCodeModeChanged(mode, planEnabled, parseZCodeModeSource(payload.Source)); exitMode != "" {
+			a.sendDeferredZCodeExitMode(exitMode)
+		}
 	default:
 		// The remaining shapes are telemetry: the per-request model/iteration counters
 		// and the provider request record (baseURL, requestId, maxAttempts). They carry
@@ -926,6 +937,21 @@ func parseZCodeModeChange(rawMode, rawPlanEnabled json.RawMessage) (mode string,
 		return "", false, false
 	}
 	return mode, planEnabled, true
+}
+
+// zcodeModeSourceTool is the `source` of a SessionModeChanged event that a plan tool
+// caused: EnterPlanMode or ExitPlanMode. A session/setMode request states `command`.
+// Source: the app-server bundle of ZCode 3.14.4 (`createRuntimeSessionModePort`).
+const zcodeModeSourceTool = "tool"
+
+// parseZCodeModeSource reads the `source` of a SessionModeChanged payload. It is empty
+// for a payload that states none or states a value that is not a string.
+func parseZCodeModeSource(raw json.RawMessage) string {
+	var source string
+	if len(raw) == 0 || json.Unmarshal(raw, &source) != nil {
+		return ""
+	}
+	return source
 }
 
 func (a *Agent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {

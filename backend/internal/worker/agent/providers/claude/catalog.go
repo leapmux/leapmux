@@ -444,15 +444,23 @@ func convertClaudeModel(m claudeCodeModelInfo, id string) *agent.ModelInfo {
 }
 
 // claudeFallbackDisplayName builds a display name from a normalized model id when
-// the CLI omits one. It title-cases the alias and renders a 1M-context variant's
-// bracket suffix as " (1M context)" -- matching the static catalog's "Opus (1M
-// context)" rather than the raw "Opus[1m]" providerkit.TitleCaseID would otherwise produce.
-// It detects the variant through is1MContextVariant (the single home for the "[1m]"
-// marker) rather than a literal "[1m]" suffix, so a decorated spelling like
-// "opus[1m-beta]" -- which claudeContextWindowForValue already sizes at 1M -- is
+// the CLI omits one. A model that the static catalog lists keeps the name of its
+// row. The CLI offers only the 1M window for such a model, so the name states no
+// window ("Opus", not "Opus (1M context)"), and the picker and the read-only
+// readout show one label for one id.
+//
+// Any other 1M-context variant has a standard-context sibling. The name then
+// renders the bracket suffix as " (1M context)", as the live CLI words it, rather
+// than the raw "Sonnet[1m]" that providerkit.TitleCaseID would produce. The
+// function detects the variant through is1MContextVariant (the single home for
+// the "[1m]" marker) rather than a literal "[1m]" suffix. A decorated spelling
+// such as "opus[1m-beta]" is sized at 1M by claudeContextWindowForValue, and it
 // gets a consistent name instead of a garbled "Opus[1m Beta]".
 func claudeFallbackDisplayName(id string) string {
 	if is1MContextVariant(id) {
+		if row := agent.FindAvailableModel(claudeCodeAvailableModels, id); row != nil {
+			return row.DisplayName
+		}
 		// is1MContextVariant guarantees a '[' (and a trailing ']'), so the bracket
 		// group is the suffix to strip; LastIndexByte cannot return -1 here.
 		return providerkit.TitleCaseID(id[:strings.LastIndexByte(id, '[')], "") + " (1M context)"

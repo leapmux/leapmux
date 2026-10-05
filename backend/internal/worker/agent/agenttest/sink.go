@@ -1255,6 +1255,21 @@ func (s *Sink) LeapMuxNotifications() []map[string]interface{} {
 	return append([]map[string]interface{}(nil), s.leapMuxNotifications...)
 }
 
+// AgentErrorTexts returns the text of each agent error notification in
+// notifications, in order. Pass the result of Sink.LeapMuxNotifications or of
+// ControlSink.Notifications. A notification that states no text gives an empty
+// string.
+func AgentErrorTexts(notifications []map[string]interface{}) []string {
+	var texts []string
+	for _, notification := range notifications {
+		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
+			text, _ := notification[contracts.NotificationFieldError].(string)
+			texts = append(texts, text)
+		}
+	}
+	return texts
+}
+
 // Messages returns a copy of all persisted messages.
 func (s *Sink) Messages() []Message {
 	s.mu.Lock()

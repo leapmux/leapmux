@@ -476,26 +476,29 @@ const declinedToolReason = contracts.ClineDeclineReasonTool
 const declinedQuestionError = contracts.ClineDeclineReasonQuestion
 
 // resolveControlResponse turns the browser's answer into Cline's reply.
+//
+// A withheld answer states one of the shared reasons for the reader. Several
+// causes share a reason, so the worker log states the cause as well.
 func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
-	withhold := func(reason string) agent.ControlResponseResolution {
-		slog.Warn("cline control response withheld", "request_id", ctx.RequestID, "reason", reason)
+	withhold := func(reason, cause string) agent.ControlResponseResolution {
+		slog.Warn("cline control response withheld", "request_id", ctx.RequestID, "reason", reason, "cause", cause)
 		result.Refuse(reason)
 		return result
 	}
 	if len(ctx.RequestPayload) == 0 {
-		return withhold(agent.RefusalUnreadableRequest)
+		return withhold(agent.RefusalUnreadableRequest, "the stored request is empty")
 	}
 	var request storedControlRequest
 	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
-		return withhold(agent.RefusalUnreadableRequest)
+		return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored request does not decode: %v", err))
 	}
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
-		return withhold(agent.RefusalNoDecision)
+		return withhold(agent.RefusalNoDecision, "the answer states neither allow nor deny")
 	}
 	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		return withhold(agent.RefusalOtherRequest)
+		return withhold(agent.RefusalOtherRequest, fmt.Sprintf("the answer is for request %s, and the stored request is %s", requestID, ctx.RequestID))
 	}
 	allow := behavior == agent.ControlBehaviorAllow
 
@@ -503,11 +506,16 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 	switch request.Event {
 	case contracts.ClineEventApprovalRequested:
 		var approval approvalRequest
-		if err := json.Unmarshal(request.Payload, &approval); err != nil || approval.ApprovalID == "" {
-			return withhold(agent.RefusalUnreadableRequest)
+		if err := json.Unmarshal(request.Payload, &approval); err != nil {
+			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored approval does not decode: %v", err))
 		}
+		if approval.ApprovalID == "" {
+			return withhold(agent.RefusalUnreadableRequest, "the stored approval states no id")
+		}
+		// The stored request disagrees with its own request key, so LeapMux
+		// cannot trust it. The answer is not for another request.
 		if ctx.RequestID != "" && approval.ApprovalID != ctx.RequestID {
-			return withhold(agent.RefusalOtherRequest)
+			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored approval states id %s, and its request key is %s", approval.ApprovalID, ctx.RequestID))
 		}
 		reply := contracts.ClineApprovalReply{ApprovalId: approval.ApprovalID, Approved: allow}
 		if !allow {
@@ -525,14 +533,19 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 		native = reply
 	case contracts.ClineEventCapabilityRequested:
 		var capability capabilityRequest
-		if err := json.Unmarshal(request.Payload, &capability); err != nil || capability.RequestID == "" {
-			return withhold(agent.RefusalUnreadableRequest)
+		if err := json.Unmarshal(request.Payload, &capability); err != nil {
+			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request does not decode: %v", err))
+		}
+		if capability.RequestID == "" {
+			return withhold(agent.RefusalUnreadableRequest, "the stored capability request states no id")
 		}
 		if capability.CapabilityName != contracts.ClineCapabilityAskQuestion {
-			return withhold(agent.RefusalUnreadableRequest)
+			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request is %s, not a question", capability.CapabilityName))
 		}
+		// The stored request disagrees with its own request key, so LeapMux
+		// cannot trust it. The answer is not for another request.
 		if ctx.RequestID != "" && capability.RequestID != ctx.RequestID {
-			return withhold(agent.RefusalOtherRequest)
+			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request states id %s, and its request key is %s", capability.RequestID, ctx.RequestID))
 		}
 		if !allow {
 			reason := message
@@ -544,19 +557,19 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 		}
 		answer, ok := questionAnswer(ctx.ResponseContent)
 		if !ok {
-			return withhold(agent.RefusalUnreadableAnswer)
+			return withhold(agent.RefusalUnreadableAnswer, "the answer to the question states no text")
 		}
 		payload, err := json.Marshal(map[string]string{contracts.ClineCapabilityReplyResult: answer})
 		if err != nil {
-			return withhold(agent.RefusalUnencodableReply)
+			return withhold(agent.RefusalUnencodableReply, fmt.Sprintf("the answer to the question does not encode: %v", err))
 		}
 		native = contracts.ClineCapabilityReply{RequestId: capability.RequestID, Ok: true, Payload: payload}
 	default:
-		return withhold(agent.RefusalUnreadableRequest)
+		return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored event %s is not a request", request.Event))
 	}
 	content, err := json.Marshal(native)
 	if err != nil {
-		return withhold(agent.RefusalUnencodableReply)
+		return withhold(agent.RefusalUnencodableReply, fmt.Sprintf("the reply does not encode: %v", err))
 	}
 	result.Content = content
 	return result

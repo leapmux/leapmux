@@ -106,7 +106,10 @@ func (a *Agent) recordPlanRequestLocked(requested string) {
 //
 // A change of the axis is persisted, so a plan mode that the agent entered or left
 // survives a restart.
-func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool) {
+//
+// The result is the stored plan-exit mode that this event releases, or empty. The
+// caller sends it, because the request needs a goroutine of its own.
+func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool, source string) (exitMode string) {
 	a.Mu.Lock()
 	planBefore := a.planEnabled
 	before := a.permissionModeLocked()
@@ -115,26 +118,29 @@ func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool) {
 	a.planEnabled = planEnabled
 	a.planObserved = true
 	a.modeChanges++
-	// A stored plan-exit mode fires here: this event reporting the flag OFF is
-	// the exit having finished. The same native mode consumes the deferral
-	// without a request, and entering plan mode again drops it: that session
-	// chose to keep planning, and a stale exit mode must not fire at a later
-	// exit.
+	// Every mode event drops a stored plan-exit mode, and only the exit itself
+	// releases it: an event of a plan tool that turns the flag OFF. A flag-off
+	// event of another source, such as the request of the user to leave plan
+	// mode, is a later choice that the stored mode must not override. The same
+	// native mode needs no request. Entering plan mode again drops the mode
+	// too: that session chose to keep planning, and a stale exit mode must not
+	// fire at a later exit.
 	stored := a.pendingExitMode
 	a.pendingExitMode = ""
-	sendStored := planBefore && !planEnabled && stored != "" && stored != mode
+	sendStored := planBefore && !planEnabled && source == zcodeModeSourceTool && stored != "" && stored != mode
 	// The event states both halves of the axis, so it settles a setter reply that
 	// carried no mode.
 	delete(a.unresolvedSettings, agent.OptionIDPermissionMode)
 	after := a.permissionModeLocked()
 	a.Mu.Unlock()
 	if sendStored {
-		a.sendDeferredZCodeExitMode(stored)
+		exitMode = stored
 	}
 	if before == after && !sendStored {
-		return
+		return exitMode
 	}
 	a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDPermissionMode: after})
+	return exitMode
 }
 
 // zcodeSettingsRequest is the trio a caller ASKS a session to run on: the launch
@@ -909,9 +915,10 @@ type zcodeSettingsTriple struct {
 // ZCode folds session/setMode as "any value other than plan turns the plan flag
 // off", so a mode sent while the approved ExitPlanMode still runs turns the flag
 // off early and the exit fails with "You are not in plan mode". The flag-off
-// SessionModeChanged of the exit itself is the first moment the mode can go out,
-// so that is where the stored value fires. An exit that already ran when the
-// approval settles takes its mode at once.
+// SessionModeChanged of the ExitPlanMode tool is the first moment the mode can go
+// out, so that is where the stored value fires. A flag-off event of another
+// source, and the end of the turn, drop the stored value without a request. An
+// exit that already ran when the approval settles takes its mode at once.
 func (a *Agent) DeferPlanExitMode(mode string) {
 	if mode == "" || mode == contracts.ZCodeModePlan {
 		return
