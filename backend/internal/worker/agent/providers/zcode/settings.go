@@ -792,6 +792,34 @@ func (a *Agent) isCurrentZCodeSession(sessionID string) bool {
 	return current == "" || current == sessionID
 }
 
+// zcodeStateReasonModeChanged is the `reason` of a state patch that records a change of the native
+// mode. Source: the app-server of ZCode 3.14.4 sends a `mode_changed` patch for each mode request.
+const zcodeStateReasonModeChanged = "mode_changed"
+
+// dropStaleMode removes the native mode from a patch that cannot be trusted to state it.
+//
+// ZCode puts a full settings snapshot on the patch of every reason. It emits the
+// `prompt_completed` patch of a turn beside the `mode_changed` patch of a mode request that the
+// turn ran, and both carry the same revision. The `prompt_completed` snapshot states the mode
+// that held before the request, and either patch can arrive last. Applying that snapshot after
+// the `mode_changed` patch put the session back on the old mode, in the agent and in the
+// persisted settings, until a restart.
+//
+// Once a source has stated the mode, only a `mode_changed` patch changes it. Before that, any
+// snapshot is the only evidence, so it applies.
+func (b *zcodeStatePatchBody) dropStaleMode(reason string, modeObserved bool) {
+	if modeObserved && reason != zcodeStateReasonModeChanged {
+		b.Mode = nil
+	}
+}
+
+// modeIsObserved reports whether a source has stated the native mode of the current session.
+func (a *Agent) modeIsObserved() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.modeObserved
+}
+
 // hasSettings reports whether the patch carried any settings axis at all. A patch
 // that changed only `status` must not reach applySettingsSnapshotLocked, because an
 // all-nil snapshot would compare equal and persist a pointless settings refresh.
@@ -851,6 +879,7 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 	// A patch reports a change as it happens, so it is NOT a snapshot: this is
 	// the path that announces a goal transition in the transcript.
 	a.reportZCodeGoal(body.Goal, false)
+	body.dropStaleMode(notif.Reason, a.modeIsObserved())
 	// A patch that changed something this struct does not read carries no
 	// settings axis, and must not be mistaken for an all-absent settings patch.
 	if !body.hasSettings() {

@@ -1848,3 +1848,55 @@ func TestZCodeDeferPlanExitModeIsDroppedWhenTheUsersTurnEnds(t *testing.T) {
 		assert.Equal(t, contracts.ZCodeModeYolo, pendingAfter(t, a))
 	})
 }
+
+// ZCode puts a full settings snapshot on the patch of every reason, and it emits the
+// `prompt_completed` patch of a turn beside the `mode_changed` patch of a mode request that
+// the turn ran. Both patches carry revision 5 in the native app-server, and either one can
+// arrive last. The snapshot of `prompt_completed` states the mode that held before the
+// request, so it must not replace a mode that the session already reported.
+func TestHandleZCodeStateUpdated_AStaleSnapshotOfAnotherReasonKeepsTheObservedMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeYolo, PreviousMode: contracts.ZCodeModeBuild, Source: "command",
+	}))
+	require.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a))
+	refreshes := sink.SettingsRefreshCount()
+
+	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
+
+	assert.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a),
+		"a snapshot that rides on another reason is older than the reported mode")
+	assert.Equal(t, refreshes, sink.SettingsRefreshCount(), "a snapshot that changes nothing persists nothing")
+	assert.Equal(t, contracts.ZCodeModeYolo, sink.LastSettingsRefresh().PermissionMode)
+}
+
+// The `mode_changed` patch is the record of a mode change, so it applies at any time.
+func TestHandleZCodeStateUpdated_AModeChangedPatchReplacesTheObservedMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeYolo, PreviousMode: contracts.ZCodeModeBuild, Source: "command",
+	}))
+
+	a.HandleOutput(zcodeStateLine(t, ScopeSession, "mode_changed", `{"mode":{"current":"build"}}`))
+
+	assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a))
+	assert.Equal(t, contracts.ZCodeModeBuild, sink.LastSettingsRefresh().PermissionMode)
+}
+
+// Before any source states the mode, the snapshot of any reason is the only evidence.
+func TestHandleZCodeStateUpdated_ASnapshotOfAnotherReasonStatesTheFirstMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"yolo"}}`))
+
+	assert.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a))
+}
