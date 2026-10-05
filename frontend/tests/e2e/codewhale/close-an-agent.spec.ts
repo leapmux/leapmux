@@ -4,6 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 
 codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
@@ -20,6 +21,10 @@ codewhaleTest('closes the UI tab and waits for owned process exit and Worker clo
   if (typeof mcpScript !== 'string' || !mcpScript)
     throw new Error('The Codewhale close test requires the actual MCP executable configuration.')
   await exerciseCloseAgent(context, {
+    // Codewhale starts a configured MCP server only for the first call of one of its tools,
+    // and the server then runs as a child of the runtime until the runtime ends. A runtime
+    // that no MCP call reached has no MCP process to own, so one echo call comes first.
+    prepare: () => exerciseMcpEcho(page, modelScript, AgentProvider.CODEWHALE, 'codewhale-close'),
     nativeOwnership: ({ rows, ownership }) => {
       const owned = rows.filter(row => ownership.ownedPids.includes(row.pid))
       const runtime = owned.find((row) => {

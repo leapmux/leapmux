@@ -25,4 +25,23 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
       allowPaused: true,
     })
   })
+
+  // The child reads its file with the native read tool, which the explore role runs without approval.
+  // The Worker reads the read result from the child transcript file while the next child answer stays held.
+  codewhaleTest('shows a native child file result only in the running child tab', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
+    const workingDir = authenticatedCodewhaleWorkspace.workingDir
+    if (!workingDir)
+      throw new Error('The live child file proof requires the working directory of the native agent.')
+    await exerciseLiveChildTranscript(page, modelScript, {
+      provider: AgentProvider.CODEWHALE,
+      childWhen: { user: 'Read the assigned file in the live child' },
+      childTask: 'Read the assigned file in the live child.',
+      parentTask: 'Delegate the live child file read.',
+      toolProof: { workingDir },
+      holdParentAnswer: true,
+      background: true,
+      // A resumable native interruption keeps the child tab open as Paused.
+      allowPaused: true,
+    })
+  })
 })

@@ -141,6 +141,103 @@ func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 	assert.Equal(t, bgtask.StatusCompleted, task.Status)
 }
 
+// restartReconciledRun is the record that Codewhale 0.10.0 returns from GET
+// /v1/agent-runs/{id} for a live child whose latest events are lastLive. The
+// route appends the synthetic restart event after them. The fields are those of
+// a record that a native probe captured for a child that waited for its model;
+// the run ledger on disk held `model_wait` at the same moment.
+func restartReconciledRun(lastLive ...map[string]any) map[string]any {
+	events := []any{
+		map[string]any{"seq": 1, "worker_id": testChildID, "status": "starting", "message": "starting"},
+		map[string]any{"seq": 2, "worker_id": testChildID, "status": "running", "message": "running"},
+	}
+	for i, event := range lastLive {
+		event["seq"] = 3 + i
+		event["worker_id"] = testChildID
+		events = append(events, event)
+	}
+	events = append(events, map[string]any{"seq": 3 + len(lastLive), "worker_id": testChildID, "status": "interrupted", "message": "Interrupted by process restart", "step": 1})
+	return map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart", "completed_at_ms": 1791132897437, "steps_taken": 1, "events": events}
+}
+
+// TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute pins the reading
+// of a record that the run route reconciles as if the runtime restarted.
+//
+// Codewhale 0.10.0 answers GET /v1/agent-runs/{id} from a fresh load of its run
+// ledger, and that load marks every live run as interrupted "by process
+// restart" (SubAgentManager::load_state calls
+// reconcile_orphaned_workers_after_restart). The watcher follows only the
+// children that the agent's own runtime started, and that runtime still runs,
+// so the verdict never describes the child. The status of the event before it
+// does. A real interrupt states its own reason and still pauses the row.
+func TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		record map[string]any
+		want   bgtask.Status
+	}{
+		{
+			name:   "a child that waits for its model",
+			record: restartReconciledRun(map[string]any{"status": "starting", "message": "started (explore)"}, map[string]any{"status": "model_wait", "message": "step 1: requesting model response", "step": 1}),
+			want:   bgtask.StatusRunning,
+		},
+		{
+			name:   "a child that runs a tool",
+			record: restartReconciledRun(map[string]any{"status": "running_tool", "message": "step 1: bash"}),
+			want:   bgtask.StatusRunning,
+		},
+		{
+			name:   "a child that is still queued",
+			record: restartReconciledRun(map[string]any{"status": "queued", "message": "queued"}),
+			want:   bgtask.StatusPending,
+		},
+		{
+			name:   "a record with the verdict as its only event",
+			record: map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart", "events": []any{map[string]any{"seq": 1, "status": "interrupted", "message": "Interrupted by process restart"}}},
+			want:   bgtask.StatusRunning,
+		},
+		{
+			name:   "a record with the verdict and no events",
+			record: map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart"},
+			want:   bgtask.StatusRunning,
+		},
+		{
+			name: "a child that its parent interrupted",
+			record: map[string]any{"status": "interrupted", "latest_message": "interrupted by parent via agents/interrupt", "events": []any{
+				map[string]any{"seq": 1, "status": "running", "message": "running"},
+				map[string]any{"seq": 2, "status": "interrupted", "message": "interrupted by parent via agents/interrupt"},
+			}},
+			want: bgtask.StatusPaused,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rt := newFakeRuntime(t)
+			rt.handle(http.MethodGet, routeAgentRuns+"/"+testChildID, func(w http.ResponseWriter, _ *http.Request) {
+				writeFakeJSON(w, http.StatusOK, tc.record)
+			})
+			a, sink := newTestAgent(t, rt)
+			child := &codewhaleChild{
+				agentID:   testChildID,
+				childID:   "child-1",
+				path:      filepath.Join(t.TempDir(), "absent.jsonl"),
+				nudge:     make(chan struct{}, 1),
+				openTools: map[string]string{},
+			}
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
+			}))
+
+			assert.False(t, a.pollChild(testutil.DeadlineContext(t), sink.ChildSink(child.childID), child), "an interrupted run is not final")
+			task, ok := sink.BackgroundTask(testChildID)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, task.Status)
+			assert.Empty(t, sink.Child(child.childID).ClosedSpans(), "a child that is not final keeps its transcript open")
+		})
+	}
+}
+
 func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)

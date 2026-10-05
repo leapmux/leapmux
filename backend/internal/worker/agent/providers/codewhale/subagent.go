@@ -39,7 +39,8 @@ import (
 //     The worker reads it READ-ONLY and persists each content block of it as a
 //     row of the child transcript.
 //   - GET /v1/agent-runs/{agent_id} states the child's status and its final
-//     summary.
+//     summary. For a live child, it states a restart interruption that did not
+//     occur, and agentRunRecord.liveStatus removes it.
 //
 // One watcher goroutine for each child reads both until the child ends. The
 // parent's `agent` wait call also states which children settled, and that
@@ -307,8 +308,43 @@ func (a *Agent) startChild(agentID, spawnSpan, title, prompt string) {
 
 // agentRunRecord is the part of GET /v1/agent-runs/{id} that the watcher reads.
 type agentRunRecord struct {
-	Status        string `json:"status"`
-	ResultSummary string `json:"result_summary"`
+	Status        string          `json:"status"`
+	LatestMessage string          `json:"latest_message"`
+	ResultSummary string          `json:"result_summary"`
+	Events        []agentRunEvent `json:"events"`
+}
+
+// agentRunEvent is one status change in the history of a run record.
+type agentRunEvent struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// liveStatus returns the status word of the run, without the restart verdict
+// that the route adds to a live run.
+//
+// Codewhale 0.10.0 answers the route from a fresh load of its run ledger. That
+// load marks every live run as interrupted by a process restart
+// (SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart),
+// and it appends one event that states the interruption. The ledger on disk
+// keeps the live status. The verdict never describes a child that a watcher
+// follows: the agent starts a watcher only for a start that its own runtime
+// reports live (the event stream begins after the latest event of the thread),
+// and the stop of the agent ends every watcher. So the event before the verdict
+// states the status of the run. A record with no such event states a run that
+// has no later status than its start, which is running.
+func (r agentRunRecord) liveStatus() string {
+	if r.Status != agentRunStatusInterrupted || r.LatestMessage != agentRunRestartReason {
+		return r.Status
+	}
+	events := r.Events
+	if last := len(events) - 1; last >= 0 && events[last].Status == agentRunStatusInterrupted && events[last].Message == agentRunRestartReason {
+		events = events[:last]
+	}
+	if last := len(events) - 1; last >= 0 && events[last].Status != "" {
+		return events[last].Status
+	}
+	return agentRunStatusRunning
 }
 
 // agentRunStatus maps a ledger status onto the registry. An interrupted child
@@ -381,7 +417,7 @@ func (a *Agent) pollChild(ctx context.Context, sink agent.ProviderServices, chil
 		return true
 	}
 	child.missing = 0
-	status, final := agentRunStatus(record.Status)
+	status, final := agentRunStatus(record.liveStatus())
 	if !final {
 		if child.reportedStatus == bgtask.StatusUnspecified && status == bgtask.StatusRunning {
 			// startChild already opened the row as Running.

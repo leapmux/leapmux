@@ -486,37 +486,38 @@ func (a *Agent) controlPending(requestID string) bool {
 // for the stored request. It reads nothing but its arguments.
 //
 // feedback is a deny reason the runtime's approval route cannot carry. The
-// service queues it as the reader's next message instead.
-func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, ok bool) {
+// service queues it as the reader's next message instead. refusal is the reason
+// the reader sees when no reply can be built, empty when one can.
+func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, refusal string) {
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(response)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
-		return codewhaleReplyFrame{}, "", false
+		return codewhaleReplyFrame{}, "", agent.RefusalNoDecision
 	}
 	var stored struct {
 		RequestID string                 `json:"request_id"`
 		Request   codewhaleControlHeader `json:"request"`
 	}
 	if err := json.Unmarshal(requestPayload, &stored); err != nil {
-		return codewhaleReplyFrame{}, "", false
+		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 	}
 	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
 		slog.Warn("codewhale control response addressed another request", "answered", requestID, "stored", stored.RequestID)
-		return codewhaleReplyFrame{}, "", false
+		return codewhaleReplyFrame{}, "", agent.RefusalOtherRequest
 	}
 	env, found := storedControlEvent(requestPayload)
 	if !found {
-		return codewhaleReplyFrame{}, "", false
+		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 	}
 	switch env.Event {
 	case contracts.CodewhaleEventApprovalRequired:
 		var payload approvalEventPayload
 		if json.Unmarshal(env.Payload, &payload) != nil || payload.approvalID() == "" {
-			return codewhaleReplyFrame{}, "", false
+			return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 		}
 		frame = codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameApproval, ApprovalID: payload.approvalID()}
 		if behavior == agent.ControlBehaviorAllow {
 			frame.Decision = contracts.CodewhaleDecisionAllow
-			return frame, "", true
+			return frame, "", ""
 		}
 		frame.Decision = contracts.CodewhaleDecisionDeny
 		if message != "" {
@@ -528,11 +529,11 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 				feedback = original.Response.Response.Message
 			}
 		}
-		return frame, feedback, true
+		return frame, feedback, ""
 	case contracts.CodewhaleEventUserInputRequired:
 		var payload userInputEventPayload
 		if json.Unmarshal(env.Payload, &payload) != nil || payload.inputID() == "" || env.ThreadID == "" {
-			return codewhaleReplyFrame{}, "", false
+			return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 		}
 		frame = codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameUserInput, ThreadID: env.ThreadID, InputID: payload.inputID()}
 		if behavior == agent.ControlBehaviorDeny {
@@ -545,16 +546,16 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 			}
 			frame.Answers = declinedAnswers(payload.Request, text)
 			frame.Declined = true
-			return frame, "", true
+			return frame, "", ""
 		}
 		answers, valid := answersFromResponse(response, payload.Request)
 		if !valid {
-			return codewhaleReplyFrame{}, "", false
+			return codewhaleReplyFrame{}, "", "the answers do not fit the questions of the request"
 		}
 		frame.Answers = answers
-		return frame, "", true
+		return frame, "", ""
 	default:
-		return codewhaleReplyFrame{}, "", false
+		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 	}
 }
 

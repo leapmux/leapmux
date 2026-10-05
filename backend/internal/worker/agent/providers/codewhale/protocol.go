@@ -108,11 +108,17 @@ const (
 // child can resume from a checkpoint, so only completed, failed, and cancelled
 // close its registry row. The browser never reads these native words.
 const (
+	agentRunStatusRunning     = "running"
 	agentRunStatusCompleted   = "completed"
 	agentRunStatusFailed      = "failed"
 	agentRunStatusCancelled   = "cancelled"
 	agentRunStatusInterrupted = "interrupted"
 )
+
+// agentRunRestartReason is the message of the interruption that the run ledger
+// records for a run that a runtime restart cut off (SUBAGENT_RESTART_REASON in
+// Codewhale's tools/subagent/mod.rs).
+const agentRunRestartReason = "Interrupted by process restart"
 
 // Process environment the worker sets for the runtime.
 const (

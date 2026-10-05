@@ -79,27 +79,27 @@ func (codewhaleProvider) ExtractTodoEvent(spanType string, content []byte, _ fun
 // ResolveControlResponse turns the reader's neutral answer into the reply
 // frame that SendRawInput posts. See resolveControlReply.
 //
-// A response it cannot address is WITHHELD rather than forwarded: the runtime
-// keeps waiting, and the reader can answer again.
+// A response it cannot address is WITHHELD rather than forwarded, with the
+// reason stated: the runtime keeps waiting, and the reader can answer again.
 func (codewhaleProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	res := agent.DefaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	if !providerkit.WarnUnmarshal(ctx.RequestPayload, new(map[string]json.RawMessage), "codewhale control response request") {
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
-	frame, feedback, ok := resolveControlReply(ctx.RequestPayload, ctx.ResponseContent)
-	if !ok {
-		res.Withhold = true
+	frame, feedback, refusal := resolveControlReply(ctx.RequestPayload, ctx.ResponseContent)
+	if refusal != "" {
+		res.Refuse(refusal)
 		return res
 	}
 	encoded, err := json.Marshal(frame)
 	if err != nil {
 		slog.Warn("codewhale marshal a reply frame", "error", err)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnencodableReply)
 		return res
 	}
 	res.Content = encoded
