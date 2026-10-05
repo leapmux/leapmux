@@ -8,11 +8,11 @@ import { openAgentViaAPI } from '../helpers/api'
 import { createDeepseekHarnessEnvironment } from '../helpers/deepseekHarnessEnvironment'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { sendMessage, tabById } from '../helpers/ui'
+import { tabById } from '../helpers/ui'
 
 /** One private native MCP session: its server, its working directory, and its native preset. */
 export interface DeepseekHarnessMcpSetup {
@@ -59,12 +59,10 @@ export async function invokeDeepseekHarnessMcp(
   context: ManagedNativeScenarioContext,
   options: { server: string, tool: string, callId: string, input: Record<string, unknown> },
 ): Promise<MockModelRequestRecord> {
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ toolCalls: [mcpToolCall(context.provider, options.callId, options)] }, { text: 'The native MCP operation completed.' })
-  await sendMessage(context.page, context.modelScript.prompt('Run the exact scripted native MCP operation.'))
-  await waitForNativeToolSteps(context, start + 2)
-  const request = (await context.modelScript.status()).requests.find(row => row.stepIndex === start + 1)
-  if (!request)
-    throw new Error('The native MCP result reached no following model request.')
-  return request
+  const turn = await runNativeToolTurn(context, {
+    toolCalls: [mcpToolCall(context.provider, options.callId, options)],
+    prompt: 'Run the exact scripted native MCP operation.',
+    answer: 'The native MCP operation completed.',
+  })
+  return turn.resultRequest
 }

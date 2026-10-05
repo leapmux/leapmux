@@ -9,6 +9,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
 import { googleFunctionDeclarations, googleLastUserText, googlePartsText } from './googleModelContent'
 import { jsonStringValues } from './jsonStringValues'
+import { nativeToolResult } from './nativeToolResult'
 
 /** The provider supplies any native final-answer tool through this callback. */
 export type NativeTextStep = (text: string) => MockModelStep
@@ -103,6 +104,18 @@ export function nativeScenarioModelContextText(
   request: MockModelRequestRecord,
 ): string {
   return context.readModelContext?.(request) ?? nativeModelContextText(request)
+}
+
+/**
+ * Read the result of one tool call through the scenario's provider reader, or through the generic reader.
+ * The generic reader states only the result text. A provider reader can also state the failure and the exit code.
+ */
+export async function nativeToolOutcome(
+  context: { readonly readToolResult?: NativeToolResultReader | undefined },
+  request: MockModelRequestRecord,
+  callId: string,
+): Promise<NativeToolOutcome> {
+  return context.readToolResult ? context.readToolResult(request, callId) : { text: nativeToolResult(request, callId) }
 }
 
 /** Read the last queued native request body. Keep fallback and rule requests separate. */

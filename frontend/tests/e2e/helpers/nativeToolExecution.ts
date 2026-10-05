@@ -1,11 +1,12 @@
+import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolOutcome, NativeToolResultReader } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolResultReader } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { currentNativeAgent, nativeTextStep } from './nativeScenario'
+import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { createNativeToolDirectory } from './nativeToolDirectory'
 import { nativeToolResult } from './nativeToolResult'
 import { createOutputGate, runWithGatedOutput } from './outputGate'
@@ -73,6 +74,48 @@ export async function waitForNativeToolSteps(context: NativeScenarioContext, tar
   await waitForAgentIdle(context.page)
 }
 
+/** One native turn: a model step that calls tools, then a model step that answers. */
+export interface NativeToolTurn {
+  toolCalls: readonly MockModelToolCall[]
+  /** Text that the tool step captures from its own request, for a `{{name}}` placeholder in a tool call. */
+  captures?: Readonly<Record<string, string>>
+  /** The prompt that starts the turn. The turn marks it for this test's script. */
+  prompt: string
+  /** The final answer. It goes through `nativeTextStep`, so a provider that answers through a tool keeps its own form. */
+  answer: string
+  /** Send the marked prompt. `sendMessage` by default; a turn that attaches a file passes its own sender. */
+  send?: (page: Page, text: string) => Promise<void>
+}
+
+/** The requests of one {@link NativeToolTurn}. */
+export interface NativeToolTurnRequests {
+  /** The step index of the tool step. The answer step is `start + 1`. */
+  start: number
+  /** The request that the tool step answered. It holds the tool catalog that the native client offered. */
+  toolRequest: MockModelRequestRecord
+  /** The request that the answer step answered. It holds the results of the tool calls. */
+  resultRequest: MockModelRequestRecord
+}
+
+/**
+ * Run one native tool turn and return both of its model requests.
+ * The turn allows each native approval through {@link waitForNativeToolSteps}, and it ends after the agent is idle.
+ * A turn that answers a banner or a form between its two steps cannot use this helper.
+ */
+export async function runNativeToolTurn(context: NativeScenarioContext, turn: NativeToolTurn): Promise<NativeToolTurnRequests> {
+  if (turn.toolCalls.length === 0)
+    throw new Error('A native tool turn needs at least one tool call.')
+  const toolStep: MockModelStep = { toolCalls: [...turn.toolCalls], ...(turn.captures ? { captures: { ...turn.captures } } : {}) }
+  const start = await context.modelScript.queue(toolStep, nativeTextStep(context, turn.answer))
+  await (turn.send ?? sendMessage)(context.page, context.modelScript.prompt(turn.prompt))
+  await waitForNativeToolSteps(context, start + 2)
+  return {
+    start,
+    toolRequest: await context.modelScript.requestAt(start),
+    resultRequest: await context.modelScript.requestAt(start + 1),
+  }
+}
+
 /** Read one actual queued tool result. Call arguments cannot prove its returned answer. */
 export async function nativeToolResultAt(modelScript: Pick<ModelScript, 'requestAt'>, stepIndex: number, callId: string): Promise<string> {
   if (!callId)
@@ -88,7 +131,7 @@ export async function nativeFileReadResult(
   excluded: string,
   reader?: NativeToolResultReader,
 ): Promise<string> {
-  const result: NativeToolOutcome = reader ? await reader(request, callId) : { text: nativeToolResult(request, callId) }
+  const result = await nativeToolOutcome({ readToolResult: reader }, request, callId)
   if (result.failed === true || (result.exitCode !== undefined && result.exitCode !== 0))
     throw new Error('The exact native file Read returned a failure.')
   if (!expected || !excluded || expected === excluded || !result.text.includes(expected) || result.text.includes(excluded))
@@ -140,9 +183,7 @@ export async function exerciseShellToolExecution(
       () => waitForNativeToolSteps(context, stepIndex + 2),
     )
     const request = await context.modelScript.requestAt(stepIndex + 1)
-    const result = context.readToolResult
-      ? await context.readToolResult(request, callId)
-      : { text: nativeToolResult(request, callId) }
+    const result = await nativeToolOutcome(context, request, callId)
     expect(result.text).toContain(command.output)
     if (!command.failed) {
       expect(readFileSync(outputFile, 'utf8')).toBe(`${command.output}\n`)

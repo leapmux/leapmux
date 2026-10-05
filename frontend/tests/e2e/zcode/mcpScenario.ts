@@ -10,10 +10,10 @@ import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { openWorkspace, sendMessage } from '../helpers/ui'
+import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 
 /** Build the installed app-server's native project MCP connection request. */
@@ -49,18 +49,10 @@ export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioC
   await expectUnsupportedMcpInput(context, {
     receiptLog,
     callId,
-    invoke: async () => {
-      const start = (await context.modelScript.status()).stepCount
-      await context.modelScript.queue(
-        { toolCalls: [mcpToolCall(context.provider, callId, { server: 'form_probe', tool: 'ask', input: {} })] },
-        { text: 'The actual ZCode MCP refusal reached the next model request.' },
-      )
-      await sendMessage(context.page, context.modelScript.prompt('Call the configured native form_probe ask tool once.'))
-      await waitForNativeToolSteps(context, start + 2)
-      const next = (await context.modelScript.status()).requests.find(request => request.stepIndex === start + 1)
-      if (!next)
-        throw new Error('The actual ZCode MCP refusal reached no next model request.')
-      return next
-    },
+    invoke: async () => (await runNativeToolTurn(context, {
+      toolCalls: [mcpToolCall(context.provider, callId, { server: 'form_probe', tool: 'ask', input: {} })],
+      prompt: 'Call the configured native form_probe ask tool once.',
+      answer: 'The actual ZCode MCP refusal reached the next model request.',
+    })).resultRequest,
   })
 }

@@ -12,9 +12,8 @@ import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
 import { nativeResultBubble } from './nativeResultView'
-import { currentNativeAgent, nativeTextStep } from './nativeScenario'
+import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
-import { nativeToolResult } from './nativeToolResult'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { quotePosixShellArgument } from './shellArguments'
@@ -231,8 +230,7 @@ async function nativeWriteScenario(context: ManagedNativeScenarioContext, option
     before,
     prove: async (request: MockModelRequestRecord) => {
       expect(readFileSync(file, 'utf8')).toBe(after)
-      const result = context.readToolResult ? await context.readToolResult(request, callId) : { text: nativeToolResult(request, callId) }
-      expect(result.text).toContain(output)
+      expect((await nativeToolOutcome(context, request, callId)).text).toContain(output)
     },
   }
 }

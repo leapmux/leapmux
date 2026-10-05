@@ -4,10 +4,10 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, messageBubbles, sendMessage } from '../helpers/ui'
+import { applyPermissionPreset, messageBubbles } from '../helpers/ui'
 
 /** Verify native denial before bypass permits the same actual file write. */
 export async function exerciseCommandCodePermissionLimit(context: ManagedNativeScenarioContext): Promise<void> {
@@ -15,11 +15,12 @@ export async function exerciseCommandCodePermissionLimit(context: ManagedNativeS
   const path = join(agent.workingDir, 'native-permission-target.txt')
   const content = `native computed value: ${40 + 2}\n`
   const write = async (id: string) => {
-    const start = (await context.modelScript.status()).stepCount
-    await context.modelScript.queue({ toolCalls: [writeToolCall(context.provider, id, { path, content })] }, { text: 'The native write attempt completed.' })
-    await sendMessage(context.page, context.modelScript.prompt('Run the supplied native file write.'))
-    await waitForNativeToolSteps(context, start + 2)
-    return nativeToolResult((await context.modelScript.status()).requests.find(record => record.stepIndex === start + 1), id)
+    const turn = await runNativeToolTurn(context, {
+      toolCalls: [writeToolCall(context.provider, id, { path, content })],
+      prompt: 'Run the supplied native file write.',
+      answer: 'The native write attempt completed.',
+    })
+    return nativeToolResult(turn.resultRequest, id)
   }
   await expectNoNativeControl(context, {
     testId: 'control-banner',

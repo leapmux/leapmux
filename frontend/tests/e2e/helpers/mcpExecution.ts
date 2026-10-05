@@ -5,7 +5,7 @@ import type { NativeToolResultReader } from './nativeScenario'
 import { existsSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { readMcpServerReceipt } from './mcpServerReceipt'
-import { nativeToolResult } from './nativeToolResult'
+import { nativeToolOutcome } from './nativeScenario'
 import { mcpToolCall } from './providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from './ui'
 
@@ -33,10 +33,7 @@ export async function exerciseMcpEcho(page: Page, modelScript: ModelScript, prov
   await modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(page)
   const resultRequest = await modelScript.requestAt(start + 1)
-  const result = options.readToolResult
-    ? await options.readToolResult(resultRequest, callId)
-    : { text: nativeToolResult(resultRequest, callId) }
-  expect(result.text).toContain(`MCP_ECHO:${value}`)
+  expect((await nativeToolOutcome(options, resultRequest, callId)).text).toContain(`MCP_ECHO:${value}`)
   if (options.receiptLog) {
     const receipt = readMcpServerReceipt(options.receiptLog)
     expect(receipt.initializeCapabilities).not.toBeNull()

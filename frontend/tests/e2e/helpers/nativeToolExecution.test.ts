@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
+import type { MockModelServer } from './mockModelServer'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -7,9 +8,12 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { stepRequest } from './mockModelScript'
+import { createMockModelServer } from './mockModelServer'
+import { startModelScript } from './modelScriptFixture'
 import { createNativeToolDirectory } from './nativeToolDirectory'
-import { clickNativeToolApproval, exerciseShellToolExecution, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, processNativeToolApproval, waitForNativeToolSteps } from './nativeToolExecution'
+import { clickNativeToolApproval, exerciseShellToolExecution, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, processNativeToolApproval, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
 const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn() }))
@@ -120,6 +124,117 @@ describe('waitForNativeToolSteps', () => {
       current.events.push('capture')
     } })).rejects.toBe(cause)
     expect(current.events).toEqual(['model-completed', 'capture', 'idle'])
+  })
+})
+
+describe('runNativeToolTurn', () => {
+  const servers: MockModelServer[] = []
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map(server => server.close()))
+  })
+
+  /** A real model script, and a page whose approval control is never present. */
+  async function turnContext(options: Pick<NativeScenarioContext, 'textStep'> = {}) {
+    const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
+    servers.push(server)
+    const lifecycle = await startModelScript(server.url)
+    const allow = guardedBrowserHandle<Locator>({ evaluateAll: (async () => false) as unknown as Locator['evaluateAll'] })
+    const page = guardedBrowserHandle<Page>({ locator: () => guardedBrowserHandle<Locator>({ first: () => allow }) })
+    const context: NativeScenarioContext = { page, provider: AgentProvider.CODEX, modelScript: lifecycle.script, ...options }
+    /** Answer one native turn: each request repeats the marked prompt, as a native client does. */
+    const nativeTurn = async (text: string, requests = 2) => {
+      const replies: unknown[] = []
+      for (let index = 0; index < requests; index++) {
+        const response = await fetch(`${server.url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ stream: false, messages: [{ role: 'user', content: text }] }),
+        })
+        expect(response.status).toBe(200)
+        replies.push(await response.json())
+      }
+      return replies
+    }
+    return { context, lifecycle, nativeTurn }
+  }
+
+  it('queues the tool step and the answer after earlier steps, and returns both requests of the turn', async () => {
+    const { context, lifecycle, nativeTurn } = await turnContext()
+    await lifecycle.script.queue({ text: 'An earlier turn.' })
+    await nativeTurn(lifecycle.script.prompt('The earlier prompt.'), 1)
+    const replies: unknown[] = []
+    calls.send.mockImplementation(async (_page: Page, text: string) => {
+      replies.push(...await nativeTurn(text))
+    })
+    const turn = await runNativeToolTurn(context, {
+      toolCalls: [{ id: 'unit-call', name: 'Bash', arguments: { command: 'printf unit' } }],
+      prompt: 'Run the unit tool.',
+      answer: 'The unit tool ended.',
+    })
+    expect(turn.start).toBe(1)
+    expect(turn.toolRequest.stepIndex).toBe(1)
+    expect(turn.resultRequest.stepIndex).toBe(2)
+    expect(JSON.stringify(turn.toolRequest.body)).toContain('Run the unit tool.')
+    expect(JSON.stringify(replies[0])).toContain('unit-call')
+    expect(JSON.stringify(replies[1])).toContain('The unit tool ended.')
+    expect(calls.send).toHaveBeenCalledExactlyOnceWith(context.page, lifecycle.script.prompt('Run the unit tool.'))
+    expect(calls.idle).toHaveBeenCalledOnce()
+    await lifecycle.finish(true)
+  })
+
+  it('answers through the provider text step and captures from the tool request', async () => {
+    const { context, lifecycle, nativeTurn } = await turnContext({ textStep: text => ({ toolCalls: [{ id: 'unit-answer', name: 'answer', arguments: { text } }] }) })
+    const replies: unknown[] = []
+    calls.send.mockImplementation(async (_page: Page, text: string) => {
+      replies.push(...await nativeTurn(text))
+    })
+    const send = vi.fn(async (page: Page, text: string) => calls.send(page, text))
+    await runNativeToolTurn(context, {
+      toolCalls: [{ id: 'unit-read', name: 'Read', arguments: { file_path: '{{target}}' } }],
+      captures: { target: 'Read (\\S+) now' },
+      prompt: 'Read /unit/target.txt now.',
+      answer: 'The provider answer.',
+      send,
+    })
+    expect(send).toHaveBeenCalledExactlyOnceWith(context.page, lifecycle.script.prompt('Read /unit/target.txt now.'))
+    expect(JSON.stringify(replies[0])).toContain('/unit/target.txt')
+    expect(JSON.stringify(replies[1])).toContain('unit-answer')
+    expect(JSON.stringify(replies[1])).toContain('The provider answer.')
+    await lifecycle.finish(true)
+  })
+
+  it('fails with the step of a request that the script does not hold', async () => {
+    const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, ruleMatches: {}, pendingGates: [], unexpectedRequests: [], requests: [{ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 0, body: {} }] }
+    const page = guardedBrowserHandle<Page>({ locator: () => guardedBrowserHandle<Locator>({ first: () => guardedBrowserHandle<Locator>({}) }) })
+    const context: NativeScenarioContext = {
+      page,
+      provider: AgentProvider.CODEX,
+      modelScript: {
+        id: 'dropped-result-request',
+        testDeadline: () => undefined,
+        prompt: text => text,
+        queue: async () => 0,
+        requestAt: async stepIndex => stepRequest(status, stepIndex),
+        rule: async () => {},
+        fallback: async () => {},
+        status: async () => status,
+        waitForSteps: async () => status,
+        waitForGate: async () => status,
+        releaseGate: async () => {},
+        releaseGateIfHeld: async () => false,
+        allowUnconsumed: () => {},
+      },
+    }
+    await expect(runNativeToolTurn(context, { toolCalls: [{ id: 'unit-call', name: 'Bash' }], prompt: 'Run.', answer: 'Done.' }))
+      .rejects
+      .toThrow('The model script holds no request for step 1')
+  })
+
+  it('refuses a turn without a tool call before it queues a step', async () => {
+    const queue = vi.fn(async () => 0)
+    const context = { page: guardedBrowserHandle<Page>({}), provider: AgentProvider.CODEX, modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({ queue }) }
+    await expect(runNativeToolTurn(context, { toolCalls: [], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('at least one tool call')
+    expect(queue).not.toHaveBeenCalled()
   })
 })
 

@@ -6,10 +6,10 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { openGeminiAgent } from '../gemini-fixtures'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
-import { sendMessage, tabById } from '../helpers/ui'
+import { tabById } from '../helpers/ui'
 import { closeAgentViaAPI } from '../helpers/worktree'
 
 /** Reload the actual MCP settings in a new native agent and restore their exact bytes. */
@@ -41,12 +41,10 @@ export async function withGeminiMcp(context: ManagedNativeScenarioContext, serve
 
 /** Return the exact native model request that carries a real MCP result. */
 export async function invokeGeminiMcp(context: ManagedNativeScenarioContext, options: { server: string, tool: string, callId: string, input: Record<string, unknown> }): Promise<MockModelRequestRecord> {
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ toolCalls: [mcpToolCall(context.provider, options.callId, options)] }, { text: 'The native MCP operation completed.' })
-  await sendMessage(context.page, context.modelScript.prompt('Run the scripted native MCP operation.'))
-  await waitForNativeToolSteps(context, start + 2)
-  const request = (await context.modelScript.status()).requests.find(row => row.stepIndex === start + 1)
-  if (!request)
-    throw new Error('The native MCP result reached no following model request.')
-  return request
+  const turn = await runNativeToolTurn(context, {
+    toolCalls: [mcpToolCall(context.provider, options.callId, options)],
+    prompt: 'Run the scripted native MCP operation.',
+    answer: 'The native MCP operation completed.',
+  })
+  return turn.resultRequest
 }

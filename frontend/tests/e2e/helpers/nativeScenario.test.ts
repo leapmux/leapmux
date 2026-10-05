@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import { describe, expect, it, vi } from 'vitest'
-import { nativeLastStepBody, nativeModelBodiesAfter, nativeModelContextText, nativeModelConversationTurns, nativeModelInstructionText, nativeModelLastUserText, nativeModelToolNames, nativeScenarioModelContextText, nativeToolArgumentText, selectedAgentTab } from './nativeScenario'
+import { nativeLastStepBody, nativeModelBodiesAfter, nativeModelContextText, nativeModelConversationTurns, nativeModelInstructionText, nativeModelLastUserText, nativeModelToolNames, nativeScenarioModelContextText, nativeToolArgumentText, nativeToolOutcome, selectedAgentTab } from './nativeScenario'
 
 describe('nativeScenarioModelContextText', () => {
   it('uses the injected reader for the unchanged recorded request', () => {
@@ -25,6 +25,34 @@ describe('nativeScenarioModelContextText', () => {
     const request: MockModelRequestRecord = { protocol: 'openai-responses', path: '/responses', body: { prompt: 'CURRENT_PROMPT' }, serverContext: { conversationId: 'native-service', messages: [{ role: 'user', content: 'PRIOR_PROMPT' }, { role: 'assistant', content: 'PRIOR_ANSWER' }] } }
     expect(nativeScenarioModelContextText({}, request)).toBe(nativeModelContextText(request))
     expect(nativeScenarioModelContextText({}, request)).toContain('PRIOR_ANSWER')
+  })
+})
+
+describe('nativeToolOutcome', () => {
+  const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
+    { role: 'tool', tool_call_id: 'other', content: 'OTHER_RESULT' },
+    { role: 'tool', tool_call_id: 'selected', content: 'GENERIC_RESULT' },
+  ] } }
+
+  it('reads through the provider reader and keeps its failure fields', async () => {
+    const reader = vi.fn(async () => ({ text: 'PROVIDER_RESULT', failed: true, exitCode: 7 }))
+    expect(await nativeToolOutcome({ readToolResult: reader }, request, 'selected')).toEqual({ text: 'PROVIDER_RESULT', failed: true, exitCode: 7 })
+    expect(reader).toHaveBeenCalledExactlyOnceWith(request, 'selected')
+  })
+
+  it.each([{}, { readToolResult: undefined }])('reads the result of the exact call through the generic reader without a provider reader: %j', async (context) => {
+    expect(await nativeToolOutcome(context, request, 'selected')).toEqual({ text: 'GENERIC_RESULT' })
+  })
+
+  it('keeps the failure of the generic reader for an absent call', async () => {
+    await expect(nativeToolOutcome({}, request, 'absent')).rejects.toThrow()
+  })
+
+  it('keeps the failure of the provider reader', async () => {
+    const failure = new Error('The provider result reader failed.')
+    await expect(nativeToolOutcome({ readToolResult: () => {
+      throw failure
+    } }, request, 'selected')).rejects.toBe(failure)
   })
 })
 

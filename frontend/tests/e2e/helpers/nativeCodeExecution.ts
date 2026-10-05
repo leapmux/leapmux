@@ -4,11 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { googleFunctionDeclarations } from './googleModelContent'
-import { nativeModelToolNames, nativeTextStep } from './nativeScenario'
-import { waitForNativeToolSteps } from './nativeToolExecution'
-import { nativeToolResult } from './nativeToolResult'
+import { nativeModelToolNames, nativeToolOutcome } from './nativeScenario'
+import { runNativeToolTurn } from './nativeToolExecution'
 import { codeExecutionToolCall } from './providerToolCalls'
-import { assistantBubbles, sendMessage } from './ui'
+import { assistantBubbles } from './ui'
 
 interface NativeScriptCase {
   label: string
@@ -48,13 +47,13 @@ export async function exerciseNativeCodeExecution(
     const scriptedCallId = `native-code-${index}`
     const call = options.toolCall?.(scriptedCallId, script.source) ?? codeExecutionToolCall(context.provider, scriptedCallId, script.source)
     const callId = call.id
-    const start = await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, `The native ${script.label} script ended.`))
-    await sendMessage(context.page, context.modelScript.prompt(`Run the native ${script.label} script.`))
-    // This wait ends after both steps and after the turn, so each record below is complete.
-    await waitForNativeToolSteps(context, start + 2)
-    const request = await context.modelScript.requestAt(start + 1)
-    await options.catalogProof?.(await context.modelScript.requestAt(start))
-    const result = context.readToolResult ? await context.readToolResult(request, callId) : { text: nativeToolResult(request, callId) }
+    const { toolRequest, resultRequest: request } = await runNativeToolTurn(context, {
+      toolCalls: [call],
+      prompt: `Run the native ${script.label} script.`,
+      answer: `The native ${script.label} script ended.`,
+    })
+    await options.catalogProof?.(toolRequest)
+    const result = await nativeToolOutcome(context, request, callId)
     expect(result.text).toContain(script.expected)
     if (result.failed !== undefined)
       expect(result.failed).toBe(script.failed)

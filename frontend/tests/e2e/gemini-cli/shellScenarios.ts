@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { printfMarkerCommand, quotePosixShellArgument } from '../helpers/shellArguments'
-import { assistantBubbles, sendMessage } from '../helpers/ui'
+import { assistantBubbles } from '../helpers/ui'
 import { readGeminiToolOutput } from './toolResult'
 
 const INJECTION_REFUSAL = 'Command injection detected: command substitution syntax ($(), backticks, <() or >()) found in command arguments. On PowerShell, @() array subexpressions and $() subexpressions are also blocked. This is a security risk and the command was blocked.'
@@ -35,14 +35,14 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
   expect(existsSync(hostileFile)).toBe(false)
   expect(existsSync(safeFile)).toBe(false)
   for (const [index, scenario] of cases.entries()) {
-    const start = (await context.modelScript.status()).stepCount
     const callId = `gemini-shell-${marker}-${index}`
     const answer = `The native ${scenario.name} scenario ended.`
-    await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, callId, scenario.command)] }, { text: answer })
-    await sendMessage(context.page, context.modelScript.prompt(`Run the native ${scenario.name} scenario.`))
-    await waitForNativeToolSteps(context, start + 2)
-    const request = (await context.modelScript.status()).requests.find(row => row.stepIndex === start + 1)
-    const output = readGeminiToolOutput(request, callId)
+    const { resultRequest } = await runNativeToolTurn(context, {
+      toolCalls: [bashToolCall(context.provider, callId, scenario.command)],
+      prompt: `Run the native ${scenario.name} scenario.`,
+      answer,
+    })
+    const output = readGeminiToolOutput(resultRequest, callId)
     expect(output).toContain(scenario.output)
     if (scenario.rejected) {
       expect(output).toBe(INJECTION_REFUSAL)

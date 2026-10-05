@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { nativeMcpCancellation, nativeMcpRefusal, nativeMcpUnansweredInput, readMcpServerReceipt } from './mcpServerReceipt'
 import { expectNoNativeControl } from './nativeControlObservation'
-import { nativeToolResult } from './nativeToolResult'
+import { nativeToolOutcome } from './nativeScenario'
 
 interface McpInputProbe {
   receiptLog: string
@@ -13,10 +13,7 @@ interface McpInputProbe {
 
 /** Read the native tool result of the probe call in the model request that follows it. */
 async function probeToolResult(context: ManagedNativeScenarioContext, request: MockModelRequestRecord, callId: string): Promise<string> {
-  const result = context.readToolResult
-    ? await context.readToolResult(request, callId)
-    : { text: nativeToolResult(request, callId) }
-  return result.text
+  return (await nativeToolOutcome(context, request, callId)).text
 }
 
 /** Prove the actual native client refuses a form and returns that refusal to its model. */

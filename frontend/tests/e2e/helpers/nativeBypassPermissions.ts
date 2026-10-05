@@ -5,8 +5,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { assertPrivateNativePath } from './nativeCredentialIsolation'
-import { currentNativeAgent, nativeTextStep } from './nativeScenario'
-import { nativeToolResult } from './nativeToolResult'
+import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
@@ -55,8 +54,7 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
       await waitForAgentIdle(context.page)
       expect(existsSync(target)).toBe(false)
       const request = await context.modelScript.requestAt(start + 1)
-      const result = context.readToolResult ? await context.readToolResult(request, id) : { text: nativeToolResult(request, id) }
-      expect(result.text).toContain(`${outputPrefix}42`)
+      expect((await nativeToolOutcome(context, request, id)).text).toContain(`${outputPrefix}42`)
     } })
   }
 }

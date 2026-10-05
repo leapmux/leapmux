@@ -7,10 +7,10 @@ import { openAgentViaAPI } from './api'
 import { findBinary } from './binaryOnPath'
 import { writeMcpFormServer } from './mcpFormServer'
 import { withNativeStartupWorker } from './nativeStartupWorker'
-import { waitForNativeToolSteps } from './nativeToolExecution'
+import { runNativeToolTurn } from './nativeToolExecution'
 import { mcpToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
-import { openWorkspace, sendMessage } from './ui'
+import { openWorkspace } from './ui'
 import { expectUnsupportedMcpInput } from './unsupportedMcpInput'
 
 /** Keep the native model configuration while adding one actual local MCP form server. */
@@ -59,15 +59,11 @@ export async function exerciseOpencodeMcpInputLimit(
     await expectUnsupportedMcpInput(privateContext, {
       receiptLog,
       callId,
-      invoke: async () => {
-        const start = await context.modelScript.queue(
-          { toolCalls: [mcpToolCall(context.provider, callId, { server: 'form_probe', tool: 'ask', input: {} })] },
-          { text: 'The actual native MCP refusal returned to the model.' },
-        )
-        await sendMessage(context.page, context.modelScript.prompt('Call the actual local form_probe ask tool once.'))
-        await waitForNativeToolSteps(privateContext, start + 2)
-        return context.modelScript.requestAt(start + 1)
-      },
+      invoke: async () => (await runNativeToolTurn(privateContext, {
+        toolCalls: [mcpToolCall(context.provider, callId, { server: 'form_probe', tool: 'ask', input: {} })],
+        prompt: 'Call the actual local form_probe ask tool once.',
+        answer: 'The actual native MCP refusal returned to the model.',
+      })).resultRequest,
     })
   })
 }

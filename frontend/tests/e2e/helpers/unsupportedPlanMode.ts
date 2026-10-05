@@ -2,9 +2,8 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from './nativeConversation'
-import { currentNativeAgent, nativeModelContextText, nativeTextStep } from './nativeScenario'
+import { currentNativeAgent, nativeModelContextText, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
-import { nativeToolResult } from './nativeToolResult'
 import { bashToolCall } from './providerToolCalls'
 import { messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
 
@@ -24,8 +23,7 @@ export async function exerciseMissingNativePlanMode(context: ManagedNativeScenar
   expect(nativeModelContextText(request)).toContain('/plan')
   expect(nativeModelContextText(request)).toContain(`NOPLANCONTEXT${marker}`)
   const resultRequest = await context.modelScript.requestAt(start + 1)
-  const result = context.readToolResult ? await context.readToolResult(resultRequest, callId) : { text: nativeToolResult(resultRequest, callId) }
-  expect(result.text).toContain(output)
+  expect((await nativeToolOutcome(context, resultRequest, callId)).text).toContain(output)
   await expect(messageContents(context.page).filter({ hasText: output }).first()).toBeVisible()
   for (const reload of options.reload === false ? [false] : [false, true]) {
     if (reload) {
