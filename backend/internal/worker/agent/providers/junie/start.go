@@ -11,7 +11,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
-// The worker disables Junie's update checks and anonymous statistics.
+// The worker disables Junie's update check and download, and its anonymous
+// statistics. The two update switches do not stop the launcher script, which
+// applies a staged update (updates/pending-update.json) before it starts the CLI;
+// no switch reaches that step, so E2E gives the launcher a private data directory.
 // E2E sets JUNIE_HOME to isolate the native store.
 // E2E sets JUNIE_DATA to select the installed binary.
 const (
@@ -65,6 +68,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// Junie reports its goal in session_info_update under _meta.goal.
 				// It reports child lifecycle through subagent_spawned and subagent_state_update.
 				SessionMetadataHandler: a.handleSessionMetadata,
+				// Junie streams the output of a running command in rawOutput.
+				ToolOutput: a.junieToolOutput,
 				ClearProviderState: func() {
 					a.stopChildTails()
 					transcript.Reset()

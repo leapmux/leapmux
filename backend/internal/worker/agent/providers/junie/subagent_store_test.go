@@ -173,6 +173,82 @@ func TestJunieChildTailIgnoresRepeatedSnapshotsAndReadsAReplacement(t *testing.T
 	assert.Len(t, sink.Child(row.ChildAgentID).Messages(), firstCount+2)
 }
 
+// Junie stores the text "The action is in progress." as the result of a tool
+// call that still runs, and replaces it with the real result when the call
+// ends (ACTION_IN_PROGRESS_PLACEHOLDER of AbstractIssueSingleStepAgentWorker).
+// A probe read both values from state.json of the real CLI, with 5 s between
+// them for a child Read. The tail must wait for the real result. A placeholder
+// that counts as the result closes the row for good: the first poll sees the
+// placeholder, and the real result never reaches the child tab.
+func TestJunieChildTailWaitsForTheRealResultOfARunningCall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("JUNIE_HOME", home)
+	const sessionID = "session-260928-061937-xr13"
+	const prompt = "Read a file."
+	const placeholder = "The action is in progress."
+	writeJunieChildState(t, home, sessionID, prompt, placeholder)
+	a, sink := newJunieChildTestAgent(t)
+	a.SetContextForTest(t.Context())
+	a.SetSessionIDForTest(sessionID)
+	a.HandleSessionUpdateForTest(junieSessionUpdate(t, sessionID, map[string]any{
+		"sessionUpdate": "subagent_spawned", "subagentSessionId": junieTestChildSessionID,
+		"name": "leapmux-e2e-child", "task": prompt,
+	}))
+	defer a.stopChildTails()
+	row, ok := sink.BackgroundTask(junieTestChildSessionID)
+	require.True(t, ok)
+	tail := a.childTails[junieTestChildSessionID]
+	require.NotNil(t, tail)
+
+	rows := junieChildMessageContents(sink, row.ChildAgentID)
+	assert.Len(t, rows, 2, "the task and the request of the running call, and no result")
+	assert.NotContains(t, strings.Join(rows, "\n"), placeholder)
+	tail.poll()
+	assert.Len(t, sink.Child(row.ChildAgentID).Messages(), 2, "a repeated placeholder adds no row")
+
+	path := filepath.Join(home, "sessions", sessionID, "state.json")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	replacement := filepath.Join(home, "replacement-state.json")
+	require.NoError(t, os.WriteFile(replacement, bytes.ReplaceAll(data, []byte(placeholder), []byte("REAL_RESULT")), 0o600))
+	require.NoError(t, os.Rename(replacement, path))
+	tail.poll()
+	rows = junieChildMessageContents(sink, row.ChildAgentID)
+	assert.Len(t, rows, 3, "the real result is the one result row")
+	assert.Contains(t, strings.Join(rows, "\n"), "REAL_RESULT")
+	assert.NotContains(t, strings.Join(rows, "\n"), placeholder)
+}
+
+// The two other placeholders of the jar state a call that ended without a real
+// result. They are final, so the child tab shows them as the result.
+func TestJunieChildTailShowsTheFinalPlaceholdersAsResults(t *testing.T) {
+	for _, placeholder := range []string{
+		"The action was cancelled.",
+		"The action was interrupted because the user sent a real-time follow-up message.",
+	} {
+		t.Run(placeholder, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("JUNIE_HOME", home)
+			const sessionID = "session-260928-061937-xr13"
+			const prompt = "Read a file."
+			writeJunieChildState(t, home, sessionID, prompt, placeholder)
+			a, sink := newJunieChildTestAgent(t)
+			a.SetContextForTest(t.Context())
+			a.SetSessionIDForTest(sessionID)
+			a.HandleSessionUpdateForTest(junieSessionUpdate(t, sessionID, map[string]any{
+				"sessionUpdate": "subagent_spawned", "subagentSessionId": junieTestChildSessionID,
+				"name": "leapmux-e2e-child", "task": prompt,
+			}))
+			defer a.stopChildTails()
+			row, ok := sink.BackgroundTask(junieTestChildSessionID)
+			require.True(t, ok)
+			rows := junieChildMessageContents(sink, row.ChildAgentID)
+			assert.Len(t, rows, 3)
+			assert.Contains(t, strings.Join(rows, "\n"), placeholder)
+		})
+	}
+}
+
 func TestJunieChildEventLinkIgnoresUnrelatedFrames(t *testing.T) {
 	t.Parallel()
 	events := junieEventPair(t, junieTestStepID, "agent-1", "task-1", "leapmux-e2e-child", "Read a file.")

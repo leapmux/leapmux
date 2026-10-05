@@ -23,6 +23,8 @@ junieTest.describe('Junie attachments and context usage', () => {
     await sendWithAttachment(page, modelScript.prompt('Inspect the image.'))
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expectNativeAttachmentProof(page, status, 'image', sourcePath)
+    // Junie decodes the PNG with Java ImageIO and writes a new PNG (ImageContentHelper.adjustImageData), so the pixels
+    // stay and the bytes change. The current user turn must carry an image/png part with the four quadrant colors.
+    await expectNativeAttachmentProof(page, status, 'image', sourcePath, 'openai-chat-completions', { transcodedImageType: 'image/png' })
   })
 })

@@ -1,8 +1,7 @@
 import { JUNIE_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
-import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
-import { exerciseNativePlanReview } from './planScenarios'
+import { exerciseNativePlanReview, exerciseNativePlanRevision, expectNativePlanToolCatalog } from './planScenarios'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie settings', () => {
@@ -46,17 +45,16 @@ junieTest.describe('Junie settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Plan')
 
-    const selected = await exerciseNativePlanReview(context, { selectMode: false, callPrefix: 'junie-selected-mode' })
-    expect(nativeModelToolNames(selected)).toContain('submit')
-    expect(nativeModelToolNames(selected)).not.toContain('answer')
-    await chooseSettingsOption(page, 'permissionMode-plan')
-    await waitForSettingsIdle(page)
+    // The first review denies its plan. Approval ends Plan mode in Junie, and Junie can then answer the
+    // next planning prompt with the question "You already have a plan in this session". That prompt waits
+    // for a reply and sends no model request. A denied plan keeps Junie in Plan mode and raises no question.
+    const selected = await exerciseNativePlanRevision(context, { callPrefix: 'junie-selected-mode' })
+    expectNativePlanToolCatalog(selected)
 
     await page.reload()
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Plan')
-    const restored = await exerciseNativePlanReview(context, { selectMode: false, callPrefix: 'junie-restored-mode' })
-    expect(nativeModelToolNames(restored)).toContain('submit')
-    expect(nativeModelToolNames(restored)).not.toContain('answer')
+    const restored = await exerciseNativePlanReview(context, { selectMode: false, callPrefix: 'junie-restored-mode', housekeepingRegistered: true })
+    expectNativePlanToolCatalog(restored)
   })
 })

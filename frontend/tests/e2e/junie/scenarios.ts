@@ -4,16 +4,21 @@ import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { JUNIE_ANSWER_TOOL, junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 
 /** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
-export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep'>): Promise<ManagedNativeScenarioContext> {
+export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep' | 'answerToolNames'>): Promise<ManagedNativeScenarioContext> {
   await context.modelScript.rule(
     { name: 'junie-native-capability', when: { system: 'capability filter agent' }, respond: { text: '' } },
     { name: 'junie-native-title', when: { system: 'task description summarizer' }, respond: { text: 'Native scenario' } },
   )
-  return { ...context, provider: AgentProvider.JUNIE, textStep: (text: string) => ({ toolCalls: [junieAnswerToolCall(`junie-answer-${randomUUID()}`, text)] }) }
+  return {
+    ...context,
+    provider: AgentProvider.JUNIE,
+    textStep: (text: string) => ({ toolCalls: [junieAnswerToolCall(`junie-answer-${randomUUID()}`, text)] }),
+    answerToolNames: [JUNIE_ANSWER_TOOL],
+  }
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

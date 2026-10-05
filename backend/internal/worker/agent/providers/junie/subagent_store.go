@@ -95,6 +95,32 @@ type junieStoredToolResult struct {
 	} `json:"images"`
 }
 
+// junieActionInProgressPlaceholder is the text that Junie stores as the result
+// of a tool call that still runs. It replaces the text with the real result when
+// the call ends (ACTION_IN_PROGRESS_PLACEHOLDER of AbstractIssueSingleStepAgentWorker).
+// The two other placeholders of the jar, "The action was cancelled." and "The
+// action was interrupted because the user sent a real-time follow-up message.",
+// state a call that ended, so they stay results.
+const junieActionInProgressPlaceholder = "The action is in progress."
+
+// isActionInProgress reports whether the stored result is the placeholder of a
+// call that still runs, and no real result yet.
+func (r *junieStoredToolResult) isActionInProgress() bool {
+	if r == nil || len(r.Images) > 0 {
+		return false
+	}
+	return r.text() == junieActionInProgressPlaceholder
+}
+
+// text returns the text of the result. Junie states it in `text`, and in
+// `content` when it states no `text`.
+func (r *junieStoredToolResult) text() string {
+	if r.Text != "" {
+		return r.Text
+	}
+	return r.Content
+}
+
 type junieToolRecord struct {
 	callID string
 	name   string
@@ -259,7 +285,13 @@ func junieChildToolRecords(data []byte, link junieChildLink, childName, prompt s
 			if !json.Valid(input) {
 				return nil, errors.New("junie child tool input is not JSON")
 			}
-			out = append(out, junieToolRecord{callID: call.CallID, name: call.Name, input: input, result: record.Result})
+			// A call that still runs has no result yet. The placeholder must not close
+			// the row, because the real result replaces it in a later snapshot.
+			result := record.Result
+			if result.isActionInProgress() {
+				result = nil
+			}
+			out = append(out, junieToolRecord{callID: call.CallID, name: call.Name, input: input, result: result})
 		}
 	}
 	return out, nil
@@ -573,11 +605,7 @@ func junieToolRequestUpdate(record junieToolRecord) ([]byte, error) {
 
 func junieToolResultUpdate(record junieToolRecord) ([]byte, error) {
 	var content []map[string]any
-	text := record.result.Text
-	if text == "" {
-		text = record.result.Content
-	}
-	if text != "" {
+	if text := record.result.text(); text != "" {
 		content = append(content, map[string]any{
 			"type": "content", "content": map[string]string{"type": "text", "text": text},
 		})
