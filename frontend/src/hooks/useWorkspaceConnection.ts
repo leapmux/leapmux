@@ -357,7 +357,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         setWorkerOnline(wid, true)
       const current = view.getAgentTab(agentId)
       if (current?.agentStatus === AgentStatus.INACTIVE) {
-        metadata.patch(agentId, { agentStatus: AgentStatus.ACTIVE })
+        // A status that the live stream wrote, like a statusChange event: a
+        // ListAgents reply in flight holds an older answer. See
+        // `TabMetadataStore.liveStatusEpoch`.
+        metadata.patchLiveStatus(agentId, { agentStatus: AgentStatus.ACTIVE })
       }
     }
 

@@ -23,6 +23,7 @@ import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.sto
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { LIVE_STATUS_FIELDS } from '~/stores/tab.helpers'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -931,6 +932,19 @@ describe('buildAgentStatusTabUpdate', () => {
       {},
     )
     expect(failed.startupError).toBe('spawn failed')
+  })
+
+  // `withoutLiveStatusFields` strips LIVE_STATUS_FIELDS from a ListAgents reply
+  // that a live event overtook. A field that this builder writes beside the
+  // status and that the list misses would let the older reply overwrite it.
+  it('writes exactly the fields in LIVE_STATUS_FIELDS beside the status', () => {
+    const written = new Set<string>()
+    for (const status of [AgentStatus.ACTIVE, AgentStatus.INACTIVE, AgentStatus.STARTING, AgentStatus.STARTUP_FAILED]) {
+      const sc = { status, agentSessionId: 's1', startupError: 'e', startupMessage: 'm', supportsSteering: true, supportsPreemption: true } as unknown as AgentStatusChange
+      for (const key of Object.keys(buildAgentStatusTabUpdate(sc, true, {})))
+        written.add(key)
+    }
+    expect([...written].sort()).toEqual([...LIVE_STATUS_FIELDS].sort())
   })
 
   it('derives repo identity from a gitStatus payload (a git-only push)', () => {
@@ -2201,6 +2215,39 @@ describe('extracted handleAgentEvent branch handlers', () => {
         handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
         expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
         expect(online).toBe(true)
+        dispose()
+      })
+    })
+
+    // A ListAgents reply that is in flight compares this count across the call
+    // (see TabMetadataStore.liveStatusEpoch). The event that carries a status
+    // must advance it. A status-less push must not, or the reply would lose the
+    // status that no event replaced.
+    it('counts an event that carries a status, and only that', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.STARTING })
+        const statusEvent = { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
+        const gitOnly = { agentId: 'a1', status: AgentStatus.UNSPECIFIED, workerOnline: false, optionGroups: [], gitStatus: { toplevel: '/repo', branch: 'main', originUrl: '', isWorktree: false } } as unknown as AgentStatusChange
+
+        expect(s.metadata.liveStatusEpoch('a1')).toBe(0)
+        handleAgentStatusChange('a1', gitOnly, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.metadata.liveStatusEpoch('a1'), 'a git-only push').toBe(0)
+        handleAgentStatusChange('a1', statusEvent, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.metadata.liveStatusEpoch('a1'), 'a status event').toBe(1)
+        handleAgentStatusChange('a1', statusEvent, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.metadata.liveStatusEpoch('a1'), 'the same status again').toBe(2)
+        dispose()
+      })
+    })
+
+    it('counts a catch-up status marker too', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.STARTING })
+        const marker = { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
+        handleAgentStatusChange('a1', marker, 'catchingUp', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.metadata.liveStatusEpoch('a1')).toBe(1)
         dispose()
       })
     })

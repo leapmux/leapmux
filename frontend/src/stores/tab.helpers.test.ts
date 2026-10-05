@@ -15,7 +15,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps, withoutLiveStatusFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1150,5 +1150,63 @@ describe('canCloseTab and canRenameTab', () => {
   it('treats an absent archived flag as not archived', () => {
     expect(canCloseTab(undefined)).toBe(true)
     expect(canRenameTab(undefined, agent)).toBe(true)
+  })
+})
+
+describe('withoutLiveStatusFields', () => {
+  const full: Partial<AgentTab> = {
+    workerId: 'w1',
+    workingDir: '/repo',
+    title: 'Agent Liz',
+    agentStatus: AgentStatus.STARTING,
+    agentSessionId: 's1',
+    supportsSteering: true,
+    supportsPreemption: true,
+    startupError: 'e',
+    startupMessage: 'Starting Claude Code…',
+    optionValues: { model: 'opus' },
+  }
+
+  it('removes every lifecycle field that a live status event owns', () => {
+    const kept = withoutLiveStatusFields(full)
+    for (const key of LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  it('keeps the identity and the settings of the tab', () => {
+    expect(withoutLiveStatusFields(full)).toEqual({
+      workerId: 'w1',
+      workingDir: '/repo',
+      title: 'Agent Liz',
+      optionValues: { model: 'opus' },
+    })
+  })
+
+  it('does not change its argument', () => {
+    const before = { ...full }
+    withoutLiveStatusFields(full)
+    expect(full).toEqual(before)
+  })
+
+  it('accepts fields that carry none of them', () => {
+    expect(withoutLiveStatusFields({})).toEqual({})
+  })
+
+  it('removes the lifecycle fields that protoToAgentTabFields writes from a reply', () => {
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
+      id: 'a1',
+      status: AgentStatus.STARTING,
+      agentSessionId: 's1',
+      startupMessage: 'Starting Claude Code…',
+      supportsSteering: true,
+      supportsPreemption: true,
+      title: 'Agent Liz',
+    }))
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining([...LIVE_STATUS_FIELDS.filter(k => k !== 'startupError')]))
+
+    const kept = withoutLiveStatusFields(fields)
+    for (const key of LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+    expect(kept.title).toBe('Agent Liz')
   })
 })

@@ -62,11 +62,13 @@ func installBlockingGit(t *testing.T) (started, release string) {
 }
 
 // A process that runs has stored its native session ID, because startup stores the ID
-// before the Manager registers the process. ListAgents reads the rows, then runs git
-// for each working directory, then asks whether the process runs. A startup that
-// completes in the middle of that work left a row from before it, beside a process
-// from after it: an ACTIVE agent with no session ID. A picker that reopens a session
-// compares the ID of that row with the stored one, and failed on the empty ID.
+// before the Manager registers the process. ListAgents reads the rows, runs git for
+// each working directory, asks whether the process runs, and then reads the rows of
+// the running agents again. A startup that completes in the middle of that work left
+// a row from before it, beside a process from after it: an ACTIVE agent with no
+// session ID. A picker that reopens a session compares the ID of that row with the
+// stored one, and failed on the empty ID. The second read of the rows follows the
+// process check, so it states the ID that the process owns.
 func TestListAgents_AnActiveAgentStatesTheSessionThatItsStartupStored(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	svc, d, w := setupTestService(t)

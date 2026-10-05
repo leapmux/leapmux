@@ -266,6 +266,90 @@ describe('tabMetadata', () => {
     })
   })
 
+  /**
+   * The count of live status events that a tab applied. A reader that fetches a
+   * snapshot compares it across the request to learn whether the live stream
+   * wrote a status while the reply was in flight.
+   */
+  describe('patchLiveStatus and liveStatusEpoch', () => {
+    it('is zero for a tab that applied no event', () => {
+      const m = createTabMetadataStore()
+      expect(m.liveStatusEpoch('a1')).toBe(0)
+      m.patch('a1', { title: 'One' })
+      expect(m.liveStatusEpoch('a1')).toBe(0)
+    })
+
+    it('writes the fields like patch does and advances the epoch by one per event', () => {
+      const m = createTabMetadataStore()
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.STARTING, title: 'One' })
+      expect(m.get('a1')).toEqual({ agentStatus: AgentStatus.STARTING, title: 'One' })
+      expect(m.liveStatusEpoch('a1')).toBe(1)
+
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      expect(m.get('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      expect(m.get('a1')?.title).toBe('One')
+      expect(m.liveStatusEpoch('a1')).toBe(2)
+    })
+
+    // The worker re-ships its whole status on every push, so an event often
+    // repeats the status that the tab holds. A reply that was in flight is still
+    // older than that event, so the epoch counts events and not changes.
+    it('counts an event that repeats the stored status', () => {
+      const m = createTabMetadataStore()
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      expect(m.liveStatusEpoch('a1')).toBe(2)
+    })
+
+    it('does not advance on patch, patchExisting, or patchMatching', () => {
+      const m = createTabMetadataStore()
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      m.patch('a1', { agentStatus: AgentStatus.INACTIVE })
+      m.patchExisting('a1', { agentStatus: AgentStatus.STARTING })
+      m.patchMatching(() => true, { agentStatus: AgentStatus.ACTIVE })
+      expect(m.liveStatusEpoch('a1')).toBe(1)
+    })
+
+    it('counts each tab on its own', () => {
+      const m = createTabMetadataStore()
+      m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+      expect(m.liveStatusEpoch('a1')).toBe(1)
+      expect(m.liveStatusEpoch('a2')).toBe(0)
+    })
+
+    it('does not make the epoch reactive state', () => {
+      createRoot((dispose) => {
+        const m = createTabMetadataStore()
+        m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+        let runs = 0
+        createEffect(() => {
+          void m.get('a1')?.agentStatus
+          runs += 1
+        })
+        const baseline = runs
+        // The same status again: the row is equal, so no reader re-runs.
+        m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
+        expect(runs).toBe(baseline)
+        expect(m.liveStatusEpoch('a1')).toBe(2)
+        dispose()
+      })
+    })
+
+    it('resets when the row is removed or dropped', () => {
+      const m = createTabMetadataStore()
+      m.patchLiveStatus('removed', { agentStatus: AgentStatus.ACTIVE })
+      m.patchLiveStatus('dropped', { agentStatus: AgentStatus.ACTIVE })
+      m.patchLiveStatus('kept', { agentStatus: AgentStatus.ACTIVE })
+
+      m.remove('removed')
+      m.dropTabs(new Set(['dropped']))
+
+      expect(m.liveStatusEpoch('removed')).toBe(0)
+      expect(m.liveStatusEpoch('dropped')).toBe(0)
+      expect(m.liveStatusEpoch('kept')).toBe(1)
+    })
+  })
+
   describe('remove', () => {
     it('drops the row', () => {
       const m = createTabMetadataStore()

@@ -1,12 +1,19 @@
 /// <reference types="vitest/globals" />
+import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
+import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
+import { AgentActivityState, AgentStatus, AgentStatusChangeSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { GitRepoStatusSchema, TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { handleAgentStatusChange } from '~/hooks/agentEvents'
+import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { setCRDTBridge } from '~/lib/crdt'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
+import { createAgentSessionStore } from '~/stores/agentSession.store'
+import { createChatStore } from '~/stores/chat.store'
+import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { isFileTab, isImageTab } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
@@ -80,6 +87,51 @@ function terminalInfo(id: string, over: Record<string, unknown> = {}) {
     startupMessage: '',
     ...over,
   }
+}
+
+/**
+ * A reply that the test settles by hand, so a live event can land while the
+ * `ListAgents` call is in flight.
+ */
+function heldReply() {
+  let settle!: (reply: unknown) => void
+  const promise = new Promise<unknown>((resolve) => {
+    settle = resolve
+  })
+  return { promise, settle }
+}
+
+/**
+ * A live status event for `agentId`, applied through the production handler:
+ * the same function that the WatchEvents stream feeds.
+ */
+function applyLiveStatus(
+  s: Pick<ReturnType<typeof createTestTabStores>, 'view' | 'metadata' | 'selection'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
+  agentId: string,
+  event: { status: AgentStatus, gitStatus?: GitRepoStatus },
+) {
+  handleAgentStatusChange(
+    agentId,
+    create(AgentStatusChangeSchema, {
+      agentId,
+      workerOnline: true,
+      status: event.status,
+      ...(event.gitStatus !== undefined ? { gitStatus: event.gitStatus } : {}),
+    }),
+    'live',
+    {
+      agentSessionStore: createAgentSessionStore(),
+      chatStore: createChatStore(),
+      view: s.view,
+      metadata: s.metadata,
+      selection: s.selection,
+      getActiveWorkspaceId: () => 'ws-test',
+      controlStore: createControlStore(),
+      repoGitStore: s.repoGitStore,
+    },
+    createLoadingSignal(),
+    () => {},
+  )
 }
 
 /**
@@ -323,6 +375,167 @@ describe('useTabHydrators', () => {
 
       expect(mockListAgents).not.toHaveBeenCalled()
       d()
+    })
+  })
+
+  // The worker reads the status of an agent when it builds the reply, and the
+  // reply then travels behind the events that the worker broadcast meanwhile. A
+  // client that watches the agent applies those events first. The reply holds an
+  // older answer than they do, so it must not move the status back: nothing sends
+  // the status again, and a tab that a stale STARTING reply reached shows "Starting"
+  // and holds the file tree back for as long as the page lives.
+  describe('agent status that a live event set while the reply was in flight', () => {
+    async function mountWithHeldReply(tabIds: string[], reply: ReturnType<typeof heldReply>) {
+      mockListAgents.mockReturnValue(reply.promise)
+      const s = setup()
+      const dispose = createRoot((d) => {
+        for (const id of tabIds)
+          s.add(TabType.AGENT, id)
+        s.mount()
+        return d
+      })
+      await flush()
+      await flush()
+      expect(mockListAgents, 'the call is in flight').toHaveBeenCalledTimes(1)
+      return { s, dispose }
+    }
+
+    it('keeps the ACTIVE status that a live event set over a STARTING reply', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+      applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE })
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+
+      reply.settle({
+        agents: [agentInfo('a1', { status: AgentStatus.STARTING, startupMessage: 'Starting Claude Code…' })],
+        verdicts: [],
+      })
+      await flush()
+      await flush()
+
+      const tab = s.view.getAgentTab('a1')
+      expect(tab?.agentStatus, 'the older reply must not move the tab back to STARTING').toBe(AgentStatus.ACTIVE)
+      expect(tab?.startupMessage, 'the phase label of the older answer must not return').toBeFalsy()
+      expect(s.metadata.get('a1')?.hydrated, 'the reply still answers for the tab').toBe(true)
+      dispose()
+    })
+
+    it('still writes what the status event does not own', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+      applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE })
+      reply.settle({
+        agents: [agentInfo('a1', { status: AgentStatus.STARTING, title: 'Agent Liz', workingDir: '/repo' })],
+        verdicts: [],
+      })
+      await flush()
+      await flush()
+
+      const tab = s.view.getAgentTab('a1')
+      expect(tab?.title).toBe('Agent Liz')
+      expect(tab?.workingDir).toBe('/repo')
+      dispose()
+    })
+
+    it('keeps the INACTIVE status that a live event set over an ACTIVE reply', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+      applyLiveStatus(s, 'a1', { status: AgentStatus.INACTIVE })
+      reply.settle({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      await flush()
+      await flush()
+
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
+      dispose()
+    })
+
+    it('applies the reply status when the live event came before the call', async () => {
+      // The worker read the status after that event, so the reply is the newer answer.
+      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { status: AgentStatus.INACTIVE })], verdicts: [] })
+      const s = setup()
+      const dispose = createRoot((d) => {
+        s.add(TabType.AGENT, 'a1')
+        applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE })
+        s.mount()
+        return d
+      })
+      await flush()
+      await flush()
+
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
+      dispose()
+    })
+
+    it('applies the reply status when the live event carried no status', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithHeldReply(['a1'], reply)
+
+      // A git-only push has no status to take the reply's place.
+      applyLiveStatus(s, 'a1', {
+        status: AgentStatus.UNSPECIFIED,
+        gitStatus: create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' }),
+      })
+      reply.settle({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      await flush()
+      await flush()
+
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      dispose()
+    })
+
+    it('holds back only the tab that the live event reached', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithHeldReply(['a1', 'a2'], reply)
+
+      applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE })
+      reply.settle({
+        agents: [
+          agentInfo('a1', { status: AgentStatus.STARTING }),
+          agentInfo('a2', { status: AgentStatus.STARTING }),
+        ],
+        verdicts: [],
+      })
+      await flush()
+      await flush()
+
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      expect(s.view.getAgentTab('a2')?.agentStatus, 'a tab with no live event takes its reply').toBe(AgentStatus.STARTING)
+      dispose()
+    })
+
+    it('holds back a re-ask reply that a live event overtook', async () => {
+      const s = setup()
+      const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
+      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      const dispose = createRoot((d) => {
+        s.add(TabType.AGENT, 'a1')
+        s.mount(() => online())
+        return d
+      })
+      await flush()
+      await flush()
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+
+      // The link drops and returns, and the re-ask reply is held.
+      const reply = heldReply()
+      mockListAgents.mockReturnValue(reply.promise)
+      setOnline(new Set<string>())
+      await flush()
+      setOnline(new Set(['w1']))
+      await flush()
+      await flush()
+
+      // The worker restarts the agent and the stream reports each end of it.
+      applyLiveStatus(s, 'a1', { status: AgentStatus.INACTIVE })
+      reply.settle({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      await flush()
+      await flush()
+
+      expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
+      dispose()
     })
   })
 

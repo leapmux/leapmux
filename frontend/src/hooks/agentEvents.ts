@@ -930,5 +930,14 @@ function applyAgentStatusTabUpdate(
     : {})
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
   // Consolidate every per-status field into one patch so the row is written once.
-  metadata.patch(sc.agentId, buildAgentStatusTabUpdate(sc, sc.status !== AgentStatus.UNSPECIFIED, settingsFields))
+  //
+  // An event that carries a status is counted: a `ListAgents` reply that was in
+  // flight meanwhile holds an older answer and must not replace it. See
+  // `TabMetadataStore.liveStatusEpoch`.
+  const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+  const update = buildAgentStatusTabUpdate(sc, hasStatus, settingsFields)
+  if (hasStatus)
+    metadata.patchLiveStatus(sc.agentId, update)
+  else
+    metadata.patch(sc.agentId, update)
 }

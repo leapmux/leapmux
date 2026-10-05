@@ -380,15 +380,30 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			found[agents[i].ID] = true
 		}
 
+		// Run git FIRST. It is the one slow step of this call: a large working
+		// tree takes seconds. The reply leaves the Worker after the last step, and
+		// the client takes it as the state of the agent. A status that the call read
+		// before git is older than every event that the Worker broadcast while git
+		// ran. A client that applied such an event, such as the ACTIVE at the end of
+		// a startup, then takes the older reply over it, and nothing sends the event
+		// again. The status below is therefore read after git, with no slow step
+		// between the read and the reply.
+		//
+		// The row of an agent never changes its working directory, so the rows
+		// that this call read first give the same directories as a refreshed row.
+		workingDirs := make([]string, len(agents))
+		for i := range agents {
+			workingDirs[i] = agents[i].WorkingDir
+		}
+		gitStatuses := gitutil.BatchGetGitStatus(ctx, workingDirs)
+
 		// A child tab derives ACTIVE from its feeding (root) process; a root tab
 		// from its own. ListAgentsByIDs returns only closed_at IS NULL rows, so a
 		// child here is an open transcript whose status tracks its owner process.
 		//
-		// Read the runtime state of every agent FIRST, and keep it until the
-		// status is built. The registry comes before the process inside each
-		// sample, for the reason that agentLiveness states. A status that read the
-		// registry after git ran reported INACTIVE for a startup that ended while
-		// git ran.
+		// Read the runtime state of every agent now, and keep it until the status
+		// is built. The registry comes before the process inside each sample, for
+		// the reason that agentLiveness states.
 		live := make([]agentLiveness, len(agents))
 		running := make([]bool, len(agents))
 		for i := range agents {
@@ -405,12 +420,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendInternalError(sender, "failed to list agents")
 			return
 		}
-
-		workingDirs := make([]string, len(agents))
-		for i := range agents {
-			workingDirs[i] = agents[i].WorkingDir
-		}
-		gitStatuses := gitutil.BatchGetGitStatus(ctx, workingDirs)
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {

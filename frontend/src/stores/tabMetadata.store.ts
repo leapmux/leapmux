@@ -439,6 +439,19 @@ export function createTabMetadataStore() {
   const [state, setState] = createStore<{ byTabId: Record<string, TabMetadata> }>({ byTabId: seedByTabId })
   let mruCounter = seedMax
 
+  // How many live status events each tab has applied. Plain data, not store state:
+  // no reader renders it, and a counter that sits in a reactive row would turn every
+  // repeated status push into a write that `sameStoredValue` could not drop.
+  const liveStatusEpochs = new Map<string, number>()
+
+  const patch = (tabId: string, fields: TabMetadata) => {
+    setState(produce((s) => {
+      const existing = s.byTabId[tabId] ?? {}
+      mergeDefined(existing, fields)
+      s.byTabId[tabId] = existing
+    }))
+  }
+
   return {
     state,
 
@@ -451,12 +464,36 @@ export function createTabMetadataStore() {
      * Undefined values are skipped rather than written, so a partial update from
      * one source (say a git-status event) can't blank fields another source owns.
      */
-    patch(tabId: string, fields: TabMetadata) {
-      setState(produce((s) => {
-        const existing = s.byTabId[tabId] ?? {}
-        mergeDefined(existing, fields)
-        s.byTabId[tabId] = existing
-      }))
+    patch,
+
+    /**
+     * `patch` for a status event that the worker pushed on the live stream. It is
+     * the only writer that advances {@link liveStatusEpoch}.
+     *
+     * Call it for an event that carries a status. An event with no status (a
+     * git-only update) goes through `patch`: it does not answer the question that
+     * a snapshot answers.
+     */
+    patchLiveStatus(tabId: string, fields: TabMetadata) {
+      patch(tabId, fields)
+      liveStatusEpochs.set(tabId, (liveStatusEpochs.get(tabId) ?? 0) + 1)
+    },
+
+    /**
+     * How many live status events this tab has applied. The value changes when one
+     * more event lands, and for no other reason.
+     *
+     * A reader that fetches a snapshot of the worker's state (`ListAgents`) reads
+     * it before it sends the request, and again when the reply lands. A different
+     * value means the live stream wrote a status while the reply was in flight.
+     * The worker read the snapshot before it sent those events, so the reply holds
+     * the older answer and must not replace the status. Nothing sends the status
+     * again, so the tab would keep the older one for as long as the page lives.
+     *
+     * Zero for a tab that applied no event, and for a tab that was removed.
+     */
+    liveStatusEpoch(tabId: string): number {
+      return liveStatusEpochs.get(tabId) ?? 0
     },
 
     /**
@@ -507,6 +544,7 @@ export function createTabMetadataStore() {
       setState(produce((s) => {
         delete s.byTabId[tabId]
       }))
+      liveStatusEpochs.delete(tabId)
       persistMru(state.byTabId)
     },
 
@@ -535,6 +573,8 @@ export function createTabMetadataStore() {
         for (const tabId of retired)
           delete s.byTabId[tabId]
       }))
+      for (const tabId of retired)
+        liveStatusEpochs.delete(tabId)
       persistMru(state.byTabId)
     },
 

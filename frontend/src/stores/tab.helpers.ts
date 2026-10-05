@@ -230,6 +230,36 @@ export function protoToAgentTabFields(
 }
 
 /**
+ * The tab fields that a live status event writes beside the status itself. Each
+ * one states the lifecycle of the agent at the moment of the event.
+ * `buildAgentStatusTabUpdate` writes exactly these, and `tab.helpers.test.ts`
+ * fails when the two lists differ.
+ */
+export const LIVE_STATUS_FIELDS = [
+  'agentStatus',
+  'agentSessionId',
+  'supportsSteering',
+  'supportsPreemption',
+  'startupError',
+  'startupMessage',
+] as const satisfies readonly (keyof AgentTab)[]
+
+/**
+ * `fields` without the lifecycle fields that a live status event owns.
+ *
+ * A `ListAgents` reply states the lifecycle as the worker read it before the
+ * reply left. When the live stream wrote a status in the meantime (see
+ * `TabMetadataStore.liveStatusEpoch`), the reply holds the older answer, and
+ * only the rest of it still applies: the identity and the settings of the tab.
+ */
+export function withoutLiveStatusFields(fields: Partial<AgentTab>): Partial<AgentTab> {
+  const kept = { ...fields }
+  for (const key of LIVE_STATUS_FIELDS)
+    delete kept[key]
+  return kept
+}
+
+/**
  * Resolve an agent tab's ROOT main agent id. The wire-provided rootAgentId
  * (AgentInfo.root_agent_id, hydrated onto the tab) wins when present: the
  * backend already walked the parent_agent_id chain server-side, so the registry

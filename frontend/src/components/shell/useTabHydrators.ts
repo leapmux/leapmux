@@ -12,7 +12,7 @@ import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { tabPayloadView } from '~/lib/tabPayload'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
-import { protoToAgentTabFields, tabKey, terminalMetadata } from '~/stores/tab.helpers'
+import { protoToAgentTabFields, tabKey, terminalMetadata, withoutLiveStatusFields } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
@@ -555,6 +555,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || reaskAgentTabIds().has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
+      // Read before the request leaves. The worker builds the reply after that, and
+      // the live stream can write a status to a tab while the reply is in flight.
+      // See `TabMetadataStore.liveStatusEpoch`.
+      const epochBefore = new Map(tabs.map(t => [t.id, opts.metadata.liveStatusEpoch(t.id)]))
       const resp = await listAgents(workerId, { tabIds: tabs.map(t => t.id) })
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
@@ -595,7 +599,11 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           agent.optionGroups,
           opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
         )
-        opts.metadata.patch(tab.id, { ...fields, ...settingsFields })
+        // The reply holds the lifecycle as the worker read it before the reply left. A
+        // status event that landed since is newer, and nothing sends it again, so
+        // the reply keeps what the live stream wrote and gives only the rest.
+        const liveStatusLanded = opts.metadata.liveStatusEpoch(tab.id) !== epochBefore.get(tab.id)
+        opts.metadata.patch(tab.id, { ...(liveStatusLanded ? withoutLiveStatusFields(fields) : fields), ...settingsFields })
         // Hydration, not a transition, so it seeds and raises nothing. This
         // batch runs when a tab first appears and on an explicit re-ask, never
         // as a poll, so an agent that settled between the two is not news the
