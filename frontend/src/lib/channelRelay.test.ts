@@ -2,9 +2,10 @@ import type { ChannelSocket } from './channelRelay'
 import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { HUB_CONTROL_CHANNEL_ID } from '~/generated/contracts/wire'
 import { ChannelMessageSchema, HubControlFrameSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
-import { ChannelRelay, HUB_CONTROL_CHANNEL_ID } from './channelRelay'
+import { ChannelRelay } from './channelRelay'
 
 function frame(msg: ChannelMessage): ArrayBuffer {
   const data = toBinary(ChannelMessageSchema, msg)

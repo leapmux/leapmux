@@ -1071,28 +1071,28 @@ func (m *Manager) getConnSender(userID, connID string) SendFunc {
 	return uc.sendFn
 }
 
-// sendCloseNotification sends a channel-close notification to a single sender.
-// Uses the CLOSE flag as the close sentinel.
-func sendCloseNotification(sender SendFunc, channelID string) {
-	if sender == nil {
-		return
-	}
-	closeMsg := &leapmuxv1.ChannelMessage{
+// CloseNotification builds the frame that tells a frontend a channel is closed.
+// The CLOSE flag is the sentinel, and the frame carries no ciphertext.
+func CloseNotification(channelID string) *leapmuxv1.ChannelMessage {
+	return &leapmuxv1.ChannelMessage{
 		ProtocolVersion: contracts.ProtocolVersion,
 		ChannelId:       channelID,
 		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
 	}
-	if err := sender(closeMsg); err != nil {
+}
+
+// sendCloseNotification sends a channel-close notification to a single sender.
+func sendCloseNotification(sender SendFunc, channelID string) {
+	if sender == nil {
+		return
+	}
+	if err := sender(CloseNotification(channelID)); err != nil {
 		slog.Debug("failed to send channel close notification",
 			"channel_id", channelID,
 			"error", err,
 		)
 	}
 }
-
-// HubControlChannelID is the reserved channel ID used for Hub-originated
-// control frames sent to frontends via the existing /ws/channel WebSocket.
-const HubControlChannelID = "_hub"
 
 // SendToUser sends a ChannelMessage to all WebSocket connections of a specific user.
 func (m *Manager) SendToUser(userID string, msg *leapmuxv1.ChannelMessage) {

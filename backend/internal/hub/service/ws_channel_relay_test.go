@@ -552,6 +552,58 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	}
 }
 
+// A frame for a channel the Hub does not hold must come back as that channel's
+// CLOSE frame. A worker disconnect sends the CLOSE only to the relay connection
+// that the channel is bound to, and a channel binds at its first frame. So a
+// channel opened just before its worker went away closed with no connection to
+// tell. When the tab's relay connected, its frames for that dead channel went
+// nowhere, and every request on it waited out the 15-second RPC timeout instead
+// of reopening and hearing "worker is offline". The reserved Hub control channel
+// is no frontend channel, so a frame for it gets no reply.
+func TestChannelRelay_AnswersAFrameForAnUnknownChannelWithItsClose(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	h := NewChannelRelayHandler(st, workermgr.New(workermgr.DenyAllReach()), channelmgr.New(0), newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+		WithTokenValidator(tv)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+mintAdminAPIToken(t, st, tv))
+	// Generous: the reply arrives in milliseconds, and this only bounds the
+	// failure when no reply comes at all.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/channel", &websocket.DialOptions{HTTPHeader: hdr})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	// The read loop handles frames in order, so the first reply belongs to the
+	// first frame that earns one.
+	require.NoError(t, channelwire.WriteChannelMessage(ctx, conn, &leapmuxv1.ChannelMessage{
+		ChannelId:     contracts.HubControlChannelID,
+		CorrelationId: 1,
+		Ciphertext:    []byte("not a frontend channel"),
+	}))
+	deadChannelID := id.Generate()
+	require.NoError(t, channelwire.WriteChannelMessage(ctx, conn, &leapmuxv1.ChannelMessage{
+		ChannelId:     deadChannelID,
+		CorrelationId: 2,
+		Ciphertext:    []byte("ping on a channel the Hub already closed"),
+	}))
+
+	reply, err := channelwire.ReadChannelMessage(ctx, conn)
+	require.NoError(t, err, "a frame for an unknown channel must not go unanswered")
+	assert.Equal(t, deadChannelID, reply.GetChannelId())
+	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, reply.GetFlags())
+	assert.Empty(t, reply.GetCiphertext())
+	assert.EqualValues(t, contracts.ProtocolVersion, reply.GetProtocolVersion())
+}
+
 // relayFrontendMessageToWorker owns the four teardown/forward decisions the read
 // loop reacts to: a channel with no worker is a no-op; an offline worker or a
 // broken worker stream is terminal (the read loop then closes the channel); a

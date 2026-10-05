@@ -218,6 +218,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			// when the target conn is gone — not authorize-only.
 			slog.Debug("channel relay: channel unavailable for user",
 				"channel_id", channelID, "user_id", user.ID)
+			h.answerUnavailableChannel(writer, channelID)
 			continue
 		}
 		if errors.Is(relayErr, errTerminalChannelRelay) {
@@ -226,6 +227,30 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			})
 			h.closeDispatcher.enqueueChannelCloses(closed)
 		}
+	}
+}
+
+// answerUnavailableChannel tells this connection that a channel it sent a frame
+// for is closed, so the frontend fails the requests on it at once and opens a
+// new channel for the next one.
+//
+// The close that tore the channel down cannot always reach the frontend. A
+// worker disconnect sends it only to the relay connection that the channel is
+// bound to, and a channel binds at its first frame. A channel opened just before
+// its worker went away therefore closed with no connection to tell. A Hub
+// restart forgets every channel the same way. Without this answer, each request
+// on such a channel waited out its RPC timeout.
+//
+// The answer is the same for a channel that does not exist and for one that this
+// connection may not use, so it reveals nothing about which channel IDs exist.
+// The reserved Hub control channel is no frontend channel, so it gets none.
+func (h *ChannelRelayHandler) answerUnavailableChannel(writer *relayWriter, channelID string) {
+	if channelID == contracts.HubControlChannelID {
+		return
+	}
+	if err := writer.enqueue(channelmgr.CloseNotification(channelID)); err != nil {
+		slog.Debug("channel relay: failed to answer an unavailable channel",
+			"channel_id", channelID, "error", err)
 	}
 }
 

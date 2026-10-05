@@ -8,6 +8,7 @@
   "maxIncompleteChunked": 4,
   "pingMethod": "Ping",
   "protocolVersion": 1,
+  "hubControlChannelId": "_hub",
   "sessionKey": {
     "maxAgeMs": 3600000,
     "minRekeyIntervalMs": 3000000,

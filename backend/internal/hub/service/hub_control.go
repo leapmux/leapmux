@@ -104,7 +104,7 @@ func (b *HubEventBroadcaster) flush(userID string) {
 	}
 	b.cMgr.SendToUser(userID, &leapmuxv1.ChannelMessage{
 		ProtocolVersion: contracts.ProtocolVersion,
-		ChannelId:       channelmgr.HubControlChannelID,
+		ChannelId:       contracts.HubControlChannelID,
 		Ciphertext:      data,
 	})
 }

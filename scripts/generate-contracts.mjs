@@ -91,6 +91,7 @@ export const WIRE_GO_NAMES = {
   maxIncompleteChunked: 'DefaultMaxIncompleteChunked',
   pingMethod: 'PingMethod',
   protocolVersion: 'ProtocolVersion',
+  hubControlChannelId: 'HubControlChannelID',
   sessionKeyMaxAgeMs: 'SessionKeyMaxAge',
   sessionKeyMinRekeyIntervalMs: 'MinRekeyInterval',
   sessionKeyHardCeilingMs: 'SessionKeyHardCeiling',
@@ -123,6 +124,7 @@ export const WIRE_TS_NAMES = {
   maxIncompleteChunked: 'MAX_INCOMPLETE_CHUNKED',
   pingMethod: 'PING_METHOD',
   protocolVersion: 'PROTOCOL_VERSION',
+  hubControlChannelId: 'HUB_CONTROL_CHANNEL_ID',
   sessionKeyMaxAgeMs: 'SESSION_KEY_MAX_AGE_MS',
   sessionKeyMinRekeyIntervalMs: 'MIN_REKEY_INTERVAL_MS',
   sessionKeyHardCeilingMs: 'SESSION_KEY_HARD_CEILING_MS',
@@ -157,6 +159,7 @@ function flattenWire(w, d) {
     maxIncompleteChunked: w.maxIncompleteChunked,
     pingMethod: w.pingMethod,
     protocolVersion: w.protocolVersion,
+    hubControlChannelId: w.hubControlChannelId,
     sessionKeyMaxAgeMs: w.sessionKey.maxAgeMs,
     sessionKeyMinRekeyIntervalMs: w.sessionKey.minRekeyIntervalMs,
     sessionKeyHardCeilingMs: d.sessionKeyHardCeilingMs,
@@ -3329,6 +3332,11 @@ const ${WIRE_GO_NAMES.pingMethod} = ${jsonString(flat.pingMethod)}
 // channelSession all read this constant.
 const ${WIRE_GO_NAMES.protocolVersion} = ${flat.protocolVersion}
 
+// HubControlChannelID is the reserved channel ID of the frames that the Hub
+// itself sends to a frontend over the /ws/channel WebSocket. No worker channel
+// uses it.
+const ${WIRE_GO_NAMES.hubControlChannelId} = ${jsonString(flat.hubControlChannelId)}
+
 // Session-key rotation timing. RejectRetryAfter spaces rekey refusals;
 // the hard ceiling outlives the max age by hardCeilingOverrunMs. The verify
 // timeout caps the open-time Ping round trip; the idle interval spaces the
@@ -3398,6 +3406,10 @@ ${line('maxConfigurableMessageSizeBytes')}
 ${line('maxIncompleteChunked')}
 ${line('pingMethod')}
 ${line('protocolVersion')}
+
+// The reserved channel ID of the frames that the Hub itself sends over the
+// channel WebSocket. No worker channel uses it.
+${line('hubControlChannelId')}
 
 // Session-key rotation timing, in milliseconds.
 ${line('sessionKeyMaxAgeMs')}
