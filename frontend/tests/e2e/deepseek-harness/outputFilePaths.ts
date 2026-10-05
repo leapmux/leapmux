@@ -43,7 +43,8 @@ export function readDeepseekHarnessNativeOutput(snapshot: NativeMessageSnapshot,
     }
     for (const match of text.matchAll(/ Full formatted result stored at: ([^\r\n]+\.txt)\. [^\r\n]*\)$/gu)) {
       const path = match[1]
-      if (isFilesystemPath(path) && /[\\/]dsh-spill[\\/][0-9a-f]{12}[\\/][0-9a-f]{12}-[^\\/]+\.txt$/u.test(path))
+      // The native spill store writes `<root>/session-<12 hex>/<12 hex>-<encoded name>`.
+      if (isFilesystemPath(path) && /[\\/]session-[0-9a-f]{12}[\\/][0-9a-f]{12}-(?:[\w.-]|~[0-9A-F]{4})*\.txt$/u.test(path))
         paths.push(path)
     }
   }

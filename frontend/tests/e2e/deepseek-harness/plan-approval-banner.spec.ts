@@ -20,7 +20,8 @@ for (const approval of [true, false]) {
     await sendMessage(page, modelScript.prompt('Present the exact native plan for review.'))
     await modelScript.waitForSteps(1)
     const banner = page.locator('[data-testid="control-banner"]:visible')
-    await expect(banner).toContainText('Plan Ready for Review')
+    // The native request carries its plan, so the banner draws the plan under its own title, as for every provider that sends the plan.
+    await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Inspect the scratch file.')
     await page.locator(`[data-testid="${approval ? 'plan-approve-btn' : 'plan-reject-btn'}"]:visible`).click()
     const status = await modelScript.waitForSteps(2)

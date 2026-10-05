@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -21,12 +22,26 @@ import (
 // newOfflineAgent drives the native event path without a model request.
 func newOfflineAgent(t *testing.T, sink *agenttest.Sink) *Agent {
 	t.Helper()
+	return newOfflineAgentOn(t, sink, nil)
+}
+
+// newOfflineAgentOn is newOfflineAgent with the clock that times the waits of the agent.
+// A nil clock selects the real clock.
+func newOfflineAgentOn(t *testing.T, sink *agenttest.Sink, clock quartz.Clock) *Agent {
+	t.Helper()
+	return newOfflineAgentServing(t, agent.NewProviderServices(sink), clock)
+}
+
+// newOfflineAgentServing is newOfflineAgentOn for a test that needs a sink other than the base
+// sink, such as agenttest.ControlSink, which records plan updates and published controls.
+func newOfflineAgentServing(t *testing.T, services agent.ProviderServices, clock quartz.Clock) *Agent {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	a := newAgent(agent.NewProviderServices(sink), "/workspace")
+	a := newAgent(services, "/workspace")
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
 		AgentID: "deepseek-test", ProviderName: "dsh", Ctx: ctx, Cancel: cancel,
-		Stdin: agenttest.NopStdin(io.Discard),
+		Stdin: agenttest.NopStdin(io.Discard), Clock: clock,
 	})
 	a.sessionID = "native-root"
 	a.streams["root"] = &sessionStream{sessionID: a.sessionID, lastSeq: -1,

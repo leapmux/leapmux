@@ -81,9 +81,11 @@ func (deepseekHarnessProvider) PlanApprovalOptions(permissionMode string) map[st
 
 func (deepseekHarnessProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	resolution := agent.DefaultControlResponseResolution(ctx)
-	if len(ctx.RequestPayload) > 0 && !validStoredControl(ctx) {
-		resolution.Withhold = true
-		return resolution
+	if len(ctx.RequestPayload) > 0 {
+		if refusal := storedControlRefusal(ctx); refusal != "" {
+			resolution.Refuse(refusal)
+			return resolution
+		}
 	}
 	if ctx.ToolName == contracts.DeepseekHarnessToolExitPlanMode {
 		resolution.PlanModeControl = agent.PlanModeControlExit

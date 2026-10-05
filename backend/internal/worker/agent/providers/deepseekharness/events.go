@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -24,6 +25,12 @@ type sessionStream struct {
 	startedAt       int64
 	ready           chan struct{}
 	readyOnce       bool
+	// followRetries counts the times that the follow of this stream opened again after
+	// the native process reported that the descriptor of the child was not written yet.
+	followRetries int
+	// contextWindow is the native context window of the model of this Session, in tokens,
+	// or 0 while the native process has stated none. Only the Remote reader reads and writes it.
+	contextWindow int64
 }
 
 type sessionAddress struct {
@@ -45,6 +52,23 @@ type historyPage struct {
 
 // Native Session cursors use JavaScript safe integers.
 const maxSessionSequence int64 = 1<<53 - 1
+
+// The native process announces a one-shot workflow child (`subagent/catalog`) before it writes
+// the descriptor of that child. A follow in that gap fails with this error code and reason
+// (`@deepseek-ai/dsh` 0.2.0-rc.2, dsh-api-session-controller validateAddress: a descriptor
+// projection of null). A live probe saw the descriptor about 26 ms after the announcement.
+// The other reason of this code, "unsupported", names a child that has no usable descriptor at all.
+//
+// The delay of the first retry doubles for each later retry. The seven retries wait 3.175 s in total,
+// more than 100 times the delay that the probe saw. A descriptor that is still absent after that
+// is corrupt, and the failure then stops the agent as before.
+const (
+	catalogDiagnosticCode      = "subagent/catalog-diagnostic"
+	descriptorNotWrittenReason = "corrupt"
+	childFollowRetries         = 7
+	childFollowFirstRetryDelay = 25 * time.Millisecond
+	childFollowRetryTag        = "deepseekharness-child-follow-retry"
+)
 
 type sessionEvent struct {
 	Type            string          `json:"type"`
@@ -117,13 +141,64 @@ func (a *Agent) followSession(address sessionAddress, childAgentID string) error
 	a.Mu.Lock()
 	a.streams[streamID] = stream
 	a.Mu.Unlock()
-	err := a.writeMux(map[string]any{"type": "open", "streamId": streamID, "endpoint": "session/follow", "payload": map[string]any{"args": map[string]any{"request": map[string]any{"address": address, "assistantStream": true}}}})
+	err := a.openFollow(streamID, stream)
 	if err != nil {
 		a.Mu.Lock()
 		delete(a.streams, streamID)
 		a.Mu.Unlock()
 	}
 	return err
+}
+
+// openFollow asks the native process to stream one Session under the given stream identity.
+func (a *Agent) openFollow(streamID string, stream *sessionStream) error {
+	return a.writeMux(map[string]any{"type": "open", "streamId": streamID, "endpoint": "session/follow", "payload": map[string]any{"args": map[string]any{"request": map[string]any{"address": stream.address, "assistantStream": true}}}})
+}
+
+// isUnwrittenDescriptor reports whether the native process refused a child follow because it
+// has not written the descriptor of the child yet.
+func isUnwrittenDescriptor(failure *remoteFailure) bool {
+	if failure.Code != catalogDiagnosticCode {
+		return false
+	}
+	var details struct {
+		Reason string `json:"reason"`
+	}
+	return json.Unmarshal(failure.Details, &details) == nil && details.Reason == descriptorNotWrittenReason
+}
+
+// retryChildFollow schedules a new follow for a child stream that the native process refused
+// before it wrote the descriptor of the child, and reports whether it did. The failed stream
+// cannot open again, so the same stream moves to a new stream identity. Any other failure, a
+// follow of the root Session, and a descriptor that stays absent past the last retry return false.
+func (a *Agent) retryChildFollow(streamID string, failure *remoteFailure) bool {
+	if !isUnwrittenDescriptor(failure) {
+		return false
+	}
+	a.Mu.Lock()
+	stream := a.streams[streamID]
+	if stream == nil || stream.address.Kind != "subagent" || stream.followRetries >= childFollowRetries {
+		a.Mu.Unlock()
+		return false
+	}
+	delay := childFollowFirstRetryDelay << stream.followRetries
+	stream.followRetries++
+	retryID := "session-" + uuid.NewString()
+	delete(a.streams, streamID)
+	a.streams[retryID] = stream
+	a.Mu.Unlock()
+	a.Clock().AfterFunc(delay, func() {
+		a.Mu.Lock()
+		stopped := a.StoppedLocked() || a.streamFailure != nil
+		a.Mu.Unlock()
+		if stopped {
+			return
+		}
+		if err := a.openFollow(retryID, stream); err != nil {
+			a.reportStreamFailure(err)
+		}
+	}, childFollowRetryTag)
+	return true
 }
 
 // historyRecords reads each older native page before it returns chronological records.
@@ -184,6 +259,9 @@ func (a *Agent) handleFrame(raw []byte) error {
 		if frame.Error == nil {
 			return fmt.Errorf("DeepSeek Harness Remote stream failed without a cause")
 		}
+		if a.retryChildFollow(frame.StreamID, frame.Error) {
+			return nil
+		}
 		return frame.Error
 	}
 	if frame.Type == "end" {
@@ -220,6 +298,7 @@ func (a *Agent) handleFrame(raw []byte) error {
 		if item.Cursor == nil || *item.Cursor < -1 || *item.Cursor > maxSessionSequence {
 			return fmt.Errorf("DeepSeek Harness Session snapshot has an invalid cursor")
 		}
+		stream.seedContextWindow(item.Projections.Values)
 		if stream.childAgentID != "" {
 			ownSeq, err := childOwnSequence(stream, item.Projections.Values, *item.Cursor)
 			if err != nil {

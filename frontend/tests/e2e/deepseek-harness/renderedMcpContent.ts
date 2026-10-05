@@ -1,10 +1,31 @@
-import { limitTextForDisplay } from '../../../src/components/chat/safeTextDisplay'
+import { limitTextForDisplay, markdownNeedsPlainTextDisplay } from '../../../src/components/chat/safeTextDisplay'
+import { createMarkdownParser } from '../../../src/lib/markdownParse'
 
 export type DeepseekHarnessRenderedMcpBlock = { type: 'text', text: string } | { type: 'image', index: number }
 
-/** Project the current native fixture text into its expected display blocks. */
+/**
+ * Project one native text block of the controlled fixture into its expected visible occurrences.
+ * Large text uses the shared plain display, which shows one capped text occurrence.
+ * Other text uses the shared Markdown parser, which shows one occurrence for each paragraph.
+ * This oracle accepts only paragraphs of plain text. It refuses other Markdown so that it never drops text.
+ */
 export function deepseekHarnessMcpTextDisplay(text: string): DeepseekHarnessRenderedMcpBlock[] {
-  return text ? [{ type: 'text', text: limitTextForDisplay(text).text }] : []
+  if (!text)
+    return []
+  if (markdownNeedsPlainTextDisplay(text))
+    return [{ type: 'text', text: limitTextForDisplay(text).text }]
+  return createMarkdownParser().parse(text).children.map((node) => {
+    if (node.type !== 'paragraph')
+      throw new Error(`The DeepSeek Harness fixture text contains an unsupported Markdown ${node.type} block.`)
+    return {
+      type: 'text',
+      text: node.children.map((child) => {
+        if (child.type !== 'text')
+          throw new Error(`The DeepSeek Harness fixture text contains unsupported inline Markdown ${child.type}.`)
+        return child.value
+      }).join(''),
+    }
+  })
 }
 
 /** Read visible Model Context Protocol (MCP) result blocks in DOM order. */

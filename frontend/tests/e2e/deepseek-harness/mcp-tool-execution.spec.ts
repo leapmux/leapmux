@@ -7,7 +7,6 @@ import { readMcpCallArguments } from '../helpers/mcpRequestReceipt'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
@@ -46,7 +45,8 @@ test('preserves the computed canonical native MCP result while removing private 
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   const input = { count: 0, enabled: false, text: output.text }
   const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await withDeepseekHarnessMcp(native, { name: 'results', script, workingDir: directory }, async (privateContext) => {
+  // The native standard preset offers no run_code tool. The native PTC preset offers run_code and keeps the MCP bindings.
+  await withDeepseekHarnessMcp(native, { name: 'results', script, workingDir: directory, agentPreset: 'ptc' }, async (privateContext) => {
     const callId = 'native-canonical-mcp-result'
     const source = `${output.source}
 const args = {count: 0, enabled: false, text: completeOutput};
@@ -79,7 +79,7 @@ return JSON.stringify({contentMatches: value.content.length === 1 && value.conte
       const bubble = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${callId}"][data-tool-row-role="result"]:visible`)
       await expect(bubble).toHaveCount(1)
       await expect(bubble).toHaveAttribute('data-tool-status', 'completed')
-      await expandNativeResultView(bubble)
+      // The compact projection is one short line. The view shows it in full and offers no Expand control.
       for (const marker of ['"echoedCount":0', '"enabled":false', '"nullable":null', '"hasPrivateMeta":false'])
         await expect(bubble).toContainText(marker)
       await copyNativeToolOutputPreview(page, bubble, block.text)

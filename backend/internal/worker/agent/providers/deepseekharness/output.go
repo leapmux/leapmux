@@ -68,7 +68,11 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			if block.Type != contracts.DeepseekHarnessContentTypeText && block.Type != contracts.DeepseekHarnessContentTypeReasoning {
 				continue
 			}
-			supplemental, err := encodeJSON(map[string]any{contracts.DeepseekHarnessSupplementBlockIndex: index})
+			fields := map[string]any{contracts.DeepseekHarnessSupplementBlockIndex: index}
+			if stream.contextWindow > 0 {
+				fields[contracts.DeepseekHarnessSupplementContextWindow] = stream.contextWindow
+			}
+			supplemental, err := encodeJSON(fields)
 			if err != nil {
 				return err
 			}
@@ -81,7 +85,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			}
 		}
 	case contracts.DeepseekHarnessEventUserMessage:
-		if stream.childAgentID != "" {
+		if stream.childAgentID != "" && isUnstoredChildPrompt(event.Data) {
 			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
 		}
 	case contracts.DeepseekHarnessEventToolCall:
@@ -147,7 +151,10 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 				return err
 			}
 		}
-	case contracts.DeepseekHarnessEventCompactionEnd, contracts.DeepseekHarnessEventRequestContext:
+	case contracts.DeepseekHarnessEventRequestContext:
+		stream.learnContextWindow(event.Data)
+		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	case contracts.DeepseekHarnessEventCompactionEnd:
 		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	case contracts.DeepseekHarnessEventPlanMode:
 		if stream.childAgentID == "" {
@@ -179,6 +186,66 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	}
 	return nil
+}
+
+// learnContextWindow takes the context window from the data of a native `request/context` event.
+// The native process states the window when the provider, the model, or the window changes, and
+// the usage of an assistant message states none, so the Worker keeps the last valid window of
+// the Session. A value that is not a positive safe integer leaves the last valid window.
+func (s *sessionStream) learnContextWindow(data []byte) {
+	var request struct {
+		ContextWindow *int64 `json:"contextWindow"`
+	}
+	if json.Unmarshal(data, &request) == nil && request.ContextWindow != nil {
+		s.setContextWindow(*request.ContextWindow)
+	}
+}
+
+// seedContextWindow takes the window of a Session from the `contextPressure` projection of its
+// snapshot, so a resumed Session states its window before its next `request/context` event.
+// The native process emits that event only when the window changes. An event that the Worker saw
+// states the same window, so a stream that has a window keeps it.
+func (s *sessionStream) seedContextWindow(projections map[string]json.RawMessage) {
+	if s.contextWindow > 0 {
+		return
+	}
+	var pressure struct {
+		ContextWindow *int64 `json:"contextWindow"`
+	}
+	if json.Unmarshal(projections["contextPressure"], &pressure) == nil && pressure.ContextWindow != nil {
+		s.setContextWindow(*pressure.ContextWindow)
+	}
+}
+
+// setContextWindow keeps a positive window that a native JavaScript number can state exactly.
+// The browser rejects a larger count, so the Worker never sends one.
+func (s *sessionStream) setContextWindow(window int64) {
+	if window > 0 && window <= maxSessionSequence {
+		s.contextWindow = window
+	}
+}
+
+// nativeUserSourceKind is the source kind of a message that a person or a parent agent wrote.
+// The native process also injects the instruction file, the runtime context and notices as user
+// messages, and each of those has another kind.
+const nativeUserSourceKind = "user"
+
+// isUnstoredChildPrompt reports whether a native user message of a child Session is a prompt
+// that LeapMux stored nowhere else. The root Session stores no native user message, because
+// LeapMux stores the message of the reader itself. A child reports every input as a native
+// user message, so the Worker keeps one only when nothing at LeapMux stored it: the prompt that
+// the parent agent gave the child. A prompt that a client sent carries `rpcId`, and the native
+// process is private to this Worker, so each such prompt is one that LeapMux stored already.
+// A message that states no readable source is not a prompt that LeapMux can attribute.
+// Source: `@deepseek-ai/dsh` 0.2.0-rc.2 (dsh-api-session-controller prompt, dsh-subagent).
+func isUnstoredChildPrompt(data []byte) bool {
+	var message struct {
+		Source struct {
+			Kind  string `json:"kind"`
+			RPCID string `json:"rpcId"`
+		} `json:"source"`
+	}
+	return json.Unmarshal(data, &message) == nil && message.Source.Kind == nativeUserSourceKind && message.Source.RPCID == ""
 }
 
 func nativeTurnCompletion(raw []byte) agent.MessageCompletion {

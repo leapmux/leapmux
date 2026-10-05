@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,5 +62,43 @@ func TestModelSelectionUsesNativeDefaultsAndExactEffort(t *testing.T) {
 	for _, tc := range []struct{ model, effort string }{{"missing", ""}, {"deepseek-official/missing", ""}, {"", "unknown"}, {"deepseek-official/model/no-reasoning", "high"}} {
 		_, err := c.resolve(c.defaultSelection, tc.model, tc.effort)
 		require.Error(t, err)
+	}
+}
+
+// The Worker service resets the effort of a model switch to agent.EffortAuto for a provider that
+// manages a model-dependent effort catalog, because Auto is valid for every model. The provider
+// must read Auto as "the effort that the selected model declares as its default".
+const twoReasoningModelsFixture = `{"default":{"provider":"deepseek-official","model":"deepseek-flash"},"groups":[{"id":"deepseek-official","name":"DeepSeek","models":[{"id":"deepseek-flash","name":"Flash","reasoning":{"defaultEffort":"high","efforts":[{"id":"off"},{"id":"high"},{"id":"max"}]}},{"id":"deepseek-pro","name":"Pro","reasoning":{"defaultEffort":"off","efforts":[{"id":"off"},{"id":"low"}]}},{"id":"plain","name":"Plain"}]}]}`
+
+func TestModelSelectionReadsEffortAutoAsTheDefaultOfTheSelectedModel(t *testing.T) {
+	c, err := convertModelCatalog(decodeNativeCatalog(t, twoReasoningModelsFixture))
+	require.NoError(t, err)
+	flash := modelSelection{Provider: "deepseek-official", Model: "deepseek-flash", Effort: "max"}
+	for _, tc := range []struct {
+		name, model, effort, want string
+	}{
+		{"a switch to a model that has another default effort", "deepseek-official/deepseek-pro", agent.EffortAuto, "off"},
+		{"the same model", "", agent.EffortAuto, "high"},
+		{"a switch to a model without reasoning", "deepseek-official/plain", agent.EffortAuto, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selection, err := c.resolve(flash, tc.model, tc.effort)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, selection.Effort)
+		})
+	}
+}
+
+func TestModelSelectionStillRefusesAnEffortThatTheModelDoesNotOffer(t *testing.T) {
+	c, err := convertModelCatalog(decodeNativeCatalog(t, twoReasoningModelsFixture))
+	require.NoError(t, err)
+	flash := modelSelection{Provider: "deepseek-official", Model: "deepseek-flash", Effort: "high"}
+	for _, tc := range []struct{ model, effort string }{
+		{"deepseek-official/deepseek-pro", "max"},
+		{"deepseek-official/plain", "high"},
+		{"", "automatic"},
+	} {
+		_, err := c.resolve(flash, tc.model, tc.effort)
+		require.Error(t, err, tc.model+" "+tc.effort)
 	}
 }

@@ -216,3 +216,94 @@ func TestImageReceiptValidatesNativeIdentityPositionsAndLimits(t *testing.T) {
 		})
 	}
 }
+
+// Source: `@deepseek-ai/dsh` 0.2.0-rc.2. `read_image` saves the file with `name: basename(path)`
+// (dsh-tool-fs), and a reference of dsh-attachment may state `originalDimensions` when its
+// normalization reduced the image. Both are optional fields of the native reference, and the
+// native image hook copies the whole reference into its receipt. The five fields that identify
+// the image stay exact. The other fields of the native object must not refuse the receipt.
+func TestImageReceiptAcceptsTheOptionalFieldsOfANativeImageReference(t *testing.T) {
+	t.Parallel()
+	for _, retained := range []bool{false, true} {
+		name := "an omitted image"
+		if retained {
+			name = "a retained image"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			f := prepareNativeImageObserverFixture(t)
+			installNativeImageObserverFixture(t, a, f)
+			var pixels bytes.Buffer
+			require.NoError(t, png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 3))))
+			imageSum := sha256.Sum256(pixels.Bytes())
+			id := "sha256:" + hex.EncodeToString(imageSum[:])
+			ref := map[string]any{
+				"attachmentId": id, "mediaType": "image/png", "bytes": pixels.Len(), "width": 2, "height": 3,
+				"name": "tool-image-native.png", "originalDimensions": map[string]any{"width": 4, "height": 6},
+			}
+			const callID = "native-call"
+			const toolName = "read_image"
+			sessionID := a.sessionID
+			sessionSum, callSum := sha256.Sum256([]byte(sessionID)), sha256.Sum256([]byte(callID))
+			retainedImages := []any{}
+			content := []any{map[string]any{"type": "text", "text": "native preview"}}
+			if retained {
+				retainedImages = []any{map[string]any{"position": 0, "attachment": ref}}
+				content = []any{map[string]any{"type": "image", "attachment": ref}, map[string]any{"type": "text", "text": "native preview"}}
+			}
+			position := 1
+			if retained {
+				position = 0
+			}
+			receipt := map[string]any{"sessionId": sessionID, "callId": callID, "toolName": toolName, "isError": false, "originalImages": []any{map[string]any{"position": position, "attachment": ref}}, "retainedImages": retainedImages, "images": []any{map[string]any{"attachment": ref, "data": base64.StdEncoding.EncodeToString(pixels.Bytes())}}}
+			raw, err := json.Marshal(receipt)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(f.receipts, hex.EncodeToString(sessionSum[:])+"."+hex.EncodeToString(callSum[:])+".json"), raw, 0o600))
+			opening, err := json.Marshal(map[string]any{"type": "tool/call", "seq": 1, "time": 1, "data": map[string]any{"callId": callID, "name": toolName, "arguments": "{}"}})
+			require.NoError(t, err)
+			original, err := json.Marshal(map[string]any{"type": "tool/result", "seq": 2, "time": 2, "data": map[string]any{"message": map[string]any{"toolCallId": callID, "isError": false, "content": content}}})
+			require.NoError(t, err)
+			require.NoError(t, a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: opening, AgentSessionID: sessionID}, agent.SpanInfo{SpanID: callID, SpanType: toolName}))
+			require.NoError(t, a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, AgentSessionID: sessionID}, agent.SpanInfo{SpanID: callID, SpanType: toolName, Closing: true}))
+			messages := sink.Messages()
+			require.Len(t, messages, 2)
+			assert.Equal(t, original, messages[1].Content)
+			assert.Contains(t, string(messages[1].SupplementalContent), id, "the receipt of a reference with optional native fields must supply its image")
+		})
+	}
+}
+
+func TestImageReceiptStillRefusesAnotherReferenceOfTheSameImage(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	f := prepareNativeImageObserverFixture(t)
+	installNativeImageObserverFixture(t, a, f)
+	var pixels bytes.Buffer
+	require.NoError(t, png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 3))))
+	imageSum := sha256.Sum256(pixels.Bytes())
+	id := "sha256:" + hex.EncodeToString(imageSum[:])
+	reference := func(width int) map[string]any {
+		return map[string]any{"attachmentId": id, "mediaType": "image/png", "bytes": pixels.Len(), "width": width, "height": 3, "name": "tool-image-native.png"}
+	}
+	const callID = "native-call"
+	const toolName = "read_image"
+	sessionID := a.sessionID
+	sessionSum, callSum := sha256.Sum256([]byte(sessionID)), sha256.Sum256([]byte(callID))
+	// The saved value states another width than the original reference: an identity field differs.
+	receipt := map[string]any{"sessionId": sessionID, "callId": callID, "toolName": toolName, "isError": false, "originalImages": []any{map[string]any{"position": 1, "attachment": reference(2)}}, "retainedImages": []any{}, "images": []any{map[string]any{"attachment": reference(5), "data": base64.StdEncoding.EncodeToString(pixels.Bytes())}}}
+	raw, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(f.receipts, hex.EncodeToString(sessionSum[:])+"."+hex.EncodeToString(callSum[:])+".json"), raw, 0o600))
+	opening, err := json.Marshal(map[string]any{"type": "tool/call", "seq": 1, "time": 1, "data": map[string]any{"callId": callID, "name": toolName, "arguments": "{}"}})
+	require.NoError(t, err)
+	original, err := json.Marshal(map[string]any{"type": "tool/result", "seq": 2, "time": 2, "data": map[string]any{"message": map[string]any{"toolCallId": callID, "isError": false, "content": []any{map[string]any{"type": "text", "text": "native preview"}}}}})
+	require.NoError(t, err)
+	require.NoError(t, a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: opening, AgentSessionID: sessionID}, agent.SpanInfo{SpanID: callID, SpanType: toolName}))
+	require.NoError(t, a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, AgentSessionID: sessionID}, agent.SpanInfo{SpanID: callID, SpanType: toolName, Closing: true}))
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.NotContains(t, string(messages[1].SupplementalContent), id, "a changed identity field refuses the receipt")
+}

@@ -14,6 +14,7 @@ import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helper
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
+import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { openWorkspace, readAttachedWithArgument } from '../helpers/ui'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
@@ -124,12 +125,18 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
   testInfo?: Pick<TestInfo, 'attach'>
 }): Promise<void> {
   const agent = await currentNativeAgent(context)
+  const spillNotice = 'Full formatted result stored at:'
   const excerpt = nativeToolResultContent(options.request, options.callId)
-  expect(JSON.stringify(excerpt)).toContain('Full formatted result stored at:')
+  expect(JSON.stringify(excerpt)).toContain(spillNotice)
   expect(JSON.stringify(excerpt)).not.toContain(options.omittedMarker)
   const initial = await readNativeMessageSnapshot(context, agent.id)
   const receipt = readDeepseekHarnessNativeOutput(initial, options.callId)
   const nativeDisplay = nativeMcpDisplay(initial, options.callId)
+  // The native spill notice gives the output path. Both markers must occur in the original preview.
+  expect(receipt.paths.length).toBeGreaterThan(0)
+  const orderMarkers = [options.firstMarker, spillNotice]
+  expect(orderMarkers.map(marker => nativeDisplay.previewText.includes(marker))).toEqual([true, true])
+  const expectedOrder = JSON.stringify(nativeDisplay.display)
   const expectedContent = options.expected.map(block => block.type === 'text' ? block : { type: 'image', mimeType: 'image/png', data: readFileSync(block.path).toString('base64') })
   const expectedStructured = { nextCount: options.input.count + 1, enabled: options.input.enabled, text: options.input.text }
   expect(readMcpCallArguments(options.receiptLog)).toEqual([{ name: 'inspect', arguments: options.input }])
@@ -155,14 +162,24 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
     await expect(bubble).toHaveAttribute('data-tool-status', 'completed')
     await expandNativeResultView(bubble)
     const pathList = bubble.getByTestId('tool-output-file-paths')
-    await expect(pathList).toHaveCount(receipt.paths.length ? 1 : 0)
-    if (receipt.paths.length) {
-      expect(await pathList.textContent()).toBe(receipt.paths.map(path => `Output file:${path}`).join(''))
-      await expect(pathList.locator('a, button')).toHaveCount(0)
-    }
+    await expect(pathList).toHaveCount(1)
+    expect(await pathList.textContent()).toBe(receipt.paths.map(path => `Output file:${path}`).join(''))
+    await expect(pathList.locator('a, button')).toHaveCount(0)
+    expect(await readAttachedWithArgument(bubble, 'native output property order', nativeOutputPathsPrecedePreview, orderMarkers)).toBe(true)
     const images = bubble.locator('button[aria-label="Open image"]:visible img:visible')
     await expect(images).toHaveCount(options.expected.filter(block => block.type === 'image').length)
-    await expect.poll(() => readAttachedWithArgument(bubble, 'the native MCP result order', deepseekHarnessRenderedMcpContent, [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE])).toEqual(nativeDisplay.display)
+    // Compare the complete serialized occurrence list. A boolean keeps the large text out of the failure message.
+    const last: { rendered: DeepseekHarnessRenderedMcpBlock[] | null } = { rendered: null }
+    try {
+      await expect.poll(async () => {
+        last.rendered = await readAttachedWithArgument(bubble, 'the native MCP result order', deepseekHarnessRenderedMcpContent, [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE])
+        return last.rendered !== null && JSON.stringify(last.rendered) === expectedOrder
+      }).toBe(true)
+    }
+    catch (error) {
+      await options.testInfo?.attach('deepseek-native-mcp-order-mismatch', { body: JSON.stringify({ expected: nativeDisplay.display, rendered: last.rendered }), contentType: 'application/json' })
+      throw error
+    }
     const expectedImages = options.expected.flatMap(block => block.type === 'image' ? [readFileSync(block.path).toString('base64')] : [])
     for (let index = 0; index < expectedImages.length; index++) {
       const bytes = expectedImages[index]

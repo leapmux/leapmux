@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -118,4 +119,147 @@ func TestNativeCancellationClosesTheTurnAsInterrupted(t *testing.T) {
 			assert.False(t, a.active)
 		})
 	}
+}
+
+// A child session reports every input as a native `user/message`. LeapMux stores the
+// message of each input that its own client sent, so only an input that nobody at
+// LeapMux stored is a transcript row: the prompt that the parent agent gave the child.
+// Source: `@deepseek-ai/dsh` 0.2.0-rc.2, probed on a live child. A client prompt carries
+// `rpcId` (dsh-api-session-controller prompt, dsh-subagent), and the parent prompt does not.
+// The native process also injects the instruction file and the runtime context as user messages.
+func TestChildUserMessagesStoreOnlyThePromptThatLeapMuxDidNotStore(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		source string
+		stored bool
+	}{
+		{"the prompt of the parent agent", `{"kind":"user"}`, true},
+		{"a prompt that a client sent", `{"kind":"user","rpcId":"request-1"}`, false},
+		{"the instruction file", `{"kind":"agent-instructions","form":"instructions","baseline":true}`, false},
+		{"the runtime context", `{"kind":"runtime-context","form":"snapshot","sections":[]}`, false},
+		{"a settled subagent notice", `{"kind":"subagent-settled","form":"notice"}`, false},
+		{"a message with no source", ``, false},
+		{"a message with an unreadable source", `"user"`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			stream := &sessionStream{sessionID: "native-child", parentSessionID: "native-root", childAgentID: "stored-child", lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
+			source := ""
+			if tc.source != "" {
+				source = `,"source":` + tc.source
+			}
+			raw := []byte(`{"type":"user/message","seq":8,"time":1000,"data":{"content":[{"type":"text","text":"The exact native text."}],"role":"user","id":"native-message"` + source + `}}`)
+			require.NoError(t, a.handleSessionEvent(stream, raw))
+			messages := sink.Child("stored-child").Messages()
+			if !tc.stored {
+				assert.Empty(t, messages)
+				assert.Equal(t, int64(8), stream.lastSeq, "a native event that LeapMux does not store still advances the cursor")
+				return
+			}
+			require.Len(t, messages, 1)
+			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, messages[0].Source)
+			assert.Equal(t, raw, messages[0].Content, "the stored row keeps the original native bytes")
+		})
+	}
+}
+
+func TestRootUserMessageIsNeverStoredFromTheNativeSession(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	raw := []byte(`{"type":"user/message","seq":8,"time":1000,"data":{"content":[{"type":"text","text":"The exact native text."}],"source":{"kind":"user"},"role":"user","id":"native-message"}}`)
+	require.NoError(t, a.handleSessionEvent(a.streams["root"], raw))
+	assert.Empty(t, sink.Messages())
+}
+
+// The native process states the context window of a model in `request/context`, and it states
+// the window again only when the provider, the model, or the window changes. The usage of an
+// assistant message carries no window, so the Worker adds the window of the stream to the
+// supplement of each assistant block, and the browser reads it from there.
+// Source: `@deepseek-ai/dsh` 0.2.0-rc.2, dsh-agent-loop (the emit condition of request/context).
+func TestAssistantMessageCarriesTheContextWindowOfItsStream(t *testing.T) {
+	t.Parallel()
+	requestContext := func(window string) string {
+		return `{"type":"request/context","seq":SEQ,"time":1000,"data":{"provider":"deepseek-official","model":"deepseek-flash","contextWindow":` + window + `}}`
+	}
+	assistant := `{"type":"assistant/message","seq":SEQ,"time":1001,"data":{"message":{"role":"assistant","content":[{"type":"reasoning","text":"Thought."},{"type":"text","text":"Answer."}]},"usage":{"inputTokens":0,"outputTokens":0}}}`
+	var seq int
+	feed := func(t *testing.T, a *Agent, stream *sessionStream, frame string) {
+		t.Helper()
+		seq++
+		require.NoError(t, a.handleSessionEvent(stream, []byte(strings.Replace(frame, "SEQ", strconv.Itoa(seq), 1))))
+	}
+	supplements := func(sink *agenttest.Sink) []string {
+		var result []string
+		for _, message := range sink.Messages() {
+			if message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && strings.Contains(string(message.Content), `"assistant/message"`) {
+				result = append(result, string(message.SupplementalContent))
+			}
+		}
+		return result
+	}
+	t.Run("each block states the window that the last request context stated", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		feed(t, a, a.streams["root"], requestContext("1000000"))
+		feed(t, a, a.streams["root"], assistant)
+		feed(t, a, a.streams["root"], requestContext("128000"))
+		feed(t, a, a.streams["root"], assistant)
+		assert.JSONEq(t, `{"blockIndex":0,"contextWindow":1000000}`, supplements(sink)[0])
+		assert.JSONEq(t, `{"blockIndex":1,"contextWindow":1000000}`, supplements(sink)[1])
+		assert.JSONEq(t, `{"blockIndex":0,"contextWindow":128000}`, supplements(sink)[2])
+		assert.JSONEq(t, `{"blockIndex":1,"contextWindow":128000}`, supplements(sink)[3])
+	})
+	t.Run("a message before any request context states no window", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		feed(t, a, a.streams["root"], assistant)
+		assert.JSONEq(t, `{"blockIndex":0}`, supplements(sink)[0])
+	})
+	t.Run("an invalid window keeps the last valid one", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		feed(t, a, a.streams["root"], requestContext("1000000"))
+		for _, invalid := range []string{"0", "-1", "1.5", `"1000000"`, "null"} {
+			feed(t, a, a.streams["root"], requestContext(invalid))
+		}
+		feed(t, a, a.streams["root"], assistant)
+		assert.JSONEq(t, `{"blockIndex":0,"contextWindow":1000000}`, supplements(sink)[0])
+	})
+	t.Run("a child stream keeps its own window", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		child := &sessionStream{sessionID: "native-child", parentSessionID: "native-root", childAgentID: "stored-child", lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
+		feed(t, a, a.streams["root"], requestContext("1000000"))
+		feed(t, a, child, requestContext("64000"))
+		feed(t, a, child, assistant)
+		childMessages := sink.Child("stored-child").Messages()
+		var childSupplements []string
+		for _, message := range childMessages {
+			if strings.Contains(string(message.Content), `"assistant/message"`) {
+				childSupplements = append(childSupplements, string(message.SupplementalContent))
+			}
+		}
+		require.Len(t, childSupplements, 2)
+		assert.JSONEq(t, `{"blockIndex":0,"contextWindow":64000}`, childSupplements[0])
+	})
+	t.Run("a resumed session takes the window from its snapshot projection", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		snapshot := `{"type":"item","streamId":"root","value":{"type":"snapshot","cursor":-1,"records":[],"hasMore":false,"projections":{"values":{"contextPressure":{"pressureTokens":1,"projectedTokens":16,"contextWindow":1000000}}}}}`
+		require.NoError(t, a.handleFrame([]byte(snapshot)))
+		feed(t, a, a.streams["root"], assistant)
+		assert.JSONEq(t, `{"blockIndex":0,"contextWindow":1000000}`, supplements(sink)[0])
+	})
+	t.Run("an empty projection states no window", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		snapshot := `{"type":"item","streamId":"root","value":{"type":"snapshot","cursor":-1,"records":[],"hasMore":false,"projections":{"values":{"contextPressure":{}}}}}`
+		require.NoError(t, a.handleFrame([]byte(snapshot)))
+		feed(t, a, a.streams["root"], assistant)
+		assert.JSONEq(t, `{"blockIndex":0}`, supplements(sink)[0])
+	})
 }

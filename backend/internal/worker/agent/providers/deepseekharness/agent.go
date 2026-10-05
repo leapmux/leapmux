@@ -186,7 +186,7 @@ func (a *Agent) CompactContext() error {
 	if active {
 		return agent.ErrAgentBusy
 	}
-	return a.executeCommand(sessionID, "/compact")
+	return a.compact(sessionID, "/compact")
 }
 
 func (a *Agent) DiscardOutput() { a.discard.Store(true); a.Process.DiscardOutput() }

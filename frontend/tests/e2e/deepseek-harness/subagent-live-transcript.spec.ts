@@ -17,7 +17,8 @@ deepseekHarnessTest('shows a real child file result while its native model reply
     childTask,
     parentTask: 'Create the scripted live native child.',
     background: true,
-    toolProof: { workingDir: deepseekHarnessWorkspace.workingDir },
+    // The native Read result starts with three header rows: `<path>`, `<type>`, and `<content>`. A result view shows only its first three rows until the reader expands it.
+    toolProof: { workingDir: deepseekHarnessWorkspace.workingDir, expandResult: true },
     beforeRelease: async () => {
       await registerChildReports(context)
       const snapshot = await readNativeSidebarSnapshot(context, parent.id)

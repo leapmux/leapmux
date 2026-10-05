@@ -28,11 +28,12 @@ export async function runningChild(context: ManagedNativeScenarioContext) {
   const path = join(parent.workingDir, `native-child-${marker}.txt`)
   writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)
   const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: 'Native held child', prompt: context.modelScript.prompt(task), background: true })
+  const readCallId = `child-read-${marker}`
   const child = await openRunningNativeChild(context, {
     gate: `native-child-${marker}`,
     childMatcher: { user: task },
     childFinalMatcher: { user: `NATIVE_CHILD_FILE${marker}` },
-    childTool: readToolCall(context.provider, `child-read-${marker}`, path),
+    childTool: readToolCall(context.provider, readCallId, path),
     childFinalStep: { text: `NATIVE_CHILD_REPORT${marker}` },
     spawn,
     parentSteps: [{ toolCalls: [spawn] }, { text: 'The native parent completed.' }],
@@ -40,6 +41,8 @@ export async function runningChild(context: ManagedNativeScenarioContext) {
   })
   return {
     ...child,
+    /** The call ID of the native Read that the child makes. */
+    readCallId,
     finish: () => finishDeepseekHarnessChild(child.finish, () => waitForDeepseekHarnessChildReport(context, child.childId, child.parentId)),
   }
 }

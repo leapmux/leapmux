@@ -49,11 +49,35 @@ func (a *Agent) userCommand(sessionID, content string) (bool, error) {
 		return false, nil
 	}
 	switch words[0] {
-	case "/plan", "/permission", "/goal", "/compact":
-		return true, a.executeCommand(sessionID, content)
+	case "/compact":
+		return true, a.compact(sessionID, content)
+	case "/plan", "/permission", "/goal":
+		err := a.executeCommand(sessionID, content)
+		// These commands start no turn of their own, so no native event ends the turn that the
+		// input queue opened for the input. Publish the real state to release it. A turn that
+		// the command did start (a goal round) keeps the state active.
+		a.PublishTurnActive()
+		return true, err
 	default:
 		return false, nil
 	}
+}
+
+// compact runs a native compaction command. The native process finishes the compaction inside the
+// command call and emits `compaction/start` and `compaction/end`, but no turn event. The Worker
+// holds the turn for the call. The reader sees the agent busy, and the input queue keeps later
+// input until the compaction ends, whether the command succeeds or fails.
+// Source: `@deepseek-ai/dsh` 0.2.0-rc.2, probed on a live Session.
+func (a *Agent) compact(sessionID, line string) error {
+	a.Mu.Lock()
+	idle := !a.active
+	a.Mu.Unlock()
+	if !idle {
+		return a.executeCommand(sessionID, line)
+	}
+	a.setTurnState(true)
+	defer a.setTurnState(false)
+	return a.executeCommand(sessionID, line)
 }
 
 func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.RawMessage, snapshot bool) error {

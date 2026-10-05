@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { largeMarkdownPlainHtml, LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE } from '../../../src/components/chat/safeTextDisplay'
+import { largeMarkdownPlainHtml, LIMITED_TEXT_DISPLAY_NOTICE, MARKDOWN_PARSE_CHAR_LIMIT, PLAIN_TEXT_DISPLAY_NOTICE, TEXT_DISPLAY_LINE_CHAR_LIMIT } from '../../../src/components/chat/safeTextDisplay'
+import { renderMarkdownPlain } from '../../../src/lib/renderMarkdown'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
 
 const displayNotices = [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE]
@@ -156,8 +157,58 @@ describe('deepseekHarnessMcpTextDisplay', () => {
     ])
   })
 
-  it('keeps a large native block in the exact plain-text display', () => {
+  it('keeps a large native block in one capped plain-text display', () => {
     const native = `First line.\n\n${'x'.repeat(33000)}`
-    expect(deepseekHarnessMcpTextDisplay(native)).toEqual([{ type: 'text', text: native }])
+    // The plain display keeps the head and tail of a long line around one ellipsis.
+    const retained = TEXT_DISPLAY_LINE_CHAR_LIMIT - 1
+    const head = Math.floor(retained * 0.75)
+    expect(deepseekHarnessMcpTextDisplay(native)).toEqual([
+      { type: 'text', text: `First line.\n\n${'x'.repeat(head)}…${'x'.repeat(retained - head)}` },
+    ])
+  })
+
+  it('parses Markdown paragraphs up to the parse limit and uses one exact plain display above it', () => {
+    const sized = (length: number) => {
+      const first = 'First paragraph.'
+      const line = `${'y'.repeat(99)}\n`
+      const available = length - first.length - 2
+      const body = `${line.repeat(Math.floor(available / line.length))}${'y'.repeat(available % line.length)}`
+      return { native: `${first}\n\n${body}`, first, body }
+    }
+    const atLimit = sized(MARKDOWN_PARSE_CHAR_LIMIT)
+    expect(atLimit.native).toHaveLength(MARKDOWN_PARSE_CHAR_LIMIT)
+    expect(deepseekHarnessMcpTextDisplay(atLimit.native)).toEqual([
+      { type: 'text', text: atLimit.first },
+      { type: 'text', text: atLimit.body },
+    ])
+    const aboveLimit = sized(MARKDOWN_PARSE_CHAR_LIMIT + 1)
+    expect(aboveLimit.native).toHaveLength(MARKDOWN_PARSE_CHAR_LIMIT + 1)
+    expect(deepseekHarnessMcpTextDisplay(aboveLimit.native)).toEqual([{ type: 'text', text: aboveLimit.native }])
+  })
+
+  it.each([
+    { structure: 'a heading', native: '# Native heading' },
+    { structure: 'a list', native: '- native item' },
+    { structure: 'emphasis', native: 'Native **strong** text' },
+    { structure: 'inline code', native: 'Native `code` text' },
+    { structure: 'a hard line break', native: 'First line.  \nLast line.' },
+    { structure: 'a code block', native: '```\nnative\n```' },
+  ])('refuses short fixture text that contains $structure', ({ native }) => {
+    expect(() => deepseekHarnessMcpTextDisplay(native)).toThrow('unsupported')
+  })
+
+  it('matches the paragraphs and images that the actual Markdown renderer shows', () => {
+    const tail = 'NATIVETOOLOUTPUT-complete-42'
+    const notice = '(Omitted 672056 bytes. Full formatted result stored at: /private/native/mcp__results__inspect.txt. Use read with offset/limit, or grep this path to search within it.)'
+    const blocks = ['0 false\n\n0 false', `${tail}\n\n${notice}`, 'First line.\nLast line.']
+    const root = result(`${renderMarkdownPlain(blocks[0]!)}${image}${renderMarkdownPlain(blocks[1]!)}${image}${renderMarkdownPlain(blocks[2]!)}`)
+    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+      ...deepseekHarnessMcpTextDisplay(blocks[0]!),
+      { type: 'image', index: 0 },
+      ...deepseekHarnessMcpTextDisplay(blocks[1]!),
+      { type: 'image', index: 1 },
+      ...deepseekHarnessMcpTextDisplay(blocks[2]!),
+    ])
+    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toHaveLength(7)
   })
 })

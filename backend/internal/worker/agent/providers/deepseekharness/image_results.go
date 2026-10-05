@@ -20,6 +20,21 @@ type nativeImageReference struct {
 	Height    int64  `json:"height"`
 }
 
+// UnmarshalJSON reads the five fields that identify a native image and ignores every other
+// field of the native reference, such as the optional display name and the original dimensions.
+// The receipt decoder refuses unknown fields of the receipt, which LeapMux owns. The native
+// reference inside it is a native object, and the native process can state more of it. The
+// native image hook compares the same five fields.
+func (r *nativeImageReference) UnmarshalJSON(data []byte) error {
+	type identity nativeImageReference
+	var value identity
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*r = nativeImageReference(value)
+	return nil
+}
+
 func nativeResultImages(original []byte) (string, map[string]nativeImageReference, error) {
 	var event struct {
 		Type string `json:"type"`

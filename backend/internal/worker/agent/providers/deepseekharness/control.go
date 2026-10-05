@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type nativeControl struct {
@@ -29,7 +31,10 @@ type nativeQuestion struct {
 	} `json:"intent"`
 }
 
-func validStoredControl(ctx agent.ControlResponseContext) bool {
+// storedControlRefusal reads the stored request and the answer's envelope, and
+// states the reason the reader sees when either one is unreadable or mismatched.
+// "" means both stand.
+func storedControlRefusal(ctx agent.ControlResponseContext) string {
 	var payload struct {
 		Type    string          `json:"type"`
 		Event   string          `json:"event"`
@@ -38,45 +43,51 @@ func validStoredControl(ctx agent.ControlResponseContext) bool {
 		Request json.RawMessage `json:"request"`
 	}
 	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.ID == "" || payload.AgentID == "" || ctx.RequestID != "" && ctx.RequestID != payload.ID {
-		return false
+		return agent.RefusalUnreadableRequest
 	}
 	requestID, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok || requestID != payload.ID {
-		return false
+	if !ok {
+		return agent.RefusalNoDecision
+	}
+	if requestID != payload.ID {
+		return agent.RefusalOtherRequest
 	}
 	switch payload.Event {
 	case contracts.DeepseekHarnessControlEventApproval:
 		var request struct {
 			ToolName string `json:"toolName"`
 		}
-		return json.Unmarshal(payload.Request, &request) == nil && request.ToolName != ""
+		if json.Unmarshal(payload.Request, &request) != nil || request.ToolName == "" {
+			return agent.RefusalUnreadableRequest
+		}
+		return ""
 	case contracts.DeepseekHarnessControlEventUserQuestions:
 		var request struct {
 			Questions []nativeQuestion `json:"questions"`
 		}
 		if json.Unmarshal(payload.Request, &request) != nil || len(request.Questions) == 0 {
-			return false
+			return agent.RefusalUnreadableRequest
 		}
 		ids := map[string]bool{}
 		for _, question := range request.Questions {
 			if question.ID == "" || question.Question == "" || ids[question.ID] {
-				return false
+				return agent.RefusalUnreadableRequest
 			}
 			ids[question.ID] = true
 			labels := map[string]bool{}
 			for _, option := range question.Options {
 				if option.Label == "" || labels[option.Label] {
-					return false
+					return agent.RefusalUnreadableRequest
 				}
 				labels[option.Label] = true
 			}
 			if question.Intent != nil && question.Intent.Kind == "plan-review" && (question.Intent.CallID == "" || !labels[question.Intent.Approve]) {
-				return false
+				return agent.RefusalUnreadableRequest
 			}
 		}
-		return true
+		return ""
 	default:
-		return false
+		return agent.RefusalUnreadableRequest
 	}
 }
 
@@ -130,7 +141,12 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 			if question.Intent != nil && question.Intent.Kind == "plan-review" {
 				header["tool_name"] = contracts.DeepseekHarnessToolExitPlanMode
 				header["tool_use_id"] = question.Intent.CallID
-				sink.UpdatePlan([]byte(question.Detail), 0, "")
+				// The Worker decodes the plan with the compression that the call states, and it refuses an
+				// unspecified one. A review that carries no plan stores none.
+				if plan := question.Detail; plan != "" {
+					compressed, compression := msgcodec.Compress([]byte(plan))
+					sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(plan))
+				}
 			}
 		}
 	}

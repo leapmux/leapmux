@@ -1,5 +1,5 @@
 {
-  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output.",
+  "_readme": "DeepSeek Harness owns these Web Remote event and tool values. The Worker preserves native Session events. The browser reads those same events. LeapMux owns the plan selector values because the native plan state is a boolean. LeapMux image receipts preserve native image identity and order without storing complete text or subprocess output. The Worker adds the native context window to the supplement of each assistant block, because the native usage states no window.",
   "events": {
     "AssistantMessage": "assistant/message",
     "UserMessage": "user/message",
@@ -61,6 +61,7 @@
   },
   "supplement": {
     "BlockIndex": "blockIndex",
+    "ContextWindow": "contextWindow",
     "ImageAttachments": "imageAttachments"
   },
   "fields": {

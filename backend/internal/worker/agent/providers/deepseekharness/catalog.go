@@ -109,7 +109,14 @@ func (c modelCatalog) resolve(current modelSelection, model, effort string) (mod
 	if item == nil {
 		return modelSelection{}, fmt.Errorf("DeepSeek Harness does not offer the requested model")
 	}
-	if effort != "" {
+	// The Worker service sends agent.EffortAuto when a model switch makes the old effort invalid,
+	// because Auto is valid for every model. For this provider Auto means the effort that the
+	// selected model declares as its default.
+	switch effort {
+	case "":
+	case agent.EffortAuto:
+		next.Effort = ""
+	default:
 		next.Effort = effort
 	}
 	if next.Effort == "" {

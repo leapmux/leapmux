@@ -7,7 +7,7 @@ import { nativeUserStrings } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { nativeToolResult, nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { assistantBubbles, expectUserMessage } from '../helpers/ui'
@@ -51,8 +51,9 @@ export async function exerciseDeepseekHarnessFileAttachment(
     expect(result).toContain(source.toString('utf8'))
   }
   else {
-    expect(result).toContain(source.toString('base64'))
-    expect(result).toContain('[exit code: 0]')
+    // The native Bash result adds a status marker only for a nonzero exit, a signal, a timeout, or a stop.
+    // Exact text with no marker therefore proves the complete bytes and a clean exit.
+    expect(nativeToolResultContent(next, callId)).toEqual([{ type: 'text', text: source.toString('base64') }])
   }
   await expectUserMessage(context.page, fileName)
   await expect(assistantBubbles(context.page).filter({ hasText: 'The actual uploaded file bytes reached the model.' }).first()).toBeVisible()
