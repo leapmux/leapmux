@@ -5,6 +5,7 @@ import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpe
 import { lastUserText } from '../helpers/mockModelScript'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { queuedInputRow, steerButton } from '../helpers/steer'
+import { getRecordedToasts } from '../helpers/toast'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code steering', () => {
@@ -61,9 +62,12 @@ codebuddyTest.describe('CodeBuddy Code steering', () => {
       await expect(queued).toBeVisible()
       await steerButton(queued).click()
       // CodeBuddy's steer drain keeps the text of the blocks only, so the
-      // worker refuses to steer an image. The input stays queued, and no
-      // request continues the turn yet.
-      expect((await modelScript.status()).requests.some(request => request.stepIndex === 1)).toBe(false)
+      // worker refuses to steer an image. The refusal reaches the reader as a
+      // warning toast, and only a failed steer shows one. The toast is the
+      // barrier: after it, the input must still wait in the queue for the
+      // next turn.
+      await expect.poll(async () => (await getRecordedToasts(page)).some(toast => toast.variant === 'danger' && toast.message.includes('steer'))).toBe(true)
+      await expect(queued).toBeVisible()
     }
     finally {
       await modelScript.releaseGate(gate)

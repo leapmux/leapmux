@@ -447,6 +447,12 @@ claudeTest.describe('Agent Settings', () => {
     await expect.poll(async () => (await nativeAgentById(context, agent.id))?.activityState).toBe(AgentActivityState.IDLE)
     await expect(banner).not.toBeVisible()
     await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
+    // The thinking indicator is already absent in WAITING_FOR_USER, and the Worker API
+    // reports the state before the browser applies it. The Interrupt button shows only
+    // while the browser holds WORKING or WAITING_FOR_USER, so its absence proves that
+    // the browser applied the IDLE report. The browser records a receipt in the same
+    // task as that state change, so the check below cannot run before it.
+    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toHaveCount(0)
     // WAITING_FOR_USER to IDLE is not a settle edge, because the agent was not
     // working. The stop therefore rings no second alert and records no receipt.
     expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()

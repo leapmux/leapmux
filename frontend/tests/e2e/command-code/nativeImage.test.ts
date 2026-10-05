@@ -29,14 +29,15 @@ describe('readCommandCodeNativeImage', () => {
     expect(result).toEqual({ mediaType: 'image/jpeg', data: '/9j/4AAQSkZJRg==' })
   })
 
+  // Each source case keeps the two fields that its check does not read valid, so only its own check can refuse it.
   it.each([
-    ['no image block', [{ type: 'text', text: 'Read a text file.' }]],
-    ['two image blocks', [image, image]],
-    ['an image block that is not base64', [{ type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } }]],
-    ['an image block without bytes', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }]],
-    ['a media type that is not an image', [{ type: 'image', source: { type: 'base64', media_type: 'text/plain', data: 'aGk=' } }]],
-  ])('refuses a result with %s', (_name, result) => {
-    expect(() => readCommandCodeNativeImage(snapshot(completed(result)), 'native-call')).toThrow()
+    ['no image block', [{ type: 'text', text: 'Read a text file.' }], 'exactly one image block'],
+    ['two image blocks', [image, image], 'exactly one image block'],
+    ['an image block that is not base64', [{ type: 'image', source: { type: 'url', media_type: 'image/png', data: 'aGk=' } }], 'base64 image source'],
+    ['an image block without bytes', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }], 'base64 image source'],
+    ['a media type that is not an image', [{ type: 'image', source: { type: 'base64', media_type: 'text/plain', data: 'aGk=' } }], 'base64 image source'],
+  ])('refuses a result with %s', (_name, result, message) => {
+    expect(() => readCommandCodeNativeImage(snapshot(completed(result)), 'native-call')).toThrow(message)
   })
 
   it('refuses the result of another tool or another call', () => {

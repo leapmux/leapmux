@@ -46,4 +46,17 @@ describe('commandCodeLoadedToolNames', () => {
   it('reads no name from empty text', () => {
     expect(commandCodeLoadedToolNames('')).toEqual([])
   })
+
+  // A header form that a later build changes would load a tool and yield no name, and a lookup
+  // of an absent tool would then pass. The result states how many schemas it loaded, so a name
+  // count that differs from that number is a result that this reader cannot read.
+  it.each([
+    ['a header form that changed', 'Loaded 1 tool schema(s).\n\n## REPL\nA description.'],
+    ['fewer names than the stated count', `${loaded('sleep')}\n`.replace('Loaded 1', 'Loaded 2')],
+    ['more names than the stated count', loaded('sleep', 'task_create').replace('Loaded 2', 'Loaded 1')],
+    ['a header with no stated count', '### sleep\nA description.'],
+    ['a lookup that matched nothing and still lists a name', 'No deferred tool matched "select:REPL".\n\n### sleep\nA description.'],
+  ])('refuses a result with %s', (_name, result) => {
+    expect(() => commandCodeLoadedToolNames(result)).toThrow('Command Code load_tools result')
+  })
 })

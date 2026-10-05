@@ -28,7 +28,15 @@ export function commandCodeToolCatalog(request: MockModelRequestRecord): string[
  * The native tool answers a `select:<name>` request with a fuzzy search that keeps the best match of each name
  * (Command Code 1.74.1, createSearchToolsTool). A name that the catalog lacks can load a tool with another name,
  * so a lookup proves that a tool is absent only when no loaded name equals it.
+ *
+ * The result states how many schemas it loaded, and each schema has one `### <name>` header. A header count that
+ * differs from that number means that the header form changed, and a lookup of an absent tool would then pass on
+ * an empty list. So this reader throws instead of returning a list that it cannot trust.
  */
 export function commandCodeLoadedToolNames(result: string): string[] {
-  return [...result.matchAll(/^### (\S+)$/gm)].map(match => match[1]!)
+  const names = [...result.matchAll(/^### (\S+)$/gm)].map(match => match[1]!)
+  const stated = /^Loaded (\d+) tool schema\(s\)/u.exec(result)?.[1]
+  if (names.length !== Number(stated ?? 0))
+    throw new Error(`The Command Code load_tools result states ${stated ?? 'no'} loaded schemas, and ${names.length} headers name one.`)
+  return names
 }
