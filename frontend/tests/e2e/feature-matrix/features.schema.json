@@ -3,9 +3,14 @@
   "title": "Coding-agent feature definitions",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "features"],
+  "required": ["_readme", "groups", "features"],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/group" }
+    },
     "features": {
       "type": "array",
       "minItems": 1,
@@ -13,15 +18,33 @@
     }
   },
   "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 }
+      }
+    },
     "feature": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "label", "description", "showInMatrix"],
+      "allOf": [
+        {
+          "if": { "properties": { "showInMatrix": { "const": true } } },
+          "then": { "required": ["group"], "properties": { "group": true } },
+          "else": { "properties": { "group": false } }
+        }
+      ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "id": { "$ref": "#/$defs/id" },
         "label": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
-        "showInMatrix": { "type": "boolean" }
+        "showInMatrix": { "type": "boolean" },
+        "group": { "$ref": "#/$defs/id" }
       }
     }
   }

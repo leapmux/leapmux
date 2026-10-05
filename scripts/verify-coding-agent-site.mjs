@@ -12,14 +12,18 @@ const remarkParse = require('remark-parse').default
 
 const markdown = unified().use(remarkParse)
 
-function sameText(actual, expected) {
-  const normalize = value => value
+/** Compare text the way a reader sees it: one space between words, plain quotes and dashes. */
+function normalizeText(value) {
+  return value
     .replace(/[‘’]/g, '\'')
     .replace(/[“”]/g, '"')
     .replace(/[–—]/g, '-')
     .trim()
     .replace(/\s+/g, ' ')
-  return normalize(actual) === normalize(expected)
+}
+
+function sameText(actual, expected) {
+  return normalizeText(actual) === normalizeText(expected)
 }
 
 function markdownText(source) {
@@ -41,18 +45,6 @@ function markdownLinks(source) {
   return urls
 }
 
-function markdownListKinds(source) {
-  const kinds = []
-  const visit = (node) => {
-    if (node.type === 'list')
-      kinds.push(node.ordered ? 'OL' : 'UL')
-    for (const child of node.children ?? [])
-      visit(child)
-  }
-  visit(markdown.parse(source))
-  return kinds
-}
-
 function renderedText(node) {
   if (node.nodeType === 3)
     return node.textContent ?? ''
@@ -68,7 +60,6 @@ function noteMatches(node, source, removeLabel = false) {
   const actualLinks = Array.from(copy.querySelectorAll('a'), link => link.getAttribute('href'))
   return sameText(renderedText(copy), markdownText(source))
     && JSON.stringify(actualLinks) === JSON.stringify(markdownLinks(source))
-    && JSON.stringify(Array.from(copy.querySelectorAll('ul, ol'), list => list.tagName)) === JSON.stringify(markdownListKinds(source))
 }
 
 /** Count only the feature rows that the website publishes. */
@@ -103,6 +94,115 @@ export function verifyCodingAgentProviderCount(html, checklist) {
   }
 }
 
+/** Check the legend: one entry for each support state, with its symbol hidden from screen readers. */
+function legendErrors(document, states) {
+  const legend = document.querySelector('.feature-matrix-legend')
+  if (!legend)
+    return ['the page contains no support legend']
+  const entries = Array.from(legend.children)
+  const errors = []
+  if (entries.length !== states.length)
+    errors.push(`expected ${states.length} legend entries, found ${entries.length}`)
+  for (const [index, state] of states.entries()) {
+    const entry = entries[index]
+    if (!entry)
+      continue
+    const expected = `${state.symbol} ${state.label}`
+    if (!sameText(entry.textContent ?? '', expected))
+      errors.push(`legend entry ${index + 1} reads ${JSON.stringify(normalizeText(entry.textContent ?? ''))}, expected ${JSON.stringify(expected)}`)
+    if (entry.querySelector('[aria-hidden="true"]')?.textContent?.trim() !== state.symbol)
+      errors.push(`legend entry ${index + 1} must hide its symbol from assistive technology`)
+  }
+  return errors
+}
+
+/**
+ * Check that no detail note reaches the page. The website shows the user note only. A detail
+ * note that equals its user note is the user note, and a note under 15 characters can occur
+ * by chance, so neither counts. The check reads the page as plain text twice, with and
+ * without a space between inline elements, so markup cannot hide a leak.
+ */
+function detailLeakErrors(document, features, checklist) {
+  const pageTexts = [normalizeText(document.body.textContent ?? ''), normalizeText(renderedText(document.body))]
+  const leaks = (detail, userNote) => {
+    const text = normalizeText(detail ?? '')
+    return text.length >= 15 && text !== normalizeText(userNote ?? '') && pageTexts.some(page => page.includes(text))
+  }
+  const errors = []
+  for (const provider of checklist.providerGroups.flat()) {
+    if (leaks(provider.detailNote, provider.userNote))
+      errors.push(`detail note of provider ${provider.id} appears on the website`)
+  }
+  for (const feature of features.features) {
+    for (const [providerId, cell] of Object.entries(checklist.cells[feature.id])) {
+      if (leaks(cell.detailNote, cell.userNote))
+        errors.push(`detail note of ${providerId}/${feature.id} appears on the website`)
+    }
+  }
+  return errors
+}
+
+/**
+ * Check the feature groups of one table: one body for each group, a row group header
+ * with the group name, repeated logos on every group after the first, and each feature
+ * row under its own group. The table head already shows the logos above the first group.
+ */
+function featureGroupErrors(table, tableNumber, providers, publishedFeatures, groups) {
+  const expectedGroups = groups.filter(group => publishedFeatures.some(feature => feature.group === group.id))
+  const bodies = Array.from(table.tBodies)
+  if (bodies.length !== expectedGroups.length)
+    return [`table ${tableNumber} has ${bodies.length} feature groups, expected ${expectedGroups.length}`]
+  const errors = []
+  for (const [index, group] of expectedGroups.entries()) {
+    const label = `table ${tableNumber} group ${index + 1}`
+    const body = bodies[index]
+    const header = body.rows[0]
+    if (!header?.classList.contains('feature-group-header')) {
+      errors.push(`${label} has no group header`)
+      continue
+    }
+    const nameCell = header.children[0]
+    if (nameCell?.tagName !== 'TH' || nameCell.getAttribute('scope') !== 'rowgroup')
+      errors.push(`${label} has no row group header`)
+    const name = nameCell?.textContent ?? ''
+    if (!sameText(name, group.label))
+      errors.push(`${label} is named ${JSON.stringify(name.trim())}, expected ${JSON.stringify(group.label)}`)
+    const logoCells = Array.from(header.children).slice(1)
+    if (index === 0) {
+      if (logoCells.length > 0)
+        errors.push(`${label} header must not repeat the provider logos`)
+      const span = Number(nameCell?.getAttribute('colspan') ?? 1)
+      if (span !== providers.length + 1)
+        errors.push(`${label} header spans ${span} columns, expected ${providers.length + 1}`)
+    }
+    else if (logoCells.length !== providers.length) {
+      errors.push(`${label} header has ${logoCells.length} logos, expected ${providers.length}`)
+    }
+    else {
+      for (const [providerIndex, provider] of providers.entries()) {
+        const logo = `${label} header logo ${providerIndex + 1}`
+        const cell = logoCells[providerIndex]
+        const image = cell.querySelector('img')
+        if (cell.getAttribute('aria-hidden') !== 'true')
+          errors.push(`${logo} must be hidden from assistive technology`)
+        if (cell.querySelector('a'))
+          errors.push(`${logo} must not be a link`)
+        if (image?.getAttribute('alt') !== '')
+          errors.push(`${logo} must have an empty alt`)
+        if (image?.getAttribute('src') !== provider.icon)
+          errors.push(`${logo} has the wrong icon`)
+        if (!sameText(cell.querySelector('.provider-hover-label')?.textContent ?? '', provider.label))
+          errors.push(`${logo} has the wrong hover label`)
+      }
+    }
+    const actual = Array.from(body.querySelectorAll('tr:not(.feature-group-header) > th[scope="row"] a'), link => link.getAttribute('href')?.replace(/^#feature-/, ''))
+    const expected = publishedFeatures.filter(feature => feature.group === group.id).map(feature => feature.id)
+    if (JSON.stringify(actual) !== JSON.stringify(expected))
+      errors.push(`${label} holds rows [${actual.join(', ')}], expected [${expected.join(', ')}]`)
+  }
+  return errors
+}
+
 /** Check the final Hugo HTML against the two source JSON files. */
 export function verifyCodingAgentSite(html, features, checklist) {
   const dom = new JSDOM(html)
@@ -113,14 +213,8 @@ export function verifyCodingAgentSite(html, features, checklist) {
   const providers = groups.flat()
   const publishedFeatures = features.features.filter(feature => feature.showInMatrix === true)
   const hiddenFeatures = features.features.filter(feature => feature.showInMatrix === false)
-  const usedNoteIds = new Set(providers.flatMap(provider => provider.noteRefs ?? []))
-  for (const feature of publishedFeatures) {
-    for (const provider of providers) {
-      for (const id of checklist.cells[feature.id][provider.id].noteRefs ?? [])
-        usedNoteIds.add(id)
-    }
-  }
-  const sharedNotes = checklist.sharedNotes.filter(note => usedNoteIds.has(note.id))
+  const states = checklist.supportStates
+  errors.push(...legendErrors(document, states))
   const tableNames = new Set()
   if (tables.length !== groups.length)
     errors.push(`expected ${groups.length} matrix tables, found ${tables.length}`)
@@ -149,14 +243,11 @@ export function verifyCodingAgentSite(html, features, checklist) {
         errors.push(`table ${groupIndex + 1} has wrong provider URL for ${provider.id}`)
       if (!sameText(image?.closest('a')?.querySelector('.provider-hover-label')?.textContent ?? '', provider.label))
         errors.push(`table ${groupIndex + 1} has no hover label for ${provider.id}`)
-      for (const noteId of provider.noteRefs ?? []) {
-        if (!headers[providerIndex]?.querySelector(`a[href="#note-${noteId}"]`))
-          errors.push(`table ${groupIndex + 1} omits provider note ${noteId} for ${provider.id}`)
-      }
-      if (provider.notes && !headers[providerIndex]?.querySelector(`a[href="#note-provider-${provider.id}"]`))
+      if (provider.userNote && !headers[providerIndex]?.querySelector(`a[href="#note-provider-${provider.id}"]`))
         errors.push(`table ${groupIndex + 1} omits the provider note for ${provider.id}`)
     }
-    const rows = Array.from(table.querySelectorAll('tbody tr'))
+    errors.push(...featureGroupErrors(table, groupIndex + 1, group, publishedFeatures, features.groups ?? []))
+    const rows = Array.from(table.querySelectorAll('tbody tr:not(.feature-group-header)'))
     if (rows.length !== publishedFeatures.length)
       errors.push(`table ${groupIndex + 1} has ${rows.length} feature rows, expected ${publishedFeatures.length}`)
     for (const [featureIndex, feature] of publishedFeatures.entries()) {
@@ -168,20 +259,24 @@ export function verifyCodingAgentSite(html, features, checklist) {
       for (const [providerIndex, provider] of group.entries()) {
         const cell = checklist.cells[feature.id][provider.id]
         const rendered = cells[providerIndex + 1]
-        const symbol = cell.supported ? '✅' : '❌'
-        const opposite = cell.supported ? '❌' : '✅'
-        if (!rendered?.textContent?.includes(symbol) || rendered.textContent.includes(opposite))
+        const state = states.find(candidate => candidate.id === cell.support)
+        const image = rendered?.querySelector('[role="img"]')
+        const otherSymbol = states.some(other => other !== state && rendered?.textContent?.includes(other.symbol))
+        if (!state || image?.getAttribute('aria-label') !== state.label || image.textContent?.trim() !== state.symbol || otherSymbol)
           errors.push(`table ${groupIndex + 1} has wrong support for ${provider.id}/${feature.id}`)
-        for (const noteId of cell.noteRefs ?? []) {
-          if (!rendered?.querySelector(`a[href="#note-${noteId}"]`))
-            errors.push(`table ${groupIndex + 1} omits note ${noteId} for ${provider.id}/${feature.id}`)
-        }
-        if (cell.notes) {
-          if (!rendered?.querySelector(`a[href="#note-${provider.id}-${feature.id}"]`))
+        const noteLink = rendered?.querySelector(`a[href="#note-${provider.id}-${feature.id}"]`)
+        if (cell.userNote?.trim()) {
+          if (!noteLink)
             errors.push(`table ${groupIndex + 1} omits the cell note for ${provider.id}/${feature.id}`)
           const note = document.getElementById(`note-${provider.id}-${feature.id}`)
-          if (!noteMatches(note, cell.notes, true))
+          if (!noteMatches(note, cell.userNote, true))
             errors.push(`cell note for ${provider.id}/${feature.id} differs from source`)
+        }
+        else {
+          if (noteLink)
+            errors.push(`table ${groupIndex + 1} links a note for ${provider.id}/${feature.id} that has no user note`)
+          if (document.getElementById(`note-${provider.id}-${feature.id}`))
+            errors.push(`cell note for ${provider.id}/${feature.id} appears on the website, but the cell has no user note`)
         }
       }
     }
@@ -216,25 +311,14 @@ export function verifyCodingAgentSite(html, features, checklist) {
         errors.push(`hidden cell note for ${provider.id}/${feature.id} appears on the website`)
     }
   }
-  for (const note of sharedNotes) {
-    const rendered = document.getElementById(`note-${note.id}`)
-    if (!noteMatches(rendered, note.text))
-      errors.push(`shared note ${note.id} differs from source`)
-  }
-  for (const note of checklist.sharedNotes) {
-    if (!usedNoteIds.has(note.id) && document.getElementById(`note-${note.id}`))
-      errors.push(`hidden-only shared note ${note.id} appears on the website`)
-  }
-  const renderedSharedNotes = document.querySelectorAll('.feature-matrix-notes > ol > li')
-  if (renderedSharedNotes.length !== sharedNotes.length)
-    errors.push(`expected ${sharedNotes.length} shared notes, found ${renderedSharedNotes.length}`)
   for (const provider of providers) {
-    if (!provider.notes)
+    if (!provider.userNote)
       continue
     const note = document.getElementById(`note-provider-${provider.id}`)
-    if (!noteMatches(note, provider.notes, true))
+    if (!noteMatches(note, provider.userNote, true))
       errors.push(`provider note for ${provider.id} differs from source`)
   }
+  errors.push(...detailLeakErrors(document, features, checklist))
   for (const link of document.querySelectorAll('.feature-matrix a[href^="#note-"]')) {
     const target = link.getAttribute('href')?.slice(1)
     if (!target || !document.getElementById(target))

@@ -3,12 +3,14 @@
   "title": "Coding-agent provider feature checklist",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "sharedNotes", "providerGroups", "cells"],
+  "required": ["_readme", "supportStates", "providerGroups", "cells"],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
-    "sharedNotes": {
+    "supportStates": {
       "type": "array",
-      "items": { "$ref": "#/$defs/sharedNote" }
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/supportState" }
     },
     "providerGroups": {
       "type": "array",
@@ -34,44 +36,42 @@
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
-    "noteRefs": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "type": "integer", "minimum": 1 }
-    },
-    "sharedNote": {
+    "supportId": { "enum": ["supported", "agent-limit", "leapmux-limit"] },
+    "supportState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "text"],
+      "required": ["id", "symbol", "label"],
       "properties": {
-        "id": { "type": "integer", "minimum": 1 },
-        "text": { "type": "string", "minLength": 1 }
+        "id": { "$ref": "#/$defs/supportId" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 }
       }
     },
+    "userNote": { "type": "string", "maxLength": 400, "pattern": "^[^\\n]*$" },
     "provider": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "label", "url", "icon", "notes", "noteRefs"],
+      "required": ["id", "label", "url", "icon", "userNote", "detailNote"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
         "label": { "type": "string", "minLength": 1 },
         "url": { "type": "string", "pattern": "^https://" },
         "icon": { "type": "string", "pattern": "^/icons/agents/[a-z0-9-]+\\.svg$" },
-        "notes": { "type": "string" },
-        "noteRefs": { "$ref": "#/$defs/noteRefs" }
+        "userNote": { "$ref": "#/$defs/userNote" },
+        "detailNote": { "type": "string" }
       }
     },
     "cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["supported", "notes", "noteRefs", "spec", "audit", "verified", "testStatus"],
+      "required": ["support", "userNote", "detailNote", "spec", "audit", "verified", "testStatus"],
       "allOf": [
         {
           "if": { "properties": { "testStatus": { "const": "passed" } } },
           "then": { "properties": { "spec": { "type": "string", "minLength": 1 } } }
         },
         {
-          "if": { "properties": { "supported": { "const": true } } },
+          "if": { "properties": { "support": { "const": "supported" } } },
           "then": {
             "properties": {
               "audit": { "enum": ["covered", "existing-e2e-mapped", "source-verified"] }
@@ -85,9 +85,9 @@
         }
       ],
       "properties": {
-        "supported": { "type": "boolean" },
-        "notes": { "type": "string" },
-        "noteRefs": { "$ref": "#/$defs/noteRefs" },
+        "support": { "$ref": "#/$defs/supportId" },
+        "userNote": { "$ref": "#/$defs/userNote" },
+        "detailNote": { "type": "string" },
         "spec": {
           "type": "string",
           "pattern": "^(?:frontend/tests/e2e/(?:[a-z0-9-]+/)*[a-z0-9-]+\\.spec\\.ts)?$"

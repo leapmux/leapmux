@@ -310,10 +310,23 @@ Two JSON files define the coverage:
 
 - [features.json](frontend/tests/e2e/feature-matrix/features.json) holds stable feature IDs and precise descriptions.
   It holds display labels and website publication choices also.
+  It lists the feature groups, and each published feature names its group.
+  The website shows the groups in that order, and the published features of a group stand together.
 - [checklist.json](frontend/tests/e2e/feature-matrix/checklist.json) holds each provider and feature combination.
-  Each entry supplies its distinct spec path and support verdict.
+  Each entry supplies its distinct spec path and its support state.
   It records source verification and browser results separately.
-  Notes explain conditions and evidence, including upstream issue links.
+  Each entry holds two notes. The user note is short, has no implementation detail, and keeps upstream issue links.
+  The detail note holds the evidence for the maintainers.
+  The website shows the user note only.
+
+A support state is one of three values:
+
+- `supported`: LeapMux delivers the feature with this agent.
+- `agent-limit`: the native protocol of the tested agent version cannot carry the feature.
+- `leapmux-limit`: the native protocol carries the feature, and LeapMux does not use it yet.
+
+A limited cell needs a detail note. A limited cell of a published feature needs a user note also.
+A hidden feature has no user note, because the website does not show it.
 
 Feature IDs use kebab-case and match the spec filenames.
 For example, Pi's `text-attachments` entry points to `frontend/tests/e2e/pi/text-attachments.spec.ts`.

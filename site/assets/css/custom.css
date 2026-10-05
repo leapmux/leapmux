@@ -241,6 +241,20 @@
   vertical-align: middle;
 }
 
+/* The legend explains the symbol of each support state above the matrix. */
+.feature-matrix-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.5rem;
+  list-style: none;
+  margin-block: 1rem;
+  padding-inline-start: 0;
+}
+
+.feature-matrix-legend li {
+  margin: 0;
+}
+
 /* Group provider columns in tables that can scroll on a narrow screen. */
 .feature-matrix {
   overflow-x: auto;
@@ -290,6 +304,34 @@
 .feature-matrix table tbody th:first-child a {
   text-decoration: underline;
   text-underline-offset: 0.15em;
+}
+
+/*
+ * A group header names a feature group. Each group header after the first repeats the
+ * provider logos as decoration, so a reader far down the table still sees each column.
+ */
+.feature-matrix table tbody tr.feature-group-header th,
+.feature-matrix table tbody tr.feature-group-header td {
+  background: var(--hx-color-gray-100);
+  font-weight: 600;
+}
+
+.dark .feature-matrix table tbody tr.feature-group-header th,
+.dark .feature-matrix table tbody tr.feature-group-header td {
+  background: var(--hx-color-gray-800);
+}
+
+.feature-group-logo {
+  text-align: center;
+}
+
+.feature-group-logo img {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  vertical-align: middle;
+  margin: 0;
 }
 
 .feature-matrix-definitions dt {

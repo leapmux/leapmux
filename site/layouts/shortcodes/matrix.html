@@ -1,17 +1,14 @@
 {{- $page := .Page -}}
 {{- $data := index hugo.Data "feature_matrix" -}}
 {{- $checklist := index $data "checklist" -}}
+{{- $featureGroups := (index $data "features").groups -}}
 {{- $features := where (index $data "features").features "showInMatrix" true -}}
-{{- $visibleNoteIDs := slice -}}
-{{- range $group := $checklist.providerGroups -}}
-  {{- range $provider := $group -}}
-    {{- $visibleNoteIDs = union $visibleNoteIDs ($provider.noteRefs | default (slice)) -}}
-    {{- range $feature := $features -}}
-      {{- $cell := index (index $checklist.cells $feature.id) $provider.id -}}
-      {{- $visibleNoteIDs = union $visibleNoteIDs ($cell.noteRefs | default (slice)) -}}
-    {{- end -}}
+{{- $states := $checklist.supportStates -}}
+<ul class="feature-matrix-legend" aria-label="Legend">
+  {{- range $state := $states -}}
+    <li><span aria-hidden="true">{{ $state.symbol }}</span> {{ $state.label }}</li>
   {{- end -}}
-{{- end -}}
+</ul>
 <div class="feature-matrix">
   {{- range $groupIndex, $group := $checklist.providerGroups -}}
     <table aria-label="Coding agent feature matrix, group {{ add $groupIndex 1 }} of {{ len $checklist.providerGroups }}">
@@ -24,36 +21,54 @@
                 <img src="{{ $provider.icon }}" width="24" height="24" alt="{{ $provider.label }}">
                 <span class="provider-hover-label" aria-hidden="true">{{ $provider.label }}</span>
               </a>
-              {{- range $id := $provider.noteRefs -}}
-                <a href="#note-{{ $id }}" aria-label="Note {{ $id }} about {{ $provider.label }}"><sup>{{ $id }}</sup></a>
-              {{- end -}}
-              {{- with $provider.notes -}}
+              {{- with $provider.userNote -}}
                 <a href="#note-provider-{{ $provider.id }}" aria-label="Note about {{ $provider.label }}"><sup>†</sup></a>
               {{- end -}}
             </th>
           {{- end -}}
         </tr>
       </thead>
-      <tbody>
-        {{- range $feature := $features -}}
-          {{- $row := index $checklist.cells $feature.id -}}
-          <tr>
-            <th scope="row"><a href="#feature-{{ $feature.id }}">{{ $feature.label }}</a></th>
-            {{- range $provider := $group -}}
-              {{- $cell := index $row $provider.id -}}
-              <td>
-                {{- if $cell.supported -}}✅{{- else -}}❌{{- end -}}
-                {{- range $id := $cell.noteRefs -}}
-                  <a href="#note-{{ $id }}" aria-label="Note {{ $id }} about {{ $provider.label }} {{ $feature.label }}"><sup>{{ $id }}</sup></a>
+      {{- /*
+        One body for each feature group. The table head shows the provider logos above the
+        first group, so that group header shows only the name. Each later group header repeats
+        the logos as decoration, so a reader far down the table still sees each column.
+      */ -}}
+      {{- $renderedGroups := 0 -}}
+      {{- range $featureGroup := $featureGroups -}}
+        {{- $groupFeatures := where $features "group" $featureGroup.id -}}
+        {{- if $groupFeatures -}}
+          <tbody>
+            <tr class="feature-group-header">
+              {{- if eq $renderedGroups 0 -}}
+                <th scope="rowgroup" colspan="{{ add (len $group) 1 }}">{{ $featureGroup.label }}</th>
+              {{- else -}}
+                <th scope="rowgroup">{{ $featureGroup.label }}</th>
+                {{- range $provider := $group -}}
+                  <td class="feature-group-logo" aria-hidden="true"><span class="provider-link"><img src="{{ $provider.icon }}" width="20" height="20" alt=""><span class="provider-hover-label">{{ $provider.label }}</span></span></td>
                 {{- end -}}
-                {{- with $cell.notes -}}
-                  <a href="#note-{{ $provider.id }}-{{ $feature.id }}" aria-label="Note about {{ $provider.label }} {{ $feature.label }}"><sup>†</sup></a>
+              {{- end -}}
+            </tr>
+            {{- $renderedGroups = add $renderedGroups 1 -}}
+            {{- range $feature := $groupFeatures -}}
+              {{- $row := index $checklist.cells $feature.id -}}
+              <tr>
+                <th scope="row"><a href="#feature-{{ $feature.id }}">{{ $feature.label }}</a></th>
+                {{- range $provider := $group -}}
+                  {{- $cell := index $row $provider.id -}}
+                  {{- $state := index (where $states "id" $cell.support) 0 -}}
+                  <td>
+                    {{- /* The label names the state for a screen reader. The legend explains the symbols. */ -}}
+                    <span role="img" aria-label="{{ $state.label }}">{{ $state.symbol }}</span>
+                    {{- with $cell.userNote -}}
+                      <a href="#note-{{ $provider.id }}-{{ $feature.id }}" aria-label="Note about {{ $provider.label }} {{ $feature.label }}"><sup>†</sup></a>
+                    {{- end -}}
+                  </td>
                 {{- end -}}
-              </td>
+              </tr>
             {{- end -}}
-          </tr>
+          </tbody>
         {{- end -}}
-      </tbody>
+      {{- end -}}
     </table>
   {{- end -}}
 </div>
@@ -68,16 +83,12 @@
   </dl>
 </section>
 
+{{- /* The site shows the user note only. The detail note is evidence for the maintainers. */ -}}
 <section class="feature-matrix-notes" aria-labelledby="feature-matrix-notes-heading">
   <h3 id="feature-matrix-notes-heading">Notes</h3>
-  <ol>
-    {{- range $note := where $checklist.sharedNotes "id" "in" $visibleNoteIDs -}}
-      <li id="note-{{ $note.id }}" value="{{ $note.id }}">{{ $page.RenderString (dict "display" "block") $note.text }}</li>
-    {{- end -}}
-  </ol>
   {{- range $group := $checklist.providerGroups -}}
     {{- range $provider := $group -}}
-      {{- with $provider.notes -}}
+      {{- with $provider.userNote -}}
         <div id="note-provider-{{ $provider.id }}"><strong>{{ $provider.label }}:</strong> {{ $page.RenderString (dict "display" "block") . }}</div>
       {{- end -}}
     {{- end -}}
@@ -87,9 +98,10 @@
     {{- range $group := $checklist.providerGroups -}}
       {{- range $provider := $group -}}
         {{- $cell := index $row $provider.id -}}
-        {{- with $cell.notes -}}
+        {{- with $cell.userNote -}}
+          {{- $state := index (where $states "id" $cell.support) 0 -}}
           <div id="note-{{ $provider.id }}-{{ $feature.id }}">
-            <strong>{{ $provider.label }} — {{ $feature.label }}:</strong>
+            <strong>{{ $state.symbol }} {{ $provider.label }} — {{ $feature.label }}:</strong>
             {{ $page.RenderString (dict "display" "block") . }}
           </div>
         {{- end -}}

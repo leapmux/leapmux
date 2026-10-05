@@ -17,9 +17,11 @@ theme. The LeapMux user manual is served from `/docs/`.
   dependency graph does not leak into the backend/desktop workspace. All
   commands run with `GOWORK=off`.
 - The coding-agent matrix reads `frontend/tests/e2e/feature-matrix/features.json`
-  and `checklist.json` through a Hugo data mount. The checklist also records
-  each provider-feature browser spec. `task validate-json` checks both files
-  before the site builds.
+  and `checklist.json` through a Hugo data mount. The features file holds the
+  feature groups and the definitions. The checklist holds the support state and
+  the two notes of each cell, and it records each provider-feature browser spec.
+  The site shows the user note of a cell and never its detail note.
+  `task validate-json` checks both files before the site builds.
 
 ## Building
 

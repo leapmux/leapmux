@@ -394,6 +394,6 @@ See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID
 
 ## Feature matrix
 
-Every provider supports chat and streamed tool calls. Each matrix cell shows ✅ when LeapMux supports a feature and ❌ when it does not. Select a feature label for its exact definition. A note link explains a cell limit or condition.
+Every provider supports chat and streamed tool calls. Each matrix cell shows one of three states, and the legend above the table explains each symbol. The features appear in groups, and each group header repeats the agent logos. Select a feature label for its exact definition. A † link beside a symbol opens a short note about that cell.
 
 {{< matrix >}}
