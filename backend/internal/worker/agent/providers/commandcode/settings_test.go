@@ -71,8 +71,10 @@ func TestSettingsAutoEffortSendsNoNativeEffort(t *testing.T) {
 
 // The native host cannot drop an effort that it holds. A request for `auto`
 // while the host holds one needs a relaunch with no `--effort`. This covers a
-// reader who picks Auto, and a model switch for which the host keeps the launch
-// effort of the previous model.
+// reader who picks Auto, and a model switch to a model for which the host holds
+// an effort. The host keeps one effort for each model. It does not carry the
+// effort of the previous model over a switch. An earlier launch with `--effort`
+// stores the effort of a model in the host configuration.
 func TestSettingsAutoEffortOverAnExplicitNativeEffortRequiresRestart(t *testing.T) {
 	for name, options := range map[string]optionmap.Map{
 		"Auto picked for the same model":     {agent.OptionIDEffort: agent.EffortAuto},
