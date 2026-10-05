@@ -441,6 +441,18 @@ func (a *Agent) zcodeDefaultThoughtLevelLocked(modelID string) string {
 	return a.catalog.defaultThoughtLevel(modelID)
 }
 
+// zcodeThoughtLevelsLocked returns the thought levels that a model offers, or nil when nothing
+// states them. The live catalog wins over the legacy configuration. Caller holds a.Mu.
+func (a *Agent) zcodeThoughtLevelsLocked(modelID string) []*agent.EffortInfo {
+	if record, ok := a.liveModels[modelID]; ok && record.info != nil {
+		return record.info.SupportedEfforts
+	}
+	if info := agent.FindAvailableModel(a.catalog.Models, modelID); info != nil {
+		return info.SupportedEfforts
+	}
+	return nil
+}
+
 // zcodeModelsForUI returns the live model catalog when the app server supplied
 // one. It falls back to the legacy desktop configuration.
 //
@@ -503,18 +515,39 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 
 // resolveZCodeThoughtLevel reports the reasoning level a model switch must carry.
 //
-// The session's own level wins. An unset level and the automatic one both mean
-// "the model decides", so both fall back to the model's declared default, which
-// is itself empty for a model that declares none.
+// The session's own level wins, when the new model offers it. An unset level and the
+// automatic one both mean "the model decides", so both fall back to the model's declared
+// default, which is itself empty for a model that declares none. A level that the new model
+// does not offer falls back in the same way, because the app-server refuses a selection
+// that carries such a level. LeapMux's Auto sentinel is no level, so it never reaches the wire.
 //
 // Both request shapes need this answer -- the account-config selection carries it
 // in `options.reasoningLevel`, and the legacy overlay in `ThoughtLevel` -- and the
 // two spelled it out separately until one of them dropped the level on a switch.
-func resolveZCodeThoughtLevel(level, defaultLevel string) string {
-	if level == "" || level == agent.EffortAuto {
-		return defaultLevel
+func resolveZCodeThoughtLevel(level, defaultLevel string, offered []*agent.EffortInfo) string {
+	if level != "" && level != agent.EffortAuto && zcodeOffersLevel(offered, level) {
+		return level
 	}
-	return level
+	if defaultLevel == agent.EffortAuto {
+		return ""
+	}
+	return defaultLevel
+}
+
+// zcodeOffersLevel reports whether the concrete levels in offered include level. A list that
+// states no concrete level states nothing, so it refuses nothing.
+func zcodeOffersLevel(offered []*agent.EffortInfo, level string) bool {
+	concrete := false
+	for _, tier := range offered {
+		switch tier.GetId() {
+		case "", agent.EffortAuto:
+		case level:
+			return true
+		default:
+			concrete = true
+		}
+	}
+	return !concrete
 }
 
 // applyZCodeModel pins the session's model and reports what the app-server settled
@@ -530,6 +563,7 @@ func (a *Agent) applyZCodeModel(modelID string, timeout time.Duration) error {
 	accountConfig := a.accountProviderConfig
 	ref := a.liveModels[resolved].ref
 	defaultLevel := a.zcodeDefaultThoughtLevelLocked(resolved)
+	offered := a.zcodeThoughtLevelsLocked(resolved)
 	a.Mu.Unlock()
 	if !ok {
 		return newInvalidZCodeModelError(modelID)
@@ -537,6 +571,7 @@ func (a *Agent) applyZCodeModel(modelID string, timeout time.Duration) error {
 	if sessionID == "" {
 		return errNoZCodeSession
 	}
+	thoughtLevel := resolveZCodeThoughtLevel(level, defaultLevel, offered)
 
 	var params map[string]any
 	if accountConfig {
@@ -550,7 +585,7 @@ func (a *Agent) applyZCodeModel(modelID string, timeout time.Duration) error {
 		selection := zcodeModelSelection{zcodeModelRef: ref}
 		// A model that declares no default gets no level, so the app-server keeps
 		// whatever the session already had.
-		if thoughtLevel := resolveZCodeThoughtLevel(level, defaultLevel); thoughtLevel != "" {
+		if thoughtLevel != "" {
 			selection.Options = &zcodeModelSelectionOptions{ReasoningLevel: thoughtLevel}
 		}
 		params = map[string]any{"sessionId": sessionID, "model": selection}
@@ -560,7 +595,7 @@ func (a *Agent) applyZCodeModel(modelID string, timeout time.Duration) error {
 			return newInvalidZCodeModelError(modelID)
 		}
 		// A concrete level rides along so a legacy model switch does not drop it.
-		overlay.ThoughtLevel = resolveZCodeThoughtLevel(level, defaultLevel)
+		overlay.ThoughtLevel = thoughtLevel
 		params = map[string]any{
 			"sessionId":    sessionID,
 			"model":        overlay.Model,
@@ -584,6 +619,14 @@ func (a *Agent) applyZCodeModel(modelID string, timeout time.Duration) error {
 		a.markSettingUnresolved(agent.OptionIDModel)
 	}
 	return nil
+}
+
+// runsThoughtLevel reports whether the session runs at level now. A model switch can settle on the
+// level that the same edit states, so the edit then needs no second request.
+func (a *Agent) runsThoughtLevel(level string) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.thoughtLevel == level
 }
 
 // applyZCodeThoughtLevel sets the session's thought level.
@@ -685,7 +728,10 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 			applied = false
 		}
 	}
-	if effort := options[agent.OptionIDEffort]; effort != "" && effort != agent.EffortAuto && effort != curEffort {
+	// An effort that equals the level before the edit is the stored value that the Worker sends
+	// with every edit, so it is no request for a change. The model switch above can also settle
+	// on the level that this edit states.
+	if effort := options[agent.OptionIDEffort]; effort != "" && effort != agent.EffortAuto && effort != curEffort && !a.runsThoughtLevel(effort) {
 		if err := a.applyZCodeThoughtLevel(effort, timeout); err != nil {
 			slog.Warn("zcode UpdateSettings setThoughtLevel failed; restarting to apply", "agent_id", a.AgentID(), "level", effort, "error", err)
 			applied = false
