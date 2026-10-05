@@ -89,7 +89,7 @@ func TestBuildUserLineTextAttachment(t *testing.T) {
 	require.Len(t, blocks, 2)
 	assert.Equal(t, "read it", blocks[0]["text"])
 	assert.Equal(t, "text", blocks[1]["type"])
-	assert.Equal(t, "----- BEGIN ATTACHED FILE: notes.md (text/markdown) -----\n# Notes\n----- END ATTACHED FILE: notes.md -----", blocks[1]["text"])
+	assert.Equal(t, "<attached-file name=\"notes.md\" mime-type=\"text/markdown\">\n# Notes\n</attached-file>", blocks[1]["text"])
 }
 
 func TestBuildUserLineAttachmentOnly(t *testing.T) {

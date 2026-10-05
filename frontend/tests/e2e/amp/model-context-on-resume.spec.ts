@@ -8,6 +8,8 @@ import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
+import { expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts } from '../helpers/nativeResume'
+import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, menuOptionLabel, openMenu, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 
@@ -32,9 +34,9 @@ async function seedThread(mockModelUrl: string, thread: AmpSeededThread): Promis
   expect(response.status).toBe(201)
 }
 
-function savedMessages(label: string): AmpSeededThread['messages'] {
+function savedMessages(label: string, prompt = 'Remember the earlier topic.'): AmpSeededThread['messages'] {
   return [
-    { role: 'user', text: 'Remember the earlier topic.' },
+    { role: 'user', text: prompt },
     { role: 'assistant', text: `${label} was the earlier answer.` },
     { role: 'user', text: 'Keep that answer available.' },
   ]
@@ -46,15 +48,16 @@ ampTest('offers the workspace\'s Amp threads and resumes the one picked', async 
   const otherDir = createGitRepo(dataDir, `amp-picker-other-${crypto.randomUUID()}`)
   const subjectTree = pathToFileURL(realpathSync(subjectDir)).href
   const seeded = `T-${crypto.randomUUID()}`
-  const priorAnswer = 'AMP_PRIOR_ANSWER_MARKER'
-  await seedThread(mockModelUrl, { id: seeded, title: 'Seeded Amp thread', tree: subjectTree, messages: savedMessages(priorAnswer) })
+  const texts = nativeResumeTexts()
+  const priorAnswer = texts.originalAnswer
+  await seedThread(mockModelUrl, { id: seeded, title: 'Seeded Amp thread', tree: subjectTree, messages: savedMessages(priorAnswer, texts.originalPrompt) })
   await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Archived Amp thread', tree: subjectTree, messages: savedMessages('Archived'), archived: true })
   await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Empty Amp thread', tree: subjectTree, messages: [] })
   await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Other workspace thread', tree: pathToFileURL(realpathSync(otherDir)).href, messages: savedMessages('Other workspace') })
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Amp Picker ${crypto.randomUUID()}`)
-  await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
+  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
     agentProvider: AgentProvider.AMP,
     ...agentOpenOptions(agentSettings(AgentProvider.AMP)),
     title: 'Keeper',
@@ -87,16 +90,23 @@ ampTest('offers the workspace\'s Amp threads and resumes the one picked', async 
   await expect(trigger).toHaveAttribute('data-value', seeded)
   await dialog.getByRole('button', { name: 'Create' }).click()
   await expect(page.getByRole('heading', { name: 'New Agent' })).toBeHidden()
+  const reopened = await expectReopenedNativeAgent({ page, leapmuxServer }, { agentProvider: AgentProvider.AMP, agentSessionId: seeded }, [keeperId])
 
   // The resumed tab continues the seeded thread: its messages land in that thread.
-  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+  await modelScript.queue({ text: `${ARITHMETIC_ANSWER_TEXT} ${texts.resumedAnswer}` })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   const status = await modelScript.waitForSteps()
   await waitForAgentIdle(page, 180_000)
   await expectAssistantAnswer(page)
-  const resumed = JSON.stringify(status.requests.find(request => request.stepIndex === 0)?.body)
+  const resumedRequest = status.requests.find(request => request.stepIndex === 0)
+  if (!resumedRequest)
+    throw new Error('The resumed prompt reached no native model request.')
+  const resumed = JSON.stringify(resumedRequest.body)
   expect(resumed).toContain(priorAnswer)
   expect(resumed).toContain(ARITHMETIC_PROMPT)
+  expectNativeResumeContext(nativeModelConversationTurns(resumedRequest), { ...texts, resumedPrompt: ARITHMETIC_PROMPT })
+  // An external thread opens without Worker rows to copy, so only the separate resumed answer is provable here.
+  await expectResumedAnswerUnmerged({ page, leapmuxServer }, reopened.id, texts)
   const threads = await (await fetch(`${mockModelUrl}${AMP_E2E_THREADS_PATH}`)).json() as AmpThreadView[]
   expect(threads.find(thread => thread.id === seeded)?.messageCount).toBe(5)
 })

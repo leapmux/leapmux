@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { cleanName } from '../../../src/lib/validate'
 import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
 import { finishCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -56,9 +57,14 @@ ampTest.describe('Amp subagent registry', () => {
     await expectNoRegistryRows(page, leapmuxServer)
     const agent = await currentNativeAgent(context)
     const control = createToolOutputControl(agent.workingDir)
-    const pidFile = join(agent.workingDir, 'amp-background-command.pid')
-    const program = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));require(${JSON.stringify(control.scriptPath)})`
-    const command = `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(program)}`
+    const pidFileName = 'amp-background-command.pid'
+    const pidFile = join(agent.workingDir, pidFileName)
+    // The registry titles a row with its command cut to NAME_BYTE_LIMIT bytes (`cleanName`, and
+    // `bgtask.Upsert.Clean` in the Worker). The node path and the working directory differ on each
+    // machine, so an assignment in front of them keeps the file name inside the title.
+    // Amp runs the command in the turn's working directory, so the relative name resolves to pidFile.
+    const program = `require("node:fs").writeFileSync(process.env.AMP_BACKGROUND_PID_FILE,String(process.pid));require(${JSON.stringify(control.scriptPath)})`
+    const command = `AMP_BACKGROUND_PID_FILE=${pidFileName} ${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(program)}`
     const gate = 'amp-background-interrupt-response'
     try {
       await modelScript.queue(
@@ -68,7 +74,8 @@ ampTest.describe('Amp subagent registry', () => {
       await sendMessage(page, modelScript.prompt('Start the long command in the background.'))
       await control.waitForFirstOutput()
       const row = await requireRegistryRow(page, 'shell')
-      await expect(row).toContainText('amp-background-command.pid')
+      await expect(row).toContainText(pidFileName)
+      await expect(row).toContainText(cleanName(command))
       await modelScript.waitForSteps()
       await expect(assistantBubbles(page).filter({ hasText: 'The command runs in the background.' })).not.toHaveCount(0)
       await expect(row).toHaveAttribute('data-status', 'running')

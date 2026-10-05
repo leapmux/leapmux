@@ -40,8 +40,12 @@ const (
 	// envSettingsFile moves Amp's default settings file. The generated settings
 	// merge the file it states.
 	envSettingsFile = "AMP_SETTINGS_FILE"
-	// envSkipUpdateCheck turns Amp's update check off. Execute mode does not
-	// start the update service, so this is a second guard.
+	// envSkipUpdateCheck turns off Amp's update service: its check and its
+	// install (`brew upgrade`, `npm install -g`, or a download that replaces the
+	// binary). Only the exact value `1` counts. The environment value wins over the
+	// `amp.updates.mode` setting, and a workspace `.amp/settings.json` can set that
+	// setting to `auto` again. Execute mode does not start the update service, so
+	// this is a second guard.
 	envSkipUpdateCheck = "AMP_SKIP_UPDATE_CHECK"
 	// envXDGConfigHome moves the directory of Amp's default settings file.
 	envXDGConfigHome = "XDG_CONFIG_HOME"

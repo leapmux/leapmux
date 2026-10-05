@@ -553,6 +553,255 @@ func TestInterruptedResultEndsTheTurnAsInterrupted(t *testing.T) {
 	assert.False(t, fp.resumeAfterExit.Load(), "an interrupt waits for the next message")
 }
 
+// Native frames of a stop, from Amp 0.0.1791074829 (the `probe_interrupt_*`
+// fixtures). Amp answers EVERY cancel signal with one `result` that states its
+// cancel wording, whether the signal finds the model request held, a tool
+// running, the answer printed, or the process idle. The `result` alone cannot
+// tell a finished turn from an abort. The stream tells: the end_turn message
+// comes first when the turn finished, and Amp prints its own failure instead of
+// the cancel wording when a failure wins the race against the signal.
+
+// A stop while the model request waits: Amp prints its init line and the user
+// echo late, then the cancel result. The turn ends as interrupted with Amp's
+// own row, and nothing resumes.
+func TestProbeInterruptDuringAModelRequest(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("Probe the interrupt race.")
+	lines := fixtureLines(t, "probe_interrupt_model.jsonl")
+	require.Len(t, lines, 3)
+	require.NoError(t, h.agent.Interrupt())
+	for _, line := range lines {
+		h.feed(fp, line)
+	}
+	fp.exit()
+	fp.awaitHandled(t)
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionInterrupted, ends[0].Completion)
+	assert.JSONEq(t, lines[2], string(ends[0].Content), "the turn end is Amp's own result")
+	assert.False(t, fp.resumeAfterExit.Load(), "an interrupt waits for the next message")
+	assert.Equal(t, []string{""}, h.startedThreads())
+	assert.Empty(t, h.sink.Notifications())
+}
+
+// The stop reaches the worker while the answer is still in the pipe. The
+// end_turn message ends the turn as complete, whatever the stop note says, and
+// the cancel result that follows finds no turn. It is Amp's answer to the
+// signal that the worker sent, so it is no agent error. The note does not
+// reach the next turn.
+func TestATurnThatFinishedBeforeTheStopKeepsItsOutcome(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("Probe the interrupt race.")
+	lines := fixtureLines(t, "probe_interrupt_finished.jsonl")
+	require.Len(t, lines, 4)
+	h.feed(fp, lines[0])
+	h.feed(fp, lines[1])
+	require.NoError(t, h.agent.Interrupt())
+	h.feed(fp, lines[2])
+	h.feed(fp, lines[3])
+	fp.exit()
+	fp.awaitHandled(t)
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionComplete, ends[0].Completion, "Amp's end_turn message ended the turn before the stop")
+	assert.Empty(t, h.sink.Notifications(), "Amp's cancel result answers the worker's own signal")
+	assert.False(t, fp.resumeAfterExit.Load())
+	assert.Equal(t, []string{""}, h.startedThreads())
+
+	// The next turn runs in a new process, and it ends as complete.
+	require.NoError(t, h.agent.SendInput("next", nil))
+	require.Equal(t, []string{"", "T-acd2eb8e-93b8-4de7-926a-c08625532237"}, h.startedThreads())
+	next := h.nextProcAfter(fp)
+	h.feed(next, textLine("again", stopReasonEndTurn))
+	ends = h.turnEnds()
+	require.Len(t, ends, 2)
+	assert.Equal(t, agent.MessageCompletionComplete, ends[1].Completion)
+}
+
+// A model failure that wins the race against the stop. Amp prints its own
+// failure, not its cancel wording, so the turn FAILED on its own: the divider
+// states the failure, and the thread resumes at once, as for any failure.
+func TestAFailureThatEndedTheTurnBeforeTheStopIsAnError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("Probe the interrupt race.")
+	lines := fixtureLines(t, "probe_interrupt_failed.jsonl")
+	require.Len(t, lines, 3)
+	h.feed(fp, lines[0])
+	h.feed(fp, lines[1])
+	require.NoError(t, h.agent.Interrupt())
+	h.feed(fp, lines[2])
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	assert.JSONEq(t, lines[2], string(ends[0].Content), "the turn end is Amp's own result")
+	assert.True(t, fp.resumeAfterExit.Load(), "an error that ended a turn resumes the thread")
+	assert.Empty(t, h.sink.Notifications())
+}
+
+// The cancel wording ends the turn as an error when the worker sent no signal:
+// an outside SIGINT is no stop of the user's.
+func TestACancelResultThatNoStopRequestedEndsTheTurnAsAnError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("sleep")
+	h.feed(fp, errorResult(interruptedMessage))
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	assert.True(t, fp.resumeAfterExit.Load(), "an error that ended a turn resumes the thread")
+}
+
+// The same outside signal with no turn running still reaches the user: it
+// ended the process, and the worker did not ask for that.
+func TestACancelResultThatNoStopRequestedWithNoTurnIsANotification(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	h.feed(fp, textLine("done", stopReasonEndTurn))
+	h.feed(fp, errorResult(interruptedMessage))
+
+	notifications := h.sink.Notifications()
+	require.Len(t, notifications, 1)
+	assert.Equal(t, interruptedMessage, notifications[0][contracts.NotificationFieldError])
+}
+
+// Stop signals an idle process too, and Amp answers with the same cancel result
+// (probed). The agent asked for it, so it is no error.
+func TestAStopOfAnIdleAgentStatesNoError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	h.feed(fp, textLine("done", stopReasonEndTurn))
+	fp.stdin.onClose = func() {
+		h.feed(fp, errorResult(interruptedMessage))
+		fp.exit()
+	}
+
+	h.agent.Stop()
+	fp.awaitHandled(t)
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionComplete, ends[0].Completion)
+	assert.Empty(t, h.sink.Notifications())
+}
+
+// A stop that lost the race against a failure keeps the failure when the
+// stop is the agent's own Stop, too.
+func TestStopKeepsAFailureThatEndedTheTurnFirst(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	lines := fixtureLines(t, "probe_interrupt_failed.jsonl")
+	h.feed(fp, lines[0])
+	fp.stdin.onClose = func() {
+		h.feed(fp, lines[2])
+		fp.exit()
+	}
+
+	h.agent.Stop()
+	fp.awaitHandled(t)
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	assert.Equal(t, []string{""}, h.startedThreads(), "a stopped agent resumes nothing")
+}
+
+// No probed signal printed a success `result`, so the shape is not known to
+// follow a stop. A turn with no end_turn message did not finish, and the stop is
+// the only cause that the worker knows, so the note still decides.
+func TestASuccessResultAfterAStopRequestEndsTheTurnAsInterrupted(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("sleep")
+	require.NoError(t, h.agent.Interrupt())
+	h.feed(fp, `{"type":"result","subtype":"success","duration_ms":9,"is_error":false,"num_turns":1,"result":"partial","session_id":"T-1"}`)
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	assert.Equal(t, agent.MessageCompletionInterrupted, ends[0].Completion)
+	assert.False(t, fp.resumeAfterExit.Load())
+}
+
+// The agent records its signal on the process when it sends one, and only then:
+// Interrupt and Stop both go through signalInterrupt.
+func TestSignalsRecordThemselvesOnTheProcess(t *testing.T) {
+	t.Parallel()
+	t.Run("interrupt", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("sleep")
+		assert.False(t, fp.interruptSignalled.Load(), "a process the agent never signalled")
+		require.NoError(t, h.agent.Interrupt())
+		assert.True(t, fp.interruptSignalled.Load())
+	})
+	t.Run("stop", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("sleep")
+		h.agent.Stop()
+		assert.True(t, fp.interruptSignalled.Load())
+	})
+	t.Run("a stop request with no turn sends no signal", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("go")
+		h.feed(fp, textLine("done", stopReasonEndTurn))
+		require.NoError(t, h.agent.Interrupt())
+		assert.False(t, fp.interruptSignalled.Load())
+	})
+}
+
+// The two readings of a `result` that states an error, on the native frames. The
+// subtype and the error flag are the same for both, so the error wording decides.
+func TestResultLineStatesCancelOrFailure(t *testing.T) {
+	t.Parallel()
+	cancel := fixtureLines(t, "probe_interrupt_model.jsonl")[2]
+	failure := fixtureLines(t, "probe_interrupt_failed.jsonl")[2]
+	tests := []struct {
+		name    string
+		line    string
+		cancel  bool
+		failure bool
+	}{
+		{name: "the cancel result of a stop", line: cancel, cancel: true},
+		{name: "the cancel result after an answer", line: fixtureLines(t, "probe_interrupt_finished.jsonl")[3], cancel: true},
+		{name: "a model failure", line: failure, failure: true},
+		{name: "an error with no wording", line: `{"type":"result","subtype":"error_during_execution","is_error":true}`, failure: true},
+		{name: "a success", line: `{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok"}`},
+		{name: "a cancel wording that is no error", line: `{"type":"result","subtype":"success","is_error":false,"error":"` + interruptedMessage + `"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var line ampLine
+			require.NoError(t, json.Unmarshal([]byte(tc.line), &line))
+			assert.Equal(t, tc.cancel, line.statesCancel())
+			assert.Equal(t, tc.failure, line.statesFailure())
+		})
+	}
+}
+
+func TestAnswersSignal(t *testing.T) {
+	t.Parallel()
+	cancel := ampLine{IsError: true, Error: interruptedMessage}
+	failure := ampLine{IsError: true, Error: "Model Provider Overloaded"}
+	signalled := &ampProcess{}
+	signalled.interruptSignalled.Store(true)
+
+	assert.True(t, answersSignal(signalled, cancel), "the cancel wording after the agent's signal")
+	assert.False(t, answersSignal(&ampProcess{}, cancel), "a cancel wording with no signal of the agent's")
+	assert.False(t, answersSignal(nil, cancel), "no process")
+	assert.False(t, answersSignal(signalled, failure), "a failure that the signal did not cause")
+	assert.False(t, answersSignal(signalled, ampLine{}), "a success")
+}
+
 func TestErrorResultWithNoTurnIsANotification(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)

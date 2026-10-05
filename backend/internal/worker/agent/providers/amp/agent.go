@@ -115,7 +115,10 @@ type turnState struct {
 	active    bool
 	startedAt time.Time
 	// interruptRequested records that the user stopped the turn, so the exit
-	// that the interrupt causes reads as an interruption and not as an error.
+	// that the interrupt causes reads as an interruption and not as an error. A
+	// `result` that states a failure of Amp's own outranks it (see
+	// handleResultLine). The note ends with the turn: the signal itself is
+	// ampProcess.interruptSignalled.
 	interruptRequested bool
 	// assistantMessages counts the assistant lines of the turn, which is what
 	// Amp's own `num_turns` counts.

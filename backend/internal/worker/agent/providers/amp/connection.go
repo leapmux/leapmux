@@ -64,6 +64,13 @@ type ampProcess struct {
 	// resumeAfterExit asks the exit handler to continue the thread in a new
 	// process at once, because an error ended a turn that was in progress.
 	resumeAfterExit atomic.Bool
+	// interruptSignalled is true once the agent sent its cancel signal to this
+	// process. Amp answers every such signal with a `result` that states its
+	// cancel wording, also when the signal finds the turn finished or the
+	// process idle. The flag outlives the turn, unlike
+	// turnState.interruptRequested, so the answer to a signal that arrives after
+	// its turn ended is still known as that answer (see answersSignal).
+	interruptSignalled atomic.Bool
 	// handled closes when the exit handler returns. A new process waits for it,
 	// so the handler cannot end the new process's turn.
 	handled chan struct{}
@@ -84,7 +91,12 @@ func (p *ampProcess) writeLine(line []byte) error {
 // signalInterrupt sends SIGINT to the process group, which makes Amp send its
 // cancel to the server and exit. Windows has no such signal for a process, and
 // the call fails there.
+//
+// The flag is set BEFORE the signal. Amp answers within a millisecond, and the
+// reader can handle that answer before this call returns. A signal that fails
+// leaves the flag set, and no answer follows it.
 func (p *ampProcess) signalInterrupt() error {
+	p.interruptSignalled.Store(true)
 	return procutil.SignalProcessGroup(p.Cmd(), syscall.SIGINT)
 }
 
@@ -348,8 +360,12 @@ func (a *Agent) resumeAfterError(exited *ampProcess) {
 	}
 }
 
-// interruptedMessage is the error of the `result` that ends an interrupted turn
-// whose process printed none. It is Amp's own wording for the same event.
+// interruptedMessage is Amp's own wording for a cancel signal (SIGINT or
+// SIGTERM). Amp states it as the `error` of the `result` that it prints for every
+// such signal, whatever the process was doing (probed on 0.0.1791074829). It is
+// the only field that separates that `result` from a failure (see
+// ampLine.statesCancel). The worker writes it too, as the `error` of the `result`
+// that ends an interrupted turn whose process printed none.
 const interruptedMessage = "User cancelled (SIGINT/SIGTERM)"
 
 // exitMessage states why a process ended with no `result`. A resumed process

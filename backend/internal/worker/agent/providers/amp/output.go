@@ -27,6 +27,27 @@ type ampLine struct {
 	Error     string      `json:"error"`
 }
 
+// statesCancel reports whether the line is the `result` that Amp prints for a
+// cancel signal: an error that states Amp's own cancel wording. A failure has
+// the same `subtype` and `is_error`, so the wording is the only field that tells
+// the two apart.
+func (l ampLine) statesCancel() bool {
+	return l.IsError && l.Error == interruptedMessage
+}
+
+// statesFailure reports whether the line is a `result` that states an error of
+// Amp's own: any error but the cancel wording.
+func (l ampLine) statesFailure() bool {
+	return l.IsError && !l.statesCancel()
+}
+
+// answersSignal reports whether line is Amp's answer to the cancel signal that
+// the agent sent to proc. A cancel wording with no signal behind it comes from
+// outside the agent.
+func answersSignal(proc *ampProcess, line ampLine) bool {
+	return proc != nil && proc.interruptSignalled.Load() && line.statesCancel()
+}
+
 // ampMessage is the message of an assistant or user line. Amp prints each
 // assistant message WHOLE, once, when it completes.
 type ampMessage struct {
@@ -283,10 +304,24 @@ func (a *Agent) handleUserLine(raw []byte) {
 // ended the session, or after a signal. So the result ends whatever turn ran,
 // and the next message starts a new process.
 //
+// The user's stop is a note on the turn (turnState.interruptRequested), and the
+// note says only that the agent sent the signal. The `result` says why the
+// process ended, and the two can differ. Amp prints the same cancel `result` for
+// each signal, whatever the process was doing, so the `result` of a stop does not
+// tell a finished turn from an aborted one (probed on 0.0.1791074829):
+//
+//   - A turn that finished before Amp read the signal ended at its end_turn
+//     message already, and the note went with the turn. The cancel `result` that
+//     follows answers the signal, so it states nothing.
+//   - A failure that won the race against the signal prints the failure, not the
+//     cancel wording. The turn failed on its own, so the note does not turn it
+//     into an interruption.
+//   - Every other stop prints the cancel wording, and the turn is interrupted.
+//
 // An error that ended a turn the user did not stop asks the exit handler to
 // resume the thread at once. The transcript states an error with no turn
-// running, and a success with no turn running (the answer to closing stdin)
-// states nothing.
+// running, unless it answers the agent's own signal. A success with no turn
+// running (the answer to closing stdin) states nothing.
 func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	if proc != nil {
 		proc.sawResult.Store(true)
@@ -300,7 +335,7 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
 		ended = true
 		switch {
-		case turn.interruptRequested:
+		case turn.interruptRequested && !line.statesFailure():
 			return agent.MessageCompletionInterrupted, raw
 		case line.IsError:
 			if proc != nil {
@@ -311,7 +346,7 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 			return agent.MessageCompletionComplete, raw
 		}
 	})
-	if !ended && line.IsError {
+	if !ended && line.IsError && !answersSignal(proc, line) {
 		a.sink.PersistLeapMuxNotification(map[string]any{
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 			contracts.NotificationFieldError: line.Error,

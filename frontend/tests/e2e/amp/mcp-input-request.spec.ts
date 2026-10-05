@@ -11,6 +11,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
@@ -32,19 +33,23 @@ ampTest('returns the actual native MCP unsupported-method reply without a browse
     })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await applyPermissionPreset(page, 'bypass')
-    await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'ask'))).toBe(true)
     const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.AMP }
     context.readToolResult = ampToolResultReader(context)
+    // The Worker starts the Amp process for the first message, and Amp starts its MCP servers with that process.
+    // So no server can list its tools before a first turn.
+    await sendNativeAnswer(context, 'Start the native session that loads the registered form server.', 'The native session started.')
+    await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'ask'))).toBe(true)
     const callId = 'native-amp-form-refusal'
     await expectUnsupportedMcpInput(context, { receiptLog, callId, invoke: async () => {
+      const start = (await modelScript.status()).stepCount
       await modelScript.queue(
         { toolCalls: [mcpToolCall(AgentProvider.AMP, callId, { server: 'form_probe', tool: 'ask', input: {} })] },
         { text: 'The native MCP refusal reached the model.' },
       )
       await sendMessage(page, modelScript.prompt('Call the registered native probe form once.'))
-      const status = await modelScript.waitForSteps(2)
+      const status = await modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(page)
-      const request = status.requests.find(record => record.stepIndex === 1)
+      const request = status.requests.find(record => record.stepIndex === start + 1)
       if (!request)
         throw new Error('The native MCP refusal reached no following model request.')
       return request
