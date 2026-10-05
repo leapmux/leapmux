@@ -65,6 +65,43 @@ export async function exerciseNativeOption(
   await exerciseRestoredNativeOption(context, options)
 }
 
+/**
+ * Prove that a model switch keeps a setting that the new model offers.
+ *
+ * The user changes the model alone, so the browser sends the model and nothing else. The setting must still
+ * hold on screen, in the Worker row, and in the next native request, and it must survive a reload. Pick a
+ * `kept` value that differs from the value that the new model starts with: a native server that resets the
+ * setting on a model change then fails this proof, and a value equal to that start value proves nothing.
+ */
+export async function exerciseModelSwitchKeepsOption(
+  context: ManagedNativeScenarioContext,
+  options: {
+    /** The setting that the user chooses before the switch. */
+    kept: { groupId: string, value: string }
+    /** The option value of the model to switch to. */
+    model: string
+    /** Check that the next native request carries the new model and the kept setting. */
+    nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
+    prepare?: () => Promise<void>
+  },
+): Promise<void> {
+  await options.prepare?.()
+  await waitForNativeSettingsHydrated(context.page)
+  const keptId = `${options.kept.groupId}-${options.kept.value}`
+  const modelId = `model-${options.model}`
+  await chooseSettingsOption(context.page, keptId)
+  await waitForSettingsIdle(context.page)
+  await expectSettingsOptionChosen(context.page, keptId)
+  await chooseSettingsOption(context.page, modelId)
+  await waitForSettingsIdle(context.page)
+  await expectSettingsOptionChosen(context.page, modelId)
+  await expectSettingsOptionChosen(context.page, keptId)
+  await waitForNativeOptionApplied(context, options.kept.groupId, options.kept.value)
+  const first = await sendNativeAnswer(context, 'Reply once after the model switch.', 'The kept setting reached the new model.')
+  await options.nativeProof(first)
+  await exerciseRestoredNativeOption(context, { groupId: options.kept.groupId, value: options.kept.value, nativeProof: options.nativeProof })
+}
+
 /** Keep a coupled mode and effort while the provider checks its actual native requests. */
 export async function exerciseNativePlanWithEffort(
   context: ManagedNativeScenarioContext,
