@@ -99,6 +99,7 @@ export async function exerciseInterruptTurn(
      * first streamed text chunk. Goose 1.53.0 ends a turn on `session/cancel` only
      * after the response stream starts. A request that still waits for its response
      * headers runs on, and the session refuses the next prompt.
+     * A `tool` turn refuses this option, because it holds the tool and not the response.
      */
     holdModelTurn?: 'before-response' | 'after-first-chunk'
     /** Applies to the `model` kind only. The default is `while-held`. */
@@ -110,6 +111,8 @@ export async function exerciseInterruptTurn(
 ): Promise<void> {
   if (options.heldModelTurnEnd !== undefined && options.kind === 'tool')
     throw new Error('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
+  if (options.holdModelTurn !== undefined && options.kind === 'tool')
+    throw new Error('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
   await options.prepare?.()
   const marker = randomUUID().replaceAll('-', '')
   await sendNativeAnswer(context, `Keep INTERRUPTCONTEXT${marker} for this session.`, `INTERRUPTANSWER${marker}`)

@@ -372,14 +372,18 @@ Rerun selection and shard balancing:
   output root, or an explicit report from `--failed-files-from=<report.json>`).
   Use it for complete-file acceptance of a matrix cell. It selects its own
   files, so it excludes `--last-failed`, `--test-list`, `--only-changed` and
-  positional file filters.
+  positional file filters. It reruns every test of a file, so it excludes
+  `--grep`, `--grep-invert`, `--test-list-invert` and `--shard` also. Only a
+  parallel run saves the report, so the launcher refuses a report that is older
+  than the last-run state.
 - **The duration history balances the shards.** Each parallel run records the
   measured duration of every file in `.file-durations.json` under the output
   root, and the next run assigns files to shards longest-first from that
   history. Without a usable history the launcher keeps the native
   `--shard=i/N` split, as `--balance=off` does by choice.
 - **`--pass-with-no-tests` accepts an empty selection.** Without it, a rerun
-  whose state lists no failure fails before the build starts.
+  whose state lists no failure fails before the build starts. A parallel run
+  that selects no test leaves the saved state unchanged.
 
 Prefer `task test-e2e -- <files>` during development.
 **CI does not run E2E**: neither `task test` nor `task test-no-docker` reaches `test-e2e`.

@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { assertMergedTestCoverage, collectShardBlobs, discoveredTestCoverage, failedReportFiles, mergedJsonDestination, readDiscoveredTestCoverage, readFailedReportFiles, reportedFileDurations, shardReporterEnvironment } from './e2eReports'
+import { assertMergedTestCoverage, assertReportIsCurrent, collectShardBlobs, discoveredTestCoverage, failedReportFiles, mergedJsonDestination, readDiscoveredTestCoverage, readFailedReportFiles, reportedFileDurations, shardReporterEnvironment } from './e2eReports'
 
 const roots: string[] = []
 afterEach(() => {
@@ -484,5 +484,59 @@ describe('readFailedReportFiles', () => {
       message: expect.stringContaining(message),
       cause: expect.anything(),
     }))
+  })
+})
+
+describe('assertReportIsCurrent', () => {
+  /** Write a file whose modification time lies this many seconds in the past. */
+  function fileAged(path: string, seconds: number): string {
+    writeFileSync(path, '{}')
+    const time = (Date.now() - seconds * 1000) / 1000
+    utimesSync(path, time, time)
+    return path
+  }
+
+  it('accepts a report that a run wrote after it replaced the state', () => {
+    const root = directory()
+
+    expect(() => assertReportIsCurrent(fileAged(join(root, 'report.json'), 5), fileAged(join(root, 'state.json'), 60))).not.toThrow()
+  })
+
+  it('accepts a report with the same modification time as the state', () => {
+    const root = directory()
+    const report = fileAged(join(root, 'report.json'), 30)
+    const state = join(root, 'state.json')
+    writeFileSync(state, '{}')
+    utimesSync(state, statSync(report).atime, statSync(report).mtime)
+
+    expect(() => assertReportIsCurrent(report, state)).not.toThrow()
+  })
+
+  it('refuses a report that is older than the state and identifies both files', () => {
+    const root = directory()
+    const report = fileAged(join(root, 'report.json'), 60)
+    const state = fileAged(join(root, 'state.json'), 5)
+
+    expect(() => assertReportIsCurrent(report, state)).toThrow(`The combined report at ${report} is older than the last-run state at ${state}.`)
+    expect(() => assertReportIsCurrent(report, state)).toThrow('Run the E2E tests once in parallel, or give an existing report with --failed-files-from=<report.json>.')
+  })
+
+  it('accepts a report when no state file shows a later run', () => {
+    const root = directory()
+
+    expect(() => assertReportIsCurrent(fileAged(join(root, 'report.json'), 60), join(root, 'absent-state.json'))).not.toThrow()
+  })
+
+  it('leaves an absent report to the reader of the report', () => {
+    const root = directory()
+
+    expect(() => assertReportIsCurrent(join(root, 'absent-report.json'), fileAged(join(root, 'state.json'), 5))).not.toThrow()
+  })
+
+  it('throws a stat error other than an absent file', () => {
+    const root = directory()
+
+    // A path with a NUL character fails on every platform, and the failure is not an absent file.
+    expect(() => assertReportIsCurrent(fileAged(join(root, 'report.json'), 5), join(root, 'state\0.json'))).toThrow(expect.objectContaining({ code: 'ERR_INVALID_ARG_VALUE' }))
   })
 })

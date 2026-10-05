@@ -1,7 +1,7 @@
 import type { SpawnOptions } from 'node:child_process'
 import { ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -23,6 +23,10 @@ vi.mock('../tests/e2e/helpers/runBinary', async (importOriginal) => {
 const calls: { command: string, args: string[], env: NodeJS.ProcessEnv }[] = []
 const runDirs = new Set<string>()
 const releaseHeldCommands = new Set<() => Promise<void>>()
+/** The report that the mocked discovery run writes. A test replaces it to select other tests. */
+let discoveredReport: () => unknown
+/** The report that the mocked merge writes. A test replaces it to report other results. */
+let mergedReport: () => unknown
 /** A project root of this test's own, so no test reads or writes the real build output. */
 let projectRoot: string
 /** The file that `task build-backend` writes in `projectRoot`. */
@@ -67,6 +71,8 @@ it('keeps serial runtime roots short and preserves their full tool output run la
 
 beforeEach(() => {
   calls.length = 0
+  discoveredReport = selectedReport
+  mergedReport = selectedReport
   // Mocked command PIDs must never select a real process or process group.
   vi.spyOn(process, 'kill').mockImplementation(() => {
     throw Object.assign(new Error('The mocked process does not exist.'), { code: 'ESRCH' })
@@ -116,7 +122,7 @@ function processes(exitCodes = [0, 0], inspect?: (env: NodeJS.ProcessEnv) => voi
     const env = { ...options.env }
     calls.push({ command, args, env })
     if (args.includes('--list') && env.PLAYWRIGHT_JSON_OUTPUT_FILE) {
-      writeFileSync(env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(selectedReport()))
+      writeFileSync(env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(discoveredReport()))
     }
     if (args.includes('--reporter=list,blob,json') && env.PLAYWRIGHT_BLOB_OUTPUT_DIR && env.LEAPMUX_E2E_OUTPUT_FILE_DIR) {
       const shard = args.find(argument => argument.startsWith('--shard='))?.replaceAll('/', '-') ?? basename(env.LEAPMUX_E2E_OUTPUT_FILE_DIR)
@@ -131,7 +137,7 @@ function processes(exitCodes = [0, 0], inspect?: (env: NodeJS.ProcessEnv) => voi
     }
     if (args.includes('merge-reports') && env.PLAYWRIGHT_JSON_OUTPUT_FILE) {
       mkdirSync(dirname(env.PLAYWRIGHT_JSON_OUTPUT_FILE), { recursive: true })
-      writeFileSync(env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(selectedReport()))
+      writeFileSync(env.PLAYWRIGHT_JSON_OUTPUT_FILE, JSON.stringify(mergedReport()))
     }
     const child = new EventEmitter()
     queueMicrotask(() => {
@@ -446,22 +452,33 @@ describe('end-to-end launcher', () => {
     return calls.filter(call => call.args.includes('--reporter=list,blob,json'))
   }
 
-  function writeLastRunState(state: unknown) {
-    const path = join(projectRoot, 'frontend/test-results/.last-run.json')
+  function lastRunStateFile() {
+    return join(projectRoot, 'frontend/test-results/.last-run.json')
+  }
+
+  function combinedReportFile() {
+    return join(projectRoot, 'frontend/test-results/.last-run-report.json')
+  }
+
+  function durationHistoryFile() {
+    return join(projectRoot, 'frontend/test-results/.file-durations.json')
+  }
+
+  function writeLastRunState(state: unknown, path = lastRunStateFile()) {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, JSON.stringify(state))
   }
 
   function writeDurationHistory(files: Record<string, { durationMs: number, cases: number }>) {
-    const path = join(projectRoot, 'frontend/test-results/.file-durations.json')
+    const path = durationHistoryFile()
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, JSON.stringify({ version: 1, files }))
   }
 
-  function combinedReport(failedFiles: readonly string[]) {
+  function combinedReport(failedFiles: readonly string[], files: readonly string[] = ['first.spec.ts', 'second.spec.ts']) {
     return {
       errors: [],
-      suites: ['first.spec.ts', 'second.spec.ts'].map(file => ({
+      suites: files.map(file => ({
         title: file,
         file,
         specs: [{
@@ -482,10 +499,33 @@ describe('end-to-end launcher', () => {
     }
   }
 
-  function writeCombinedReport(failedFiles: readonly string[]) {
-    const path = join(projectRoot, 'frontend/test-results/.last-run-report.json')
+  function writeCombinedReport(failedFiles: readonly string[], files?: readonly string[]) {
+    const path = combinedReportFile()
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify(combinedReport(failedFiles)))
+    writeFileSync(path, JSON.stringify(combinedReport(failedFiles, files)))
+  }
+
+  /** Set the modification time of a file to this many seconds in the past. */
+  function ageFile(path: string, seconds: number) {
+    const time = (Date.now() - seconds * 1000) / 1000
+    utimesSync(path, time, time)
+  }
+
+  /** Collect what the launcher writes to its standard streams, so a test reads each message. */
+  function captureOutput() {
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const collect = (chunks: string[]) => ((chunk: string | Uint8Array) => {
+      chunks.push(String(chunk))
+      return true
+    }) as typeof process.stdout.write
+    vi.spyOn(process.stdout, 'write').mockImplementation(collect(stdout))
+    vi.spyOn(process.stderr, 'write').mockImplementation(collect(stderr))
+    return { stdout: () => stdout.join(''), stderr: () => stderr.join('') }
+  }
+
+  function emptyReport() {
+    return { config: selectedReport().config, suites: [], errors: [] }
   }
 
   it('shares the last-failed state with every parallel shard through private copies', async () => {
@@ -521,9 +561,31 @@ describe('end-to-end launcher', () => {
     { args: ['--last-failed', '--pass-with-no-tests'], code: 0 },
   ])('settles a parallel last-failed run without failed tests before any build starts: %j', async ({ args, code }) => {
     writeLastRunState({ status: 'passed', failedTests: [] })
+    const before = readFileSync(lastRunStateFile(), 'utf8')
     processes()
     expect(await runE2E(['--workers=2', ...args], projectRoot)).toBe(code)
     expect(calls).toEqual([])
+    expect(readFileSync(lastRunStateFile(), 'utf8')).toBe(before)
+  })
+
+  it.each([
+    { args: ['--last-failed'], code: 1, stream: 'stderr', message: 'No selected E2E test matches a failed test in', hint: 'Add --pass-with-no-tests to accept an empty selection.' },
+    { args: ['--last-failed', '--pass-with-no-tests'], code: 0, stream: 'stdout', message: 'No selected E2E test matches a failed test in', hint: '' },
+    { args: ['--grep', 'no match'], code: 1, stream: 'stderr', message: 'No selected E2E test files exist.', hint: 'Add --pass-with-no-tests to accept an empty selection.' },
+    { args: ['--grep', 'no match', '--pass-with-no-tests'], code: 0, stream: 'stdout', message: 'No selected E2E test files exist.', hint: '' },
+  ] as const)('keeps the saved failed tests when discovery selects no test file: %j', async ({ args, code, stream, message, hint }) => {
+    const saved = { status: 'failed', failedTests: ['first-id', 'second-id'] }
+    writeLastRunState(saved)
+    const before = readFileSync(lastRunStateFile(), 'utf8')
+    discoveredReport = emptyReport
+    processes()
+    const output = captureOutput()
+    expect(await runE2E(['--workers=2', ...args], projectRoot)).toBe(code)
+    expect(output[stream]()).toContain(message)
+    expect(output[stream]()).toContain(hint)
+    // Only the discovery run executes: no shard starts, and no merge replaces the state.
+    expect(calls.filter(call => call.command === 'node').map(call => call.args.includes('--list'))).toEqual([true])
+    expect(readFileSync(lastRunStateFile(), 'utf8')).toBe(before)
   })
 
   it('refuses a parallel last-failed run without a last-run state before any build starts', async () => {
@@ -574,6 +636,11 @@ describe('end-to-end launcher', () => {
     expect(readFileSync(list, 'utf8')).toBe('second.spec.ts\n')
     const children = shardChildren()
     expect(children).toHaveLength(2)
+    // The selection is the whole file. A last-failed selection would run the failed cases only.
+    for (const child of [discovery, ...children]) {
+      expect(child.args).not.toContain('--last-failed')
+      expect(child.args.some(argument => argument.startsWith('--last-failed-file='))).toBe(false)
+    }
     for (const child of children) {
       expect(child.args).toContain(`--test-list=${list}`)
       expect(child.args.some(argument => argument.startsWith('--shard='))).toBe(true)
@@ -591,6 +658,124 @@ describe('end-to-end launcher', () => {
     processes()
     await expect(runE2E(['--workers=2', '--failed-files'], projectRoot)).rejects.toThrow('that file does not exist')
     expect(calls).toEqual([])
+  })
+
+  it('refuses the last combined report after a later run replaced the last-run state', async () => {
+    writeCombinedReport(['second.spec.ts'])
+    writeLastRunState({ status: 'passed', failedTests: [] })
+    ageFile(combinedReportFile(), 60)
+    processes()
+    await expect(runE2E(['--workers=2', '--failed-files'], projectRoot)).rejects.toThrow('older than the last-run state')
+    expect(calls).toEqual([])
+  })
+
+  it('compares the report with the last-run state that --last-failed-file selects', async () => {
+    writeCombinedReport(['second.spec.ts'])
+    const custom = join(projectRoot, 'frontend', 'custom-state.json')
+    writeLastRunState({ status: 'passed', failedTests: [] }, custom)
+    ageFile(combinedReportFile(), 60)
+    processes()
+    await expect(runE2E(['--workers=2', '--failed-files', '--last-failed-file=custom-state.json'], projectRoot)).rejects.toThrow(`older than the last-run state at ${custom}`)
+    // The default state file is absent, so it cannot show a later run.
+    expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
+  })
+
+  it('reruns the failed files when the combined report is not older than the last-run state', async () => {
+    writeCombinedReport(['second.spec.ts'])
+    writeLastRunState({ status: 'failed', failedTests: ['second-id'] })
+    ageFile(lastRunStateFile(), 60)
+    processes()
+    expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
+    expect(calls.some(call => call.args.includes('--list'))).toBe(true)
+  })
+
+  it('reads an explicit report although a later run replaced the last-run state', async () => {
+    writeCombinedReport(['second.spec.ts'])
+    writeLastRunState({ status: 'passed', failedTests: [] })
+    ageFile(combinedReportFile(), 60)
+    processes()
+    expect(await runE2E(['--workers=2', '--failed-files-from=test-results/.last-run-report.json'], projectRoot)).toBe(0)
+    expect(calls.some(call => call.args.includes('--list'))).toBe(true)
+  })
+
+  it('writes the combined report after the merge replaced the state, so the next --failed-files run accepts it', async () => {
+    mergedReport = () => {
+      // The native merge reporter replaces the last-run state before the launcher saves the report.
+      writeLastRunState({ status: 'failed', failedTests: ['second-id'] })
+      return combinedReport(['second.spec.ts'])
+    }
+    processes()
+    expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
+    expect(JSON.parse(readFileSync(combinedReportFile(), 'utf8'))).toEqual(combinedReport(['second.spec.ts']))
+    calls.length = 0
+    expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
+    const list = calls.find(call => call.args.includes('--list'))?.args.find(argument => argument.startsWith('--test-list='))?.slice('--test-list='.length)
+    if (!list)
+      throw new Error('The second run did not receive the failed-file list.')
+    expect(readFileSync(list, 'utf8')).toBe('second.spec.ts\n')
+  })
+
+  it('keeps the preceding combined report when the merged report misses a selected case', async () => {
+    writeCombinedReport(['first.spec.ts'])
+    const preceding = readFileSync(combinedReportFile(), 'utf8')
+    mergedReport = () => ({ ...selectedReport(), suites: selectedReport().suites.slice(0, 1) })
+    processes()
+    await expect(runE2E(['--workers=2'], projectRoot)).rejects.toThrow('does not contain every selected test case exactly once')
+    expect(readFileSync(combinedReportFile(), 'utf8')).toBe(preceding)
+  })
+
+  it('warns about a failed file that selects no test now and reruns the files that remain', async () => {
+    writeCombinedReport(['first.spec.ts', 'third.spec.ts'], ['first.spec.ts', 'second.spec.ts', 'third.spec.ts'])
+    processes()
+    const output = captureOutput()
+    expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
+    expect(output.stderr()).toContain(`Warning: these failed files from ${combinedReportFile()} select no test now: third.spec.ts`)
+    expect(output.stdout()).toContain('E2E --failed-files: 2 files from')
+    const list = calls.find(call => call.args.includes('--list'))?.args.find(argument => argument.startsWith('--test-list='))?.slice('--test-list='.length)
+    if (!list)
+      throw new Error('The discovery run did not receive the failed-file list.')
+    expect(readFileSync(list, 'utf8')).toBe('first.spec.ts\nthird.spec.ts\n')
+  })
+
+  it('runs the failed files of the last combined report in one serial process', async () => {
+    writeCombinedReport(['second.spec.ts'])
+    processes()
+    const output = captureOutput()
+    expect(await runE2E(['--workers=1', '--failed-files'], projectRoot)).toBe(0)
+    expect(output.stdout()).toContain(`E2E --failed-files: 1 file from ${combinedReportFile()}`)
+    // A serial run starts no discovery run and no shard: one native process runs the complete files.
+    const children = calls.filter(call => call.command === 'node')
+    expect(children).toHaveLength(1)
+    const [child] = children
+    const list = child!.args.find(argument => argument.startsWith('--test-list='))?.slice('--test-list='.length)
+    if (!list)
+      throw new Error('The serial run did not receive the failed-file list.')
+    expect(readFileSync(list, 'utf8')).toBe('second.spec.ts\n')
+    expect(child!.args).not.toContain('--list')
+    expect(child!.args).not.toContain('--last-failed')
+  })
+
+  it('saves the duration of the files that another run recorded while this run went on', async () => {
+    writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 } })
+    mergedReport = () => {
+      // A second launcher run that shares this output root ends first and saves its own measurement.
+      writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'other.spec.ts': { durationMs: 700, cases: 2 } })
+      return selectedReport()
+    }
+    processes()
+    expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
+    const history: unknown = JSON.parse(readFileSync(durationHistoryFile(), 'utf8'))
+    expect(history).toEqual({ version: 1, files: { 'first.spec.ts': { durationMs: 125, cases: 1 }, 'other.spec.ts': { durationMs: 700, cases: 2 }, 'second.spec.ts': { durationMs: 125, cases: 1 } } })
+  })
+
+  it('warns and keeps the result of the run when the duration history cannot be saved', async () => {
+    // A directory at the history path makes the atomic replacement fail on every platform.
+    mkdirSync(durationHistoryFile(), { recursive: true })
+    processes()
+    const output = captureOutput()
+    expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
+    expect(output.stderr()).toContain(`Warning: the E2E duration history at ${durationHistoryFile()} was not saved.`)
+    expect(existsSync(combinedReportFile())).toBe(true)
   })
 
   it('retains separate reports for two runs with the same explicit output directory', async () => {

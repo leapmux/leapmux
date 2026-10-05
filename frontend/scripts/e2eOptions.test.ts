@@ -1,4 +1,6 @@
+import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { isObject } from '../src/lib/jsonPick'
 import { discoveryRunArgs, parseE2EOptions, serialRunArgs, shardRunArgs, shardSelectionArgs } from './e2eOptions'
 
 afterEach(() => vi.unstubAllEnvs())
@@ -198,8 +200,8 @@ describe('parseE2EOptions balance', () => {
 
 describe('parseE2EOptions failed files', () => {
   it('consumes --failed-files without forwarding it', () => {
-    expect(parseE2EOptions(['--failed-files', '--grep', 'pattern'], 10))
-      .toMatchObject({ failedFiles: true, playwrightArgs: ['--grep', 'pattern'], serial: false })
+    expect(parseE2EOptions(['--failed-files', '--timeout', '5000'], 10))
+      .toMatchObject({ failedFiles: true, playwrightArgs: ['--timeout', '5000'], serial: false })
   })
 
   it.each([{ args: ['--failed-files-from=reports/run.json'] }, { args: ['--failed-files-from', 'reports/run.json'] }, { args: ['--failed-files', '--failed-files-from=reports/run.json'] }])('selects failed files from an explicit report: %j', ({ args }) => {
@@ -227,13 +229,110 @@ describe('parseE2EOptions failed files', () => {
   })
 
   it.each([
-    { args: ['--failed-files', '--grep', 'provider/file.spec.ts'] },
+    { args: ['--failed-files', '--reporter', 'provider/file.spec.ts'] },
     { args: ['--failed-files', '--project', 'mock-chromium'] },
-    { args: ['--failed-files', '--test-list-invert', 'skip.txt'] },
+    { args: ['--failed-files', '--output', 'provider/results'] },
     { args: ['--failed-files', '--update-snapshots', 'all'] },
     { args: ['--failed-files', '--last-failed-file', 'state.json'] },
   ])('accepts an option value that resembles a file argument: $args', ({ args }) => {
     expect(parseE2EOptions(args, 10)).toMatchObject({ failedFiles: true, playwrightArgs: args.slice(1) })
+  })
+
+  it.each([
+    { args: ['--failed-files', '--browser', 'chromium'] },
+    { args: ['--failed-files', '--project', 'one', 'two'] },
+    { args: ['--failed-files', '--project=one', 'two', 'three'] },
+    { args: ['--failed-files', '--project', 'one', 'two', '--browser', 'chromium'] },
+  ])('reads every value of a native option as a value, not as a file argument: $args', ({ args }) => {
+    expect(parseE2EOptions(args, 10)).toMatchObject({ failedFiles: true, playwrightArgs: args.slice(1) })
+  })
+
+  it.each([
+    { args: ['--failed-files', '--grep', 'title'], option: '--grep' },
+    { args: ['--failed-files', '--grep=title'], option: '--grep' },
+    { args: ['--failed-files', '-g', 'title'], option: '-g' },
+    { args: ['--failed-files', '-gtitle'], option: '-g' },
+    { args: ['--failed-files', '--grep-invert', 'title'], option: '--grep-invert' },
+    { args: ['--failed-files', '-G', 'title'], option: '-G' },
+    { args: ['--failed-files', '--test-list-invert', 'skip.txt'], option: '--test-list-invert' },
+    { args: ['--failed-files', '--shard', '1/2'], option: '--shard' },
+    { args: ['--failed-files-from=run.json', '--grep', 'title'], option: '--grep' },
+  ])('refuses an option that selects fewer tests of the failed files: $args', ({ args, option }) => {
+    expect(() => parseE2EOptions(args, 10)).toThrow(`reruns every test of the failed files. Remove ${option}`)
+  })
+
+  it('reads a narrowing option only as an option, never as the value of another option', () => {
+    expect(parseE2EOptions(['--failed-files', '--reporter', '--grep'], 10)).toMatchObject({ failedFiles: true, reporters: '--grep' })
+  })
+
+  it.each([{ args: ['--grep', 'title'] }, { args: ['--shard=1/2'] }, { args: ['--test-list-invert', 'skip.txt'] }])('keeps a narrowing option valid without --failed-files: %j', ({ args }) => {
+    expect(parseE2EOptions(args, 10).failedFiles).toBe(false)
+  })
+})
+
+describe('parseE2EOptions native option classification', () => {
+  interface NativeOption {
+    readonly name: string
+    readonly kind: 'flag' | 'value' | 'optional' | 'variadic'
+  }
+
+  /** Read the options of the installed `playwright test` command, which commander classifies by its own rules. */
+  function nativeTestOptions(): NativeOption[] {
+    const loaded: unknown = createRequire(import.meta.url)('playwright/lib/program')
+    const program = isObject(loaded) ? loaded.program : undefined
+    const commands = isObject(program) && Array.isArray(program.commands) ? program.commands : []
+    const test = commands.find(command => isObject(command) && typeof command.name === 'function' && command.name() === 'test')
+    if (!isObject(test) || !Array.isArray(test.options))
+      throw new Error('The installed Playwright has no test command with an option list.')
+    return test.options.map((option: unknown): NativeOption => {
+      if (!isObject(option))
+        throw new Error('The installed Playwright holds an option that is not an object.')
+      const name = typeof option.long === 'string' ? option.long : option.short
+      if (typeof name !== 'string')
+        throw new Error('The installed Playwright holds an option without a name.')
+      if (option.variadic === true)
+        return { name, kind: 'variadic' }
+      if (option.optional === true)
+        return { name, kind: 'optional' }
+      return { name, kind: option.required === true ? 'value' : 'flag' }
+    })
+  }
+
+  /** The launcher refuses these together with --failed-files on purpose. Their own tests state the reason. */
+  const REFUSED_WITH_FAILED_FILES = new Set(['--last-failed', '--test-list', '--test-list-invert', '--only-changed', '--grep', '--grep-invert', '--shard'])
+  /** The launcher refuses these in every run. */
+  const REFUSED_ALWAYS = new Set(['--fully-parallel'])
+  /** The launcher validates the value of these options. */
+  const VALID_VALUE: Readonly<Record<string, string>> = { '--workers': '2', '--retries': '0' }
+
+  const classified = nativeTestOptions().filter(option => !REFUSED_WITH_FAILED_FILES.has(option.name) && !REFUSED_ALWAYS.has(option.name))
+
+  it('reads the option list of the installed Playwright', () => {
+    const names = nativeTestOptions().map(option => option.name)
+    expect(names).toEqual(expect.arrayContaining(['--grep', '--project', '--only-changed', '--browser', '--headed']))
+    for (const name of [...REFUSED_WITH_FAILED_FILES, ...REFUSED_ALWAYS])
+      expect(names, `${name} must stay a native option`).toContain(name)
+  })
+
+  it.each(classified)('reads $name with the arity that Playwright gives it', (option) => {
+    const value = VALID_VALUE[option.name] ?? 'value'
+    const parse = (args: string[]) => () => parseE2EOptions(['--failed-files', ...args], 10)
+    if (option.kind === 'flag') {
+      // A flag takes no value, so the next argument is a file argument.
+      expect(parse([option.name, 'sentinel.spec.ts'])).toThrow('Remove the file arguments: sentinel.spec.ts')
+      return
+    }
+    // Every other kind takes the next argument as its value, so only the sentinel after it is a file argument.
+    expect(parse([option.name, value])).not.toThrow()
+    if (option.kind === 'variadic') {
+      expect(parse([option.name, value, value, value])).not.toThrow()
+      return
+    }
+    expect(parse([option.name, value, 'sentinel.spec.ts'])).toThrow(/Remove the file arguments: sentinel\.spec\.ts$/u)
+  })
+
+  it.each([...REFUSED_WITH_FAILED_FILES])('refuses %s together with --failed-files', (name) => {
+    expect(() => parseE2EOptions(['--failed-files', name, '1/2'], 10)).toThrow('--failed-files')
   })
 })
 
@@ -259,6 +358,32 @@ describe('shardSelectionArgs', () => {
 
   it('preserves a last-failed-like regular expression value', () => {
     expect(shardSelectionArgs(['--grep', '--last-failed', '-G', '--last-failed-file=x'])).toEqual(['--grep', '--last-failed', '-G', '--last-failed-file=x'])
+  })
+
+  it.each([
+    { args: ['--only-changed', '--last-failed', 'a.spec.ts'], expected: ['a.spec.ts', '--only-changed'] },
+    { args: ['--only-changed', '--reporter=json', 'a.spec.ts'], expected: ['a.spec.ts', '--only-changed'] },
+    { args: ['--only-changed', '--output', 'dir', 'a.spec.ts'], expected: ['a.spec.ts', '--only-changed'] },
+    { args: ['--only-changed', '--last-failed-file=x', '--grep', 'title'], expected: ['--grep', 'title', '--only-changed'] },
+    { args: ['--only-changed', '--last-failed', '--', '--literal'], expected: ['--only-changed', '--', '--literal'] },
+    { args: ['--only-changed'], expected: ['--only-changed'] },
+  ])('keeps a file filter out of the value of a bare --only-changed: $args', ({ args, expected }) => {
+    expect(shardSelectionArgs(args)).toEqual(expected)
+  })
+
+  it.each([
+    { args: ['--only-changed', 'main', '--last-failed', 'a.spec.ts'], expected: ['--only-changed', 'main', 'a.spec.ts'] },
+    { args: ['--only-changed=main', '--last-failed', 'a.spec.ts'], expected: ['--only-changed=main', 'a.spec.ts'] },
+  ])('keeps the value that the caller gave --only-changed: $args', ({ args, expected }) => {
+    expect(shardSelectionArgs(args)).toEqual(expected)
+  })
+
+  it.each([
+    { args: ['--project', 'one', 'two', '--last-failed', 'a.spec.ts'], expected: ['a.spec.ts', '--project', 'one', 'two'] },
+    { args: ['--project=one', '--reporter=json', 'a.spec.ts'], expected: ['a.spec.ts', '--project=one'] },
+    { args: ['--project', 'one', 'two'], expected: ['--project', 'one', 'two'] },
+  ])('keeps a file filter out of the project list: $args', ({ args, expected }) => {
+    expect(shardSelectionArgs(args)).toEqual(expected)
   })
 })
 
@@ -287,6 +412,15 @@ describe('serialRunArgs', () => {
   it('puts the launcher test list before the caller filters and their separator', () => {
     expect(serialRunArgs(['--grep', 'title', '--', '--literal'], '/private/test-results', '/private/failed files.txt'))
       .toEqual(['--output=/private/test-results', '--test-list=/private/failed files.txt', '--grep', 'title', '--', '--literal'])
+  })
+
+  it.each([
+    { args: ['--debug', '--output=public', 'a.spec.ts'], expected: ['--output=/private/test-results', 'a.spec.ts', '--debug'] },
+    { args: ['-u', '--output', 'public', 'a.spec.ts'], expected: ['--output=/private/test-results', 'a.spec.ts', '-u'] },
+    { args: ['--update-snapshots', '--output=public', 'a.spec.ts'], expected: ['--output=/private/test-results', 'a.spec.ts', '--update-snapshots'] },
+    { args: ['--debug', 'cli', '--output=public', 'a.spec.ts'], expected: ['--output=/private/test-results', '--debug', 'cli', 'a.spec.ts'] },
+  ])('keeps a file filter out of the value of a bare optional option when it removes the output option: $args', ({ args, expected }) => {
+    expect(serialRunArgs(args, '/private/test-results')).toEqual(expected)
   })
 })
 

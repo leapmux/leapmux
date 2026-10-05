@@ -199,8 +199,9 @@ describe('the saved answers of the probe form', () => {
   // that an unload follows within one IndexedDB round trip loses its answer,
   // and each earlier answer survives. That is the failure of the Goose form
   // specs: the count and the switch restored, and the color did not.
-  // If the page ever closes this window, this test fails and the wait is
-  // unnecessary.
+  // The test simulates the unload with `resetBrowserStorageForTests`, which
+  // settles every pending write as failed. It does not run the `pagehide`
+  // flush of `App`, so it cannot show whether the page closes this window.
   it('loses only the answer that an unload overtakes before the queue commits it', async () => {
     const first = await mountForm()
     fillCount()

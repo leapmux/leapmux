@@ -1,6 +1,5 @@
 import type { CommandProcess } from './e2eCommandProcess'
 import type { ChildSelection } from './e2eOptions'
-import type { DurationHistoryRead } from './e2eShardPlan'
 import { constants, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
@@ -11,9 +10,9 @@ import { finishCleanup } from '../tests/e2e/helpers/cleanup'
 import { stopTrackedProcesses } from '../tests/e2e/helpers/processRegistry'
 import { copyRunBinary, LEAPMUX_BINARY_NAME } from '../tests/e2e/helpers/runBinary'
 import { runCommand } from './e2eCommand'
-import { lastRunStatePath, readLastFailedState, writeNativeLastRunState } from './e2eLastRunReporter'
+import { lastRunStatePath, readLastFailedState } from './e2eLastRunReporter'
 import { discoveryRunArgs, parseE2EOptions, serialRunArgs, shardRunArgs, shardSelectionArgs } from './e2eOptions'
-import { assertMergedTestCoverage, collectShardBlobs, LAST_RUN_REPORT_FILE, mergedJsonDestination, readDiscoveredTestCoverage, readFailedReportFiles, reportedFileDurations, shardReporterEnvironment } from './e2eReports'
+import { assertMergedTestCoverage, assertReportIsCurrent, collectShardBlobs, LAST_RUN_REPORT_FILE, mergedJsonDestination, readDiscoveredTestCoverage, readFailedReportFiles, reportedFileDurations, shardReporterEnvironment } from './e2eReports'
 import { DURATION_HISTORY_FILE, formatShardPlan, mergeDurationHistory, planShards, readDurationHistory, testListContent, writeDurationHistory } from './e2eShardPlan'
 import { writeFileAtomically } from './e2eStateFiles'
 import { resolveTaskBin } from './resolve-task-bin'
@@ -67,9 +66,12 @@ function distinctFailures(errors: readonly unknown[]): unknown[] {
   return errors.flatMap(visit)
 }
 
-/** Finish a run that selects no test. Native Playwright records the same empty state and exit status. */
-function finishWithoutTests(lastRunState: string, passWithNoTests: boolean, reason: string): number {
-  writeNativeLastRunState(lastRunState, { status: passWithNoTests ? 'passed' : 'failed', failedTests: [] })
+/**
+ * Finish a run that selects no test.
+ * No test ran, so the run leaves the saved last-run state as it is. A mistyped filter then cannot erase the saved failures.
+ * Native Playwright replaces the state with an empty one, and a serial run keeps that native behavior.
+ */
+function finishWithoutTests(passWithNoTests: boolean, reason: string): number {
   if (passWithNoTests) {
     process.stdout.write(`${reason}\n`)
     return 0
@@ -80,11 +82,12 @@ function finishWithoutTests(lastRunState: string, passWithNoTests: boolean, reas
 
 /**
  * Save the measured file durations for the next shard plan.
+ * Read the saved history again, because another run can share the output root and end while this run goes on.
  * The history only balances later runs. A failure to save it does not change this run's result, so report it as a warning.
  */
-function recordDurationHistory(path: string, previous: DurationHistoryRead, report: unknown): void {
+function recordDurationHistory(path: string, report: unknown): void {
   try {
-    writeDurationHistory(path, mergeDurationHistory(previous, reportedFileDurations(report)))
+    writeDurationHistory(path, mergeDurationHistory(readDurationHistory(path), reportedFileDurations(report)))
   }
   catch (error) {
     process.stderr.write(`Warning: the E2E duration history at ${path} was not saved. A later run can use the native shard split.\n${inspect(error)}\n`)
@@ -107,11 +110,14 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
   const lastFailed = options.lastFailed ? readLastFailedState(lastRunState) : undefined
   // A serial run keeps the native result for an empty selection: native Playwright writes its own reports.
   if (lastFailed?.failedTests.length === 0 && !options.serial)
-    return finishWithoutTests(lastRunState, options.passWithNoTests, `The last-run state at ${lastRunState} lists no failed tests.`)
+    return finishWithoutTests(options.passWithNoTests, `The last-run state at ${lastRunState} lists no failed tests.`)
   let failedFiles: { report: string, files: string[], testList: string } | undefined
   if (options.failedFiles) {
     const report = options.failedFilesFrom === undefined ? lastRunReport : resolve(cwd, options.failedFilesFrom)
     const files = readFailedReportFiles(report)
+    // The caller chooses an explicit report. The saved report must describe the last run, which a serial run does not save.
+    if (options.failedFilesFrom === undefined)
+      assertReportIsCurrent(report, lastRunState)
     if (files.length === 0) {
       process.stdout.write(`No failed E2E test files exist in ${report}.\n`)
       return 0
@@ -229,7 +235,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
         process.stderr.write(`Warning: these failed files from ${failedFiles.report} select no test now: ${absent.join(', ')}\n`)
     }
     if (coverage.files.length === 0)
-      return finishWithoutTests(lastRunState, options.passWithNoTests, lastFailed ? `No selected E2E test matches a failed test in ${lastRunState}.` : 'No selected E2E test files exist.')
+      return finishWithoutTests(options.passWithNoTests, lastFailed ? `No selected E2E test matches a failed test in ${lastRunState}.` : 'No selected E2E test files exist.')
     const history = readDurationHistory(historyPath)
     const plan = planShards({ coverage, workers: options.workers, balance: options.balance, history, callerTestList: options.testList })
     process.stdout.write(formatShardPlan(plan, historyPath))
@@ -283,11 +289,12 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       return interrupted || mergeCode
     const mergedReportPath = mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE
     const mergedText = readFileSync(mergedReportPath, 'utf8')
-    // Keep the last combined report at a fixed path for --failed-files, as the merge keeps the last-run state.
-    writeFileAtomically(lastRunReport, mergedText)
     const merged: unknown = JSON.parse(mergedText)
-    recordDurationHistory(historyPath, history, merged)
+    recordDurationHistory(historyPath, merged)
     assertMergedTestCoverage(merged, coverage.cases)
+    // Keep the last combined report at a fixed path for --failed-files, as the merge keeps the last-run state.
+    // Save it only after the coverage check: a report that misses a selected case must not select the next rerun.
+    writeFileAtomically(lastRunReport, mergedText)
     process.stdout.write(`E2E artifacts: ${outputFileDir}\n`)
     process.stdout.write(`E2E combined JSON report: ${mergedReportPath}\n`)
     if (options.reporters?.split(',').includes('json') && !process.env.PLAYWRIGHT_JSON_OUTPUT_FILE && !process.env.PLAYWRIGHT_JSON_OUTPUT_NAME)

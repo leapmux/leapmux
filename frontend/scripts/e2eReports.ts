@@ -1,9 +1,12 @@
-import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { isObject } from '../src/lib/jsonPick'
 import { readOptionalStateFile } from './e2eStateFiles'
 
-/** The output root keeps a copy of the combined JSON report of the last parallel run under this name. */
+/**
+ * The output root keeps a copy of the combined JSON report of the last parallel run under this name.
+ * A serial run writes no such report, so a serial run makes the copy older than the last-run state.
+ */
 export const LAST_RUN_REPORT_FILE = '.last-run-report.json'
 
 const REPORTER_DESTINATIONS = [
@@ -252,4 +255,30 @@ export function readFailedReportFiles(path: string): string[] {
   catch (error) {
     throw new Error(`The combined report at ${path} is not a valid Playwright JSON report.`, { cause: error })
   }
+}
+
+/** Read the modification time of a file. Return undefined only when the file does not exist, and throw every other error. */
+function modifiedAt(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs
+  }
+  catch (error) {
+    if (isObject(error) && error.code === 'ENOENT')
+      return undefined
+    throw error
+  }
+}
+
+/**
+ * Refuse a report that an earlier run wrote.
+ * A parallel run saves the report right after its merge replaced the last-run state, so the report is not older than that state.
+ * A serial run replaces the state and saves no report. A report older than the state therefore describes an earlier run.
+ * An absent report is left to its reader, and an absent state shows no later run.
+ */
+export function assertReportIsCurrent(report: string, state: string): void {
+  const reportTime = modifiedAt(report)
+  const stateTime = modifiedAt(state)
+  if (reportTime === undefined || stateTime === undefined || reportTime >= stateTime)
+    return
+  throw new Error(`The combined report at ${report} is older than the last-run state at ${state}. A later run replaced the state, and only a parallel run saves the report. Run the E2E tests once in parallel, or give an existing report with --failed-files-from=<report.json>.`)
 }

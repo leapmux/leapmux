@@ -8,13 +8,28 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from './nativePermission'
+import { createNativePermissionFileWrite, exerciseNativePermissionDecision, expectDeclinedToolRow } from './nativePermission'
 import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
+const declinedRow = vi.hoisted(() => ({ assertions: [] as string[] }))
 vi.mock('./nativeScenario', async (importOriginal) => {
   const original = await importOriginal<typeof import('./nativeScenario')>()
   return { ...original, currentNativeAgent: native.currentAgent }
+})
+vi.mock('@playwright/test', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@playwright/test')>()
+  return {
+    ...original,
+    // The fake result row records each assertion that the helper makes. Every other value reaches the real `expect`.
+    expect: (value: unknown) => typeof value === 'object' && value !== null && 'declinedRowProbe' in value
+      ? {
+          toHaveCount: async (count: number) => { declinedRow.assertions.push(`count:${count}`) },
+          toHaveAttribute: async (name: string, text: string) => { declinedRow.assertions.push(`attribute:${name}=${text}`) },
+          toContainText: async (text: string) => { declinedRow.assertions.push(`text:${text}`) },
+        }
+      : original.expect(value),
+  }
 })
 vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-native-shell', arguments: { command } }) }))
 
@@ -29,6 +44,7 @@ const context: ManagedNativeScenarioContext = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  declinedRow.assertions.length = 0
   delete context.readToolResult
   mkdirSync(scratchRoot, { recursive: true })
   native.directory = mkdtempSync(join(scratchRoot, 'native-permission-plan-unit-'))
@@ -132,5 +148,51 @@ describe('exerciseNativePermissionDecision', () => {
       nativeProof: () => {},
     })).rejects.toThrow('A denied command prints no output')
     expect(outputGate.shown).not.toHaveBeenCalled()
+  })
+})
+
+describe('expectDeclinedToolRow', () => {
+  /** A page that records each selector and answers every locator with the fake result row. */
+  function rowPage() {
+    const selectors: string[] = []
+    // The call ID reaches the page unescaped here, so a helper that escapes it in the browser builds another selector.
+    const page = Object.assign({} as Page, {
+      evaluate: async (_read: unknown, id: string) => id,
+      locator: (selector: string) => {
+        selectors.push(selector)
+        return { declinedRowProbe: true }
+      },
+    })
+    return { page, selectors }
+  }
+
+  it('selects the visible result row of the call through the shared row locator', async () => {
+    const { page, selectors } = rowPage()
+    await expectDeclinedToolRow(page, 'call-1')
+    expect(selectors).toEqual(['[data-testid="message-bubble"][data-tool-call-id="call-1"][data-tool-row-role="result"]:visible'])
+  })
+
+  it('escapes a quote and a backslash in the rendered call ID for a quoted attribute value', async () => {
+    const { page, selectors } = rowPage()
+    await expectDeclinedToolRow(page, 'Run"Shell\\Command__1')
+    expect(selectors).toEqual(['[data-testid="message-bubble"][data-tool-call-id="Run\\"Shell\\\\Command__1"][data-tool-row-role="result"]:visible'])
+  })
+
+  it('requires one declined row and states no refusal text by default', async () => {
+    const { page } = rowPage()
+    await expectDeclinedToolRow(page, 'call-1')
+    expect(declinedRow.assertions).toEqual(['count:1', 'attribute:data-tool-status=declined', 'text:Declined'])
+  })
+
+  it('also requires the native refusal text when the caller gives one', async () => {
+    const { page } = rowPage()
+    await expectDeclinedToolRow(page, 'call-1', 'The user rejected this tool call.')
+    expect(declinedRow.assertions).toEqual(['count:1', 'attribute:data-tool-status=declined', 'text:Declined', 'text:The user rejected this tool call.'])
+  })
+
+  it('requires the refusal text even when it is the empty string', async () => {
+    const { page } = rowPage()
+    await expectDeclinedToolRow(page, 'call-1', '')
+    expect(declinedRow.assertions.at(-1)).toBe('text:')
   })
 })

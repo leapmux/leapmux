@@ -11,6 +11,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
+import { nativeResultBubble } from './nativeResultView'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { nativeToolResult } from './nativeToolResult'
@@ -100,8 +101,7 @@ export async function exerciseNativePermissionDecision(
  * The row carries the declined status and its heading, and it keeps the native refusal text when the caller gives one.
  */
 export async function expectDeclinedToolRow(page: Page, renderedCallId: string, refusal?: string): Promise<void> {
-  const escaped = await page.evaluate(id => CSS.escape(id), renderedCallId)
-  const row = page.locator(`[data-testid="message-bubble"][data-tool-call-id=${escaped}][data-tool-row-role="result"]:visible`)
+  const row = nativeResultBubble(page, renderedCallId)
   await expect(row).toHaveCount(1)
   await expect(row).toHaveAttribute('data-tool-status', 'declined')
   await expect(row).toContainText('Declined')

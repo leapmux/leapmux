@@ -93,4 +93,38 @@ describe('nativeResultBubble', () => {
   it('keeps an empty call ID as an empty attribute value, so it matches no real call', () => {
     expect(nativeResultBubble(selectorPage(), '')).toContain('[data-tool-call-id=""]')
   })
+
+  it.each([
+    { callId: 'a\nb', escaped: 'a\\a b' },
+    { callId: 'a\rb', escaped: 'a\\d b' },
+    { callId: 'a\fb', escaped: 'a\\c b' },
+  ])('escapes the line break in $callId as a CSS hex escape, because a quoted CSS string cannot hold one', ({ callId, escaped }) => {
+    expect(nativeResultBubble(selectorPage(), callId)).toContain(`[data-tool-call-id="${escaped}"]`)
+  })
+
+  it.each([
+    'live-child-read',
+    'Run"Shell\\Command__1',
+    'call|fc_1/x:y',
+    'line\nbreak',
+    'carriage\rreturn',
+    'form\ffeed',
+    '\\"\\',
+    ']',
+    '',
+  ])('builds a selector that a CSS parser matches to the row of the exact call ID: %j', (callId) => {
+    const row = document.createElement('div')
+    row.setAttribute('data-testid', 'message-bubble')
+    row.setAttribute('data-tool-call-id', callId)
+    row.setAttribute('data-tool-row-role', 'result')
+    const other = document.createElement('div')
+    other.setAttribute('data-testid', 'message-bubble')
+    other.setAttribute('data-tool-call-id', `${callId}-other`)
+    other.setAttribute('data-tool-row-role', 'result')
+    document.body.replaceChildren(row, other)
+    // The browser adds the :visible pseudo-class. A CSS parser does not know it, so the match drops it.
+    const selector = String(nativeResultBubble(selectorPage(), callId)).replace(/:visible$/u, '')
+    expect(document.querySelectorAll(selector)).toHaveLength(1)
+    expect(document.querySelector(selector)).toBe(row)
+  })
 })

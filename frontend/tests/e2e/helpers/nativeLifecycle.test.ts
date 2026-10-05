@@ -634,4 +634,12 @@ describe('exerciseInterruptTurn', () => {
       .rejects
       .toThrow('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
   })
+
+  it.each(['before-response', 'after-first-chunk'] as const)('refuses the held model turn position %s for an interrupted tool', async (holdModelTurn) => {
+    // The check runs before the helper touches the context. Without it, the tool branch ignores the position.
+    const context = {} as ManagedNativeScenarioContext
+    await expect(exerciseInterruptTurn(context, { kind: 'tool', holdModelTurn }))
+      .rejects
+      .toThrow('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
+  })
 })

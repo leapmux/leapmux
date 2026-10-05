@@ -401,6 +401,7 @@ task test-e2e -- --last-failed
 
 The launcher stores the combined native selection at the output root's `.last-run.json`.
 A complete passing run clears the prior failed selection.
+A parallel run that selects no test leaves the saved selection unchanged.
 The last-failed run uses parallel execution.
 Each shard reads a private copy of the selection through `--last-failed-file`.
 Only the merged result replaces the caller's `.last-run.json`.
@@ -412,15 +413,20 @@ Use `--failed-files` to run every file that holds a test without a complete clea
 
 ```bash
 task test-e2e -- --failed-files
-task test-e2e -- --failed-files-from=frontend/test-results/runs/<run-id>/report.json
+task test-e2e -- --failed-files-from=test-results/runs/<run-id>/report.json
 ```
 
 This option reruns complete files, not single cases.
 A complete file is the unit of acceptance for a matrix cell.
 The launcher reads the last combined report, `.last-run-report.json` under the output root.
+Each parallel run saves that report after its coverage check, also a run that selects only some tests.
+A serial run saves no report.
+The launcher refuses a report that is older than the last-run state, because a later run replaced the state.
 `--failed-files-from` reads an explicit combined report instead.
+It resolves a relative path against the `frontend` directory, as `--output` does.
 The option selects its own files.
 Do not combine it with `--last-failed`, `--test-list`, `--only-changed`, or file arguments.
+Do not combine it with `--grep`, `--grep-invert`, `--test-list-invert`, or `--shard`, because they select fewer tests of a file.
 The launcher refuses an absent or malformed report.
 
 The launcher balances the shards by the measured duration of each file.

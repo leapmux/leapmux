@@ -37,6 +37,7 @@ const VALUE_OPTIONS = new Set([
   '-j',
   '--balance',
   '--failed-files-from',
+  '--browser',
   '--reporter',
   '--output',
   '--retries',
@@ -64,8 +65,21 @@ const VALUE_OPTIONS = new Set([
 ])
 /** Native options with an optional value. Commander takes the next argument as the value when it is not an option. */
 const OPTIONAL_VALUE_OPTIONS = new Set(['--debug', '--only-changed', '--update-snapshots', '-u'])
+/** Native options that take a list. Commander adds every following argument that is not an option to the list. */
+const VARIADIC_OPTIONS = new Set(['--project'])
+/**
+ * Options that select fewer tests of the selected files. They conflict with --failed-files, which reruns every test of its files.
+ * --project is absent on purpose: playwright.config.ts defines one project, so a project filter keeps every test of a file,
+ * and an unknown project name fails natively.
+ */
+const NARROWING_OPTIONS = new Set(['--grep', '-g', '--grep-invert', '-G', '--test-list-invert', '--shard'])
 /** Flags that the launcher reads. A value would change nothing natively, so the launcher refuses one. */
 const INSPECTED_FLAGS = new Set(['--last-failed', '--pass-with-no-tests', '--failed-files'])
+
+/** Decide whether commander reads this argument as a value of the option before it. An option starts with a dash. */
+function isValueArgument(argument: string | undefined): argument is string {
+  return argument !== undefined && !argument.startsWith('-')
+}
 
 /** Expand native short options without interpreting their attached value as another option. */
 function shortArguments(argument: string): string[] {
@@ -113,7 +127,7 @@ function workerCount(value: string, capacity: number): number {
 }
 
 /** Refuse a selection that would not run the complete failed files. */
-function requireCompleteFailedFiles(positionals: readonly string[], conflicts: { lastFailed: boolean, testList: boolean, onlyChanged: boolean }): void {
+function requireCompleteFailedFiles(positionals: readonly string[], conflicts: { lastFailed: boolean, testList: boolean, onlyChanged: boolean, narrowing: string | undefined }): void {
   if (conflicts.lastFailed)
     throw new Error('The E2E --failed-files option reruns complete files, and --last-failed reruns only the failed tests. Use one of the two options.')
   if (positionals.length)
@@ -122,6 +136,8 @@ function requireCompleteFailedFiles(positionals: readonly string[], conflicts: {
     throw new Error('The E2E --failed-files option selects its own files. Remove --test-list.')
   if (conflicts.onlyChanged)
     throw new Error('The E2E --failed-files option selects its own files. Remove --only-changed.')
+  if (conflicts.narrowing !== undefined)
+    throw new Error(`The E2E --failed-files option reruns every test of the failed files. Remove ${conflicts.narrowing}, which selects fewer tests.`)
 }
 
 /** Consume the public worker count and the launcher options. Every child retains one native Playwright worker. */
@@ -140,6 +156,7 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
   let passWithNoTests = false
   let testList = false
   let onlyChanged = false
+  let narrowing: string | undefined
   let balance: BalanceMode | undefined
   const positionals: string[] = []
   const playwrightArgs: string[] = []
@@ -185,8 +202,7 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
       if (option === '--only-changed')
         onlyChanged = true
       playwrightArgs.push(argument)
-      const next = input[index + 1]
-      if (separator < 0 && next !== undefined && !next.startsWith('-'))
+      if (separator < 0 && isValueArgument(input[index + 1]))
         playwrightArgs.push(input[++index]!)
       continue
     }
@@ -197,6 +213,8 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
     const value = separator < 0 ? input[++index] : argument.slice(separator + 1)
     if (value === undefined || value.includes('\0'))
       throw new Error(`The E2E ${option} option requires a value without NUL.`)
+    if (NARROWING_OPTIONS.has(option))
+      narrowing ??= option
     if (option === '--workers' || option === '-j') {
       if (workerOption)
         throw new Error('The E2E worker count must appear only once.')
@@ -250,9 +268,13 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
     playwrightArgs.push(argument)
     if (separator < 0)
       playwrightArgs.push(value)
+    if (VARIADIC_OPTIONS.has(option)) {
+      while (isValueArgument(input[index + 1]))
+        playwrightArgs.push(input[++index]!)
+    }
   }
   if (failedFiles)
-    requireCompleteFailedFiles(positionals, { lastFailed, testList, onlyChanged })
+    requireCompleteFailedFiles(positionals, { lastFailed, testList, onlyChanged, narrowing })
   return {
     workers: serial ? 1 : workers,
     playwrightArgs,
@@ -269,15 +291,20 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
   }
 }
 
-/** Remove actual options while preserving values that resemble those options. */
+/**
+ * Remove actual options while preserving values that resemble those options.
+ * Commander gives the next arguments that are not options to a bare optional-value option and to a list option.
+ * A removed option can be the one that separated such an option from a file filter, so the filter would become its value.
+ * The function therefore moves these options after every other argument and before any `--`.
+ * An optional-value option that has its value stays in place, because it takes no further argument.
+ */
 function withoutRunOptions(args: readonly string[], removed: ReadonlySet<string>): string[] {
   const result: string[] = []
+  const last: string[] = []
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!
-    if (argument === '--') {
-      result.push(...args.slice(index))
-      break
-    }
+    if (argument === '--')
+      return [...result, ...last, ...args.slice(index)]
     const option = argument.split('=', 1)[0]
     const takesValue = option !== undefined && VALUE_OPTIONS.has(option) && !argument.includes('=')
     if (option !== undefined && removed.has(option)) {
@@ -286,11 +313,26 @@ function withoutRunOptions(args: readonly string[], removed: ReadonlySet<string>
         index++
       continue
     }
+    if (option !== undefined && VARIADIC_OPTIONS.has(option)) {
+      last.push(argument)
+      if (takesValue)
+        last.push(args[++index]!)
+      while (isValueArgument(args[index + 1]))
+        last.push(args[++index]!)
+      continue
+    }
+    if (option !== undefined && OPTIONAL_VALUE_OPTIONS.has(option) && !argument.includes('=')) {
+      if (isValueArgument(args[index + 1]))
+        result.push(argument, args[++index]!)
+      else
+        last.push(argument)
+      continue
+    }
     result.push(argument)
     if (takesValue)
       result.push(args[++index]!)
   }
-  return result
+  return [...result, ...last]
 }
 
 /**

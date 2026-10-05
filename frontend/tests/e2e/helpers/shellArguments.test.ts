@@ -1,6 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
+
+/** A Windows host has no /bin/sh. The cases that run the command in a shell need one. */
+const hasPosixShell = existsSync('/bin/sh')
 
 describe('quotePosixShellArgument', () => {
   it.each([
@@ -15,7 +19,7 @@ describe('quotePosixShellArgument', () => {
 })
 
 describe('printfMarkerCommand', () => {
-  it.each([
+  it.runIf(hasPosixShell).each([
     { prefix: 'SHELL0123456789abcdef', value: 42, output: 'SHELL0123456789abcdef42\n' },
     { prefix: 'SHELLERR_x-y', value: 77, output: 'SHELLERR_x-y77\n' },
     { prefix: 'BYPASS', value: 0, output: 'BYPASS0\n' },
@@ -31,7 +35,7 @@ describe('printfMarkerCommand', () => {
     expect(command).not.toMatch(/\$\(|`|[<>]\(/)
   })
 
-  it('keeps its output on the stream that the caller redirects to', () => {
+  it.runIf(hasPosixShell)('keeps its output on the stream that the caller redirects to', () => {
     const result = spawnSync('/bin/sh', ['-c', `${printfMarkerCommand('SHELLERR', 77)} >&2; exit 7`], { encoding: 'utf8' })
     expect(result.status).toBe(7)
     expect(result.stdout).toBe('')

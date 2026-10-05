@@ -100,8 +100,10 @@ export async function expectClipsLongText(label: Locator) {
 export type MessageEntry = 'type' | 'insert'
 
 /**
- * Put the text into the focused composer. Both modes give the same composer content: `insert` presses Enter
- * for each line break, as typing does, and inserts each line at once.
+ * Put the text into the focused composer. `insert` presses Enter for each line break, as typing does,
+ * and inserts each line at once. Both modes give the same text for a line of prose.
+ * A line with a markdown trigger, such as backticks, can differ, because only typing presses each key.
+ * Use `type` for such a line.
  */
 export async function enterMessageText(page: Page, text: string, entry: MessageEntry): Promise<void> {
   if (entry === 'type') {

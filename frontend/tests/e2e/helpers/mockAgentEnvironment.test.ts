@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { findBinary } from './binaryOnPath'
@@ -331,7 +331,7 @@ describe('createMockAgentEnvironment', () => {
     for (const name of ['ZCODE_STORAGE_DIR', 'KIRO_DATA_DIR', 'GROK_FILE_LOCK_SLOT_DIR'] as const) {
       const path = env[name]
       expect(path, name).toBeDefined()
-      expect(path!.startsWith(`${directory}/`), `${name} lies inside the run directory`).toBe(true)
+      expect(path!.startsWith(`${directory}${sep}`), `${name} lies inside the run directory`).toBe(true)
       expect(existsSync(path!) && statSync(path!).isDirectory(), `${name} exists as a directory`).toBe(true)
     }
   })
