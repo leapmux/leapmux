@@ -105,20 +105,25 @@ const (
 // `auto` exists in the enum and is NOT implemented in the shipped app-server:
 // every tool call under it is denied with
 // `permission.resolved {reason:"Auto mode is reserved but not implemented yet"}`.
-// It is therefore deliberately absent from the option list -- see settings.go.
+// It is therefore deliberately absent from the option list -- see registration.go.
+//
+// `plan` is a mode REQUEST and not a native mode. session/create and session/setMode
+// accept it and turn the session's plan flag on, and the native mode stays as it
+// was. See the plan-flag section of settings.go.
 // The values are generated: see contracts/zcode-protocol.json.
 
 // contracts.ZCodeDefaultMode is the mode LeapMux asks a fresh session for.
 //
 // session/create HONORS its `mode` parameter, and LeapMux always sends one. A
 // create that sends none does NOT get this mode: the app-server persists the last
-// mode that session/setMode applied and gives the new session that one instead, so
-// a session opened with no mode inherits whatever the desktop application or an
-// earlier agent left behind.
+// native mode that session/setMode applied and gives the new session that one
+// instead, so a session opened with no mode inherits whatever the desktop
+// application or an earlier agent left behind.
 //
 // The reply is easy to misread. `session.mode` reports the projection's seed and
 // reads `build` whatever the session runs in. `settings.mode.current` is the live
-// mode, and it is the field applySettingsSnapshotLocked reads.
+// native mode, and it is the field applySettingsSnapshotLocked reads. Neither field
+// states plan mode: a session in plan mode reports its native mode in both.
 // The value is generated: see contracts/zcode-protocol.json.
 
 // ZCode subscription delivery kind. `desktop-continuous` is the streaming

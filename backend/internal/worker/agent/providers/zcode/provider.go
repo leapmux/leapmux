@@ -105,11 +105,15 @@ func (zcodeProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 	}
 }
 
-// PlanModePermissionMode gives ZCode's own two modes. ZCode's mode axis is
-// plan/build/edit/yolo, so an approved exit lands on `build` -- the mode the frontend
-// plugin already declares as the plan banner's default. Claude's `acceptEdits` is not a
-// value `session/setMode` accepts, and a session told that word stays where it was while
-// the settings bar claims otherwise.
+// PlanModePermissionMode gives ZCode's own two mode words. LeapMux's axis for ZCode is
+// plan/build/edit/yolo, where `plan` is ZCode's plan flag. An approved ExitPlanMode
+// turns the flag off and the session continues in the native mode that it kept under
+// plan mode. That native mode is `build` unless the user entered plan mode from
+// another mode, and `build` is the mode that the frontend plugin already declares as
+// the plan banner's default. When the native mode differs, the agent reports the real
+// one when ZCode reports the exit (handleZCodeModeChanged). Claude's `acceptEdits` is not a
+// value `session/setMode` accepts, and a session told that word stays where it was
+// while the settings bar claims otherwise.
 func (zcodeProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
 	switch kind {
 	case agent.PlanModeControlEnter:
@@ -216,13 +220,13 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		// after the winner deleted it). There is nothing to address the reply to, and
 		// forwarding the frontend envelope would put a frame the app-server cannot
 		// parse on its stdin.
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 
 	var stored zcodeControlRequestPayload
 	if !providerkit.WarnUnmarshal(ctx.RequestPayload, &stored, "zcode control response request") {
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
@@ -232,31 +236,31 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		// Not a recognizable allow/deny. Withholding the forward is the safe answer:
 		// the app-server keeps waiting (and the user can answer again) rather than
 		// receiving a frame that means nothing.
-		res.Withhold = true
+		res.Refuse(agent.RefusalNoDecision)
 		return res
 	}
 	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
 		slog.Warn("zcode control response addressed another request",
 			"answered", requestID, "stored", stored.RequestID)
-		res.Withhold = true
+		res.Refuse(agent.RefusalOtherRequest)
 		return res
 	}
 	if len(stored.WireID) == 0 {
 		slog.Warn("zcode stored control request carried no wire id", "request_id", stored.RequestID)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 
 	reply, err := zcodeReplyForAnswer(stored, behavior, message, ctx.ResponseContent)
 	if err != nil {
 		slog.Warn("zcode build control reply failed", "request_id", stored.RequestID, "error", err)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	encoded, err := json.Marshal(zcodeReplyFrame{ID: stored.WireID, Result: reply})
 	if err != nil {
 		slog.Warn("zcode marshal control reply failed", "request_id", stored.RequestID, "error", err)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnencodableReply)
 		return res
 	}
 	res.Content = encoded

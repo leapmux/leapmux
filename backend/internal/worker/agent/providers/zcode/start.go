@@ -96,13 +96,16 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		a.model = model
 	}
 	a.thoughtLevel = opts.Effort()
+	// No goroutine reads the agent yet. The lock is the contract of the two helpers.
+	a.Mu.Lock()
 	if mode := opts.PermissionMode(); mode != "" {
-		a.mode = mode
+		a.pinPermissionModeLocked(mode)
 	}
 	// Capture the launch request BEFORE the session exists. Opening one folds the
 	// app-server's own settings over these fields, so this is the last point at which
 	// what the USER asked for is still readable. applyStartupSettings takes it back.
-	launchRequest := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.mode}
+	launchRequest := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.permissionModeLocked()}
+	a.Mu.Unlock()
 
 	if err := a.StartCmd(); err != nil {
 		return nil, err

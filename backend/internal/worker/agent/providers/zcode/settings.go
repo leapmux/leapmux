@@ -30,6 +30,9 @@ func newInvalidZCodeModelError(modelID string) error {
 // thought level a model does not offer and refuses a mode it does not know, and a
 // UI showing the request rather than the result would be lying about what the next
 // turn will do.
+//
+// The plan flag is the one exception, because no snapshot carries it -- see
+// recordPlanRequestLocked for the evidence that replaces the snapshot there.
 
 // ThoughtLevelLabel is ZCode's display label for its effort axis. The
 // app-server calls it a "thought level" (session/setThoughtLevel), not a generic
@@ -39,6 +42,100 @@ const ThoughtLevelLabel = "Thought Level"
 // ModeLabel labels the mode axis, which LeapMux carries on its permission-mode
 // channel so the plan-mode toggle and the mode chip drive it.
 const ModeLabel = "Mode"
+
+// --- the plan flag ---
+//
+// ZCode keeps plan mode in a `planEnabled` flag beside the native mode (build, edit,
+// yolo or auto). Its mode requests -- the `mode` of session/create and of
+// session/setMode -- still accept `plan`, and the runtime folds every request by one
+// rule (resolveExecutionState in the app-server bundle): `plan` turns the flag on and
+// keeps the native mode, and any other mode replaces the native mode and turns the
+// flag off. EnterPlanMode and ExitPlanMode change the flag alone.
+//
+// LeapMux's permission-mode axis carries plan mode as its `plan` value, as Kimi Code
+// does: the plan toggle and the plan approval read one axis for every provider. So
+// `plan` means "the flag is on", and every other value means "the flag is off, in
+// this native mode".
+
+// permissionModeLocked returns the value of LeapMux's permission-mode axis.
+//
+// A build that kept plan mode as a native mode reports `plan` in
+// `settings.mode.current`, and that value passes through unchanged.
+//
+// Caller holds a.Mu.
+func (a *Agent) permissionModeLocked() string {
+	if a.planEnabled {
+		return contracts.ZCodeModePlan
+	}
+	return a.mode
+}
+
+// pinPermissionModeLocked stores a value of the axis that LeapMux asks for and ZCode
+// did not confirm yet: the launch request, and the startup request before its setter
+// runs. It splits the value as ZCode's runtime splits the request. It is not an
+// observation, so it leaves planObserved alone.
+//
+// Caller holds a.Mu.
+func (a *Agent) pinPermissionModeLocked(value string) {
+	if value == contracts.ZCodeModePlan {
+		a.planEnabled = true
+		return
+	}
+	a.mode = value
+	a.planEnabled = false
+}
+
+// recordPlanRequestLocked records the plan flag that an ACCEPTED mode request left
+// the session in.
+//
+// The reply of session/create and session/setMode carries `settings.mode.current`,
+// the native mode, and no flag. The event that states the flag is a separate frame,
+// and nothing promises that it arrives before the reply. ZCode's fold of the request
+// is fixed, so the request itself is the evidence: `plan` turns the flag on, and any
+// other mode turns it off. The native mode stays with the reply's snapshot.
+//
+// Caller holds a.Mu.
+func (a *Agent) recordPlanRequestLocked(requested string) {
+	a.planEnabled = requested == contracts.ZCodeModePlan
+	a.planObserved = true
+}
+
+// handleZCodeModeChanged folds ZCode's SessionModeChanged event, which states the
+// native mode and the plan flag together. It is the only frame that reports a plan
+// flag that the AGENT changed: EnterPlanMode, and ExitPlanMode after an approval.
+//
+// A change of the axis is persisted, so a plan mode that the agent entered or left
+// survives a restart.
+func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool) {
+	a.Mu.Lock()
+	planBefore := a.planEnabled
+	before := a.permissionModeLocked()
+	a.mode = mode
+	a.modeObserved = true
+	a.planEnabled = planEnabled
+	a.planObserved = true
+	a.modeChanges++
+	// A stored plan-exit mode fires here: this event reporting the flag OFF is
+	// the exit having finished. The same native mode consumes the deferral
+	// without a request, and entering plan mode again drops it: that session
+	// chose to keep planning, and a stale exit mode must not fire at a later
+	// exit.
+	stored := a.pendingExitMode
+	a.pendingExitMode = ""
+	sendStored := planBefore && !planEnabled && stored != "" && stored != mode
+	// The event states both halves of the axis, so it settles a setter reply that
+	// carried no mode.
+	delete(a.unresolvedSettings, agent.OptionIDPermissionMode)
+	after := a.permissionModeLocked()
+	a.Mu.Unlock()
+	if sendStored {
+		a.sendDeferredZCodeExitMode(stored)
+	}
+	if before == after && !sendStored {
+		return
+	}
+	a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDPermissionMode: after})
+}
 
 // zcodeSettingsRequest is the trio a caller ASKS a session to run on: the launch
 // options at startup, and the current axes at a context clear.
@@ -106,8 +203,11 @@ type zcodeSettingsSnapshot struct {
 	// session credential.
 	AppliedProviderRevision string `json:"appliedProviderRevision"`
 	Mode                    *struct {
-		// Current is the AUTHORITATIVE mode. `session.mode` is the creation-time
-		// record and never tracks a switch, so it is deliberately not read.
+		// Current is the AUTHORITATIVE native mode. `session.mode` is the
+		// creation-time record and never tracks a switch, so it is deliberately not
+		// read. Current does not state plan mode: a session in plan mode reports its
+		// native mode here, and no snapshot carries the plan flag (see
+		// Agent.planEnabled).
 		Current string `json:"current"`
 	} `json:"mode"`
 	Model *struct {
@@ -129,7 +229,9 @@ type zcodeSettingsSnapshot struct {
 //
 // Every value read here is the app-server's own: `mode.current`, `model.current`
 // and `thoughtLevel.current`. Where a field is absent the previous value stands,
-// which is what makes this safe to call with a partial state.updated patch.
+// which is what makes this safe to call with a partial state.updated patch. The plan
+// flag is not in the snapshot, so it stands also: the patch that ends a turn in plan
+// mode states `build` and leaves plan mode on.
 func (a *Agent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 	if snap == nil {
 		return
@@ -383,7 +485,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	groups := providerkit.ModelAndEffortGroups(models, model, effort, ThoughtLevelLabel, nil)
 
 	a.Mu.Lock()
-	mode := a.mode
+	mode := a.permissionModeLocked()
 	a.Mu.Unlock()
 	if g := providerkit.LiveGroup(optionids.GroupByID(zcodeStaticOptionGroups, agent.OptionIDPermissionMode), mode); g != nil {
 		groups = append(groups, g)
@@ -513,9 +615,13 @@ func (a *Agent) applyZCodeThoughtLevel(level string, timeout time.Duration) erro
 }
 
 // applyZCodeMode switches the session's mode and reports the observed value.
+//
+// mode is a value of LeapMux's axis, and session/setMode accepts each of them: `plan`
+// turns the plan flag on, and any other mode turns it off.
 func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
+	modeChangesBefore := a.modeChanges
 	a.Mu.Unlock()
 	if sessionID == "" {
 		return errNoZCodeSession
@@ -527,8 +633,18 @@ func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	// The snapshot carries settings.mode.current, which is the only field that tracks
-	// a switch, so no local assignment happens here.
+	// The reply states no plan flag, so the accepted request states it. A
+	// SessionModeChanged event that arrived during the RPC wins instead: the event of
+	// this request states the same flag, and a later one, such as an EnterPlanMode
+	// that ran after the request, states a newer flag that the rule would overwrite.
+	a.Mu.Lock()
+	if a.modeChanges == modeChangesBefore {
+		a.recordPlanRequestLocked(mode)
+	}
+	a.Mu.Unlock()
+	// The snapshot carries settings.mode.current, which is the only snapshot field
+	// that tracks a switch of the native mode, so no local assignment of the native
+	// mode happens here.
 	snapshot, observed := a.applyStateSnapshot(raw)
 	if !observed || snapshot.Settings == nil || snapshot.Settings.Mode == nil || snapshot.Settings.Mode.Current == "" {
 		a.markSettingUnresolved(agent.OptionIDPermissionMode)
@@ -543,7 +659,9 @@ func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
 // would strand the picker on a value the running session does not have.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.Mu.Lock()
-	curModel, curEffort, curMode := a.model, a.thoughtLevel, a.mode
+	// The axis value, not the native mode: plan mode reads `build` natively, so a
+	// switch from Plan to Build would otherwise compare equal and send nothing.
+	curModel, curEffort, curMode := a.model, a.thoughtLevel, a.permissionModeLocked()
 	a.Mu.Unlock()
 
 	// Switching effort to Auto means "let the app-server pick", which the wire cannot
@@ -593,7 +711,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	}
 
 	a.Mu.Lock()
-	model, effort, mode := a.model, a.thoughtLevel, a.mode
+	model, effort, mode := a.model, a.thoughtLevel, a.permissionModeLocked()
 	a.Mu.Unlock()
 	a.sink.PersistSettingsRefresh(map[string]string{
 		agent.OptionIDModel:          model,
@@ -676,9 +794,12 @@ func (b *zcodeStatePatchBody) hasSettings() bool {
 }
 
 // handleZCodeStateUpdated folds a top-level state.updated notification into the
-// agent's settings and usage, so a mode or model the AGENT changed mid-turn
-// (ZCode's own EnterPlanMode / ExitPlanMode tools do exactly that) reaches the
-// picker, and the context-usage readout tracks the turn.
+// agent's settings and usage, so a native mode or a model that changed during a turn
+// reaches the picker, and the context-usage readout tracks the turn.
+//
+// The plan flag is not here. ZCode's EnterPlanMode and ExitPlanMode tools change the
+// flag alone, and only the SessionModeChanged event reports that -- see
+// handleZCodeModeChanged.
 func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 	if len(params) == 0 {
 		return
@@ -730,15 +851,16 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 		return
 	}
 	a.Mu.Lock()
-	before := zcodeSettingsTriple{a.model, a.thoughtLevel, a.mode}
+	before := zcodeSettingsTriple{a.model, a.thoughtLevel, a.permissionModeLocked()}
 	a.applySettingsSnapshotLocked(&body.zcodeSettingsSnapshot)
-	after := zcodeSettingsTriple{a.model, a.thoughtLevel, a.mode}
+	after := zcodeSettingsTriple{a.model, a.thoughtLevel, a.permissionModeLocked()}
 	a.Mu.Unlock()
 	if before == after {
 		return
 	}
 	// The AGENT changed a setting, so the persisted row is stale. Refreshing it here
-	// is what makes a mid-turn plan-mode entry survive a restart.
+	// is what makes a native mode or a model that changed during a turn survive a
+	// restart.
 	a.sink.PersistSettingsRefresh(map[string]string{
 		agent.OptionIDModel:          after.model,
 		agent.OptionIDEffort:         after.effort,
@@ -773,9 +895,44 @@ func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch, raw []byte) {
 }
 
 // zcodeSettingsTriple is the comparable snapshot of the three settable axes, used to
-// detect whether a state patch actually changed anything.
+// detect whether a state patch actually changed anything. mode is the value of the
+// permission-mode axis, not the native mode.
 type zcodeSettingsTriple struct {
 	model  string
 	effort string
 	mode   string
+}
+
+// DeferPlanExitMode stores the permission mode an approved plan exit chose and
+// sends it once ZCode reports the exit finished.
+//
+// ZCode folds session/setMode as "any value other than plan turns the plan flag
+// off", so a mode sent while the approved ExitPlanMode still runs turns the flag
+// off early and the exit fails with "You are not in plan mode". The flag-off
+// SessionModeChanged of the exit itself is the first moment the mode can go out,
+// so that is where the stored value fires. An exit that already ran when the
+// approval settles takes its mode at once.
+func (a *Agent) DeferPlanExitMode(mode string) {
+	if mode == "" || mode == contracts.ZCodeModePlan {
+		return
+	}
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	exitAlreadyRan := !a.planEnabled && sessionID != ""
+	a.pendingExitMode = mode
+	a.Mu.Unlock()
+	if exitAlreadyRan {
+		a.sendDeferredZCodeExitMode(mode)
+	}
+}
+
+// sendDeferredZCodeExitMode sends one stored exit mode. The caller sits on the
+// event goroutine, so the RPC goes on a goroutine of its own: the reader must
+// keep reading frames while the request is in flight.
+func (a *Agent) sendDeferredZCodeExitMode(mode string) {
+	go func() {
+		if err := a.applyZCodeMode(mode, a.APITimeout()); err != nil {
+			slog.Warn("zcode deferred plan exit mode failed", "agent_id", a.AgentID(), "mode", mode, "error", err)
+		}
+	}()
 }

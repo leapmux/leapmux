@@ -872,11 +872,18 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// are the discriminator.
 		AgentID          string `json:"agentId"`
 		ParentToolCallID string `json:"parentToolCallId"`
+
+		// A SessionModeChanged event: the native mode and the plan flag. Both stay
+		// raw, so a payload of another shape that gives either key another JSON type
+		// cannot fail the decode for the cases above.
+		Mode        json.RawMessage `json:"mode"`
+		PlanEnabled json.RawMessage `json:"planEnabled"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	mode, planEnabled, isModeChange := parseZCodeModeChange(payload.Mode, payload.PlanEnabled)
 
 	switch {
 	case payload.TaskID != "":
@@ -895,11 +902,30 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 			a.recordZCodeUsage(*payload.Usage)
 		}
 		a.persistZCodeAssistantMessage(event, *payload.Content)
+	case isModeChange:
+		a.handleZCodeModeChanged(mode, planEnabled)
 	default:
 		// The remaining shapes are telemetry: the per-request model/iteration counters
 		// and the provider request record (baseURL, requestId, maxAttempts). They carry
 		// no conversation, and persisting them would fill the transcript.
 	}
+}
+
+// parseZCodeModeChange reads a SessionModeChanged payload. ok is true only for a
+// non-empty string mode beside a boolean plan flag: no other session.updated payload
+// carries that pair, and a mode without the flag cannot say whether plan mode is on.
+func parseZCodeModeChange(rawMode, rawPlanEnabled json.RawMessage) (mode string, planEnabled bool, ok bool) {
+	if len(rawMode) == 0 || len(rawPlanEnabled) == 0 {
+		return "", false, false
+	}
+	if json.Unmarshal(rawMode, &mode) != nil || mode == "" {
+		return "", false, false
+	}
+	// A JSON null decodes into a bool with no error, so it is refused by its bytes.
+	if string(rawPlanEnabled) == "null" || json.Unmarshal(rawPlanEnabled, &planEnabled) != nil {
+		return "", false, false
+	}
+	return mode, planEnabled, true
 }
 
 func (a *Agent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {

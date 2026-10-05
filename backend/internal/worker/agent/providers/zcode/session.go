@@ -103,7 +103,9 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 
 	params := map[string]any{"workspace": a.workspace}
 	a.Mu.Lock()
-	mode, model, accountConfig := a.mode, a.model, a.accountProviderConfig
+	// The axis value: session/create accepts `plan` and folds it into the plan flag.
+	// The native mode alone would open the fresh session outside plan mode.
+	mode, model, accountConfig := a.permissionModeLocked(), a.model, a.accountProviderConfig
 	a.Mu.Unlock()
 	if accountConfig {
 		params["dynamicWorkflowEnabled"] = true
@@ -129,6 +131,14 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 		return fmt.Errorf("%s returned no session id", MethodSessionCreate)
 	}
 	a.applyParsedStateSnapshot(snap)
+	if mode != "" {
+		// The runtime folds the create's mode as it folds a session/setMode request,
+		// and the reply states the native mode only. A create with no mode takes a
+		// mode from ZCode's own preferences, so its flag stays unknown.
+		a.Mu.Lock()
+		a.recordPlanRequestLocked(mode)
+		a.Mu.Unlock()
+	}
 	// A create RESTATES the session's goal -- normally that it has none, which
 	// is what clears one a previous session left on the row.
 	a.reportZCodeGoal(snap.goalState(), true)
@@ -147,10 +157,11 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 	// resolves it to. Where the launch asked for nothing, the observed value stands.
 	a.Mu.Lock()
 	// The mode the opened session RUNS in, read before the request is pinned over it.
-	// `settings.mode.current` is the app-server's own live value, so it decides whether
-	// the mode setter below has any work to do -- and modeObserved says whether the
-	// opened session reported that value at all.
-	observedMode, modeObserved := a.mode, a.modeObserved
+	// It decides whether the mode setter below has any work to do, and it is known
+	// only when both of its halves are: `settings.mode.current` gives the native mode
+	// (modeObserved), and the create request or a mode event gives the plan flag
+	// (planObserved).
+	observedMode, observedBoth := a.permissionModeLocked(), a.modeObserved && a.planObserved
 	if req.Model != "" {
 		a.model = req.Model
 	}
@@ -158,7 +169,7 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 		a.thoughtLevel = req.ThoughtLevel
 	}
 	if req.Mode != "" {
-		a.mode = req.Mode
+		a.pinPermissionModeLocked(req.Mode)
 	}
 	// The model and the level fall back to the observed value, because the app-server
 	// resolves both and a launch that asked for neither still runs on something. The
@@ -181,13 +192,15 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 	}
 	// session/create HONORS its mode parameter, and openSession sends it, so the
 	// session usually already runs in the requested mode and the setter is one
-	// blocking RPC of pure repetition. The comparison is against
-	// `settings.mode.current` from the create or resume reply -- the app-server's live
-	// mode -- and never against `session.mode`, which reports the projection's seed
-	// (`build`) whatever the session runs in. A reply that reported no mode is no
-	// evidence, and the setter runs: the cost of a redundant RPC is a round trip, and
-	// the cost of a wrong skip is a session that runs in another session's mode.
-	if mode != "" && (!modeObserved || mode != observedMode) {
+	// blocking RPC of pure repetition. The comparison is against the axis value of the
+	// opened session: `settings.mode.current` from the create or resume reply -- the
+	// app-server's live native mode, never `session.mode`, which reports the
+	// projection's seed (`build`) whatever the session runs in -- and the plan flag
+	// that the create request stated. A reply that reported no mode is no evidence,
+	// and neither is a resume, whose plan flag ZCode restores and reports nowhere: the
+	// setter runs. The cost of a redundant RPC is a round trip, and the cost of a wrong
+	// skip is a session that runs in another session's mode.
+	if mode != "" && (!observedBoth || mode != observedMode) {
 		if err := a.applyZCodeMode(mode, timeout); err != nil {
 			slog.Warn("zcode setMode on startup failed", "agent_id", a.AgentID(), "mode", mode, "error", err)
 		}
@@ -291,10 +304,16 @@ func (a *Agent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
 	defer a.Mu.Unlock()
 	if zcodeUsableSessionID(snap.Session.SessionID) {
 		if snap.Session.SessionID != a.sessionID {
-			// Sequence and revision counters belong to one native session.
+			// Sequence and revision counters belong to one native session, and so does
+			// what LeapMux knows about its mode. A resumed session restores its plan
+			// flag from ZCode's store, and no snapshot states it, so the flag is
+			// unknown until a mode request or a mode event states it.
 			a.lastSeq = 0
 			a.stateRevision = 0
 			a.modeObserved = false
+			a.planEnabled = false
+			a.planObserved = false
+			a.pendingExitMode = ""
 		}
 		a.sessionID = snap.Session.SessionID
 	}
@@ -352,8 +371,9 @@ func (a *Agent) ClearContext() (string, error) {
 	a.Mu.Lock()
 	// The three axes the user currently runs on are the request for the fresh session.
 	// Reading them AFTER openSession would read the new session's defaults instead, and
-	// a context clear would silently drop the level and the model back to them.
-	current := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.mode}
+	// a context clear would silently drop the level and the model back to them. The
+	// mode is the axis value, so a session in plan mode is replaced by one in plan mode.
+	current := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.permissionModeLocked()}
 	a.Mu.Unlock()
 
 	if err := a.openSession("", timeout); err != nil {

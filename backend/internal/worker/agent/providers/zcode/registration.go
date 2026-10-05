@@ -102,6 +102,8 @@ var zcodeFallbackModels []*agent.ModelInfo
 
 // zcodeStaticOptionGroups holds the option groups that do NOT depend on a
 // running agent: the mode axis, whose four values are fixed by the app-server.
+// Three are native modes. `plan` is the app-server's plan flag, which keeps the
+// native mode under it (see the plan-flag section of settings.go).
 //
 // It is the one home of that template. The registration in agent.go and
 // Agent.OptionGroups both read this value, so the list the static fallback

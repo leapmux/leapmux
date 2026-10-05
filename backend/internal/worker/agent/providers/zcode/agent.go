@@ -62,12 +62,37 @@ type Agent struct {
 	stateRevision int64
 	model         string // the composite catalog id, providerId/modelId
 	thoughtLevel  string
-	mode          string
+	// mode is the session's native mode, `settings.mode.current`: build, edit, yolo or
+	// auto. Plan mode is not one of them. ZCode keeps it in planEnabled, beside this
+	// value, and LeapMux's permission-mode axis combines the two -- see
+	// permissionModeLocked.
+	mode string
 	// modeObserved is true once the RUNNING session reported its own mode through
 	// `settings.mode.current`. Until then `mode` holds what the launch asked for, not
 	// what the app-server settled on, and the two must not be compared. It resets with
 	// the session, because the next one reports its own.
 	modeObserved bool
+	// planEnabled is the session's plan flag. ZCode keeps plan mode in this flag and
+	// leaves the native mode unchanged under it, so a session in plan mode reports
+	// `build` in `settings.mode.current`. No state document and no state.updated patch
+	// carries the flag. Only ZCode's SessionModeChanged event states it, and the rule
+	// by which ZCode folds a mode request decides it for an accepted request.
+	planEnabled bool
+	// planObserved is true once LeapMux knows planEnabled for the RUNNING session: an
+	// accepted session/create or session/setMode stated it, or a SessionModeChanged
+	// event reported it. A resume restores the flag from ZCode's own store and reports
+	// nothing, so the flag stays unknown until one of those arrives. It resets with
+	// the session.
+	planObserved bool
+	// modeChanges counts the SessionModeChanged events that this agent folded. The
+	// mode setter compares the count across its RPC, so the rule for its request does
+	// not overwrite an event that reported a later state.
+	modeChanges uint64
+	// pendingExitMode is the permission mode an approved plan exit chose, waiting
+	// for the event that reports the exit turned the plan flag off. session/setMode
+	// turns the flag off itself, so sending the mode before the exit ran makes
+	// ExitPlanMode fail; see DeferPlanExitMode.
+	pendingExitMode string
 	// unresolvedSettings records successful setter calls whose response omitted
 	// the authoritative axis snapshot.
 	unresolvedSettings map[string]struct{}

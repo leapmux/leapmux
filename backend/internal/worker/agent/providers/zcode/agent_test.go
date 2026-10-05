@@ -588,6 +588,43 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	assert.Empty(t, a.children.title("spawn-2"))
 }
 
+// A context clear opens the fresh session in the mode the user runs in. ZCode keeps
+// plan mode in a flag beside the native mode, so a session in plan mode reads `build`
+// in settings.mode.current. The create request must still ask for plan, or the clear
+// drops the user out of plan mode.
+func TestZCodeClearContext_KeepsPlanMode(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	// ZCode's EnterPlanMode tool turned the plan flag on and kept the native mode.
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	go func() {
+		create := waitZCodeRequest(t, stdin, MethodSessionCreate)
+		// session/create folds `mode:"plan"` into the flag, so its reply reads build.
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, create), json.RawMessage(
+			`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},`+
+				`"settings":{"mode":{"current":"build"}}}`)))
+		sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
+	}()
+
+	_, clearErr := a.ClearContext()
+	require.NoError(t, clearErr)
+
+	creates := zcodeRequestsFor(t, stdin, MethodSessionCreate)
+	require.Len(t, creates, 1)
+	var params struct {
+		Mode string `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(creates[0].Params, &params))
+	assert.Equal(t, contracts.ZCodeModePlan, params.Mode)
+	assert.Empty(t, zcodeRequestsFor(t, stdin, MethodSetMode),
+		"session/create already opened the fresh session in plan mode")
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
+}
+
 func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) {
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}

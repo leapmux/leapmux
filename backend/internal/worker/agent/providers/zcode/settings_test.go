@@ -904,25 +904,72 @@ func TestApplyZCodeModel_ReportsTheObservedModel(t *testing.T) {
 // create, so the opened session already runs in the requested mode and the setter is
 // one blocking RPC of pure repetition.
 //
-// Measured against the shipped app-server: a create with `mode:"plan"` answers
-// `settings.mode.current:"plan"` and `settings.permission.mode:"plan"`. Only
-// `session.mode` keeps reading "build", because that field reports the projection's
-// seed -- which is what makes the reply easy to misread.
+// The create reply does not show this for plan mode. ZCode keeps plan mode in a
+// `planEnabled` flag beside the native mode, so a create with `mode:"plan"` answers
+// `settings.mode.current:"build"`: the native mode, with the flag on. The runtime
+// folds the create's mode parameter as it folds a session/setMode request
+// (resolveExecutionState in the app-server bundle), so the create request itself
+// states the flag.
 func TestApplyStartupSettings_SkipsTheModeSetterWhenTheSessionRunsInThatMode(t *testing.T) {
 	t.Parallel()
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.Mu.Lock()
+	a.sessionID = ""
 	a.model = ""
 	a.thoughtLevel = agent.EffortAuto
+	a.mode = contracts.ZCodeModePlan // the launch request
 	a.Mu.Unlock()
-	// The mode the create reply folded in through settings.mode.current.
-	zcodeApplySettings(t, a, `{"mode":{"current":"plan"}}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate,
+		`{"session":{"sessionId":"sess-new"},"runtime":{"eventSeq":0},"settings":{"mode":{"current":"build"}}}`)
+	require.NoError(t, a.openSession("", zcodeTestRPCTimeout))
+	// A setter that runs against this expectation must fail at once, not wait for a
+	// reply that nothing sends.
+	a.CancelForTest()
 
 	a.applyStartupSettings(zcodeSettingsRequest{Mode: contracts.ZCodeModePlan}, 0)
 
-	assert.Empty(t, stdin.Frames(), "a session that already runs in the requested mode needs no setter")
+	requests := stdin.Requests(t)
+	require.Len(t, requests, 1, "a session that already runs in the requested mode needs no setter")
+	assert.Equal(t, MethodSessionCreate, requests[0].Method)
+	var params struct {
+		Mode string `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
+	assert.Equal(t, contracts.ZCodeModePlan, params.Mode)
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a),
+		"the session runs in plan mode although settings.mode.current reads build")
+}
+
+// A resume restores the plan flag from ZCode's own store, and the resume reply does
+// not state it. The reply therefore cannot prove that the session runs in the
+// requested mode, and the setter runs: a session left in plan mode reports
+// `settings.mode.current:"build"` exactly as a session in Build mode does.
+func TestApplyStartupSettings_PinsTheModeOnAResumedSession(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	answerZCodeRequest(t, a, stdin, MethodSessionResume,
+		`{"session":{"sessionId":"sess-existing"},"runtime":{"eventSeq":4},"settings":{"mode":{"current":"build"}}}`)
+	require.NoError(t, a.openSession("sess-existing", zcodeTestRPCTimeout))
+	a.Mu.Lock()
+	a.model = ""
+	a.thoughtLevel = agent.EffortAuto
+	a.Mu.Unlock()
+	// No reply arrives, so the setter fails at once. The REQUEST is what this test is
+	// about.
+	a.CancelForTest()
+
+	a.applyStartupSettings(zcodeSettingsRequest{Mode: contracts.ZCodeModeBuild}, 0)
+
+	setModes := zcodeRequestsFor(t, stdin, MethodSetMode)
+	require.Len(t, setModes, 1, "the resume reply cannot show the plan flag, so it cannot justify a skip")
+	var params map[string]any
+	require.NoError(t, json.Unmarshal(setModes[0].Params, &params))
+	assert.Equal(t, "sess-existing", params["sessionId"])
+	assert.Equal(t, contracts.ZCodeModeBuild, params["mode"])
 }
 
 // The skip needs the app-server's own report. A reply that carried no
@@ -1118,4 +1165,551 @@ func TestApplyStartupSettings_AnEmptyRequestKeepsTheObservedValue(t *testing.T) 
 	level := a.thoughtLevel
 	a.Mu.Unlock()
 	assert.Equal(t, "low", level)
+}
+
+// --- the plan flag ---
+//
+// ZCode keeps plan mode in a `planEnabled` flag beside the native mode: build, edit,
+// yolo or auto. `settings.mode.current` states the native mode only, so a session in
+// plan mode reports `build` there, in every state document and every state.updated
+// patch. The flag reaches the client in ZCode's SessionModeChanged event. The
+// app-server has no protocol type for that event, so it sends the raw payload as a
+// generic `session.updated`.
+//
+// LeapMux carries plan mode as the `plan` value of its permission-mode axis, as it
+// does for Kimi Code: `plan` means "the flag is on", and every other value means
+// "the flag is off, in this native mode".
+
+// zcodePermissionMode is the value that the agent reports on LeapMux's
+// permission-mode axis. The mode chip shows this value.
+func zcodePermissionMode(t *testing.T, a *Agent) string {
+	t.Helper()
+	group := optionids.GroupByID(a.OptionGroups(), agent.OptionIDPermissionMode)
+	require.NotNil(t, group)
+	return group.GetCurrentValue()
+}
+
+// zcodeRequestsFor returns the requests for one method that the agent wrote.
+func zcodeRequestsFor(t *testing.T, stdin *zcodeRecordedStdin, method string) []zcodeSentRequest {
+	t.Helper()
+	out := []zcodeSentRequest{}
+	for _, req := range stdin.Requests(t) {
+		if req.Method == method {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// zcodeModeChangedPayload is the payload of ZCode's SessionModeChanged event.
+type zcodeModeChangedPayload struct {
+	Mode                string `json:"mode"`
+	PlanEnabled         bool   `json:"planEnabled"`
+	PreviousMode        string `json:"previousMode"`
+	PreviousPlanEnabled bool   `json:"previousPlanEnabled"`
+	// Source is `command` for session/setMode and `tool` for the EnterPlanMode and
+	// ExitPlanMode tools.
+	Source     string `json:"source"`
+	ToolCallID string `json:"toolCallId,omitempty"`
+}
+
+// zcodeModeChangedLine renders one SessionModeChanged event as the app-server sends
+// it: a generic session.updated that carries the raw payload.
+func zcodeModeChangedLine(t *testing.T, seq int64, change zcodeModeChangedPayload) []byte {
+	t.Helper()
+	payload, err := json.Marshal(change)
+	require.NoError(t, err)
+	return zcodeEventLine(t, seq, contracts.ZCodeEventSessionUpdated, string(payload))
+}
+
+// zcodePlanEntered is the event that ZCode sends when its EnterPlanMode tool turns
+// the plan flag on. The native mode stays `build`.
+var zcodePlanEntered = zcodeModeChangedPayload{
+	Mode: contracts.ZCodeModeBuild, PlanEnabled: true,
+	PreviousMode: contracts.ZCodeModeBuild, PreviousPlanEnabled: false,
+	Source: "tool", ToolCallID: "call-enter",
+}
+
+func TestZCodePlanFlag_AModeEventThatTurnsThePlanFlagOnReportsPlan(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a),
+		"the plan flag is on, although the native mode in the same event reads build")
+	require.Equal(t, 1, sink.SettingsRefreshCount(),
+		"a mode that the AGENT changed must reach the stored row, or a restart loses it")
+	assert.Equal(t, contracts.ZCodeModePlan, sink.LastSettingsRefresh().PermissionMode)
+}
+
+// The full-access grant of a permission prompt changes the native mode to yolo and
+// leaves the plan flag as it was. With the flag off, the axis is the native mode.
+func TestZCodePlanFlag_AModeEventWithThePlanFlagOffReportsTheNativeMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeYolo, PlanEnabled: false,
+		PreviousMode: contracts.ZCodeModeBuild, PreviousPlanEnabled: false,
+		Source: "command",
+	}))
+
+	assert.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a))
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, contracts.ZCodeModeYolo, sink.LastSettingsRefresh().PermissionMode)
+}
+
+// An event that restates the axis value changes nothing, so it persists nothing.
+func TestZCodePlanFlag_ARepeatedModeEventPersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+	a.HandleOutput(zcodeModeChangedLine(t, 2, zcodePlanEntered))
+
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
+	assert.Equal(t, 1, sink.SettingsRefreshCount())
+}
+
+// `session.updated` is the app-server's catch-all. Only a payload that states a
+// native mode AND a boolean plan flag is a mode change. A payload whose `mode` is not
+// a string must not stop the other readers of the same event either: a model response
+// that happened to carry one still reaches the transcript.
+func TestZCodePlanFlag_APayloadWithoutAModeAndABooleanFlagIsNotAModeChange(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	for i, payload := range []string{
+		`{"mode":"yolo"}`,
+		`{"planEnabled":true}`,
+		`{"mode":"","planEnabled":true}`,
+		`{"mode":"yolo","planEnabled":"true"}`,
+		`{"mode":"yolo","planEnabled":null}`,
+		`{"mode":{"current":"yolo"},"planEnabled":true}`,
+	} {
+		a.HandleOutput(zcodeEventLine(t, int64(i+1), contracts.ZCodeEventSessionUpdated, payload))
+	}
+
+	assert.Equal(t, contracts.ZCodeDefaultMode, zcodePermissionMode(t, a))
+	assert.Equal(t, 0, sink.SettingsRefreshCount())
+
+	a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventSessionUpdated,
+		`{"mode":{"current":"yolo"},"content":"The model answered.","stopReason":"stop"}`))
+	assert.Equal(t, 1, sink.MessageCount(), "a model response with an unrelated `mode` shape still persists")
+}
+
+// A declined plan keeps ZCode in plan mode. ZCode asks for the plan approval as the
+// permission check of its ExitPlanMode tool, and the tool's handler, which turns the
+// plan flag off, runs only after an approval. So a decline sends no mode event, and
+// the turn ends with a settings patch that states the native mode only.
+func TestZCodePlanFlag_ADeclinedPlanKeepsPlanMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
+	resolution := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+		RequestPayload:  zcodeStoredPayload(t, sink),
+		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorDeny, "Split step 2.", nil),
+	})
+	require.NotEmpty(t, resolution.Content)
+	require.NoError(t, a.SendRawInput(resolution.Content))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
+	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
+
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a),
+		"the declined ExitPlanMode never ran, so the plan flag is still on")
+	require.Positive(t, sink.SettingsRefreshCount())
+	assert.Equal(t, contracts.ZCodeModePlan, sink.LastSettingsRefresh().PermissionMode,
+		"the plan-blind patch must not store the native mode as the axis value")
+}
+
+// An approved plan runs ExitPlanMode, which turns the plan flag off and keeps the
+// native mode. The session continues in that native mode, which is not always build.
+func TestZCodePlanFlag_AnApprovedPlanReturnsToTheNativeMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeEdit, PlanEnabled: true,
+		PreviousMode: contracts.ZCodeModeEdit, PreviousPlanEnabled: false,
+		Source: "command",
+	}))
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
+
+	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
+	resolution := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+		RequestPayload:  zcodeStoredPayload(t, sink),
+		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorAllow, "", nil),
+	})
+	require.NotEmpty(t, resolution.Content)
+	require.NoError(t, a.SendRawInput(resolution.Content))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
+	a.HandleOutput(zcodeModeChangedLine(t, 3, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeEdit, PlanEnabled: false,
+		PreviousMode: contracts.ZCodeModeEdit, PreviousPlanEnabled: true,
+		Source: "tool", ToolCallID: "call-plan",
+	}))
+	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"edit"}}`))
+
+	assert.Equal(t, contracts.ZCodeModeEdit, zcodePermissionMode(t, a))
+	require.Equal(t, 2, sink.SettingsRefreshCount(), "one refresh for plan on, one for plan off")
+	assert.Equal(t, contracts.ZCodeModeEdit, sink.LastSettingsRefresh().PermissionMode)
+}
+
+// session/setMode with `plan` turns the flag on and keeps the native mode, so the reply
+// reads `settings.mode.current:"build"`. The reply carries no flag, and the event that
+// states it can arrive after the reply. ZCode's runtime folds the request by a fixed
+// rule (resolveExecutionState): `plan` turns the flag on, and any other mode turns it
+// off. That rule is the evidence that the reply gives.
+func TestZCodeUpdateSettings_ChoosingPlanReportsPlan(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.SetAPITimeoutForTest(zcodeTestRPCTimeout)
+
+	done := make(chan agent.SettingsApplyResult, 1)
+	go func() {
+		done <- a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ZCodeModePlan})
+	}()
+	req := waitZCodeRequest(t, stdin, MethodSetMode)
+	var params map[string]any
+	require.NoError(t, json.Unmarshal(req.Params, &params))
+	assert.Equal(t, contracts.ZCodeModePlan, params["mode"], "session/setMode accepts plan, and folds it into the flag")
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(
+		`{"session":{"sessionId":"sess-1"},"settings":{"mode":{"current":"build"},"permission":{"mode":"build"}}}`)))
+	result := <-done
+
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, contracts.ZCodeModePlan, result.SurfacedOptions[agent.OptionIDPermissionMode])
+	settlement := result.Settlements[agent.OptionIDPermissionMode]
+	assert.Equal(t, agent.OptionSettlementConfirmed, settlement.State)
+	require.NotNil(t, settlement.Value)
+	assert.Equal(t, contracts.ZCodeModePlan, *settlement.Value)
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
+	require.Positive(t, sink.SettingsRefreshCount())
+	assert.Equal(t, contracts.ZCodeModePlan, sink.LastSettingsRefresh().PermissionMode)
+}
+
+// The usual wire order: the event of the setMode request arrives before its reply.
+// Both state the same flag, so the axis reads Plan once and stays there.
+func TestZCodeUpdateSettings_ThePlanEventBeforeTheReplyAgreesWithIt(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.SetAPITimeoutForTest(zcodeTestRPCTimeout)
+
+	done := make(chan agent.SettingsApplyResult, 1)
+	go func() {
+		done <- a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ZCodeModePlan})
+	}()
+	req := waitZCodeRequest(t, stdin, MethodSetMode)
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeBuild, PlanEnabled: true,
+		PreviousMode: contracts.ZCodeModeBuild, PreviousPlanEnabled: false,
+		Source: "command",
+	}))
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(
+		`{"session":{"sessionId":"sess-1"},"settings":{"mode":{"current":"build"}}}`)))
+	result := <-done
+
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, contracts.ZCodeModePlan, result.SurfacedOptions[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
+}
+
+// Plan mode reads `build` in settings.mode.current. A comparison against that field
+// would take a switch from Plan to Build for no change, and the session would stay in
+// plan mode while the chip read Build.
+func TestZCodeUpdateSettings_LeavingPlanForBuildSendsSetMode(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.SetAPITimeoutForTest(zcodeTestRPCTimeout)
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	done := make(chan agent.SettingsApplyResult, 1)
+	go func() {
+		done <- a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ZCodeModeBuild})
+	}()
+	req := waitZCodeRequest(t, stdin, MethodSetMode)
+	var params map[string]any
+	require.NoError(t, json.Unmarshal(req.Params, &params))
+	assert.Equal(t, contracts.ZCodeModeBuild, params["mode"])
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(
+		`{"session":{"sessionId":"sess-1"},"settings":{"mode":{"current":"build"}}}`)))
+	result := <-done
+
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, contracts.ZCodeModeBuild, result.SurfacedOptions[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a))
+}
+
+// A mode event that arrives after LeapMux sent session/setMode and before the reply
+// states a LATER state than the request: here the model's EnterPlanMode ran after the
+// request turned the flag off. The request's own rule must not overwrite that event.
+func TestZCodeApplyMode_AModeEventAfterTheRequestWinsOverTheRequest(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.applyZCodeMode(contracts.ZCodeModeBuild, zcodeTestRPCTimeout)
+	}()
+	req := waitZCodeRequest(t, stdin, MethodSetMode)
+	// The event of the request itself, then the event of the tool that ran after it.
+	a.HandleOutput(zcodeModeChangedLine(t, 2, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeBuild, PlanEnabled: false,
+		PreviousMode: contracts.ZCodeModeBuild, PreviousPlanEnabled: true,
+		Source: "command",
+	}))
+	a.HandleOutput(zcodeModeChangedLine(t, 3, zcodeModeChangedPayload{
+		Mode: contracts.ZCodeModeBuild, PlanEnabled: true,
+		PreviousMode: contracts.ZCodeModeBuild, PreviousPlanEnabled: false,
+		Source: "tool", ToolCallID: "call-enter-again",
+	}))
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(
+		`{"session":{"sessionId":"sess-1"},"settings":{"mode":{"current":"build"}}}`)))
+	require.NoError(t, <-errCh)
+
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a),
+		"the newest event wins over the rule that the older request implies")
+}
+
+// A refused request changed nothing in ZCode, so it changes nothing in LeapMux. The
+// app-server refuses plan mode while a goal is active.
+func TestZCodeApplyMode_ARefusedPlanRequestLeavesTheAxisAlone(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	refuseZCodeRequest(t, a, stdin, MethodSetMode, ErrInternal, "Plan and Goal cannot be active at the same time.")
+
+	err := a.applyZCodeMode(contracts.ZCodeModePlan, zcodeTestRPCTimeout)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Plan and Goal")
+	assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a))
+}
+
+// The two halves of the axis split as ZCode's runtime splits a mode request: `plan`
+// turns the flag on and keeps the native mode, and any other value replaces the
+// native mode and turns the flag off. A pin is LeapMux's own request, so it proves
+// nothing about the session. An accepted request does.
+func TestZCodePermissionMode_SplitsTheAxisValueAsZCodeDoes(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.mode = contracts.ZCodeModeEdit
+
+	a.pinPermissionModeLocked(contracts.ZCodeModePlan)
+	assert.Equal(t, contracts.ZCodeModePlan, a.permissionModeLocked())
+	assert.Equal(t, contracts.ZCodeModeEdit, a.mode, "plan mode keeps the native mode under it")
+	assert.False(t, a.planObserved, "a pin is a request, not an observation")
+
+	a.pinPermissionModeLocked(contracts.ZCodeModeYolo)
+	assert.Equal(t, contracts.ZCodeModeYolo, a.permissionModeLocked())
+	assert.False(t, a.planEnabled)
+
+	a.recordPlanRequestLocked(contracts.ZCodeModePlan)
+	assert.Equal(t, contracts.ZCodeModePlan, a.permissionModeLocked())
+	assert.Equal(t, contracts.ZCodeModeYolo, a.mode, "an accepted request leaves the native mode to the reply's snapshot")
+	assert.True(t, a.planObserved)
+
+	a.recordPlanRequestLocked(contracts.ZCodeModeBuild)
+	assert.Equal(t, contracts.ZCodeModeYolo, a.permissionModeLocked(),
+		"the flag is off, and the native mode waits for the reply's snapshot")
+	assert.True(t, a.planObserved)
+}
+
+// Start pins the launch request through the same split, so a launch in plan mode
+// leaves the native mode at its default and the flag on. The create request still
+// asks for plan, and the create's own fold makes the setter unnecessary.
+func TestApplyStartupSettings_ALaunchInPlanOpensTheSessionInPlan(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.sessionID = ""
+	a.model = ""
+	a.thoughtLevel = agent.EffortAuto
+	a.pinPermissionModeLocked(contracts.ZCodeModePlan) // what Start does with the launch request
+	request := zcodeSettingsRequest{Mode: a.permissionModeLocked()}
+	a.Mu.Unlock()
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate,
+		`{"session":{"sessionId":"sess-new"},"runtime":{"eventSeq":0},"settings":{"mode":{"current":"build"}}}`)
+	require.NoError(t, a.openSession("", zcodeTestRPCTimeout))
+	a.CancelForTest()
+
+	a.applyStartupSettings(request, 0)
+
+	creates := zcodeRequestsFor(t, stdin, MethodSessionCreate)
+	require.Len(t, creates, 1)
+	var params struct {
+		Mode string `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(creates[0].Params, &params))
+	assert.Equal(t, contracts.ZCodeModePlan, params.Mode)
+	assert.Empty(t, zcodeRequestsFor(t, stdin, MethodSetMode))
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
+}
+
+// A setter reply that carried no mode leaves the axis unresolved. The event states
+// both halves of the axis, so it settles the axis.
+func TestZCodePlanFlag_AModeEventSettlesAnUnresolvedMode(t *testing.T) {
+	t.Parallel()
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.markSettingUnresolved(agent.OptionIDPermissionMode)
+	require.Equal(t, agent.OptionSettlementUnresolved,
+		a.SettingsSnapshot().Settlements[agent.OptionIDPermissionMode].State)
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	settlement := a.SettingsSnapshot().Settlements[agent.OptionIDPermissionMode]
+	assert.Equal(t, agent.OptionSettlementConfirmed, settlement.State)
+	require.NotNil(t, settlement.Value)
+	assert.Equal(t, contracts.ZCodeModePlan, *settlement.Value)
+}
+
+// ClearContext replaces the session without stopping the old one, so a mode event of
+// the replaced session can arrive after the swap. It describes another session, and
+// it must not move this session's axis.
+func TestZCodePlanFlag_AModeEventOfAnotherSessionIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.Mu.Lock()
+	a.sessionID = "sess-2" // zcodeEventLine stamps every event with sess-1
+	a.Mu.Unlock()
+
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a))
+	assert.Equal(t, 0, sink.SettingsRefreshCount())
+}
+
+// DeferPlanExitMode stores the mode an approved plan exit chose. ZCode's
+// session/setMode turns the plan flag off, so the mode cannot go out before the
+// approved ExitPlanMode ran: the first SessionModeChanged that reports the flag
+// OFF is the moment ZCode finished the exit, and the mode goes out right then.
+func TestZCodeDeferPlanExitModeAppliesTheModeWhenTheExitTurnsTheFlagOff(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	answerZCodeRequest(t, a, stdin, MethodSetMode, `{}`)
+	a.Mu.Lock()
+	a.sessionID = "zcode-test-session"
+	a.planEnabled = true
+	a.planObserved = true
+	a.mode = contracts.ZCodeModeBuild
+	a.Mu.Unlock()
+
+	a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false)
+
+	request := waitZCodeRequest(t, stdin, MethodSetMode)
+	assert.Contains(t, string(request.Params), contracts.ZCodeModeYolo,
+		"the deferred mode goes to the session the exit just left")
+}
+
+// The exit itself can land in the mode the approval chose, so the deferred value
+// states nothing new and no request goes out: the event already reports the
+// session in that mode.
+func TestZCodeDeferPlanExitModeSendsNothingWhenTheExitLandsInTheChosenMode(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.sessionID = "zcode-test-session"
+	a.planEnabled = true
+	a.planObserved = true
+	a.mode = contracts.ZCodeModeBuild
+	a.Mu.Unlock()
+
+	a.DeferPlanExitMode(contracts.ZCodeModeBuild)
+	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false)
+
+	a.Mu.Lock()
+	pending := a.pendingExitMode
+	a.Mu.Unlock()
+	assert.Empty(t, pending, "the event that already states the chosen mode consumes the deferral")
+	assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a))
+}
+
+// The exit may already have run when the approval settles, so the deferral goes
+// out at once when the flag is already off.
+func TestZCodeDeferPlanExitModeSendsAtOnceWhenTheExitAlreadyRan(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	answerZCodeRequest(t, a, stdin, MethodSetMode, `{"sessionId":"zcode-test-session"}`)
+	a.Mu.Lock()
+	a.sessionID = "zcode-test-session"
+	a.planEnabled = false
+	a.planObserved = true
+	a.mode = contracts.ZCodeModeBuild
+	a.Mu.Unlock()
+
+	a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+
+	request := waitZCodeRequest(t, stdin, MethodSetMode)
+	assert.Contains(t, string(request.Params), contracts.ZCodeModeYolo,
+		"an exit that already ran takes its mode at once")
+}
+
+// EnterPlanMode clears a deferral: a session that re-entered plan mode chose to
+// keep planning, so a stale exit mode must not fire at a later exit.
+func TestZCodeDeferPlanExitModeIsClearedByEnteringPlanModeAgain(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.Mu.Lock()
+	a.sessionID = "zcode-test-session"
+	a.planEnabled = true
+	a.planObserved = true
+	a.mode = contracts.ZCodeModeBuild
+	a.Mu.Unlock()
+
+	a.DeferPlanExitMode(contracts.ZCodeModeYolo)
+	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, true)
+	a.handleZCodeModeChanged(contracts.ZCodeModeBuild, false)
+
+	a.Mu.Lock()
+	pending := a.pendingExitMode
+	a.Mu.Unlock()
+	assert.Empty(t, pending, "the session that re-entered plan mode drops the stale exit mode")
 }
