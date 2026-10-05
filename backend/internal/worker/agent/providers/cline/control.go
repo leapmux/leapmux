@@ -480,22 +480,22 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 	result := agent.DefaultControlResponseResolution(ctx)
 	withhold := func(reason string) agent.ControlResponseResolution {
 		slog.Warn("cline control response withheld", "request_id", ctx.RequestID, "reason", reason)
-		result.Withhold = true
+		result.Refuse(reason)
 		return result
 	}
 	if len(ctx.RequestPayload) == 0 {
-		return withhold("no stored request states which reply answers it")
+		return withhold(agent.RefusalUnreadableRequest)
 	}
 	var request storedControlRequest
 	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
-		return withhold("the stored request does not decode")
+		return withhold(agent.RefusalUnreadableRequest)
 	}
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
-		return withhold("the response carries no decision")
+		return withhold(agent.RefusalNoDecision)
 	}
 	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		return withhold("the response answers another request")
+		return withhold(agent.RefusalOtherRequest)
 	}
 	allow := behavior == agent.ControlBehaviorAllow
 
@@ -504,10 +504,10 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 	case contracts.ClineEventApprovalRequested:
 		var approval approvalRequest
 		if err := json.Unmarshal(request.Payload, &approval); err != nil || approval.ApprovalID == "" {
-			return withhold("the stored approval states no id")
+			return withhold(agent.RefusalUnreadableRequest)
 		}
 		if ctx.RequestID != "" && approval.ApprovalID != ctx.RequestID {
-			return withhold("the stored approval is keyed by another id")
+			return withhold(agent.RefusalOtherRequest)
 		}
 		reply := contracts.ClineApprovalReply{ApprovalId: approval.ApprovalID, Approved: allow}
 		if !allow {
@@ -526,13 +526,13 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 	case contracts.ClineEventCapabilityRequested:
 		var capability capabilityRequest
 		if err := json.Unmarshal(request.Payload, &capability); err != nil || capability.RequestID == "" {
-			return withhold("the stored question states no id")
+			return withhold(agent.RefusalUnreadableRequest)
 		}
 		if capability.CapabilityName != contracts.ClineCapabilityAskQuestion {
-			return withhold("the stored capability request is not a question")
+			return withhold(agent.RefusalUnreadableRequest)
 		}
 		if ctx.RequestID != "" && capability.RequestID != ctx.RequestID {
-			return withhold("the stored question is keyed by another id")
+			return withhold(agent.RefusalOtherRequest)
 		}
 		if !allow {
 			reason := message
@@ -544,19 +544,19 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 		}
 		answer, ok := questionAnswer(ctx.ResponseContent)
 		if !ok {
-			return withhold("the answer to the question is empty")
+			return withhold(agent.RefusalUnreadableAnswer)
 		}
 		payload, err := json.Marshal(map[string]string{contracts.ClineCapabilityReplyResult: answer})
 		if err != nil {
-			return withhold("the answer does not encode")
+			return withhold(agent.RefusalUnencodableReply)
 		}
 		native = contracts.ClineCapabilityReply{RequestId: capability.RequestID, Ok: true, Payload: payload}
 	default:
-		return withhold("the stored request is not an approval or a question")
+		return withhold(agent.RefusalUnreadableRequest)
 	}
 	content, err := json.Marshal(native)
 	if err != nil {
-		return withhold("the reply does not encode")
+		return withhold(agent.RefusalUnencodableReply)
 	}
 	result.Content = content
 	return result

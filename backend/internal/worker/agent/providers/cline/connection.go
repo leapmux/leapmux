@@ -546,25 +546,38 @@ func verifyDaemon(ctx context.Context, endpoint *providerkit.HTTPEndpoint, recor
 // pipe, and the daemon that an ended worker left: a new daemon that resumed
 // the session while the old one still ran would give two processes the
 // session's files, and each rewrites them whole.
+//
+// The poll runs in a TickerFunc, not on a Ticker channel. A mock clock waits
+// for a TickerFunc's function when it advances, so a test that advances to the
+// next poll knows that the poll checked the daemon. A Ticker gives no such
+// point: the advance returns once the tick is sent, before the loop takes it,
+// so a test that ended the daemon next raced the check of the earlier tick.
+// The deadline ends the poll through its context, so one Wait reports all
+// three ends: the daemon exited, the wait passed, or ctx ended.
 func awaitDaemonExit(ctx context.Context, daemon procutil.ProcessIdentity, clock quartz.Clock) error {
 	if !daemon.Runs() {
 		return nil
 	}
-	deadline := clock.NewTimer(daemonExitWait, "cline", "daemon-exit")
+	pollCtx, stopPoll := context.WithCancel(ctx)
+	defer stopPoll()
+	deadline := clock.AfterFunc(daemonExitWait, stopPoll, "cline", "daemon-exit")
 	defer deadline.Stop()
-	ticker := clock.NewTicker(daemonExitPoll, "cline", "daemon-exit-poll")
-	defer ticker.Stop()
-	for daemon.Runs() {
-		select {
-		case <-ticker.C:
-		case <-deadline.C:
-			return killDaemon(daemon)
-		case <-ctx.Done():
-			return killDaemon(daemon)
+	err := clock.TickerFunc(pollCtx, daemonExitPoll, func() error {
+		if daemon.Runs() {
+			return nil
 		}
+		return errDaemonNoLongerRuns
+	}, "cline", "daemon-exit-poll").Wait()
+	if errors.Is(err, errDaemonNoLongerRuns) {
+		return nil
 	}
-	return nil
+	return killDaemon(daemon)
 }
+
+// errDaemonNoLongerRuns ends the poll of awaitDaemonExit once the daemon no
+// longer runs. It never leaves that function. It is not errDaemonExited, which
+// reports a daemon that ended before it was ready.
+var errDaemonNoLongerRuns = errors.New("the Cline hub no longer runs")
 
 // killDaemon kills the verified process of a daemon that did not exit after
 // its shutdown.

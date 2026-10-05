@@ -351,11 +351,11 @@ func (d *fakeDaemon) staleDir(t *testing.T) string {
 	return dir
 }
 
-// awaitExitTraps catches the deadline and the poll ticker of awaitDaemonExit.
+// awaitExitTraps catches the deadline and the poll of awaitDaemonExit.
 func awaitExitTraps(t *testing.T, clock *quartz.Mock) (deadline, poll *quartz.Trap) {
 	t.Helper()
-	deadline = clock.Trap().NewTimer("cline", "daemon-exit")
-	poll = clock.Trap().NewTicker("cline", "daemon-exit-poll")
+	deadline = clock.Trap().AfterFunc("cline", "daemon-exit")
+	poll = clock.Trap().TickerFunc("cline", "daemon-exit-poll")
 	t.Cleanup(func() {
 		deadline.Close()
 		poll.Close()
@@ -363,15 +363,18 @@ func awaitExitTraps(t *testing.T, clock *quartz.Mock) (deadline, poll *quartz.Tr
 	return deadline, poll
 }
 
-// armedWait waits until awaitDaemonExit armed its deadline and its ticker, and
-// checks the deadline.
+// armedWait waits until awaitDaemonExit armed its deadline and its poll, and
+// checks both periods.
 func armedWait(t *testing.T, ctx context.Context, deadline, poll *quartz.Trap) {
 	t.Helper()
 	assert.Equal(t, daemonExitWait, testutil.WaitForTimer(t, ctx, deadline))
-	poll.MustWait(ctx).MustRelease(ctx)
+	assert.Equal(t, daemonExitPoll, testutil.WaitForTimer(t, ctx, poll))
 }
 
-// advancePoll moves the clock to the next poll of awaitDaemonExit.
+// advancePoll moves the clock to the next poll of awaitDaemonExit, and returns
+// after that poll checked the daemon. The mock clock waits for the function of
+// a TickerFunc before the advance completes, so the next step of a test never
+// races the check of the poll before it.
 func advancePoll(t *testing.T, ctx context.Context, clock *quartz.Mock) {
 	t.Helper()
 	d, w := clock.AdvanceNext()

@@ -133,8 +133,12 @@ const (
 	// does not read it. A `cline` that a tool runs inherits it, and the session
 	// listing sets it also.
 	envSessionBackendMode = "CLINE_SESSION_BACKEND_MODE"
-	// envNoAutoUpdate turns off the npm update check of a `cline` that a tool
-	// runs, and of the session listing. The daemon itself runs no update check.
+	// envNoAutoUpdate turns off the update of a `cline` that a tool runs, and of
+	// the session listing. Every `cline` that is not the daemon asks the npm
+	// registry at its start, and when a newer release exists it starts a detached
+	// `npm update -g cline` (or the pnpm, yarn or bun form) as it exits, which
+	// changes the operator's global install. Only the exact value `1` counts. The
+	// daemon itself runs no update.
 	envNoAutoUpdate = "CLINE_NO_AUTO_UPDATE"
 	// envTasksDBPath moves the daemon's agenda task database into the agent's
 	// private directory (see connection.go).
@@ -146,7 +150,7 @@ const (
 const sessionBackendLocal = "local"
 
 // localRuntimeEnv keeps a Cline process on its local session backend and off
-// the npm update check. The shell wrapper sets it after the user's profile
+// the update. The shell wrapper sets it after the user's profile
 // runs, because a profile export would otherwise replace it: with the backend
 // mode `auto`, a `cline` can attach to the user's own hub or start a detached
 // one.

@@ -6,6 +6,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
+import { expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts } from '../helpers/nativeResume'
+import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { hubSpawnEnv } from '../helpers/server'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, menuOptionLabel, openMenu, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
@@ -47,15 +49,18 @@ clineTest('offers a Cline session of the working directory and resumes the one p
   const subjectDir = createGitRepo(dataDir, `cline-picker-subject-${crypto.randomUUID()}`)
   const otherDir = createGitRepo(dataDir, `cline-picker-other-${crypto.randomUUID()}`)
 
-  // One session in the subject directory, and one in another directory.
-  await modelScript.queue({ text: 'The seeded answer.' }, { text: 'The other answer.' })
-  await runClineOnce(subjectDir, agentEnv, modelScript.prompt('Seeded Cline session'))
+  // One session in the subject directory, and one in another directory. The
+  // session title is the first line of the prompt, so the marker goes on the
+  // second line.
+  const texts = nativeResumeTexts()
+  await modelScript.queue({ text: `The seeded answer. ${texts.originalAnswer}` }, { text: 'The other answer.' })
+  await runClineOnce(subjectDir, agentEnv, modelScript.prompt(`Seeded Cline session\n${texts.originalPrompt}`))
   await runClineOnce(otherDir, agentEnv, modelScript.prompt('Other directory session'))
   await modelScript.waitForSteps()
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Cline Picker ${crypto.randomUUID()}`)
-  await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
+  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
     agentProvider: AgentProvider.CLINE,
     ...agentOpenOptions(agentSettings(AgentProvider.CLINE)),
     title: 'Keeper',
@@ -90,16 +95,24 @@ clineTest('offers a Cline session of the working directory and resumes the one p
   await expect(trigger).toHaveAttribute('data-value', sessionId)
   await dialog.getByRole('button', { name: 'Create' }).click()
   await expect(page.getByRole('heading', { name: 'New Agent' })).toBeHidden()
+  const reopened = await expectReopenedNativeAgent({ page, leapmuxServer }, { agentProvider: AgentProvider.CLINE, agentSessionId: sessionId }, [keeperId])
 
   // The resumed tab continues the seeded session: its model call carries the
   // stored conversation.
-  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+  await modelScript.queue({ text: `${ARITHMETIC_ANSWER_TEXT} ${texts.resumedAnswer}` })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   const status = await modelScript.waitForSteps()
   await waitForAgentIdle(page, 180_000)
   await expectAssistantAnswer(page)
-  const resumed = JSON.stringify(status.requests.at(-1)?.body)
+  // The two CLI runs consumed steps 0 and 1.
+  const resumedRequest = status.requests.find(request => request.stepIndex === 2)
+  if (!resumedRequest)
+    throw new Error('The resumed prompt reached no native model request.')
+  const resumed = JSON.stringify(resumedRequest.body)
   expect(resumed).toContain('Seeded Cline session')
   expect(resumed).toContain('The seeded answer.')
   expect(resumed).not.toContain('The other answer.')
+  expectNativeResumeContext(nativeModelConversationTurns(resumedRequest), { ...texts, resumedPrompt: ARITHMETIC_PROMPT })
+  // An external session opens without Worker rows to copy, so only the separate resumed answer is provable here.
+  await expectResumedAnswerUnmerged({ page, leapmuxServer }, reopened.id, texts)
 })
