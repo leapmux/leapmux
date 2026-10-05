@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -187,6 +188,63 @@ func TestGeminiModeReplyKeepsALaterNativeToolModeChange(t *testing.T) {
 	a.handleSessionUpdate("root", nil, json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"enter_plan_mode__later-call","status":"completed"}`))
 	a.observeNativeMode("root", json.RawMessage(`{"id":"enter_plan_mode__later-call","name":"enter_plan_mode","status":"success","result":[{"functionResponse":{"response":{"output":"Switching to Plan mode."}}}]}`))
 	assert.Equal(t, contracts.GeminiModePlan, a.PermissionModeForTest())
+}
+
+// A mode change makes Gemini send `[MODE_UPDATE] <mode>` as a text chunk
+// before the session/set_mode reply: setMode calls config.setApprovalMode,
+// whose event handleApprovalModeChanged sends the text (acpSession.ts). The
+// text is no answer of the model, also while a prompt runs. Before this test,
+// a mode change during a turn put the text into the answer of that turn.
+func TestGeminiModeSetterEchoIsNoConversation(t *testing.T) {
+	t.Parallel()
+	const echo = `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"model-test-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[MODE_UPDATE] %s"}}}}`
+	for name, tc := range map[string]struct {
+		echoed string
+		// buffered is the text that the turn holds after the setter returns.
+		buffered string
+	}{
+		"the echo of the requested mode": {echoed: contracts.GeminiModeYolo},
+		"the text of another mode":       {echoed: contracts.GeminiModePlan, buffered: "[MODE_UPDATE] plan"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, peer := newGeminiModelPeer(t)
+			a.SetPromptActiveForTest(true)
+			a.HooksForTest().SessionUpdateHandler = a.handleSessionUpdate
+			a.HooksForTest().ModeChannel = acp.ModeChannelPermissionMode
+			a.SetAvailableModesForTest(geminiModes())
+			a.SetPermissionModeForTest(contracts.GeminiModeDefault)
+			peer.receive = func(request geminiModelRequest) {
+				a.HandleOutput(fmt.Appendf(nil, echo, tc.echoed))
+				a.Deliver(request.ID, agenttest.JSONRPCResponse(request.ID, agenttest.RPCReply{Result: json.RawMessage(`{}`)}))
+			}
+
+			require.NoError(t, a.setNativePermissionMode(contracts.GeminiModeYolo, a.SetPermissionMode))
+
+			assert.Equal(t, contracts.GeminiModeYolo, a.PermissionModeForTest())
+			assert.Equal(t, tc.buffered, a.TurnAssistantTextForTest().String())
+			// The reply ended the window of the echo, so the same text is the
+			// model's text again.
+			a.TurnAssistantTextForTest().Reset()
+			a.HandleOutput(fmt.Appendf(nil, echo, contracts.GeminiModeYolo))
+			assert.Equal(t, "[MODE_UPDATE] yolo", a.TurnAssistantTextForTest().String())
+		})
+	}
+}
+
+// A setter whose reply never comes ends the window of its echo too.
+func TestGeminiModeSetterEchoEndsWithAFailedWrite(t *testing.T) {
+	t.Parallel()
+	a, _ := newGeminiModelPeer(t)
+	a.SetPromptActiveForTest(true)
+	a.HooksForTest().SessionUpdateHandler = a.handleSessionUpdate
+	a.SetAvailableModesForTest(geminiModes())
+	a.SetStdinForTest(agenttest.FailingStdin{})
+
+	require.Error(t, a.setNativePermissionMode(contracts.GeminiModeYolo, a.SetPermissionMode))
+
+	assert.False(t, a.handleSessionUpdate("model-test-session", nil, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[MODE_UPDATE] yolo"}}`)),
+		"no setter waits, so the text is the model's")
 }
 
 func TestGeminiModeWriterRefusesEmptyAndUnavailableModesBeforeTransport(t *testing.T) {

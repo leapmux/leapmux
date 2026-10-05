@@ -61,6 +61,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 					}
 					a.stopChildTranscript(completion)
 				},
+				// Gemini CLI 0.62.0 cannot create a file through the host
+				// filesystem. Its ACP filesystem service maps a failed
+				// fs/read_text_file to ENOENT only when the rejection is an Error
+				// whose message says so, but its ACP SDK rejects with the plain
+				// JSON-RPC error object. write_file then takes every missing file
+				// for one that exists and cannot be read. Without the capability,
+				// Gemini reads and writes the working tree itself.
+				DisableHostFileSystem: true,
 			}
 		},
 		AfterHandshake: func(a *Agent, result *acp.SessionResult, opts agent.Options) error {

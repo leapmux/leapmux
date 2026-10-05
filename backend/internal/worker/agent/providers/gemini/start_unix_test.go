@@ -3,7 +3,9 @@
 package gemini
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -86,6 +88,85 @@ func TestStartChangesModelsThroughTheNativeModelRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, strings.Split(strings.TrimSpace(string(methods)), "\n"), acp.MethodSessionSetModel)
 	assert.NotContains(t, strings.Split(strings.TrimSpace(string(methods)), "\n"), acp.MethodSessionSetConfigOption)
+}
+
+const geminiCapabilitiesHelperEnv = "LEAPMUX_GEMINI_CAPABILITIES_HELPER"
+const geminiCapabilitiesPathEnv = "LEAPMUX_GEMINI_CAPABILITIES_PATH"
+
+// TestHelperProcessGeminiCapabilities records the client capabilities that the
+// initialize request offers, and then answers as Gemini CLI 0.62.0 does.
+func TestHelperProcessGeminiCapabilities(*testing.T) {
+	if os.Getenv(geminiCapabilitiesHelperEnv) != "1" {
+		return
+	}
+	writer := bufio.NewWriter(os.Stdout)
+	reply := func(id json.RawMessage, result string) {
+		_, _ = writer.WriteString(`{"jsonrpc":"2.0","id":` + string(id) + `,"result":` + result + "}\n")
+		_ = writer.Flush()
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ClientCapabilities json.RawMessage `json:"clientCapabilities"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &request) != nil {
+			continue
+		}
+		switch request.Method {
+		case acp.MethodInitialize:
+			if os.WriteFile(os.Getenv(geminiCapabilitiesPathEnv), request.Params.ClientCapabilities, 0o600) != nil {
+				os.Exit(2)
+			}
+			reply(request.ID, `{"protocolVersion":1,"agentInfo":{"name":"gemini-cli","version":"0.62.0"},"agentCapabilities":{"loadSession":true}}`)
+		case acp.MethodSessionNew:
+			reply(request.ID, `{"sessionId":"gemini-capabilities-session","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"}]}}`)
+		case acp.MethodSessionSetModel, acp.MethodSessionSetMode:
+			reply(request.ID, `{}`)
+		}
+	}
+	os.Exit(0)
+}
+
+// Gemini CLI 0.62.0 cannot create a file through the host filesystem. Its
+// AcpFileSystemService (packages/cli/src/acp/acpFileSystemService.ts) maps a
+// failed fs/read_text_file to ENOENT only when the rejection is an Error whose
+// message says so, but the bundled ACP SDK rejects with the plain JSON-RPC error
+// object. write_file then reads every missing file as one that exists and
+// cannot be read, and fails with "Error checking existing file". Gemini reads
+// and writes the working tree itself when the host offers no filesystem, so the
+// initialize request must not offer one.
+func TestStartWithholdsTheHostFileSystem(t *testing.T) {
+	home := t.TempDir()
+	work := filepath.Join(home, "work")
+	require.NoError(t, os.MkdirAll(work, 0o700))
+	capabilitiesPath := filepath.Join(home, "client-capabilities.json")
+	t.Setenv("GEMINI_CLI_HOME", home)
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "gemini", HelperRun: "TestHelperProcessGeminiCapabilities", WantEnv: geminiCapabilitiesHelperEnv,
+		Env: []string{geminiCapabilitiesPathEnv + "=" + capabilitiesPath},
+	})
+	started, err := Start(t.Context(), agent.Options{
+		AgentID: "gemini-capabilities", HomeDir: home, WorkingDir: work,
+		// A plain shell keeps the private PATH instead of loading a user's zsh startup configuration.
+		Shell: "/bin/sh", StartupTimeout: 30 * time.Second,
+		Options: optionmap.Map{agent.OptionIDModel: "gemini-2.5-pro", agent.OptionIDPermissionMode: "default"},
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		started.Stop()
+		err := started.Wait()
+		require.True(t, expectedGeminiStopError(err), "unexpected controlled-peer cleanup failure: %v", err)
+	})
+	recorded, err := os.ReadFile(capabilitiesPath)
+	require.NoError(t, err, "the controlled peer must record the actual initialize request")
+	var capabilities map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(recorded, &capabilities))
+	assert.JSONEq(t, `{"readTextFile":false,"writeTextFile":false}`, string(capabilities["fs"]), "Gemini must use its own filesystem")
+	assert.JSONEq(t, `true`, string(capabilities["terminal"]), "the host terminal stays offered")
 }
 
 // Each joined failure must be an expected stop outcome. A cancellation cannot hide an ownership failure.

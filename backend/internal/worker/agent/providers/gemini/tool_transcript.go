@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -70,6 +71,59 @@ func (source *geminiToolSource) ReadSupplements(ctx context.Context, sessionID s
 		}
 	}
 	return output, nil
+}
+
+// ResolveProviderData gives the worker's semantic extractors the native record
+// that the tool transcript stored beside a frame.
+//
+// Gemini CLI 0.62.0 states the outcome of a tool call only in its session
+// record: a tool_call_update carries no rawOutput. geminiToolSupplement stores
+// that record in the row's supplement, and the shared ACP resolve copies only the
+// request fields that a later update revises. Without this resolve,
+// ExtractTodoEvent reads no write_todos list, and the worker keeps no to-do
+// snapshot. The browser plugin reads the same record from the supplement.
+//
+// It delegates to the embedded Provider first, so a later shared resolve rule
+// reaches Gemini too. It applies the same identity gate as the shared resolve and
+// the browser plugin: a record stored beside one frame never reaches another.
+func (p geminiProvider) ResolveProviderData(content agent.MessageContent) []byte {
+	resolved := p.Provider.ResolveProviderData(content)
+	if len(content.Supplemental) == 0 {
+		return resolved
+	}
+	var supplement acp.ToolSupplement
+	if json.Unmarshal(content.Supplemental, &supplement) != nil {
+		return resolved
+	}
+	var stored map[string]json.RawMessage
+	if json.Unmarshal(supplement[contracts.ACPSupplementRawOutput], &stored) != nil || len(stored) == 0 {
+		return resolved
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(resolved, &fields) != nil || fields == nil || !supplement.IdentityMatches(fields) {
+		return resolved
+	}
+	// A rawOutput of the frame's own keeps every key, and the stored record joins
+	// it under the key that LeapMux chose. A rawOutput that is not an object
+	// cannot hold that key, so the frame stays as the agent sent it.
+	var output map[string]json.RawMessage
+	if own, exists := fields[contracts.ACPSupplementRawOutput]; exists && json.Unmarshal(own, &output) != nil {
+		return resolved
+	}
+	if output == nil {
+		output = make(map[string]json.RawMessage, len(stored))
+	}
+	maps.Copy(output, stored)
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return resolved
+	}
+	fields[contracts.ACPSupplementRawOutput] = encoded
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return resolved
+	}
+	return merged
 }
 
 func geminiToolSupplement(original, record []byte) ([]byte, error) {

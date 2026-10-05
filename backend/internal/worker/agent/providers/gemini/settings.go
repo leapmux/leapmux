@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -35,6 +36,36 @@ func (a *Agent) observeModeSetterReply(sessionID, mode string, result json.RawMe
 	a.modeGeneration++
 	acknowledged(mode)
 	return true
+}
+
+// expectModeEcho records a session/set_mode that waits for its reply.
+func (a *Agent) expectModeEcho(sessionID, mode string) *geminiModeEcho {
+	echo := &geminiModeEcho{sessionID: sessionID, mode: mode}
+	a.modeMu.Lock()
+	a.modeEchoes = append(a.modeEchoes, echo)
+	a.modeMu.Unlock()
+	return echo
+}
+
+// forgetModeEcho ends the echo window of one setter. A window that already
+// ended stays ended.
+func (a *Agent) forgetModeEcho(echo *geminiModeEcho) {
+	a.modeMu.Lock()
+	a.modeEchoes = slices.DeleteFunc(a.modeEchoes, func(pending *geminiModeEcho) bool { return pending == echo })
+	a.modeMu.Unlock()
+}
+
+// takeModeEchoLocked reports whether `[MODE_UPDATE] <mode>` text of sessionID
+// is the echo of a setter that waits for its reply, and ends that window, so
+// a second copy of the text is the model's again. The caller holds modeMu.
+func (a *Agent) takeModeEchoLocked(sessionID, mode string) bool {
+	for index, pending := range a.modeEchoes {
+		if pending.sessionID == sessionID && pending.mode == mode {
+			a.modeEchoes = slices.Delete(a.modeEchoes, index, index+1)
+			return true
+		}
+	}
+	return false
 }
 
 func geminiSettingReplyIsObject(result json.RawMessage, replyErr error) bool {
@@ -96,8 +127,14 @@ func (a *Agent) setNativePermissionMode(mode string, acknowledged func(string)) 
 		if err != nil {
 			return err
 		}
+		// The echo window opens before the request is written, and the reply
+		// closes it on the reader. The deferred close covers a request that gets
+		// no reply.
+		echo := a.expectModeEcho(sessionID, mode)
+		defer a.forgetModeEcho(echo)
 		accepted := false
 		_, err = a.SendRequestObserved(acp.MethodSessionSetMode, params, a.APITimeout(), func(result json.RawMessage, replyErr error) {
+			a.forgetModeEcho(echo)
 			accepted = a.observeModeSetterReply(sessionID, mode, result, replyErr, acknowledged)
 		})
 		if err != nil {

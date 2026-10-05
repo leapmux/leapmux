@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
@@ -22,8 +23,15 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 	result := agent.DefaultControlResponseResolution(ctx)
 	requestID, behavior, feedback, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	id, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	if !ok || !found || requestID == "" || requestID != agent.StoredControlRequestID(ctx, storedID) {
-		result.Withhold = true
+	switch {
+	case !ok || requestID == "":
+		result.Refuse(agent.RefusalNoDecision)
+		return result
+	case !found:
+		result.Refuse(agent.RefusalUnreadableRequest)
+		return result
+	case requestID != agent.StoredControlRequestID(ctx, storedID):
+		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	option := ""
@@ -35,7 +43,7 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		option = "cancel"
 		result.Feedback = feedback
 	default:
-		result.Withhold = true
+		result.Refuse(agent.RefusalNoDecision)
 		return result
 	}
 	var request struct {
@@ -46,7 +54,7 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		} `json:"params"`
 	}
 	if json.Unmarshal(ctx.RequestPayload, &request) != nil {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
 	offered := false
@@ -57,7 +65,7 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		}
 	}
 	if !offered {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, option))
 		return result
 	}
 	content, err := json.Marshal(struct {
@@ -66,7 +74,7 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		Result  any             `json:"result"`
 	}{JSONRPC: "2.0", ID: id, Result: map[string]any{"outcome": map[string]string{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option}}})
 	if err != nil {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnencodableReply)
 		return result
 	}
 	result.Content = content

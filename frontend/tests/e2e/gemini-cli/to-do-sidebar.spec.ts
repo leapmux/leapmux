@@ -5,17 +5,26 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiTodoSnapshotToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
-import { expandGoalsAndTodosSection, expectSectionPersists } from '../helpers/subagentRegistry'
-import { sendMessage } from '../helpers/ui'
+import { exerciseRelatedTodo, expectRelatedTodoSurvivesReload } from '../helpers/relatedTodoProof'
+import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
+import { applyPermissionPreset, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
+// Gemini CLI asks for approval of write_todos in its default mode: the tool is not
+// in the allow list of its read-only policy (bundle/policies/read-only.toml). The
+// shared proof answers no approval, so this case runs under the bypass shortcut
+// (native yolo). The next case answers the approval in the default mode.
 geminiTest('stores an exact native task snapshot and preserves it after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
-  await exerciseRelatedTodo(context, { toolCall: updateTodosToolCall(context.provider, 'gemini-sidebar-todo', [{ step: 'Keep the native Gemini task', status: 'pending' }]), item: 'Keep the native Gemini task' })
-  await expectSectionPersists(page)
+  const item = 'Keep the native Gemini task'
+  await exerciseRelatedTodo(context, {
+    toolCall: updateTodosToolCall(context.provider, 'gemini-sidebar-todo', [{ step: item, status: 'pending' }]),
+    item,
+    prepare: () => applyPermissionPreset(page, 'bypass'),
+  })
+  await expectRelatedTodoSurvivesReload(context, item)
 })
 
 geminiTest('preserves all native task statuses and replaces and clears the saved snapshot', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
