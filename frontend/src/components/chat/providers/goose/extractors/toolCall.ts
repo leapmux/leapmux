@@ -71,7 +71,11 @@ function gooseImageSpec<K extends ToolKind>(spec: ToolCallSpec<K>, tool: Record<
   }
 }
 
-/** Goose puts stable tool identity in metadata. Its generated title can change. */
+/**
+ * Goose hooks the `_meta.goose.toolCall` record. Its generated title can change, and its
+ * platform extensions send no prefix, so that record is the only stable statement of
+ * the tool name.
+ */
 export const gooseToolCallAdapter: ACPToolCallAdapter = (facts, base) => gooseCall(facts, base)
 
 function gooseCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec {

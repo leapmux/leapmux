@@ -19,6 +19,10 @@ export async function exerciseGooseCompaction(
   const { page, modelScript } = context
   const start = (await modelScript.status()).stepCount
   const rule = `goose-manual-summary-${start}`
+  // Goose quotes the conversation, with its scenario markers, in the system
+  // prompt of the summary request. That request has one user text, the fixed
+  // instruction below, which holds no marker. The mock then selects this
+  // scenario from the system text.
   await modelScript.rule({ name: rule, when: { user: '^Please summarize the conversation history provided in the system prompt\\.$' }, respond: { text: SUMMARY_RESPONSE } })
   await modelScript.queue(
     { text: 'The first Goose turn ended.' },

@@ -8,10 +8,14 @@ import { expectNoNativeEditorRequest } from '../helpers/unsupportedEditor'
 
 gooseTest('resolves an actual native control without exposing a multiline editor request', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId, provider: AgentProvider.GOOSE }
+  const todo = updateTodosToolCall(AgentProvider.GOOSE, 'native-editor-limit-todo', [{ step: 'Native editor control proof', status: 'pending' }])
+  const checklist = todo.arguments?.content
+  if (typeof checklist !== 'string')
+    throw new Error('The Goose to-do call carries no checklist.')
   await expectNoNativeEditorRequest(context, {
     relatedControl: async () => {
       const start = (await modelScript.status()).stepCount
-      await modelScript.queue({ toolCalls: [updateTodosToolCall(AgentProvider.GOOSE, 'native-editor-limit-todo', [{ step: 'Native editor control proof', status: 'pending' }])] }, { text: 'The native approval proof ended.' })
+      await modelScript.queue({ toolCalls: [todo] }, { text: 'The native approval proof ended.' })
       await sendMessage(page, modelScript.prompt('Write the scripted native to-do item.'))
       await modelScript.waitForSteps(start + 1)
       const banner = page.getByTestId('control-banner').filter({ visible: true })
@@ -19,7 +23,11 @@ gooseTest('resolves an actual native control without exposing a multiline editor
       await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
       await modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(page)
-      expect(nativeToolResult((await modelScript.status()).requests.find(record => record.stepIndex === start + 1), 'native-editor-limit-todo')).toMatch(/native editor control proof|success|saved|write/i)
+      // Goose 1.53.0 `todo__todo_write` (platform_extensions/todo.rs) does not
+      // repeat the checklist. It answers with the count of Unicode code points
+      // that it stored. This result proves that Goose ran the approved call and
+      // stored a checklist of the scripted length.
+      expect(nativeToolResult((await modelScript.status()).requests.find(record => record.stepIndex === start + 1), 'native-editor-limit-todo')).toBe(`Updated (${[...checklist].length} chars)`)
     },
   })
 })
