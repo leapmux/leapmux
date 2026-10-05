@@ -178,11 +178,15 @@ test.describe('Quake-mode terminal', () => {
     initialWorkspaceIds = (await listWorkspacesViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)).map(workspace => workspace.id).sort()
   })
 
+  // This file must leave no workspace of its own behind. A workspace that existed before the
+  // file started can vanish while it runs: an earlier file can leave an empty workspace that the
+  // app removes when the first test of this file loads it. That is no leak of this file.
   test.afterAll(async ({ leapmuxServer }) => {
     if (!initialWorkspaceIds)
       return
     const workspaces = await listWorkspacesViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    expect(workspaces.map(workspace => workspace.id).sort()).toEqual(initialWorkspaceIds)
+    const leaked = workspaces.map(workspace => workspace.id).filter(id => !initialWorkspaceIds!.includes(id)).sort()
+    expect(leaked).toEqual([])
   })
 
   test('nothing exists until the shortcut is pressed', async ({ page, quakeServer }) => {
