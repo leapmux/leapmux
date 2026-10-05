@@ -291,6 +291,29 @@ func TestAnEffortTheNewModelLacksFallsBackToAuto(t *testing.T) {
 	assert.Equal(t, "claude-haiku-4-5", r.agent.settings.model)
 }
 
+// A model switch that keeps the effort sends the model alone. The worker sends the model and the
+// kept effort together, because the new model offers the effort. Cline's runtime merges
+// session.update_connection field by field, so the reasoning that the session holds stays on the
+// new model, and the switch needs neither a second field nor a rebuild.
+func TestAModelSwitchThatKeepsTheEffortSendsTheModelAlone(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, func(c *rigConfig) {
+		c.selection = providerSelection{Provider: "anthropic", Model: "claude-opus-5"}
+		c.opts.Options = options(agent.OptionIDEffort, "high")
+	})
+	result := r.agent.UpdateSettings(options(agent.OptionIDModel, "claude-sonnet-5", agent.OptionIDEffort, "high"))
+	assert.Equal(t, []map[string]any{{"modelId": "claude-sonnet-5"}}, updates(t, r.hub))
+	assert.Empty(t, r.hub.commandsNamed(commandSessionDetach), "keeping the effort needs no rebuild")
+	assert.Equal(t, "claude-sonnet-5", r.agent.settings.model)
+	assert.Equal(t, "high", r.agent.settings.effort)
+	for key, want := range map[string]string{agent.OptionIDModel: "claude-sonnet-5", agent.OptionIDEffort: "high"} {
+		settlement := result.Settlements[key]
+		assert.Equal(t, agent.OptionSettlementConfirmed, settlement.State, key)
+		require.NotNil(t, settlement.Value, key)
+		assert.Equal(t, want, *settlement.Value, key)
+	}
+}
+
 func TestNeedsRebuild(t *testing.T) {
 	t.Parallel()
 	act := clineSettings{model: "m", effort: agent.EffortAuto, permissionMode: contracts.ClinePermissionModeAct}

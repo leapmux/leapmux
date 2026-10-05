@@ -163,6 +163,29 @@ func TestKimiUpdateSettings(t *testing.T) {
 		assert.Equal(t, optionmap.Map{agent.OptionIDModel: "kimi-k2"}, result.ConfirmedOptions())
 	})
 
+	t.Run("a model switch that keeps an explicit level restates nothing", func(t *testing.T) {
+		t.Parallel()
+		// The worker sends the model and the kept level together, because the new model
+		// offers the level. The server keeps the level across the switch, so the write
+		// states the model alone: the clearing of Auto must not touch a level that the
+		// user chose.
+		fake, server := newFakeKap(t)
+		fake.models = append(fake.models, map[string]any{
+			"model": "kimi-k3", "display_name": "Kimi K3", "max_context_size": 262144,
+			"capabilities": []string{"thinking"}, "support_efforts": []string{"low", "medium", "high"},
+		})
+		rig := connectKimiTestRig(t, fake, server.URL, agent.Options{Options: options(agent.OptionIDEffort, "high")})
+		before := profileCount(rig)
+		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-k3", agent.OptionIDEffort: "high"})
+		require.Equal(t, before+1, profileCount(rig))
+		assert.Equal(t, map[string]any{"model": "kimi-k3"}, lastProfile(t, rig),
+			"the server keeps the level across the switch, and the new model takes it")
+		assert.Equal(t, optionmap.Map{agent.OptionIDModel: "kimi-k3", agent.OptionIDEffort: "high"}, result.ConfirmedOptions())
+		session, ok := fake.session(rig.sessionID())
+		require.True(t, ok)
+		assert.Equal(t, "high", session.Thinking, "the server still runs the level that the user kept")
+	})
+
 	t.Run("switching back to Auto sends the configured level", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDEffort, "high")})

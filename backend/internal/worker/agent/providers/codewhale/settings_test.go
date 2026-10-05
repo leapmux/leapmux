@@ -209,3 +209,34 @@ func TestUpdateSettingsOfTheEffortAloneSendsNoUpdate(t *testing.T) {
 	assert.Equal(t, "low", result.SurfacedOptions[agent.OptionIDEffort])
 	assert.Equal(t, before+1, sink.SettingsRefreshCount())
 }
+
+// A model switch keeps the effort. The worker sends the model and the kept tier together, because the
+// new model offers the tier. The effort is LeapMux's own, so the update patches the model alone, and
+// the tier rides the next turn on the new model.
+func TestUpdateSettingsKeepsTheEffortAcrossAModelSwitch(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	rt.respondJSON(http.MethodPatch, threadRoute, http.StatusOK, threadRecord{
+		ID: testThreadID, Model: "deepseek-lite", ModelProvider: "deepseek", ModelProviderID: "deepseek", Mode: "agent", PermissionPosture: "ask",
+	})
+	a, _ := settledAgent(t, rt)
+	a.applyModelCatalog([]providerModel{
+		{ID: "deepseek-flash", ReasoningEffort: capabilitySupported, ReasoningEffortLevels: []string{"low", "high"}},
+		{ID: "deepseek-lite", ReasoningEffort: capabilitySupported, ReasoningEffortLevels: []string{"high"}},
+	})
+	a.settings.effort = "high"
+
+	result := a.UpdateSettings(optionmap.Map{agent.OptionIDModel: "deepseek-lite", agent.OptionIDEffort: "high"})
+
+	require.Len(t, rt.requestsTo(http.MethodPatch, threadRoute), 1)
+	assert.Equal(t, map[string]any{"model": "deepseek-lite"}, rt.lastBody(t, http.MethodPatch, threadRoute),
+		"the effort is not a thread field")
+	for key, want := range map[string]string{agent.OptionIDModel: "deepseek-lite", agent.OptionIDEffort: "high"} {
+		settlement := result.Settlements[key]
+		assert.Equal(t, agent.OptionSettlementConfirmed, settlement.State, key)
+		require.NotNil(t, settlement.Value, key)
+		assert.Equal(t, want, *settlement.Value, key)
+		assert.Equal(t, want, result.SurfacedOptions[key], key)
+	}
+	assert.Equal(t, "high", a.settings.effort, "the next turn sends the kept tier")
+}

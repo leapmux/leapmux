@@ -274,10 +274,18 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 			var value any = map[string]any{}
 			switch request.Method {
 			case "session.model.list":
-				value = map[string]any{"list": []map[string]any{{
+				models := []map[string]any{{
 					"id": "probe-model", "name": "Probe model",
 					"capabilities": map[string]any{"supports": map[string]any{"reasoning_effort": []string{"low", "medium", "high"}}},
-				}}}
+				}}
+				// A test that switches the model names a second model that offers the same tiers.
+				if second := os.Getenv("LEAPMUX_TEST_COPILOT_SECOND_MODEL"); second != "" {
+					models = append(models, map[string]any{
+						"id": second, "name": "Second model",
+						"capabilities": map[string]any{"supports": map[string]any{"reasoning_effort": []string{"low", "medium", "high"}}},
+					})
+				}
+				value = map[string]any{"list": models}
 			case "session.model.getCurrent":
 				value = map[string]any{"modelId": model, "reasoningEffort": effort}
 			case "session.model.switchTo":

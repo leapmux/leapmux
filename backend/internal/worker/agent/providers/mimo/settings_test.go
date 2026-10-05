@@ -1,6 +1,7 @@
 package mimo
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -100,6 +101,30 @@ func TestUpdateSettingsAppliesAtTheNextPrompt(t *testing.T) {
 	body := decodeBody(t, server.requestsTo("POST /session/ses_test/prompt_async")[0])
 	assert.Equal(t, contracts.MiMoModePlan, body["agent"])
 	assert.Equal(t, map[string]any{"providerID": "mock", "modelID": "beta"}, body["model"])
+}
+
+// A model switch keeps the effort. The worker sends the model and the kept variant together, because
+// the new model offers the variant. The next prompt then states the new model and the kept variant.
+func TestUpdateSettingsKeepsTheEffortAcrossAModelSwitch(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	a.catalog = buildMiMoCatalog(mimoConfigProviders{Providers: []mimoProviderInfo{{
+		ID: "mock", Name: "Mock", Models: map[string]mimoModelInfo{
+			"alpha": {ID: "alpha", Name: "Alpha", Variants: map[string]json.RawMessage{"high": {}, "low": {}}},
+			"gamma": {ID: "gamma", Name: "Gamma", Variants: map[string]json.RawMessage{"high": {}, "max": {}}},
+		},
+	}}}, mimoConfig{Model: "mock/alpha"}, nil)
+	a.effort = "high"
+
+	result := a.UpdateSettings(optionmap.Map{agent.OptionIDModel: "mock/gamma", agent.OptionIDEffort: "high"})
+
+	assert.Equal(t, "mock/gamma", result.ConfirmedOptions()[agent.OptionIDModel])
+	assert.Equal(t, "high", result.ConfirmedOptions()[agent.OptionIDEffort])
+	assert.Equal(t, "high", sink.LastSettingsRefresh().Effort)
+	require.NoError(t, a.SendInput("keep going", nil))
+	body := decodeBody(t, server.requestsTo("POST /session/ses_test/prompt_async")[0])
+	assert.Equal(t, "high", body["variant"], "the prompt states the kept variant")
+	assert.Equal(t, map[string]any{"providerID": "mock", "modelID": "gamma"}, body["model"], "the prompt states the new model")
 }
 
 func TestUpdateSettingsSetsThePermissionSwitches(t *testing.T) {

@@ -80,3 +80,55 @@ func TestNativeCopilotEffortAutoSendsNoEffort(t *testing.T) {
 		}
 	}
 }
+
+// A model switch keeps the effort. The worker sends the model and the kept tier in ONE update,
+// because the new model offers the tier. The update must switch the model first and then set the
+// tier, so the tier lands on the new model whatever the runtime does with the tier at a switch.
+// The settlement of each axis then states the value that the runtime reports.
+func TestNativeCopilotModelSwitchSetsTheKeptEffortOnTheNewModel(t *testing.T) {
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		Env: []string{
+			"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath,
+			"LEAPMUX_TEST_COPILOT_SECOND_MODEL=other-model",
+		},
+	})
+	provider, err := startNativeCopilot(t.Context(), agent.Options{
+		AgentID: "native-model-switch-effort", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: time.Second,
+		Options:    optionmap.Map{agent.OptionIDModel: "probe-model", agent.OptionIDEffort: "high"},
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+
+	result := provider.UpdateSettings(optionmap.Map{agent.OptionIDModel: "other-model", agent.OptionIDEffort: "high"})
+	require.True(t, result.AppliedLive)
+	for key, want := range map[string]string{agent.OptionIDModel: "other-model", agent.OptionIDEffort: "high"} {
+		settlement := result.Settlements[key]
+		require.Equal(t, agent.OptionSettlementConfirmed, settlement.State, key)
+		require.NotNil(t, settlement.Value, key)
+		assert.Equal(t, want, *settlement.Value, key)
+	}
+
+	file, err := os.Open(requestsPath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	var methods []string
+	for decoder.More() {
+		var request agenttest.RecordedRequest
+		require.NoError(t, decoder.Decode(&request))
+		switch request.Method {
+		case "session.model.switchTo":
+			assert.Equal(t, "other-model", request.Params["modelId"])
+			methods = append(methods, request.Method)
+		case "session.model.setReasoningEffort":
+			assert.Equal(t, "high", request.Params["reasoningEffort"])
+			methods = append(methods, request.Method)
+		}
+	}
+	assert.Equal(t, []string{"session.model.switchTo", "session.model.setReasoningEffort"}, methods,
+		"the update switches the model, then sets the tier on it")
+}
