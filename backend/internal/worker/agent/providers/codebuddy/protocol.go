@@ -110,6 +110,17 @@ type controlResponseEnvelope struct {
 	} `json:"response"`
 }
 
+// The reasons that CodeBuddy gives when its steer handler does not take a steer
+// into the running turn (q4 in 2.160.0). A refusal of the content carries no
+// reason.
+const (
+	// codebuddySteerReasonIdle states that no turn runs.
+	codebuddySteerReasonIdle = "idle"
+	// codebuddySteerReasonStale states that the steer is for a turn that
+	// already ended.
+	codebuddySteerReasonStale = "stale"
+)
+
 // controlRequestEnvelope is the outer control_request frame the CLI sends the
 // host, and the host sends the CLI. The Request payload differs by subtype.
 type controlRequestEnvelope struct {
@@ -138,6 +149,32 @@ type resultMessage struct {
 	Meta       struct {
 		ContextUsed *int64 `json:"codebuddy.ai/contextUsed"`
 	} `json:"_meta"`
+	// TerminalReason is set by CodeBuddy 2.158.0 and later on the `result` of an
+	// aborted turn, and on no other `result`.
+	TerminalReason string `json:"terminal_reason"`
+}
+
+// The `terminal_reason` values that state a turn ended in an abort, as CodeBuddy
+// spells them. CodeBuddy 2.160.0 writes the first when a stop arrives while the
+// model streams, and the second when it arrives while a tool runs.
+const (
+	codebuddyTerminalReasonAbortedStreaming = "aborted_streaming"
+	codebuddyTerminalReasonAbortedTools     = "aborted_tools"
+)
+
+// statesAbortedTurn reports whether a `result` states that the stop took effect, so
+// the turn ended in an abort. A turn that ended some other way before the CLI read the
+// stop keeps its own outcome.
+//
+// `terminal_reason` is the only statement. CodeBuddy ends an abort with the SUCCESS
+// shape (`subtype: success`, `is_error: false`), so neither `subtype` nor `is_error`
+// tells an abort from a finished turn. The Claude Code and Qoder providers read
+// `is_error: false` as a finished turn. That rule is impossible here, because it
+// would read each stop of CodeBuddy as a finished turn. A failure writes
+// `subtype: error_during_execution` and `is_error: true`, with no reason.
+func (r *resultMessage) statesAbortedTurn() bool {
+	return r.TerminalReason == codebuddyTerminalReasonAbortedStreaming ||
+		r.TerminalReason == codebuddyTerminalReasonAbortedTools
 }
 
 type codebuddyUsage struct {

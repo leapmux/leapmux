@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,30 @@ func awaitCodebuddyChildClose(t *testing.T, ctx context.Context, closed <-chan s
 	case <-ctx.Done():
 		t.Fatal("workflow child did not close after the archive attempt")
 	}
+}
+
+// settledCodebuddyArchive waits until every archive retry of the agent
+// returned, and then copies the two ownership maps under their lock.
+//
+// A read at the close signal alone races the retry. The retry closes a child
+// first and releases the child's ownership after that, on its own goroutine, so
+// an unlocked read there is a data race, and a locked read can still see the
+// child.
+func settledCodebuddyArchive(t *testing.T, a *Agent) (jobs, childJobs map[string]*codebuddyArchiveJob) {
+	t.Helper()
+	settled := make(chan struct{})
+	go func() {
+		a.archiveRetries.Wait()
+		close(settled)
+	}()
+	select {
+	case <-settled:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("a workflow archive retry did not return")
+	}
+	a.archiveMu.Lock()
+	defer a.archiveMu.Unlock()
+	return maps.Clone(a.archiveJobs), maps.Clone(a.archiveChildJobs)
 }
 
 func TestCodebuddyWorkflowReplaysTheLinkedChildHistoryInOrder(t *testing.T) {
@@ -471,7 +496,8 @@ func TestCodebuddyPendingWorkflowChildNotificationWaitsForArchive(t *testing.T) 
 	assert.Len(t, sink.Child(child.ChildAgentID).Messages(), 2)
 	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, sink.BackgroundTaskStatuses(codebuddyTestChildKey),
 		"the child reaches a final status once, after the saved messages arrive")
-	assert.Empty(t, a.archiveChildJobs, "the completed retry releases child ownership")
+	_, childJobs := settledCodebuddyArchive(t, a)
+	assert.Empty(t, childJobs, "the completed retry releases child ownership")
 }
 
 func TestCodebuddyWorkflowArchiveRetryKeepsPartialRoutesDistinct(t *testing.T) {
@@ -526,6 +552,9 @@ func TestCodebuddyWorkflowArchiveRetryUsesTheProcessClock(t *testing.T) {
 	writeCodebuddyChildHistory(t, sessionDir, codebuddyTestChildID)
 	testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
 	awaitCodebuddyChildClose(t, ctx, closed)
+	// The close signal fires before the sink writes the row, so a read here
+	// races the retry. Wait for the retry to return first.
+	_, _ = settledCodebuddyArchive(t, a)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, child.Status)
@@ -550,12 +579,15 @@ func TestCodebuddyWorkflowArchiveRetryEndsAtTheDeadline(t *testing.T) {
 		elapsed += delay
 	}
 	awaitCodebuddyChildClose(t, ctx, closed)
+	// The close signal fires before the sink writes the row, so a read here
+	// races the retry. Wait for the retry to return first.
+	_, childJobs := settledCodebuddyArchive(t, a)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, child.Status)
 	assert.Empty(t, child.ChildAgentID, "missing history cannot open an empty tab")
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
-	assert.Empty(t, a.archiveChildJobs, "the retry deadline releases child ownership")
+	assert.Empty(t, childJobs, "the retry deadline releases child ownership")
 }
 
 func TestCodebuddyWorkflowArchiveRetryStopsWhenTheProcessExits(t *testing.T) {
@@ -573,11 +605,14 @@ func TestCodebuddyWorkflowArchiveRetryStopsWhenTheProcessExits(t *testing.T) {
 	close(processDone)
 	stopTimer.MustWait(ctx).MustRelease(ctx)
 	awaitCodebuddyChildClose(t, ctx, closed)
+	// The close signal fires before the sink writes the row, so a read here
+	// races the retry. Wait for the retry to return first.
+	_, childJobs := settledCodebuddyArchive(t, a)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusFailed, child.Status, "process exit cannot replace the child's native failure")
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
-	assert.Empty(t, a.archiveChildJobs, "process exit releases child ownership")
+	assert.Empty(t, childJobs, "process exit releases child ownership")
 }
 
 func TestCodebuddyWorkflowArchiveRetryRefusesAnUnsafePathImmediately(t *testing.T) {
@@ -595,7 +630,8 @@ func TestCodebuddyWorkflowArchiveRetryRefusesAnUnsafePathImmediately(t *testing.
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusCompleted, child.Status)
 	assert.Empty(t, child.ChildAgentID)
-	assert.Empty(t, a.archiveJobs, "an unsafe path must not enter the retry queue")
+	jobs, _ := settledCodebuddyArchive(t, a)
+	assert.Empty(t, jobs, "an unsafe path must not enter the retry queue")
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
 }
 

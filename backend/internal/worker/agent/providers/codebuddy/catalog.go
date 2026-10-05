@@ -3,7 +3,6 @@ package codebuddy
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -11,8 +10,14 @@ import (
 
 // loadModelCatalog reads the live models before Start publishes the first
 // option groups. CodeBuddy accepts this control request before the first prompt.
+//
+// CodeBuddy answers from its own process. A late answer therefore means a slow
+// start, and a cold start on a loaded machine can take longer than any short
+// fixed wait. A wait that ends early leaves the agent with no live catalog
+// until its next restart, so the wait lasts as long as the startup handshake
+// of the agent allows. A process exit ends it sooner.
 func (a *Agent) loadModelCatalog() error {
-	result, err := a.sendControlAndWait(`{"subtype":"get_available_models"}`, 5*time.Second)
+	result, err := a.sendControlAndWait(`{"subtype":"get_available_models"}`, a.opts.EffectiveStartupTimeout())
 	if err != nil {
 		return err
 	}

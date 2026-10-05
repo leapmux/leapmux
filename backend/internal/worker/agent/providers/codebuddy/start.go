@@ -17,6 +17,13 @@ import (
 
 var _ agent.StartFunc = Start
 
+// codebuddyDisableAutoUpdaterEnv turns off the updater of CodeBuddy Code, which
+// installs a newer release over the running one. The `-p` mode that the worker
+// starts never runs it, but a daemon does (CODEBUDDY_SESSION_KIND=daemon), and the
+// variable also stops the `brew list` and `dnf list` probes of the install method.
+// Any truthy value counts. The shell wrapper states it after the user's profile.
+const codebuddyDisableAutoUpdaterEnv = "DISABLE_AUTOUPDATER=1"
+
 // codebuddyAgentEnv builds the environment for one CodeBuddy launch.
 //
 // The pins REPLACE an inherited value. The important one is the identity scrub:
@@ -36,7 +43,6 @@ func codebuddyAgentEnv(environ []string) []string {
 	),
 		"DISABLE_TELEMETRY=1",
 		"DISABLE_GALILEO=1",
-		"DISABLE_AUTOUPDATER=1",
 		"CODEBUDDY_DISABLE_TRACE_COLLECTOR=1",
 	)
 	return env
@@ -99,6 +105,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
 		StripEnvKeys: []string{"CLAUDE_SESSION_ID", "CODEBUDDY_SESSION_ID"},
+		SetEnv:       []string{codebuddyDisableAutoUpdaterEnv},
 		BaseArgs:     baseArgs,
 		WorkingDir:   opts.WorkingDir,
 	})

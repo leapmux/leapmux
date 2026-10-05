@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/coder/quartz"
@@ -96,10 +95,10 @@ func TestCodebuddyReadsItsSessionStore(t *testing.T) {
 		require.NoError(t, os.MkdirAll(projectDir, 0o755))
 		handle := "session-codebuddy-1"
 		transcript := filepath.Join(projectDir, handle+".jsonl")
-		content := strings.Join([]string{
-			`{"type":"message","sessionId":"` + handle + `","cwd":"` + filepath.ToSlash(dir) + `"}`,
-			`{"type":"message","message":{"role":"user","content":[{"type":"input_text","text":"hello codebuddy"}]}}`,
-		}, "\n") + "\n"
+		// The record shape of CodeBuddy 2.160.0: role and content sit at the top
+		// level of a message record, beside the session id and the cwd.
+		content := `{"type":"message","role":"user","content":[{"type":"input_text","text":"hello codebuddy"}],` +
+			`"sessionId":"` + handle + `","cwd":"` + filepath.ToSlash(dir) + `"}` + "\n"
 		require.NoError(t, os.WriteFile(transcript, []byte(content), 0o644))
 		return handle
 	})

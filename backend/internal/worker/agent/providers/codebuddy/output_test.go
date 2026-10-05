@@ -59,13 +59,33 @@ func TestCodebuddyTurnEndCountsUniqueRootCallsAndResetsEachTurn(t *testing.T) {
 	assert.Equal(t, []int{2, 0, 1}, agenttest.TurnToolUseCounts(t, sink.Messages()))
 }
 
+// These `result` frames are real. CodeBuddy Code 2.160.0 wrote them in a probe against a
+// local mock model. Each frame keeps the fields that state its outcome and omits the
+// usage objects.
+//
+// CodeBuddy ends a stop with the SUCCESS shape: `subtype: success`, `is_error: false`.
+// Only `terminal_reason` (CodeBuddy 2.158.0 and later) states that the stop took effect.
+// A rule that reads a `result` with `is_error: false` as a finished turn, which
+// is right for Claude Code and Qoder, would read each stop of CodeBuddy as a finished turn.
+const (
+	// The stop took effect while the model streamed.
+	codebuddyResultAbortedStreaming = `{"type":"result","subtype":"success","is_error":false,"result":"","duration_ms":4277,"num_turns":2,"terminal_reason":"aborted_streaming"}`
+	// The stop took effect while a tool ran.
+	codebuddyResultAbortedTools = `{"type":"result","subtype":"success","is_error":false,"result":"","duration_ms":5621,"num_turns":3,"terminal_reason":"aborted_tools"}`
+	// The turn finished before the CLI read the stop. The probe sent the stop right
+	// after the answer frame, and the CLI still ended the turn with this frame.
+	codebuddyResultFinished = `{"type":"result","subtype":"success","is_error":false,"result":"QUICK ANSWER","duration_ms":702,"num_turns":2}`
+	// The turn failed on its own before the CLI read the stop.
+	codebuddyResultFailed = `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":102,"num_turns":2,"errors":["400 NATIVE ERROR MARKER (01a108db06177af38a010285fbc74cdf/e46a2031-5536-4038-bfe6-ad97284f4a24)"]}`
+)
+
 func TestCodebuddyInterruptMarksOnlyTheCurrentNativeResult(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	require.NoError(t, a.SendInput("Run the current turn.", nil))
 	require.NoError(t, a.Interrupt())
-	result := []byte(`{"type":"result","subtype":"success","result":"","is_error":false}`)
+	result := []byte(codebuddyResultAbortedStreaming)
 	a.HandleOutput(result)
 	first := sink.Messages()
 	require.Len(t, first, 1)
@@ -76,6 +96,82 @@ func TestCodebuddyInterruptMarksOnlyTheCurrentNativeResult(t *testing.T) {
 	final := sink.Messages()
 	require.Len(t, final, 2)
 	assert.NotEqual(t, agent.MessageCompletionInterrupted, final[1].Completion)
+}
+
+// turnEnds returns the turn-end rows of the sink. A `result` that carries an answer
+// also stores that answer as an assistant row before its turn end (see
+// backfillMissingAssistantText), so a test cannot count the rows of the sink.
+func turnEnds(messages []agenttest.Message) []agenttest.Message {
+	var rows []agenttest.Message
+	for _, message := range messages {
+		if message.TurnEnd {
+			rows = append(rows, message)
+		}
+	}
+	return rows
+}
+
+// A stop request marks the turn end as interrupted only when the `result` states that
+// the stop took effect. CodeBuddy states it in `terminal_reason`.
+func TestCodebuddyAStopThatTookEffectMarksTheTurnEndInterrupted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, frame string }{
+		{"aborted while the model streamed", codebuddyResultAbortedStreaming},
+		{"aborted while a tool ran", codebuddyResultAbortedTools},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			require.NoError(t, a.SendInput("Run the current turn.", nil))
+			require.NoError(t, a.Interrupt())
+			a.HandleOutput([]byte(tc.frame))
+			rows := turnEnds(sink.Messages())
+			require.Len(t, rows, 1)
+			assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
+		})
+	}
+}
+
+// A turn that ended before the CLI read the stop keeps its own outcome, because the
+// stop came too late to change it. Before this rule, the note of the stop marked each
+// `result`, and the divider read "Turn interrupted" for a turn that finished or failed
+// on its own.
+func TestCodebuddyATurnThatEndedBeforeTheStopKeepsItsOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, frame string }{
+		{"finished", codebuddyResultFinished},
+		{"failed on its own", codebuddyResultFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			require.NoError(t, a.SendInput("Run the current turn.", nil))
+			require.NoError(t, a.Interrupt())
+			a.HandleOutput([]byte(tc.frame))
+			rows := turnEnds(sink.Messages())
+			require.Len(t, rows, 1)
+			assert.NotEqual(t, agent.MessageCompletionInterrupted, rows[0].Completion,
+				"the stop lost the race, so the turn end keeps the outcome that the frame states")
+		})
+	}
+}
+
+// A finished turn spends the note, as any other `result` does. The abort frame of
+// the next turn does not mark that turn unless the user asks for a stop during it.
+func TestCodebuddyAFinishedTurnSpendsTheStopNote(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	require.NoError(t, a.SendInput("Run the current turn.", nil))
+	require.NoError(t, a.Interrupt())
+	a.HandleOutput([]byte(codebuddyResultFinished))
+	require.NoError(t, a.SendInput("Run the next turn.", nil))
+	a.HandleOutput([]byte(codebuddyResultAbortedStreaming))
+	rows := turnEnds(sink.Messages())
+	require.Len(t, rows, 2)
+	assert.NotEqual(t, agent.MessageCompletionInterrupted, rows[1].Completion)
 }
 
 func TestCodebuddyIdleInterruptDoesNotMarkTheNextNativeResult(t *testing.T) {

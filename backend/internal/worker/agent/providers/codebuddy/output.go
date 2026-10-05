@@ -149,8 +149,13 @@ func (a *Agent) handleResult(raw []byte) {
 	a.awaitingRejectedPlanInit = false
 	toolUses := len(a.turnToolCalls)
 	a.turnToolCalls = nil
-	interrupted := len(a.interruptRequests) > 0
+	// One `result` ends one turn, so it spends the notes of every stop request
+	// whatever it states. The notes mark the turn end only when the frame also states
+	// that a stop took effect: a turn that ended before the CLI read the stop keeps
+	// its outcome.
+	stopRequested := len(a.interruptRequests) > 0
 	a.interruptRequests = nil
+	interrupted := stopRequested && result.statesAbortedTurn()
 	a.mu.Unlock()
 	content := agent.WithToolUseCount(agent.MessageContent{Original: raw}, toolUses)
 	if interrupted {
@@ -372,13 +377,16 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		return false
 	}
 	result := codebuddyControlResult{
-		Success: envelope.Response.Subtype == "success",
-		Error:   envelope.Response.Error,
+		Answered: true,
+		Success:  envelope.Response.Subtype == "success",
+		Error:    envelope.Response.Error,
 	}
 	var inner struct {
 		Mode            string                `json:"mode"`
 		Model           string                `json:"model"`
 		AvailableModels *[]codebuddyModelInfo `json:"availableModels"`
+		Steered         *bool                 `json:"steered"`
+		Reason          string                `json:"reason"`
 	}
 	if len(envelope.Response.Response) > 0 {
 		_ = json.Unmarshal(envelope.Response.Response, &inner)
@@ -389,6 +397,8 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		result.Models = *inner.AvailableModels
 		result.HasModelCatalog = true
 	}
+	result.Steered = inner.Steered
+	result.SteerReason = inner.Reason
 	select {
 	case ch <- result:
 	default:
@@ -402,7 +412,21 @@ func (a *Agent) sendControlFire(requestBody string) error {
 	return a.SendRawInput([]byte(msg))
 }
 
+// codebuddyControlTimerTag labels the timers of sendControlAndWait. The timers
+// come from the clock of the process, so a test that drives a mock clock ends
+// the wait.
+const codebuddyControlTimerTag = "codebuddy control response"
+
+// codebuddyControlExitWait is how long sendControlAndWait waits for the process
+// exit after a failed write, so that the error states the exit when the write
+// failed because the process ended.
+const codebuddyControlExitWait = time.Second
+
 // sendControlAndWait sends a control request and waits for its response.
+//
+// The result reports whether CodeBuddy answered (codebuddyControlResult.Answered).
+// An error answer returns the result together with the error of CodeBuddy. A
+// failed write, a process exit and a timeout return an unanswered result.
 func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (codebuddyControlResult, error) {
 	requestID := shortID()
 	ch := make(chan codebuddyControlResult, 1)
@@ -417,13 +441,17 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (c
 
 	msg := `{"type":"control_request","request_id":"` + requestID + `","request":` + requestBody + `}`
 	if err := a.SendRawInput([]byte(msg)); err != nil {
+		exitWait := a.Clock().NewTimer(codebuddyControlExitWait, codebuddyControlTimerTag)
+		defer exitWait.Stop(codebuddyControlTimerTag)
 		select {
 		case <-a.ProcessDone():
 			return codebuddyControlResult{}, a.ProcessExitError()
-		case <-time.After(1 * time.Second):
+		case <-exitWait.C:
 			return codebuddyControlResult{}, err
 		}
 	}
+	answerWait := a.Clock().NewTimer(timeout, codebuddyControlTimerTag)
+	defer answerWait.Stop(codebuddyControlTimerTag)
 	select {
 	case resp := <-ch:
 		if !resp.Success {
@@ -432,7 +460,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (c
 		return resp, nil
 	case <-a.ProcessDone():
 		return codebuddyControlResult{}, a.ProcessExitError()
-	case <-time.After(timeout):
+	case <-answerWait.C:
 		return codebuddyControlResult{}, errControlTimeout
 	}
 }
