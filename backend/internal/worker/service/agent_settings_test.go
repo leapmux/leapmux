@@ -454,6 +454,53 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 	}
 }
 
+// TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort is the regression guard for
+// the Opus-to-Sonnet switch. The client sends the model alone, because the user changed only the
+// model. The stored xhigh must survive when Sonnet offers xhigh. The old rule reset every such
+// switch to auto, so the CLI chose its own default (medium) for Sonnet.
+func TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		newModel   string
+		wantEffort string
+	}{
+		{"the new model offers the tier", "sonnet", "xhigh"},
+		{"the new model has no effort axis", "haiku", agent.EffortAuto},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, d, w := setupTestService(t)
+
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID:            "agent-1",
+				WorkingDir:    t.TempDir(),
+				HomeDir:       t.TempDir(),
+				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
+			}))
+			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+
+			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+				AgentId: "agent-1",
+				Settings: &leapmuxv1.AgentSettings{
+					Options: map[string]string{agent.OptionIDModel: tc.newModel},
+				},
+			}, w)
+
+			require.Empty(t, w.errors)
+
+			dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+			require.NoError(t, err)
+			opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			assert.Equal(t, tc.newModel, opts[agent.OptionIDModel])
+			assert.Equal(t, tc.wantEffort, opts[agent.OptionIDEffort], "effort persisted after the model switch")
+		})
+	}
+}
+
 // TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort guards that a CLI `agent set --model <new>
 // --effort xhigh` against a STOPPED agent, where <new> is absent from the provider's static catalog
 // seed (a model only the running session's live catalog would list), does NOT silently reset the

@@ -138,9 +138,9 @@ test.describe('Agent Settings', () => {
     await expectAssistantAnswer(page, { answer: /\bULTRACODE_RESTORED\b/ })
   })
 
-  // A model edit resets effort to Auto. Claude restarts without an effort flag,
-  // then reports the level that the new model selected.
-  test('a model switch settles the effort on a tier the new model supports', async ({ authenticatedWorkspace, page, modelScript }) => {
+  // The user changes the model alone, so the switch carries no effort. The stored tier stays when
+  // the new model offers it. Opus and Sonnet both offer xhigh in the installed CLI.
+  test('a model switch keeps an effort that the new model supports', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -156,22 +156,66 @@ test.describe('Agent Settings', () => {
     await expect(effortChecked('xhigh')).toBeChecked()
     await page.keyboard.press('Escape')
 
-    // The model switch clears the Opus effort. The installed CLI reports Medium
-    // after the Sonnet restart, and the next model request must use that level.
     await chooseSettingsOption(page, 'model-sonnet')
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
     await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
-    await expect(effortChecked('xhigh')).not.toBeChecked()
-    await expect(effortChecked('medium')).toBeChecked()
+    await expect(effortChecked('xhigh')).toBeChecked()
+    await expect(effortChecked('medium')).not.toBeChecked()
     await page.keyboard.press('Escape')
 
     await modelScript.queue({ text: 'Claude answered after the model switch.' })
     await sendMessage(page, modelScript.prompt('Reply once after switching to Sonnet.'))
     const status = await modelScript.waitForSteps()
-    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'medium' } })
+    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({
+      model: expect.stringMatching(/^claude-sonnet-/),
+      output_config: { effort: 'xhigh' },
+    })
     await expectAssistantAnswer(page, { answer: /Claude answered after the model switch\./ })
+    await waitForAgentIdle(page)
+
+    // The saved selection survives a reload.
+    await page.reload()
+    await waitForSettingsHydrated(page)
+    await openSettingsMenu(page, 'effort')
+    await expect(effortChecked('xhigh')).toBeChecked()
+    await page.keyboard.press('Escape')
+  })
+
+  // Haiku offers no effort axis, so the switch to Haiku drops the tier. The switch back to Sonnet
+  // carries no effort either, and the row holds none, so Sonnet reports the level that it selects.
+  test('a model switch to a model without effort resets the effort', async ({ authenticatedWorkspace, page, modelScript }) => {
+    void authenticatedWorkspace // fixture trigger
+    const trigger = settingsBar(page)
+    await expect(trigger).toBeVisible()
+    const effortChecked = (tier: string) => page.locator(`[data-testid="effort-${tier}"] input[type="radio"]`)
+
+    await chooseSettingsOption(page, 'model-sonnet')
+    await expectSettingsChip(page, 'Sonnet')
+    await waitForSettingsIdle(page)
+    await chooseSettingsOption(page, 'effort-xhigh')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page, 'effort')
+    await expect(effortChecked('xhigh')).toBeChecked()
+    await page.keyboard.press('Escape')
+
+    await chooseSettingsOption(page, 'model-haiku')
+    await expectSettingsChip(page, 'Haiku')
+    await waitForSettingsIdle(page)
+    await chooseSettingsOption(page, 'model-sonnet')
+    await expectSettingsChip(page, 'Sonnet')
+    await waitForSettingsIdle(page)
+
+    await openSettingsMenu(page, 'effort')
+    await expect(effortChecked('xhigh')).not.toBeChecked()
+    await expect(effortChecked('medium')).toBeChecked()
+    await page.keyboard.press('Escape')
+
+    await modelScript.queue({ text: 'Claude answered after the round trip.' })
+    await sendMessage(page, modelScript.prompt('Reply once after the round trip through Haiku.'))
+    const status = await modelScript.waitForSteps()
+    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'medium' } })
+    await expectAssistantAnswer(page, { answer: /Claude answered after the round trip\./ })
   })
 })

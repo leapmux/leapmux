@@ -2616,14 +2616,20 @@ func (svc *Service) acceptExposedOptions(agentID string, provider leapmuxv1.Agen
 // wouldn't be valid for the model the edit settles on -- for a provider that owns a model-dependent
 // effort catalog, which Registry.ManagesEffort states (Claude/Codex/Pi from their static catalogs,
 // and native Copilot, whose account decides both the models and their tiers):
-//   - on a model switch, also when the client sent NO effort (explicitEffort == "") -- so the new
-//     model picks its own default rather than silently inheriting the previous model's tier;
-//   - whether or not the model switched, when the effort that WOULD persist -- whether explicitly
-//     sent (CLI `--effort xhigh`) OR inherited from the stored row -- is not a tier the settled
-//     model offers. Validating the MERGED value (not just the sent one) also catches a stale stored
-//     effort the unchanged model no longer offers because the live catalog narrowed mid-session
-//     (e.g. an entitlement was revoked); leaving it would persist an unsupported tier and surface a
-//     misleading effort in the settings_changed notification until a relaunch clamps it.
+//   - whether or not the model switched, when the settled model is one the catalog describes and
+//     the effort that WOULD persist -- whether explicitly sent (CLI `--effort xhigh`) OR inherited
+//     from the stored row -- is not a tier that model offers. Validating the MERGED value (not just
+//     the sent one) also catches a stale stored effort the unchanged model no longer offers because
+//     the live catalog narrowed mid-session (e.g. an entitlement was revoked); leaving it would
+//     persist an unsupported tier and surface a misleading effort in the settings_changed
+//     notification until a relaunch clamps it;
+//   - on a model switch that sent NO effort (explicitEffort == ""), unless the catalog describes
+//     the new model AND offers the inherited tier. The client sends only the axis that the user
+//     changed, so such a switch carries the model alone, and the user expects the tier to stay
+//     (Opus at xhigh, then Sonnet, stays at xhigh). When the catalog cannot show that the new model
+//     accepts the tier, the new model picks its own default instead. The catalog cannot show it
+//     for a model that it omits or for the account-default placeholder, and a stale tier there can
+//     stop a native process at startup.
 //
 // EffortAuto is offered by every model, so resetting to it is always valid. An ACP provider's
 // effort is a server-driven axis independent of the model (or it has none, like Cursor), so this is
@@ -2637,15 +2643,17 @@ func resetEffortToAutoIfUnsupported(registry *agent.Registry, provider leapmuxv1
 	}
 	switched := registry.NormalizeModelID(provider, newOptions[agent.OptionIDModel]) != registry.NormalizeModelID(provider, oldModel)
 	merged := newOptions[agent.OptionIDEffort]
-	// The merged-effort reset (second clause) fires only when the settled model is one the catalog
-	// actually describes (ModelEffortKnown): an effort can only be judged unsupported against a model
-	// whose effort set is known. A model ABSENT from the catalog -- e.g. a tier valid in the running
-	// provider's live catalog but missing from a stopped agent's static seed -- is left for the
-	// running session to validate, so a CLI `agent set --model <new> --effort xhigh` on a stopped
-	// agent doesn't silently clobber a valid effort to auto. Mirrors ValidateLaunchOptions's
-	// deliberate non-validation of model/effort against the seed.
-	if (switched && explicitEffort == "") ||
-		(merged != "" && registry.ModelEffortKnown(catalog, provider, newModel) && !registry.EffortSupportedByModel(catalog, provider, newModel, merged)) {
+	// An effort can only be judged against a model whose effort set is known (ModelEffortKnown).
+	// A model ABSENT from the catalog -- e.g. a tier valid in the running provider's live catalog
+	// but missing from a stopped agent's static seed -- is left for the running session to
+	// validate, so a CLI `agent set --model <new> --effort xhigh` on a stopped agent doesn't
+	// silently clobber a valid effort to auto. Mirrors ValidateLaunchOptions's deliberate
+	// non-validation of model/effort against the seed.
+	known := registry.ModelEffortKnown(catalog, provider, newModel)
+	offered := merged != "" && known && registry.EffortSupportedByModel(catalog, provider, newModel, merged)
+	unsupported := merged != "" && known && !offered
+	switchedWithoutEffort := switched && explicitEffort == ""
+	if unsupported || (switchedWithoutEffort && !offered) {
 		newOptions[agent.OptionIDEffort] = agent.EffortAuto
 	}
 }

@@ -87,9 +87,10 @@ func serveNativeSettings(t *testing.T, a *Agent) *nativeCalls {
 	return calls
 }
 
-// Source: the Worker service (resetEffortToAutoIfUnsupported) sends effort "auto" with every model
-// switch of a provider that manages effort, and the native model catalog of the E2E profile
-// declares effort "high" for the first model and "low" for the second.
+// Source: the Worker service (resetEffortToAutoIfUnsupported) sends effort "auto" with a model
+// switch of a provider that manages effort, when the catalog does not show that the new model offers
+// the stored effort. The native model catalog of the E2E profile declares effort "high" for the first
+// model and "low" for the second.
 func TestUpdateSettingsSwitchesTheModelWhenTheServiceSendsEffortAuto(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}

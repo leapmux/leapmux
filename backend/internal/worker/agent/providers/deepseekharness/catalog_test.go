@@ -66,8 +66,9 @@ func TestModelSelectionUsesNativeDefaultsAndExactEffort(t *testing.T) {
 }
 
 // The Worker service resets the effort of a model switch to agent.EffortAuto for a provider that
-// manages a model-dependent effort catalog, because Auto is valid for every model. The provider
-// must read Auto as "the effort that the selected model declares as its default".
+// manages a model-dependent effort catalog, unless the catalog shows that the new model offers the
+// stored effort. Auto is valid for every model. The provider must read Auto as "the effort that the
+// selected model declares as its default".
 const twoReasoningModelsFixture = `{"default":{"provider":"deepseek-official","model":"deepseek-flash"},"groups":[{"id":"deepseek-official","name":"DeepSeek","models":[{"id":"deepseek-flash","name":"Flash","reasoning":{"defaultEffort":"high","efforts":[{"id":"off"},{"id":"high"},{"id":"max"}]}},{"id":"deepseek-pro","name":"Pro","reasoning":{"defaultEffort":"off","efforts":[{"id":"off"},{"id":"low"}]}},{"id":"plain","name":"Plain"}]}]}`
 
 func TestModelSelectionReadsEffortAutoAsTheDefaultOfTheSelectedModel(t *testing.T) {

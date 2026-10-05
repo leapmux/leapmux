@@ -462,7 +462,7 @@ Changing a setting from a composer chip or the **[+]** menu restarts the agent.
 **Cause**
 Most settings changes apply **live**. Some settings control process launch arguments and require a restart.
 
-An effort change to **Auto** also requires a restart because LeapMux must remove the `--effort` argument. A model change can reset effort to Auto. Reasonix also fixes its model at process launch.
+An effort change to **Auto** also requires a restart because LeapMux must remove the `--effort` argument. A model change keeps the effort when the new model offers it. If the new model does not offer the effort, the change resets the effort to Auto. Reasonix also fixes its model at process launch.
 
 **Fix**
 Wait for the agent to start again. If the start fails, use the startup error guidance above.

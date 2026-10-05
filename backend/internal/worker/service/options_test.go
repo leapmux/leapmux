@@ -330,3 +330,47 @@ func TestResetEffortToAutoIfUnsupported_KeepsEffortOnTheAccountDefault(t *testin
 		})
 	}
 }
+
+// TestResetEffortToAutoIfUnsupported_ModelSwitchWithoutEffort pins what a model switch that
+// sends no effort does with the effort that the stored row holds. The client sends only the axis
+// that the user changed, so the switch carries the model alone. The tier stays when the catalog
+// describes the new model and offers the tier. It resets to auto when the catalog describes the
+// new model and omits the tier, and when the catalog does not describe the new model at all,
+// because nothing can then show that the new model accepts the tier.
+func TestResetEffortToAutoIfUnsupported_ModelSwitchWithoutEffort(t *testing.T) {
+	t.Parallel()
+
+	manager := agent.NewManager(testRegistry, nil)
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	for _, test := range []struct {
+		name      string
+		oldModel  string
+		newModel  string
+		inherited string
+		want      string
+	}{
+		{name: "the new model offers the tier", oldModel: "opus[1m]", newModel: "sonnet", inherited: "xhigh", want: "xhigh"},
+		{name: "the new model offers the weakest tier", oldModel: "opus[1m]", newModel: "sonnet", inherited: "low", want: "low"},
+		{name: "the inherited effort is auto", oldModel: "opus[1m]", newModel: "sonnet", inherited: agent.EffortAuto, want: agent.EffortAuto},
+		{name: "the new model has no effort axis", oldModel: "opus[1m]", newModel: "haiku", inherited: "xhigh", want: agent.EffortAuto},
+		{name: "the catalog does not describe the new model", oldModel: "opus[1m]", newModel: "unlisted-model", inherited: "xhigh", want: agent.EffortAuto},
+		{name: "the new model is the account default", oldModel: "opus[1m]", newModel: agent.DefaultModelSentinel, inherited: "xhigh", want: agent.EffortAuto},
+		{name: "the stored row holds no effort", oldModel: "opus[1m]", newModel: "sonnet", inherited: "", want: agent.EffortAuto},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// No agent is registered under this id, so OptionGroups serves the static fallback.
+			catalog := manager.OptionGroups("not-running", provider, test.newModel)
+			require.NotEmpty(t, catalog)
+			options := OptionMap{agent.OptionIDModel: test.newModel}
+			if test.inherited != "" {
+				options[agent.OptionIDEffort] = test.inherited
+			}
+
+			resetEffortToAutoIfUnsupported(testRegistry, provider, options, catalog, test.oldModel, test.newModel, "")
+
+			assert.Equal(t, test.want, options[agent.OptionIDEffort])
+		})
+	}
+}
