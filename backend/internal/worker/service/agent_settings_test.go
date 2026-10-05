@@ -501,6 +501,55 @@ func TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort(t *testing
 	}
 }
 
+// TestUpdateAgentSettings_StoppedAgentModelSwitchKeepsTheEffortTheLiveCatalogOffers guards an
+// offline model switch. A stopped Pi agent carries the catalog that its last run reported, and that
+// catalog lists the new model with its thinking levels. Pi's static seed lists a single model, so a
+// switch to any other model must read the persisted live catalog, not the seed. The worker reset the
+// held level to auto, because the seed does not describe the new model, and the next launch ran
+// Pi's own default level.
+func TestUpdateAgentSettings_StoppedAgentModelSwitchKeepsTheEffortTheLiveCatalogOffers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
+
+	levels := []*agent.EffortInfo{
+		{Id: agent.EffortAuto, Name: "Auto"}, {Id: "high", Name: "High"}, {Id: "low", Name: "Low"},
+	}
+	models := []*agent.ModelInfo{
+		{Id: "glm-5.3", DisplayName: "GLM-5.3", DefaultEffort: "low", SupportedEfforts: levels},
+		{Id: "glm-5.3-flash", DisplayName: "GLM-5.3 Flash", DefaultEffort: "low", SupportedEfforts: levels},
+	}
+	liveCatalog := []*leapmuxv1.AvailableOptionGroup{
+		agent.ModelOptionGroup(models, "glm-5.3", agent.EffortSubGroupsLabeled("Thinking Level")),
+	}
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: provider,
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "glm-5.3", agent.OptionIDEffort: "high"}),
+	}))
+	require.NoError(t, svc.Queries.SetAgentOptionGroups(ctx, db.SetAgentOptionGroupsParams{
+		OptionGroups: mustMarshalOptionGroups(t, liveCatalog), ID: "agent-1",
+	}))
+	svc.Agents.PreloadCache("agent-1", liveCatalog)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+
+	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId:  "agent-1",
+		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "glm-5.3-flash"}},
+	}, w)
+	require.Empty(t, w.errors)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	opts := loadOptions(testRegistry, dbAgent.Options, provider)
+	assert.Equal(t, "glm-5.3-flash", opts[agent.OptionIDModel])
+	assert.Equal(t, "high", opts[agent.OptionIDEffort], "the live catalog lists the new model with the held level")
+}
+
 // TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort guards that a CLI `agent set --model <new>
 // --effort xhigh` against a STOPPED agent, where <new> is absent from the provider's static catalog
 // seed (a model only the running session's live catalog would list), does NOT silently reset the
