@@ -798,7 +798,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 			provider := dbAgent.AgentProvider
 			oldOptions := loadOptions(svc.Agents.Registry(), dbAgent.Options, provider)
-			newOptions := svc.sanitizeIncomingOptions(agentID, provider, oldOptions, r.GetSettings().GetOptions())
+			newOptions := svc.sanitizeIncomingOptions(&dbAgent, oldOptions, r.GetSettings().GetOptions())
 
 			// Persist the requested options first. A later correction contains only values
 			// that the provider confirms. Persist only the axes that this edit
@@ -2035,9 +2035,9 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// this means set_permission_mode is sent after the initialize/startup
 	// sequence has fully settled, while the ACTIVE broadcast still carries
 	// the preserved DB value. A change the provider can't apply live (e.g. a
-	// model switch made during startup, which resets effort to auto and so
-	// needs a relaunch) returns false; we relaunch below so the switch takes
-	// effect rather than being silently dropped.
+	// model switch made during startup to a model that lacks the effort, which
+	// resets the effort to auto and so needs a relaunch) returns false; we
+	// relaunch below so the switch takes effect rather than being silently dropped.
 	relaunch := false
 	if !maps.Equal(initialOpts.Options, latestOpts.Options) {
 		if !svc.Agents.UpdateSettings(agentID, latestOpts.Options).AppliedLive {
@@ -2099,11 +2099,12 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 
 // relaunchForStartupSettingsChange restarts the agent with opts after a settings
 // change that landed during the startup window required a relaunch (the live
-// update could not apply it -- e.g. a model switch resets effort to auto, which
-// the CLI only honors on a fresh launch). Without this the change is written to
-// the DB but never applied to the running process, leaving the agent on its
-// launch settings. Returns the refreshed db row, or fallback when the relaunch
-// or its persistence fails, plus whether a process is still running for the tab.
+// update could not apply it -- e.g. a model switch to a model that lacks the effort
+// resets it to auto, which the CLI only honors on a fresh launch). Without this
+// the change is written to the DB but never applied to the running process,
+// leaving the agent on its launch settings. Returns the refreshed db row, or
+// fallback when the relaunch or its persistence fails, plus whether a process
+// is still running for the tab.
 // Must be called with the per-agent lifecycle lock released: it takes the lock
 // itself, around its own control-socket mint.
 func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider leapmuxv1.AgentProvider, opts agent.Options, fallback db.Agent) (db.Agent, bool) {
@@ -2658,21 +2659,38 @@ func resetEffortToAutoIfUnsupported(registry *agent.Registry, provider leapmuxv1
 	}
 }
 
+// editCatalog returns the catalog that an edit toward model is judged against: the live catalog
+// of a running agent, else the catalog that the agent row holds from its last run. The client
+// chose from this catalog, because the watch path and optionGroupsView load the cache from the
+// same row column. A stopped agent has no live catalog, and the manager cache is empty after a
+// process exit and before a watcher loads the agent (the remote CLI can edit first). The static
+// seed cannot replace the row catalog: it lists no model for a provider whose models are
+// discovered at runtime, and for the other providers it differs from the live model list.
+func (svc *Service) editCatalog(dbAgent *db.Agent, model string) []*leapmuxv1.AvailableOptionGroup {
+	// A running agent ignores the row catalog, so skip the parse of a large JSON column.
+	if !svc.Agents.HasAgent(dbAgent.ID) {
+		svc.Agents.PreloadCache(dbAgent.ID, parseOptionGroups(dbAgent.OptionGroups))
+	}
+	return svc.Agents.OptionGroups(dbAgent.ID, dbAgent.AgentProvider, model)
+}
+
 // sanitizeIncomingOptions turns a raw UpdateAgentSettings options map into the full,
 // validated option set to persist and apply: it drops axes the provider can't apply,
-// merges the rest over the agent's current options, resets effort on a model switch for
-// catalog-effort providers, and fills the provider's permission-mode and other defaults.
-func (svc *Service) sanitizeIncomingOptions(agentID string, provider leapmuxv1.AgentProvider, oldOptions, incoming OptionMap) OptionMap {
+// merges the rest over the agent's current options, resets an effort that the settled model
+// does not offer for catalog-effort providers (see resetEffortToAutoIfUnsupported), and fills
+// the provider's permission-mode and other defaults.
+func (svc *Service) sanitizeIncomingOptions(dbAgent *db.Agent, oldOptions, incoming OptionMap) OptionMap {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	oldModel := oldOptions[agent.OptionIDModel]
 	// The model the edit settles on drives both the catalog the axis filter validates against and
-	// the model the effort reset checks: for a running agent OptionGroups ignores the model arg
-	// (it returns the live catalog), so this only changes the offline/static-fallback path --
-	// exactly where a CLI `agent set --model X --set someOption=...` targets a stopped agent.
+	// the model the effort reset checks: for a running agent the catalog is the live one and
+	// ignores the model arg, so this only changes the offline path -- exactly where a CLI
+	// `agent set --model X --set someOption=...` targets a stopped agent.
 	newModel := oldModel
 	if m, ok := incoming[agent.OptionIDModel]; ok && m != "" {
 		newModel = m
 	}
-	catalog := svc.Agents.OptionGroups(agentID, provider, newModel)
+	catalog := svc.editCatalog(dbAgent, newModel)
 
 	accepted := svc.acceptExposedOptions(agentID, provider, incoming, catalog)
 	newOptions := svc.Agents.Registry().Plugin(provider).ResolveOptionConflicts(oldOptions, accepted)

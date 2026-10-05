@@ -347,7 +347,7 @@ The available values come from the CLI's configuration. Choose a radio option in
 You can hide the status bar with **[+] > Show status bar**. The **[+]** menu still gives access to all status bar settings.
 
 {{< callout type="info" >}}
-Most settings changes apply **live**. LeapMux restarts the provider when a launch flag must change. Examples include a permission-mode change, effort **Auto**, and a model change. The interface applies each change optimistically and restores the prior value after a failure.
+Most settings changes apply **live**. LeapMux restarts the provider when a launch flag must change. Examples include a permission-mode change, effort **Auto**, and a model change to a model that does not offer the current effort. A model change keeps the current effort when the new model offers it. The interface applies each change optimistically and restores the prior value after a failure.
 {{< /callout >}}
 
 A picker shows radio items for up to 7 options and switches to a searchable list above that.

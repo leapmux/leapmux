@@ -1216,8 +1216,25 @@ func (r *Registry) fallbackOptionGroups(provider leapmuxv1.AgentProvider, curren
 // from the static templates) and any live-filtered group. Falling through to the bare static
 // fallback would drop those until the agent relaunches; this swaps only the stale per-model
 // groups and keeps the rest. The caller overlays the persisted currents afterward.
+//
+// The cached model group is the first source of the new model's groups. It is the catalog of the
+// last live run: it lists the models that the CLI reported, and each model option carries its own
+// sub_groups. The static seed is only a fallback for a catalog that states no per-model groups,
+// or does not list the new model. The seed can differ from the live list, and Pi and Cline seed a
+// single placeholder model. A rebuild from the seed alone replaces the live model list with the
+// seed, and it cannot describe a live model at all.
+//
+// The rebuild drops a stale group that the new model does not carry (the effort group after a
+// switch to a model with no effort axis), but only when a source lists the new model. When no
+// source lists it, the existing groups stay, as the browser does for the same case
+// (withSelectedModelSubGroups).
 func (r *Registry) withModelDependentGroupsRebuilt(cached []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
-	fresh := r.modelDependentGroups(provider, currentModel)
+	fresh := r.cachedModelDependentGroups(cached, provider, currentModel)
+	known := fresh != nil
+	if !known {
+		fresh = r.modelDependentGroups(provider, currentModel)
+		known = r.staticModelListed(provider, currentModel)
+	}
 	if len(fresh) == 0 {
 		return cached
 	}
@@ -1225,12 +1242,20 @@ func (r *Registry) withModelDependentGroupsRebuilt(cached []*leapmuxv1.Available
 	for _, g := range fresh {
 		freshByID[g.GetId()] = g
 	}
+	// A group that varies by model is a sub_group of some model option, in the source that built
+	// `fresh` or in the cached catalog.
+	dependent := subGroupIDs(optionids.GroupByID(fresh, OptionIDModel))
+	for id := range subGroupIDs(optionids.GroupByID(cached, OptionIDModel)) {
+		dependent[id] = true
+	}
 	out := make([]*leapmuxv1.AvailableOptionGroup, 0, len(cached)+len(fresh))
 	rebuilt := make(map[string]bool, len(fresh))
 	for _, g := range cached {
 		if f, ok := freshByID[g.GetId()]; ok {
 			out = append(out, f)
 			rebuilt[g.GetId()] = true
+		} else if known && dependent[g.GetId()] {
+			continue
 		} else {
 			out = append(out, g)
 		}
@@ -1244,6 +1269,67 @@ func (r *Registry) withModelDependentGroupsRebuilt(cached []*leapmuxv1.Available
 		}
 	}
 	return out
+}
+
+// cachedModelDependentGroups returns what modelDependentGroups returns, read from the cached
+// model group: the model group without a current value, then the sub_groups of the option for
+// currentModel. It returns nil when the cached catalog cannot state them, so that the caller falls
+// back to the static seed. That holds when the catalog has no model group, when no model option
+// carries sub_groups (a stub, or a provider that keeps no per-model groups), and when no option
+// matches currentModel. An option that matches and carries no sub_groups is an answer: that model
+// has no model-dependent groups.
+func (r *Registry) cachedModelDependentGroups(cached []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, currentModel string) []*leapmuxv1.AvailableOptionGroup {
+	mg := optionids.GroupByID(cached, OptionIDModel)
+	if len(subGroupIDs(mg)) == 0 {
+		return nil
+	}
+	var option *leapmuxv1.AvailableOption
+	for _, o := range mg.GetOptions() {
+		if o.GetId() == currentModel {
+			option = o
+			break
+		}
+	}
+	if option == nil {
+		want := r.NormalizeModelID(provider, currentModel)
+		for _, o := range mg.GetOptions() {
+			if r.NormalizeModelID(provider, o.GetId()) == want {
+				option = o
+				break
+			}
+		}
+	}
+	if option == nil {
+		return nil
+	}
+	model := proto.Clone(mg).(*leapmuxv1.AvailableOptionGroup)
+	model.CurrentValue = ""
+	return append([]*leapmuxv1.AvailableOptionGroup{model}, option.GetSubGroups()...)
+}
+
+// staticModelListed reports whether the static seed of the provider lists model. The seed states
+// the model-dependent groups of a listed model, so a group that such a model lacks is really absent.
+func (r *Registry) staticModelListed(provider leapmuxv1.AgentProvider, model string) bool {
+	reg, ok := r.byProvider[provider]
+	if !ok {
+		return false
+	}
+	if model == "" {
+		model = r.DefaultModel(provider)
+	}
+	return FindAvailableModel(reg.DefaultModels, model) != nil
+}
+
+// subGroupIDs collects the ids of the groups that the options of a model group carry as
+// sub_groups. Each id names a group that varies by model.
+func subGroupIDs(modelGroup *leapmuxv1.AvailableOptionGroup) map[string]bool {
+	ids := map[string]bool{}
+	for _, o := range modelGroup.GetOptions() {
+		for _, g := range o.GetSubGroups() {
+			ids[g.GetId()] = true
+		}
+	}
+	return ids
 }
 
 // withModelGroupDefaultMarked re-derives the "model" group's DefaultValue via the

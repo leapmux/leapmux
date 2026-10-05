@@ -154,6 +154,15 @@ func TestBuildAgentSetOptions_OptionFormOfWellKnownAxisAlone(t *testing.T) {
 	assert.Equal(t, "sonnet", opts[optionids.Model])
 }
 
+// TestBuildAgentSetOptions_ModelAloneSendsNoOtherAxis pins the request of `agent set --model B`. It
+// carries the model and no other axis, so the worker decides what a model switch does to the effort
+// and to every other axis that the caller did not name.
+func TestBuildAgentSetOptions_ModelAloneSendsNoOtherAxis(t *testing.T) {
+	opts, err := buildAgentSetOptions("sonnet", "", "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{optionids.Model: "sonnet"}, opts)
+}
+
 // TestBuildAgentSetOptions_RejectsDuplicateKey is the [G5] guard: a key set both by a dedicated
 // flag and an --option, or by two --options, is rejected so a contradictory pair can't silently
 // resolve to whichever assignment is applied last.

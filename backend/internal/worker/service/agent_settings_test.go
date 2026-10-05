@@ -356,8 +356,8 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 // TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange reproduces the spurious
 // "effort (auto)" notification: switching the model on a Cursor agent (an ACP provider
 // with no effort axis) must NOT stamp effort=auto and therefore must not surface an
-// effort change. Only catalog-effort providers (Claude/Codex/Pi) reset effort on a
-// model switch.
+// effort change. Only providers with a model-dependent effort catalog
+// (Registry.ManagesEffort) ever reset effort on a model switch.
 func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 	t.Parallel()
 
