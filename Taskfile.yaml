@@ -1075,9 +1075,13 @@ tasks:
       - backend/**/testdata/**/*
       - frontend/src/lib/syntaxThemes/**/*
       - frontend/tests/e2e/feature-matrix/**/*
+      # The matrix validator checks that each provider icon and each cell spec file exists.
+      - icons/agents/*.svg
+      - frontend/tests/e2e/*/*.spec.ts
       - scripts/license-overrides/**/*
       - scripts/validate-json.mjs
       - scripts/validate-coding-agent-matrix.mjs
+      - scripts/matrix-markdown.mjs
     vars:
       JS_CONTEXT:
         sh: *js_context_command
@@ -1087,7 +1091,9 @@ tasks:
     cmds:
       - *forget_artifacts
       - bun scripts/validate-json.mjs
-      - bun scripts/validate-coding-agent-matrix.mjs
+      # The matrix is final: each cell names its own passing browser spec. The flag enforces that in CI.
+      # A cell with testStatus pending, or a spec that serves two cells, fails here by design.
+      - bun scripts/validate-coding-agent-matrix.mjs --require-cell-specs
       - *record_artifacts
 
   lint-scripts:
@@ -1495,6 +1501,7 @@ tasks:
       - scripts/validate-json.mjs
       - scripts/validate-coding-agent-matrix.mjs
       - scripts/verify-coding-agent-site.mjs
+      - scripts/matrix-markdown.mjs
     vars:
       GO_CONTEXT:
         sh: *go_context_command

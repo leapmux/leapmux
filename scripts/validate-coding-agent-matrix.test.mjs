@@ -165,7 +165,7 @@ describe('validateCodingAgentMatrix', () => {
       cell.support = 'agent-limit'
       cell.audit = 'covered-negative'
       cell.userNote = 'Claude Code does not read text attachments. See [the issue](https://github.com/org/repo/issues/1).'
-      cell.detailNote = 'The native protocol of version 1.0 has no text input.'
+      cell.detailNote = 'The native protocol of version 1.0 has no text input. The issue https://github.com/org/repo/issues/1 asks for it, and the documentation lists no such block.'
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root, requireCellSpecs: true })).toEqual([])
     })
 
@@ -250,6 +250,17 @@ describe('validateCodingAgentMatrix', () => {
       ['a Go file name', 'The handler is in agent.go.'],
       ['a TypeScript file name', 'The extractor is in plugin.tsx.'],
       ['a path after a parenthesis', 'It reads a file (scripts/validate.mjs).'],
+      ['a path in quotation marks', 'The code lives in "backend/internal/worker".'],
+      ['a path in brackets', 'The code lives in [backend/internal/worker].'],
+      ['a path in backticks', 'The code lives in `backend/internal/worker`.'],
+      ['a path without a top directory', 'The code lives in internal/worker/agent.'],
+      ['a directory with a trailing slash', 'The files live in scripts/.'],
+      ['a data file in a repository directory', 'The data is in contracts/providers.json.'],
+      ['a protocol buffer file name', 'The schema is worker.proto.'],
+      ['a Rust file name', 'The code is in main.rs.'],
+      ['a Python file name', 'The helper is sync.py.'],
+      ['a JavaScript file name', 'The loader is index.js.'],
+      ['a JavaScript module file name', 'The script is build.cjs.'],
     ])('rejects a user note that holds %s', (_name, note) => {
       const { root, features, checklist, providerContract, cell } = fixture()
       cell.userNote = note
@@ -269,6 +280,12 @@ describe('validateCodingAgentMatrix', () => {
       'See [the issue](https://github.com/org/repo/issues/1).',
       'The Go docs are at [pkg.go.dev](https://pkg.go.dev/example).',
       'Run `/compact` first.',
+      'The frontend/backend split stays hidden.',
+      'It runs shell scripts/hooks before a turn.',
+      'It needs Node.js 20 or later.',
+      'Call `tools.<name>(arguments)` with `--no-extensions`.',
+      'Set the endpoint to `https://api.example.com/v1`.',
+      'The answer is 2 < 3 and 5 > 4.',
     ])('accepts a user note that a reader can use: %s', (note) => {
       const { root, features, checklist, providerContract, cell } = fixture()
       cell.userNote = note
@@ -283,7 +300,120 @@ describe('validateCodingAgentMatrix', () => {
       expect(errors).toContain('user note of provider claude-code holds an http:// link')
     })
 
-    it('counts every support state across the full grid', () => {
+    it.each([
+      ['a path', 'See [the code](backend/internal/worker/x.go).', 'backend/internal/worker/x.go'],
+      ['a javascript: URL', 'See [the page](javascript:alert(1)).', 'javascript:alert(1)'],
+      ['an ftp:// URL', 'See [the file](ftp://example.com/file).', 'ftp://example.com/file'],
+      ['a scheme-relative URL', 'See [the page](//example.com/page).', '//example.com/page'],
+      ['an in-page anchor', 'See [the note](#note-pi-model).', '#note-pi-model'],
+      ['an entity that spells javascript:', 'See [the page](&#106;avascript:alert(1)).', 'javascript:alert(1)'],
+    ])('rejects a user note that links to %s', (_name, note, target) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain(`user note of cell claude-code/text-attachments links to ${JSON.stringify(target)}, which is not an https:// URL`)
+    })
+
+    it.each([
+      ['inline HTML', 'Press <b>Stop</b> to end it.'],
+      ['a script element', 'Press it.<script>alert(1)</script>'],
+      ['a block of HTML', '<img src=x onerror=alert(1)>'],
+      ['an HTML comment', 'Press it. <!-- hidden --> Then wait.'],
+    ])('rejects a user note that holds raw HTML: %s', (_name, note) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments holds raw HTML')
+    })
+
+    it('rejects a user note that embeds an image, because the page would load a remote file', () => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = 'See ![the chart](https://example.com/chart.png).'
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments holds an image')
+    })
+
+    it.each([
+      'See ftp://example.com/file for it.',
+      'See www.example.com for it.',
+      'See https://example.com/page for it.',
+    ])('rejects a user note that holds a bare URL, because the website turns it into a link: %s', (note) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments holds a bare URL; write a Markdown link')
+    })
+
+    it.each([
+      ['a list', '- one'],
+      ['a heading', '# Title'],
+      ['a block quote', '> quoted'],
+      ['an indented code block', '    code'],
+      ['two paragraphs', 'one\r\rtwo'],
+    ])('rejects a user note that is not one paragraph: %s', (_name, note) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments must be one paragraph of text')
+    })
+
+    it.each(['  ', '\t', ' '])('rejects a user note that holds only whitespace, because the website shows an empty note: %j', (note) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments holds only whitespace; leave it empty')
+      cell.userNote = ''
+      checklist.providerGroups[0][0].userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of provider claude-code holds only whitespace; leave it empty')
+    })
+
+    it('rejects a whitespace-only user note on a hidden feature', () => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      features.features.push(hiddenFeature)
+      checklist.cells['basic-chat'] = { 'claude-code': { ...cell, userNote: '  ' } }
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/basic-chat holds only whitespace; leave it empty')
+    })
+
+    it.each([[5], [null], [undefined], [['note']], [{ text: 'note' }]])('reports a user note that is not a string, and does not throw: %j', (note) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.userNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments is not a string')
+      cell.support = 'agent-limit'
+      cell.audit = 'covered-negative'
+      cell.detailNote = 'Evidence for the maintainers.'
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('user note of cell claude-code/text-attachments is not a string')
+    })
+
+    it.each([[5], [null], [undefined], [['note']], [{ text: 'note' }]])('reports a detail note that is not a string, and does not throw: %j', (note) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.detailNote = note
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('detail note of cell claude-code/text-attachments is not a string')
+      cell.support = 'leapmux-limit'
+      cell.audit = 'refusal-covered'
+      cell.userNote = 'A note for the reader.'
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('detail note of cell claude-code/text-attachments is not a string')
+    })
+
+    it.each([
+      ['equals its user note', 'A note for the reader.'],
+      ['is shorter than its user note', 'x'],
+    ])('rejects a limited cell whose detail note %s, because the detail note holds the evidence', (_name, detail) => {
+      const { root, features, checklist, providerContract, cell } = fixture()
+      cell.support = 'agent-limit'
+      cell.audit = 'covered-negative'
+      cell.userNote = 'A note for the reader.'
+      cell.detailNote = detail
+      expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
+        .toContain('cell claude-code/text-attachments is agent-limit but its detail note is not longer than its user note')
+    })
+
+    it('pins the support state of every cell of the full grid', () => {
       const { features, checklist, providerContract } = readCodingAgentMatrix()
       expect(validateCodingAgentMatrix(features, checklist, providerContract)).toEqual([])
       const counts = { 'supported': 0, 'agent-limit': 0, 'leapmux-limit': 0 }
@@ -291,8 +421,24 @@ describe('validateCodingAgentMatrix', () => {
         for (const cell of Object.values(row))
           counts[cell.support] += 1
       }
-      expect(counts.supported + counts['agent-limit'] + counts['leapmux-limit']).toBe(features.features.length * checklist.providerGroups.flat().length)
+      // A deliberate change of a verdict changes these numbers. Update them with the checklist.
+      expect(counts).toEqual({ 'supported': 1046, 'agent-limit': 404, 'leapmux-limit': 87 })
       expect(checklist.supportStates).toEqual(SUPPORT_STATES)
+    })
+  })
+
+  describe('the final migration rule in the build', () => {
+    const tasks = Bun.YAML.parse(readFileSync(join(ROOT, 'Taskfile.yaml'), 'utf8')).tasks
+
+    it('runs the matrix validator in final mode inside validate-json', () => {
+      expect(tasks['validate-json'].cmds).toContain('bun scripts/validate-coding-agent-matrix.mjs --require-cell-specs')
+    })
+
+    it('re-runs validate-json when a spec file, an icon, or the note parser changes', () => {
+      const sources = tasks['validate-json'].sources
+      expect(sources).toContain('frontend/tests/e2e/*/*.spec.ts')
+      expect(sources).toContain('icons/agents/*.svg')
+      expect(sources).toContain('scripts/matrix-markdown.mjs')
     })
   })
 

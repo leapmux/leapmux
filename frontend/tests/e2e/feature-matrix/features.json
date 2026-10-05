@@ -220,7 +220,7 @@
     {
       "id": "code-execution",
       "label": "Code execution",
-      "description": "The model supplies source to a dedicated code executor or a native script-and-language interface. The native agent runs the source and returns output or errors. Ordinary shell commands and browser-only scripts do not count. Provider notes state whether scripts can call agent tools.",
+      "description": "The model supplies source to a dedicated code executor or a native script-and-language interface. The native agent runs the source and returns output or errors. Ordinary shell commands and browser-only scripts do not count. Provider notes state whether scripts can call agent tools when the documentation or the source of the agent shows it.",
       "showInMatrix": true,
       "group": "tools"
     },

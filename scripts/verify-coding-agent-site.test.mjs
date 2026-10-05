@@ -34,8 +34,8 @@ const html = `
 <div class="provider-logos"><a href="https://pi.dev/">
   <img src="/icons/agents/pi.svg" alt="Pi"><span class="provider-hover-label">Pi</span>
 </a></div>
-<ul class="feature-matrix-legend"><li><span aria-hidden="true">✅</span> Supported</li><li><span aria-hidden="true">🚫</span> The agent does not offer it</li><li><span aria-hidden="true">🚧</span> LeapMux does not support it yet</li></ul>
-<div class="feature-matrix"><table aria-label="Coding agent feature matrix, group 1">
+<ul class="feature-matrix-legend" role="list"><li><span aria-hidden="true">✅</span> Supported</li><li><span aria-hidden="true">🚫</span> The agent does not offer it</li><li><span aria-hidden="true">🚧</span> LeapMux does not support it yet</li></ul>
+<div class="feature-matrix"><table aria-label="Coding agent feature matrix, part 1 of 1">
   <thead><tr><th>Feature</th><th><a href="https://pi.dev/">
     <img src="/icons/agents/pi.svg" alt="Pi"><span class="provider-hover-label">Pi</span>
   </a><a href="#note-provider-pi">†</a></th></tr></thead>
@@ -48,7 +48,7 @@ const html = `
 </dl></section>
 <section class="feature-matrix-notes">
   <div id="note-provider-pi"><strong>Pi:</strong><p>Provider note.</p></div>
-  <div id="note-pi-mcp-input-request"><strong>🚫 Pi — MCP input request:</strong><p>Cell-specific <strong>value</strong>. See <a href="https://pi.dev/issues/1">the issue</a>.</p></div>
+  <div id="note-pi-mcp-input-request"><strong><span aria-hidden="true">🚫</span> Pi — MCP input request:</strong><p>Cell-specific <strong>value</strong>. See <a href="https://pi.dev/issues/1">the issue</a>.</p></div>
 </section>
 `
 
@@ -171,7 +171,7 @@ describe('verifyCodingAgentSite', () => {
   })
 
   it('rejects a matrix table without an accessible name', () => {
-    const invalid = html.replace(' aria-label="Coding agent feature matrix, group 1"', '')
+    const invalid = html.replace(' aria-label="Coding agent feature matrix, part 1 of 1"', '')
     expect(verifyCodingAgentSite(invalid, features, checklist))
       .toContain('table 1 has no accessible name')
   })
@@ -209,7 +209,7 @@ describe('verifyCodingAgentSite support states', () => {
   })
 
   it('rejects a page without the legend', () => {
-    const invalid = html.replace(/<ul class="feature-matrix-legend">[\s\S]*?<\/ul>/, '')
+    const invalid = html.replace(/<ul class="feature-matrix-legend"[^>]*>[\s\S]*?<\/ul>/, '')
     expect(verifyCodingAgentSite(invalid, features, checklist))
       .toContain('the page contains no support legend')
   })
@@ -233,6 +233,30 @@ describe('verifyCodingAgentSite support states', () => {
     const invalid = html.replace('<li><span aria-hidden="true">✅</span> Supported</li>', '<li><span>✅</span> Supported</li>')
     expect(verifyCodingAgentSite(invalid, features, checklist))
       .toContain('legend entry 1 must hide its symbol from assistive technology')
+  })
+
+  it('rejects a legend that lost its list role, because list-style none drops the role in Safari', () => {
+    const invalid = html.replace('<ul class="feature-matrix-legend" role="list">', '<ul class="feature-matrix-legend">')
+    expect(verifyCodingAgentSite(invalid, features, checklist))
+      .toContain('the support legend must have the list role')
+  })
+
+  it('rejects a note label whose symbol screen readers announce as an emoji name', () => {
+    const invalid = html.replace('<strong><span aria-hidden="true">🚫</span> Pi', '<strong>🚫 Pi')
+    expect(verifyCodingAgentSite(invalid, features, checklist))
+      .toContain('note label of pi/mcp-input-request must hide the symbol of its state from assistive technology')
+  })
+
+  it('rejects a note label that shows the symbol of another state', () => {
+    const invalid = html.replace('<strong><span aria-hidden="true">🚫</span> Pi', '<strong><span aria-hidden="true">🚧</span> Pi')
+    expect(verifyCodingAgentSite(invalid, features, checklist))
+      .toContain('note label of pi/mcp-input-request must hide the symbol of its state from assistive technology')
+  })
+
+  it('rejects a table name that calls a part of the roster a group, because a group is a set of features', () => {
+    const invalid = html.replace('feature matrix, part 1 of 1', 'feature matrix, group 1 of 1')
+    expect(verifyCodingAgentSite(invalid, features, checklist))
+      .toContain('table 1 names itself a group, but a group is a set of features')
   })
 })
 
@@ -288,6 +312,95 @@ describe('verifyCodingAgentSite user notes', () => {
     const short = structuredClone(checklist)
     short.cells['mcp-input-request'].pi.detailNote = 'Collects'
     expect(verifyCodingAgentSite(html, features, short)).toEqual([])
+  })
+})
+
+describe('verifyCodingAgentSite detail note leaks', () => {
+  const FLAG_SENTENCE = 'Version 1.2 of the agent ignores the `--flag` option, as the [upstream issue](https://pi.dev/issues/9) shows.'
+  const FLAG_SENTENCE_RENDERED = 'Version 1.2 of the agent ignores the <code>--flag</code> option, as the <a href="https://pi.dev/issues/9">upstream issue</a> shows.'
+  const PROTOCOL_SENTENCE = 'The maintainers checked the native protocol on 2026-10-05 and found no such field.'
+  const SHORT_SENTENCE = 'The browser spec confirms the refusal.'
+  const detailed = (detailNote, userNote) => {
+    const next = structuredClone(checklist)
+    next.cells['mcp-input-request'].pi.detailNote = detailNote
+    if (userNote !== undefined)
+      next.cells['mcp-input-request'].pi.userNote = userNote
+    return next
+  }
+  const leak = 'detail note of pi/mcp-input-request appears on the website'
+  /** Put content in the notes section, which is one of the elements that the shortcode renders. */
+  const inMatrix = content => html.replace(/<\/section>\s*$/, `${content}</section>`)
+
+  it('finds a detail note that the page renders as Markdown', () => {
+    const next = detailed(`${FLAG_SENTENCE} ${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    const rendered = inMatrix(`<p>${FLAG_SENTENCE_RENDERED} ${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}</p>`)
+    expect(verifyCodingAgentSite(rendered, features, next)).toContain(leak)
+  })
+
+  it('finds a detail note that the page prints as Markdown source', () => {
+    const next = detailed(`${FLAG_SENTENCE} ${PROTOCOL_SENTENCE}`)
+    expect(verifyCodingAgentSite(`${html}<pre>${FLAG_SENTENCE} ${PROTOCOL_SENTENCE}</pre>`, features, next)).toContain(leak)
+  })
+
+  it('finds a copy that misses the last sentence', () => {
+    const next = detailed(`${FLAG_SENTENCE} ${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    const partial = inMatrix(`<p>${FLAG_SENTENCE_RENDERED} ${PROTOCOL_SENTENCE}</p>`)
+    expect(verifyCodingAgentSite(partial, features, next)).toContain(leak)
+  })
+
+  it('finds one sentence of at least 40 characters', () => {
+    const next = detailed(`${FLAG_SENTENCE} ${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    expect(verifyCodingAgentSite(inMatrix(`<p>${PROTOCOL_SENTENCE}</p>`), features, next)).toContain(leak)
+  })
+
+  it('finds a paragraph of short sentences that the page copies', () => {
+    const paragraph = 'Short one here. Short two here. Short three here.'
+    const next = detailed(`${PROTOCOL_SENTENCE}\n\n${paragraph}`)
+    expect(verifyCodingAgentSite(inMatrix(`<p>${paragraph}</p>`), features, next)).toContain(leak)
+  })
+
+  it('ignores a sentence under 40 characters, which can occur by chance', () => {
+    const next = detailed(`${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    expect(verifyCodingAgentSite(inMatrix(`<p>${SHORT_SENTENCE}</p>`), features, next)).toEqual([])
+  })
+
+  it('accepts a detail sentence that the user note of the cell also holds, because the page shows that note', () => {
+    const shared = 'The agent sends no compaction result, so LeapMux shows no notice.'
+    const next = detailed(`${shared} ${PROTOCOL_SENTENCE}`, shared)
+    const page = html.replace('Cell-specific <strong>value</strong>. See <a href="https://pi.dev/issues/1">the issue</a>.', shared)
+    expect(verifyCodingAgentSite(page, features, next)).toEqual([])
+  })
+
+  it('accepts a detail sentence that the provider note holds', () => {
+    const shared = 'The provider note states a long sentence that a cell detail note repeats.'
+    const next = detailed(`${shared} ${PROTOCOL_SENTENCE}`)
+    next.providerGroups[0][0].userNote = shared
+    const page = html.replace('<p>Provider note.</p>', `<p>${shared}</p>`)
+    expect(verifyCodingAgentSite(page, features, next)).toEqual([])
+  })
+
+  it('accepts a detail sentence that the hand-written docs prose around the matrix also holds', () => {
+    const next = detailed(`${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    expect(verifyCodingAgentSite(`${html}<ul><li>${PROTOCOL_SENTENCE}</li></ul>`, features, next)).toEqual([])
+  })
+
+  it('accepts a detail sentence that a feature definition also holds', () => {
+    const next = detailed(`${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    const described = structuredClone(features)
+    described.features[0].description = PROTOCOL_SENTENCE
+    const page = html.replace('<dd>Collects requested fields.</dd>', `<dd>${PROTOCOL_SENTENCE}</dd>`)
+    expect(verifyCodingAgentSite(page, described, next)).toEqual([])
+  })
+
+  it('still finds a whole detail note in the docs prose around the matrix', () => {
+    const next = detailed(`${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}`)
+    expect(verifyCodingAgentSite(`${html}<p>${PROTOCOL_SENTENCE} ${SHORT_SENTENCE}</p>`, features, next)).toContain(leak)
+  })
+
+  it('reports each leaking note once', () => {
+    const next = detailed(`${PROTOCOL_SENTENCE} ${FLAG_SENTENCE}`)
+    const leaking = inMatrix(`<p>${PROTOCOL_SENTENCE}</p><p>${FLAG_SENTENCE_RENDERED}</p>`)
+    expect(verifyCodingAgentSite(leaking, features, next).filter(error => error === leak)).toHaveLength(1)
   })
 })
 

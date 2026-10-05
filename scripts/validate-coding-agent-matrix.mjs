@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { parseMarkdown, walkMarkdown } from './matrix-markdown.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const MATRIX_DIR = 'frontend/tests/e2e/feature-matrix'
@@ -78,10 +79,31 @@ function validateFeatureGroups(features, errors) {
 /** The three states of a cell, in the order of the legend. */
 const SUPPORT_STATE_IDS = ['supported', 'agent-limit', 'leapmux-limit']
 
-/** A user note never names a repository path. A reader cannot use one. */
-const REPOSITORY_PATH = /(?:^|[\s(`])(?:frontend|backend|contracts|scripts|site)\//
-/** A user note never names a source file. A domain such as pkg.go.dev is not a file name. */
-const SOURCE_FILE = /\.(?:go|tsx?|mjs)(?!\w|\.\w)/
+/**
+ * The directories of the repository that a user note never names. A path starts with one of
+ * them. `internal` is the Go convention for a package that only the repository imports.
+ */
+const REPOSITORY_ROOTS = ['frontend', 'backend', 'contracts', 'scripts', 'site', 'internal', 'desktop', 'proto', 'docker', 'testdata', 'icons']
+/** A repository directory, then a slash, then more path. A quotation mark or a bracket may come before it. */
+const PATH_TOKEN = new RegExp(`(?<![\\w./@-])(?:${REPOSITORY_ROOTS.join('|')})(?:/[\\w.@-]*)+`, 'g')
+/**
+ * A user note never names a source file. A domain such as pkg.go.dev is not a file name. A brand
+ * such as Node.js is not one either, so `.js` after a capitalized word does not count.
+ */
+const SOURCE_FILE = /\.(?:go|tsx?|jsx|[mc]ts|[mc]js|rs|py|proto)(?!\w|\.\w)|(?<!\b[A-Z][a-z]+)\.js(?!\w|\.\w)/
+/** A URL that the website turns into a link by itself. Hugo enables the Goldmark linkify extension. */
+const BARE_URL = /\b(?!http:)[a-z][a-z0-9+.-]*:\/\/|(?:^|\s)www\./i
+
+/**
+ * Tell a repository path from two plain words that a slash joins, as in "frontend/backend". A
+ * path has three or more segments, ends in a slash, or ends in a file name with an extension.
+ * A path of two plain words, such as "backend/internal", looks like the two words and passes.
+ */
+function isRepositoryPath(token) {
+  const trimmed = token.replace(/[.@-]+$/, '')
+  const segments = trimmed.split('/').filter(Boolean)
+  return trimmed.endsWith('/') || segments.length > 2 || /\.\w+$/.test(segments.at(-1) ?? '')
+}
 
 /** Check that the legend lists the three fixed states, each with its own symbol and label. */
 function validateSupportStates(states, errors) {
@@ -97,17 +119,67 @@ function validateSupportStates(states, errors) {
   }
 }
 
+/** The trimmed text of a note, or the empty string for a value that is not a string. */
+function trimmedNote(note) {
+  return typeof note === 'string' ? note.trim() : ''
+}
+
+/** Report a detail note that is not a string. The website never shows it, but the checks below read it. */
+function detailNoteErrors(note, owner) {
+  return typeof note === 'string' ? [] : [`detail note of ${owner} is not a string`]
+}
+
 /**
- * Check one user note. The website publishes it, so it names no repository path, no source
- * file and no http:// link. The check ignores the text inside a link target.
+ * Check the parsed Markdown of a user note. The website renders it with Goldmark, which keeps raw
+ * HTML (`unsafe: true` in site/hugo.yaml) and turns a bare URL into a link. So the note is one
+ * paragraph of text and links, every link goes to an https:// URL, and no node names a repository
+ * path or a source file. The check reads the text of each node and never a link target.
+ */
+function noteMarkdownErrors(note, owner) {
+  const tree = parseMarkdown(note)
+  const errors = new Set()
+  if (tree.children.length !== 1 || tree.children[0].type !== 'paragraph')
+    errors.add(`user note of ${owner} must be one paragraph of text`)
+  walkMarkdown(tree, (node) => {
+    switch (node.type) {
+      case 'html':
+        errors.add(`user note of ${owner} holds raw HTML`)
+        break
+      case 'image':
+        errors.add(`user note of ${owner} holds an image`)
+        break
+      case 'link':
+      case 'definition':
+        // An http:// target has its own message, for the plain text of a note also.
+        if (!/^https?:\/\//i.test(node.url))
+          errors.add(`user note of ${owner} links to ${JSON.stringify(node.url)}, which is not an https:// URL`)
+        break
+      case 'text':
+      case 'inlineCode':
+      case 'code':
+        if (node.type === 'text' && BARE_URL.test(node.value))
+          errors.add(`user note of ${owner} holds a bare URL; write a Markdown link`)
+        if (SOURCE_FILE.test(node.value) || Array.from(node.value.matchAll(PATH_TOKEN), match => match[0]).some(isRepositoryPath))
+          errors.add(`user note of ${owner} holds a repository path or a source file name`)
+        break
+    }
+  })
+  return [...errors]
+}
+
+/**
+ * Check one user note. The website publishes it, so it holds no raw HTML, no repository path, no
+ * source file name, and no link except an https:// link. An empty note means that the cell has none.
+ * A note of only whitespace is not empty: Hugo shows its link and an empty note.
  */
 function userNoteErrors(note, owner) {
-  if (typeof note !== 'string' || !note)
+  if (typeof note !== 'string')
+    return [`user note of ${owner} is not a string`]
+  if (!note)
     return []
-  const errors = []
-  const readable = note.replace(/\]\([^)]*\)/g, ']').replace(/https?:\/\/\S+/g, '')
-  if (REPOSITORY_PATH.test(readable) || SOURCE_FILE.test(readable))
-    errors.push(`user note of ${owner} holds a repository path or a source file name`)
+  if (!note.trim())
+    return [`user note of ${owner} holds only whitespace; leave it empty`]
+  const errors = noteMarkdownErrors(note, owner)
   if (/http:\/\//i.test(note))
     errors.push(`user note of ${owner} holds an http:// link`)
   return errors
@@ -115,22 +187,28 @@ function userNoteErrors(note, owner) {
 
 /**
  * Check the state and the two notes of one cell. A cell that is not supported states why in a
- * detail note (the evidence). A published limited cell also states it for the reader in a user
+ * detail note (the evidence), which holds more than the user note, because it carries the
+ * evidence behind that note. A published limited cell also states it for the reader in a user
  * note. A hidden feature has no reader, so it has no user note.
  */
 function validateCellNotes(cell, key, { published, hidden }, errors) {
+  const owner = `cell ${key}`
+  errors.push(...userNoteErrors(cell.userNote, owner), ...detailNoteErrors(cell.detailNote, owner))
   if (!SUPPORT_STATE_IDS.includes(cell.support)) {
     errors.push(`cell ${key} has unknown support ${cell.support}`)
   }
   else if (cell.support !== 'supported') {
-    if (published && !cell.userNote?.trim())
+    const userNote = trimmedNote(cell.userNote)
+    const detailNote = trimmedNote(cell.detailNote)
+    if (published && typeof cell.userNote === 'string' && !userNote)
       errors.push(`cell ${key} is ${cell.support} but has no user note`)
-    if (!cell.detailNote?.trim())
+    if (typeof cell.detailNote === 'string' && !detailNote)
       errors.push(`cell ${key} is ${cell.support} but has no detail note`)
+    else if (detailNote && detailNote.length <= userNote.length)
+      errors.push(`cell ${key} is ${cell.support} but its detail note is not longer than its user note`)
   }
-  if (hidden && cell.userNote?.trim())
+  if (hidden && trimmedNote(cell.userNote))
     errors.push(`cell ${key} belongs to a hidden feature and must have no user note`)
-  errors.push(...userNoteErrors(cell.userNote, `cell ${key}`))
 }
 
 /** Check the relationships that the two JSON Schemas cannot express. */
@@ -170,7 +248,7 @@ export function validateCodingAgentMatrix(features, checklist, providerContract,
     const iconPath = join(root, provider.icon.replace(/^\//, ''))
     if (!existsSync(iconPath))
       errors.push(`provider ${provider.id} icon does not exist: ${provider.icon}`)
-    errors.push(...userNoteErrors(provider.userNote, `provider ${provider.id}`))
+    errors.push(...userNoteErrors(provider.userNote, `provider ${provider.id}`), ...detailNoteErrors(provider.detailNote, `provider ${provider.id}`))
   }
   compareKeys(new Set(providers.map(provider => provider.label)), contractLabels, 'provider roster', errors)
   validateSupportStates(checklist.supportStates ?? [], errors)

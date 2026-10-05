@@ -2,15 +2,12 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { markdownBlockTexts, markdownLinks, markdownText } from './matrix-markdown.mjs'
 import { readCodingAgentMatrix } from './validate-coding-agent-matrix.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const require = createRequire(new URL('../frontend/package.json', import.meta.url))
 const { JSDOM } = require('jsdom')
-const { unified } = require('unified')
-const remarkParse = require('remark-parse').default
-
-const markdown = unified().use(remarkParse)
 
 /** Compare text the way a reader sees it: one space between words, plain quotes and dashes. */
 function normalizeText(value) {
@@ -24,25 +21,6 @@ function normalizeText(value) {
 
 function sameText(actual, expected) {
   return normalizeText(actual) === normalizeText(expected)
-}
-
-function markdownText(source) {
-  const visit = node => typeof node.value === 'string'
-    ? node.value
-    : (node.children ?? []).map(visit).join(' ')
-  return visit(markdown.parse(source))
-}
-
-function markdownLinks(source) {
-  const urls = []
-  const visit = (node) => {
-    if (node.type === 'link')
-      urls.push(node.url)
-    for (const child of node.children ?? [])
-      visit(child)
-  }
-  visit(markdown.parse(source))
-  return urls
 }
 
 function renderedText(node) {
@@ -101,6 +79,9 @@ function legendErrors(document, states) {
     return ['the page contains no support legend']
   const entries = Array.from(legend.children)
   const errors = []
+  // The legend sets list-style to none, and Safari then drops the implicit list role.
+  if (legend.getAttribute('role') !== 'list')
+    errors.push('the support legend must have the list role')
   if (entries.length !== states.length)
     errors.push(`expected ${states.length} legend entries, found ${entries.length}`)
   for (const [index, state] of states.entries()) {
@@ -116,26 +97,76 @@ function legendErrors(document, states) {
   return errors
 }
 
+/** A whole detail note shorter than this can occur on the page by chance. */
+const MIN_NOTE_LENGTH = 15
+/** A sentence or a paragraph of a detail note shorter than this can occur on the page by chance. */
+const MIN_PIECE_LENGTH = 40
+/** The elements that the `matrix` shortcode renders. The page prose around them belongs to the docs page. */
+const MATRIX_ELEMENTS = '.feature-matrix-legend, .feature-matrix, .feature-matrix-definitions, .feature-matrix-notes'
+
+/** The text of some nodes, read twice: with and without a space between inline elements. */
+function textVariants(nodes) {
+  return [
+    normalizeText(nodes.map(node => node.textContent ?? '').join(' ')),
+    normalizeText(nodes.map(renderedText).join(' ')),
+  ]
+}
+
 /**
- * Check that no detail note reaches the page. The website shows the user note only. A detail
- * note that equals its user note is the user note, and a note under 15 characters can occur
- * by chance, so neither counts. The check reads the page as plain text twice, with and
- * without a space between inline elements, so markup cannot hide a leak.
+ * The pieces of a detail note that the matrix must not hold. The pieces are each paragraph and
+ * each sentence of 40 characters or more, as the plain text of the Markdown, so that a page that
+ * renders the note matches.
+ */
+function detailPieces(detail) {
+  const paragraphs = markdownBlockTexts(detail).map(normalizeText).filter(Boolean)
+  const sentences = paragraphs.flatMap(paragraph => paragraph.split(/(?<=[.!?])\s+/))
+  return new Set([...paragraphs, ...sentences].filter(text => text.length >= MIN_PIECE_LENGTH))
+}
+
+/**
+ * The whole detail note, as the Markdown source (a page can print it unrendered) and as the plain
+ * text of the Markdown. A whole note counts from 15 characters.
+ */
+function wholeDetailNotes(detail) {
+  return new Set([normalizeText(detail), normalizeText(markdownText(detail))].filter(text => text.length >= MIN_NOTE_LENGTH))
+}
+
+/**
+ * Check that no detail note reaches the page. The website shows the user note only.
+ *
+ * - A whole note counts anywhere on the page.
+ * - A paragraph or a sentence of 40 characters or more counts inside the matrix elements, so a
+ *   copy that misses its last sentence is found. The docs page around the matrix is hand-written
+ *   prose, and it can repeat a sentence of a detail note by design.
+ * - Text that a published note or a feature definition also holds does not count, because the page
+ *   shows that text on purpose.
+ *
+ * The check reads each text with and without a space between inline elements, so markup cannot hide a leak.
  */
 function detailLeakErrors(document, features, checklist) {
-  const pageTexts = [normalizeText(document.body.textContent ?? ''), normalizeText(renderedText(document.body))]
-  const leaks = (detail, userNote) => {
-    const text = normalizeText(detail ?? '')
-    return text.length >= 15 && text !== normalizeText(userNote ?? '') && pageTexts.some(page => page.includes(text))
-  }
+  const pageTexts = textVariants([document.body])
+  const matrixTexts = textVariants(Array.from(document.querySelectorAll(MATRIX_ELEMENTS)))
+  const providers = checklist.providerGroups.flat()
+  const userNotes = [
+    ...providers.map(provider => provider.userNote),
+    ...features.features.flatMap(feature => Object.values(checklist.cells[feature.id]).map(cell => cell.userNote)),
+  ].filter(note => note?.trim())
+  const publishedTexts = [
+    ...userNotes.map(note => normalizeText(markdownText(note))),
+    ...features.features.map(feature => normalizeText(feature.description)),
+  ]
+  const appearsIn = (texts, pieces) => Array.from(pieces).some(piece =>
+    !publishedTexts.some(published => published.includes(piece)) && texts.some(text => text.includes(piece)))
+  const leaks = detail => typeof detail === 'string'
+    && (appearsIn(pageTexts, wholeDetailNotes(detail)) || appearsIn(matrixTexts, detailPieces(detail)))
   const errors = []
-  for (const provider of checklist.providerGroups.flat()) {
-    if (leaks(provider.detailNote, provider.userNote))
+  for (const provider of providers) {
+    if (leaks(provider.detailNote))
       errors.push(`detail note of provider ${provider.id} appears on the website`)
   }
   for (const feature of features.features) {
     for (const [providerId, cell] of Object.entries(checklist.cells[feature.id])) {
-      if (leaks(cell.detailNote, cell.userNote))
+      if (leaks(cell.detailNote))
         errors.push(`detail note of ${providerId}/${feature.id} appears on the website`)
     }
   }
@@ -232,6 +263,9 @@ export function verifyCodingAgentSite(html, features, checklist) {
       errors.push(`table ${groupIndex + 1} repeats accessible name ${tableName}`)
     else
       tableNames.add(tableName)
+    // A group names a set of features on this page. The roster parts take another word.
+    if (tableName && /\bgroup\b/i.test(tableName))
+      errors.push(`table ${groupIndex + 1} names itself a group, but a group is a set of features`)
     const headers = Array.from(table.querySelectorAll('thead th')).slice(1)
     if (headers.length !== group.length)
       errors.push(`table ${groupIndex + 1} has ${headers.length} provider headers, expected ${group.length}`)
@@ -271,6 +305,9 @@ export function verifyCodingAgentSite(html, features, checklist) {
           const note = document.getElementById(`note-${provider.id}-${feature.id}`)
           if (!noteMatches(note, cell.userNote, true))
             errors.push(`cell note for ${provider.id}/${feature.id} differs from source`)
+          // The label names the state in words elsewhere, so a screen reader must skip the emoji.
+          if (note?.querySelector('strong > [aria-hidden="true"]')?.textContent?.trim() !== state?.symbol)
+            errors.push(`note label of ${provider.id}/${feature.id} must hide the symbol of its state from assistive technology`)
         }
         else {
           if (noteLink)

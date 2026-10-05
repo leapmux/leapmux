@@ -394,6 +394,6 @@ See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID
 
 ## Feature matrix
 
-Every provider supports chat and streamed tool calls. Each matrix cell shows one of three states, and the legend above the table explains each symbol. The features appear in groups, and each group header repeats the agent logos. Select a feature label for its exact definition. A † link beside a symbol opens a short note about that cell.
+Every provider supports chat and streamed tool calls. Each matrix cell shows one of three states. The legend above the first table explains each symbol. The page splits the agents over several tables, and each table lists the features in groups. The first group header of a table shows no logos, because the table head shows them. Each later group header repeats the logos. Select a feature label for its exact definition. A † link beside a symbol opens a short note about that cell.
 
 {{< matrix >}}

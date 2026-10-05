@@ -315,7 +315,8 @@ Two JSON files define the coverage:
 - [checklist.json](frontend/tests/e2e/feature-matrix/checklist.json) holds each provider and feature combination.
   Each entry supplies its distinct spec path and its support state.
   It records source verification and browser results separately.
-  Each entry holds two notes. The user note is short, has no implementation detail, and keeps upstream issue links.
+  Each entry holds two notes. The user note is one short paragraph with no implementation detail and no raw HTML.
+  It keeps upstream issue links, and each link is an `https://` link.
   The detail note holds the evidence for the maintainers.
   The website shows the user note only.
 
@@ -327,6 +328,7 @@ A support state is one of three values:
 
 A limited cell needs a detail note. A limited cell of a published feature needs a user note also.
 A hidden feature has no user note, because the website does not show it.
+`task validate-json` requires each cell to name its own spec and to mark that spec as passed.
 
 Feature IDs use kebab-case and match the spec filenames.
 For example, Pi's `text-attachments` entry points to `frontend/tests/e2e/pi/text-attachments.spec.ts`.
