@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '../../../src/generated/contracts/codex-protocol'
-import { codexTest, expect } from '../codex-fixtures'
+import { codexTest } from '../codex-fixtures'
 import { exerciseNativeOptionSequence } from '../helpers/nativeSettings'
 
 codexTest('applies Fast to native turns and clears it when Default returns', async ({ native }) => {

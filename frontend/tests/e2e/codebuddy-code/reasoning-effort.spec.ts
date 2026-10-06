@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { CODEBUDDY_EFFORT_LEVEL, CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'

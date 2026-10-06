@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import { AgentGoalAction, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
 import { goalAction, nativeGoalProbeTurn } from '../helpers/goalsAndTodos'
@@ -5,7 +6,7 @@ import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { waitForSettingsHydrated } from '../helpers/ui'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 
 junieTest.describe('junie unsupported controls', () => {
   junieTest('does not offer Set for the session goal', async ({ native }) => {

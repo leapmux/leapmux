@@ -1,5 +1,5 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
-import { expect } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 /** Exercise the actual native compaction path and preserve its context assertions. */

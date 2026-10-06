@@ -13,7 +13,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { CLINE_PERMISSION_MODE } from '../../src/generated/contracts/cline-protocol'
 import { CLINE_AGENT, nativeContext } from './cline/scenarios'
 import { test as base } from './fixtures'
@@ -48,5 +47,3 @@ export const clineTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId }))
   },
 })
-
-export { expect }

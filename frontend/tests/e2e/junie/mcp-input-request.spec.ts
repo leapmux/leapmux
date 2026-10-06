@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -6,7 +7,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect as junieExpect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
 import { writeJunieMcpConfig } from './mcpConfig'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
@@ -28,7 +29,7 @@ junieTest.describe('Junie MCP input form', () => {
     const receipt = readMcpServerReceipt(receiptLog)
     await testInfo.attach('junie-mcp-form-native-reply', { body: JSON.stringify(receipt), contentType: 'application/json' })
     const refusal = nativeMcpRefusal(receipt)
-    junieExpect(refusal.reply.error).toMatchObject({ code: -32601, message: 'Server does not support elicitation/create' })
-    junieExpect(refusal.toolResult.id).toBe(refusal.request.toolRequestId)
+    expect(refusal.reply.error).toMatchObject({ code: -32601, message: 'Server does not support elicitation/create' })
+    expect(refusal.toolResult.id).toBe(refusal.request.toolRequestId)
   })
 })

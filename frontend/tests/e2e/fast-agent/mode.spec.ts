@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { FASTAGENT_MODE } from '../../../src/generated/contracts/fastagent-protocol'
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelInstructionText, nativeOptionValue } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'

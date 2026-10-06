@@ -1,7 +1,8 @@
+import { expect } from '@playwright/test'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { closeComposerMenus, expectSettingsChip, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code settings', () => {
   lettaTest('offers the configured model and the permission modes', async ({ authenticatedLettaWorkspace, page }) => {

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expect } from '@playwright/test'
+import { commandCodeTest } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpProbeServer } from '../helpers/mcpProbeServer'

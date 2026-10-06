@@ -1,5 +1,6 @@
 import type { MockModelRequestRecord, MockModelStep } from '../helpers/mockModelScript'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { junieAnswerToolCall, junieSubmitPlanToolCall } from '../helpers/providerToolCalls'
@@ -15,7 +16,6 @@ import {
   waitForSettingsHydrated,
   waitForSettingsIdle,
 } from '../helpers/ui'
-import { expect } from '../junie-fixtures'
 import { JUNIE_PLAN_REPLY_RULE } from './planReplyRule'
 import { planWithheldToolsOffered } from './planToolCatalog'
 

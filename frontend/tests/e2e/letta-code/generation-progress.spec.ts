@@ -1,10 +1,11 @@
+import { expect } from '@playwright/test'
 import { isLettaToolProgress } from '../../../src/components/chat/providers/letta/toolOutput'
 import { isObject } from '../../../src/lib/jsonPick'
 import { exerciseOutputByteProgress, exerciseTokenProgress, PROGRESS_OUTPUT_CALL_ID } from '../helpers/generationProgress'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { toolCallRow } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 
 lettaTest('exposes no token or byte counter throughout the completed native stream', async ({ native }) => {
   await exerciseTokenProgress(native, { supported: false })

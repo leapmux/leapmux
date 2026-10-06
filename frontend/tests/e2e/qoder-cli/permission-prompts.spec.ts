@@ -1,13 +1,14 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, controlButton, enterControlFeedback, expectNoControlBanner, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 import { expectQoderModeChip, nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI control requests', () => {

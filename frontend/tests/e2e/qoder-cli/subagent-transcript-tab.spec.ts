@@ -1,10 +1,11 @@
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 import { qoderChildTurn } from './childScenario'
 import { attachQoderWorkerFrames } from './workerFrames'
 

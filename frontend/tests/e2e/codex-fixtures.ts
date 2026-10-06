@@ -4,7 +4,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { CODEX_EXECUTABLE } from '../../src/generated/contracts/codex-protocol'
 import { CODEX_AGENT, nativeContext } from './codex/scenarios'
 import { test as base } from './fixtures'
@@ -30,5 +29,3 @@ export const codexTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodexWorkspace.workspaceId }))
   },
 })
-
-export { expect }

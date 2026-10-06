@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, writeToolImage } from '../helpers/toolImages'

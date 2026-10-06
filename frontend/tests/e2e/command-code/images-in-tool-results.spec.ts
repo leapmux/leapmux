@@ -1,6 +1,7 @@
 import { copyFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expect } from '@playwright/test'
+import { commandCodeTest } from '../command-code-fixtures'
 import { writeAttachmentFixture } from '../helpers/attachments'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'

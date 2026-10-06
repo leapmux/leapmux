@@ -1,7 +1,7 @@
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
-import { expect } from '../fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { stepRequest } from '../helpers/mockModelScript'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'

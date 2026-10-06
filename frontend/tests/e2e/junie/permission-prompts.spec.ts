@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie control requests', () => {

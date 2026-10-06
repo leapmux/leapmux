@@ -1,4 +1,5 @@
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { assistantBubbles, messageBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid context usage', () => {

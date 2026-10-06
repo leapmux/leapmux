@@ -1,7 +1,7 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
 import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
 import { sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
-import { expect } from '../qoder-fixtures'
 
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseCompletedManualCompaction(context: NativeScenarioContext): Promise<void> {

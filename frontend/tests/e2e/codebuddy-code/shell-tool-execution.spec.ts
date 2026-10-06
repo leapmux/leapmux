@@ -1,4 +1,5 @@
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { cssAttributeValue } from '../helpers/cssAttribute'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'

@@ -1,8 +1,8 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect } from '../junie-fixtures'
 
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseCompressAcknowledgement(context: NativeScenarioContext): Promise<void> {

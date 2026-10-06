@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { exerciseFileEditSequence, exerciseFileToolExecution, exerciseFileWriteSequence } from '../helpers/nativeToolExecution'
 import { answerControl, waitForControlBanner } from '../helpers/ui'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI file tool execution', () => {
   qoderTest('seeds, reads and edits a file, and draws the edit diff', async ({ authenticatedQoderWorkspace, native }) => {

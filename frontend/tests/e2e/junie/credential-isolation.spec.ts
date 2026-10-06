@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { expect } from '@playwright/test'
 import { CREDENTIAL_STORE_SHIM_LOG, MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { loginViaToken, openWorkspace, sendMessage } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT } from './scenarios'
 
 junieTest.describe('native credential isolation', () => {

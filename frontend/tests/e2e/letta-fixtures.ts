@@ -19,7 +19,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { LETTA_MODE } from '../../src/generated/contracts/letta-protocol'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -68,5 +67,3 @@ export const lettaTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId }))
   },
 })
-
-export { expect }

@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { cssAttributeValue } from '../helpers/cssAttribute'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -6,7 +7,7 @@ import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/native
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, railedRows, toolCallRow } from '../helpers/ui'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('qoder CLI tool execution', () => {
   qoderTest('runs a Bash tool and draws its span', async ({ native }) => {

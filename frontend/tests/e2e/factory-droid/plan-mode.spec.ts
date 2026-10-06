@@ -1,4 +1,5 @@
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { assistantBubbles, sendMessage, toggleModeWithShortcut, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { expectDroidNativeSettings } from './settingsUpdates'
 

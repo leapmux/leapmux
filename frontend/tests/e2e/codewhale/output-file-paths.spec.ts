@@ -1,6 +1,7 @@
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { codewhaleTest, expect } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'

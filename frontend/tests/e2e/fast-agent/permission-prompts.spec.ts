@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { writeMcpPermissionServer } from '../helpers/mcpPermissionServer'
 import { exerciseNativePermissionDecision, expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall, mcpToolCall, writeToolCall } from '../helpers/providerToolCalls'

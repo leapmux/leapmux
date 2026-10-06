@@ -1,6 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { diracTest, expect } from '../dirac-fixtures'
+import { diracTest } from '../dirac-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'

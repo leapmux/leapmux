@@ -1,4 +1,5 @@
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseThinkingRows } from '../helpers/thinkingRows'
 import { openWorkspace } from '../helpers/ui'

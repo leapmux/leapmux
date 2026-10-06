@@ -1,4 +1,5 @@
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { closeComposerMenus, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated } from '../helpers/ui'

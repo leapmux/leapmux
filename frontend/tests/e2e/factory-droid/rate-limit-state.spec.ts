@@ -1,4 +1,5 @@
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'

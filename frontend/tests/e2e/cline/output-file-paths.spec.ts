@@ -1,6 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { clineTest, expect } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'

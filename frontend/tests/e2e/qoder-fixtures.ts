@@ -13,7 +13,6 @@ import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { expect } from '@playwright/test'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -66,5 +65,3 @@ export const qoderTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId }))
   },
 })
-
-export { expect }

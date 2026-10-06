@@ -1,4 +1,5 @@
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'

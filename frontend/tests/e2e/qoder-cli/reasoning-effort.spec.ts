@@ -1,7 +1,8 @@
+import { expect } from '@playwright/test'
 import { MOCK_MODELS, QODER_ALTERNATE_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI effort and session goal', () => {
   qoderTest('uses the selected reasoning effort in the next native model request', async ({ native }) => {

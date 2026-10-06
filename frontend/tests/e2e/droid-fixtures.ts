@@ -18,7 +18,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
 import { DROID_TITLE_RULE } from './factory-droid/housekeeping'
@@ -63,5 +62,3 @@ export const droidTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId }))
   },
 })
-
-export { expect }

@@ -1,4 +1,5 @@
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { DROID_MOCK_MODEL_IDS } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'

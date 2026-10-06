@@ -1,4 +1,5 @@
-import { expect, grokTest } from '../grok-fixtures'
+import { expect } from '@playwright/test'
+import { grokTest } from '../grok-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'

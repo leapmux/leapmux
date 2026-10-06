@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI control answers', () => {
   qoderTest('returns a selected answer from its native question tool', async ({ native }) => {

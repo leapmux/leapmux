@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { MCP_IMAGE_SERVER_NAME, writeMcpImageServer } from '../helpers/mcpImageServer'
@@ -8,7 +9,7 @@ import { mcpToolCall } from '../helpers/providerToolCalls'
 import { expectPngInRequest, writeToolImage } from '../helpers/toolImages'
 import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect as junieExpect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
 import { writeJunieMcpConfig } from './mcpConfig'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
@@ -50,8 +51,8 @@ junieTest.describe('Junie images in tool results', () => {
       && row.title === `${MCP_IMAGE_SERVER_NAME}/show`
       && row.status === 'completed'
       && row._meta?.is_mcp_tool_call === true)
-    junieExpect(completed).toBeDefined()
-    junieExpect(completed?.content).toEqual([])
-    await junieExpect(chatScrollContainer(page).locator('button[aria-label="Open image"]')).toHaveCount(0)
+    expect(completed).toBeDefined()
+    expect(completed?.content).toEqual([])
+    await expect(chatScrollContainer(page).locator('button[aria-label="Open image"]')).toHaveCount(0)
   })
 })

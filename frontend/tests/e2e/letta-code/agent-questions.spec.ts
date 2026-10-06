@@ -1,8 +1,9 @@
+import { expect } from '@playwright/test'
 import { lastUserText } from '../helpers/mockModelScript'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { controlButton, expectNoControlBanner, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code control requests', () => {

@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { exerciseFileToolExecution, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { chatText } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code tool execution', () => {
   lettaTest('draws the lines a write and a read return', async ({ authenticatedLettaWorkspace, native }) => {

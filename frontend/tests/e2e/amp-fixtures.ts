@@ -1,6 +1,5 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { AMP_PERMISSION_MODE } from '../../src/generated/contracts/amp-protocol'
 import { AMP_AGENT, nativeContext } from './amp/scenarios'
 import { test as base } from './fixtures'
@@ -39,5 +38,3 @@ export const ampTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId }))
   },
 })
-
-export { expect }

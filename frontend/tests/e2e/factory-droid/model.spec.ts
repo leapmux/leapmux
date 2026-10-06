@@ -1,4 +1,5 @@
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { DROID_MOCK_MODEL_IDS, MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { expectDroidNativeSettings } from './settingsUpdates'

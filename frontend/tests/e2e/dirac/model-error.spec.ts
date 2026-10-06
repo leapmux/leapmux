@@ -1,4 +1,5 @@
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseModelError } from '../helpers/nativeModelError'
 import { answerControl, expectNoControlBanner, waitForControlBanner } from '../helpers/ui'
 

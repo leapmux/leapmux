@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseFileToolExecution, expectFileDiff, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, diracEditAnchorCapture, editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, toolRows } from '../helpers/ui'

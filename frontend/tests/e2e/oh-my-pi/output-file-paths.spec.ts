@@ -1,11 +1,12 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import { expect } from '@playwright/test'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, OH_MY_PI_YOLO, ohMyPiTest } from '../ohmypi-fixtures'
+import { OH_MY_PI_YOLO, ohMyPiTest } from '../ohmypi-fixtures'
 import { ohMyPiNativeOutput } from './nativeToolOutput'
 import { nativeContext, OH_MY_PI_AGENT } from './scenarios'
 

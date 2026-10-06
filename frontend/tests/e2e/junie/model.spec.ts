@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { JUNIE_RESPONSES_MODEL, MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie settings', () => {
   junieTest('a model switch reaches the native Responses endpoint and survives a reload', async ({ native }) => {

@@ -1,4 +1,5 @@
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 

@@ -1,5 +1,5 @@
+import { expect } from '@playwright/test'
 import { droidTest } from '../droid-fixtures'
-import { expect } from '../fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectPngInRequest, expectToolRowImage, PNG_BASE64_PREFIX, runToolImageTurn } from '../helpers/toolImages'
 import { messageContents } from '../helpers/ui'

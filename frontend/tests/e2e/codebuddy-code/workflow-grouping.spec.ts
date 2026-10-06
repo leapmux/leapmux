@@ -1,6 +1,7 @@
 import { globSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { codebuddyFindWorkflowToolCall, codebuddyWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'

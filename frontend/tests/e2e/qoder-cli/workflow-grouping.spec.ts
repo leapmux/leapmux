@@ -1,12 +1,13 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { qoderWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { answerControl, assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly, waitForControlBanner } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('native workflow grouping', () => {
   const WORKFLOW_NAME = 'qoder-e2e-workflow'

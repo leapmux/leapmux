@@ -18,6 +18,8 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  * - `fixedWaits.test.ts`: no spec or helper sizes a window with `waitForTimeout`.
  * - `platformModifierKeys.test.ts`: no key chord presses a fixed Meta in place
  *   of `PLATFORM_MOD`.
+ * - `expectImports.test.ts`: no module passes the plain `expect` of Playwright
+ *   on.
  *
  * One walk serves every guard. A change to what counts as an e2e file -- a
  * `.mts` helper, a fixtures directory to skip -- thus moves every guard, and

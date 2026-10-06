@@ -1,8 +1,9 @@
+import { expect } from '@playwright/test'
 import { JUNIE_MODE } from '../../../src/generated/contracts/junie-protocol'
 import { JUNIE_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
 import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { exerciseNativePlanReview, exerciseNativePlanRevision, expectNativePlanToolCatalog } from './planScenarios'
 
 junieTest.describe('Junie settings', () => {

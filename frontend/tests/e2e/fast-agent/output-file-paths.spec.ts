@@ -1,5 +1,6 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'

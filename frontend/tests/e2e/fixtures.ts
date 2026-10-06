@@ -4,7 +4,7 @@ import type { SuiteServerState } from './helpers/suiteServer'
 import type { AgentWorkspaceFixture, WorkspaceFixture } from './helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { basename, relative } from 'node:path'
-import { test as base, expect } from '@playwright/test'
+import { test as base } from '@playwright/test'
 import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import {
   closeTestChannels,
@@ -353,5 +353,3 @@ export const test = base.extend<
     // The workspace fixture handles the teardown.
   },
 })
-
-export { expect }

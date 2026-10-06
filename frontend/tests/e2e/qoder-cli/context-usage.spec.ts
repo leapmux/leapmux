@@ -1,10 +1,11 @@
+import { expect } from '@playwright/test'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { isObject } from '../../../src/lib/jsonPick'
 import { SCRIPTED_CONTEXT_USAGE } from '../helpers/contextUsage'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI attachments and context usage', () => {
   qoderTest('the agent info card follows the native context percentage after reload', async ({ native }) => {

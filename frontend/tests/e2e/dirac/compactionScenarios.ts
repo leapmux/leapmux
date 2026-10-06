@@ -1,5 +1,5 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
-import { expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
 import { diracCondenseToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chatScrollContainer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 

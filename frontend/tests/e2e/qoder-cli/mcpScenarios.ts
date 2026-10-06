@@ -1,10 +1,10 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
 import { MCP_FORM_SERVER_NAME } from '../helpers/mcpFormServer'
 import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { answerControl, waitForControlBanner } from '../helpers/ui'
-import { expect } from '../qoder-fixtures'
 
 /**
  * Answer the form of the probe server through the browser, and return the model request that holds the tool result.

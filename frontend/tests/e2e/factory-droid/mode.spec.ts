@@ -1,4 +1,5 @@
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { closeComposerMenus, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated } from '../helpers/ui'

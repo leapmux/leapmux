@@ -1,7 +1,8 @@
+import { expect } from '@playwright/test'
 import { exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie questions', () => {

@@ -1,4 +1,5 @@
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 

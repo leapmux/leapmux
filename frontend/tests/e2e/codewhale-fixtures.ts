@@ -9,7 +9,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { CODEWHALE_AGENT, nativeContext } from './codewhale/scenarios'
 import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
@@ -73,5 +72,3 @@ export const codewhaleTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId }))
   },
 })
-
-export { expect }

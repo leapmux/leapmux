@@ -1,4 +1,5 @@
-import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expect } from '@playwright/test'
+import { commandCodeTest } from '../command-code-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'

@@ -1,6 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { expect, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { nativeMessageBody, nativeMessageSupplement } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'

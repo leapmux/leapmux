@@ -1,4 +1,5 @@
-import { fastAgentTest, expect as fastExpect } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
@@ -14,19 +15,19 @@ fastAgentTest.describe('Fast Agent to-do support', () => {
     await sendMessage(page, '/commands --json')
     await waitForAgentIdle(page)
     const commands = messageBubbles(page).filter({ hasText: 'command_index' }).first()
-    await fastExpect(commands).toBeVisible()
-    fastExpect(await commands.textContent()).not.toMatch(/"name"\s*:\s*"(?:todo|todowrite|update_plan|plan_update|task_list)"/i)
+    await expect(commands).toBeVisible()
+    expect(await commands.textContent()).not.toMatch(/"name"\s*:\s*"(?:todo|todowrite|update_plan|plan_update|task_list)"/i)
     await sendMessage(page, '/todo')
     await waitForAgentIdle(page)
-    await fastExpect(messageBubbles(page).filter({ hasText: 'Unknown command: /todo' }).first()).toBeVisible()
+    await expect(messageBubbles(page).filter({ hasText: 'Unknown command: /todo' }).first()).toBeVisible()
 
     const start = await modelScript.queue({ text: 'The coding turn answered without a plan update.' })
     await sendMessage(page, modelScript.prompt('Create a native to-do list if a tool supports it.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     const tools = JSON.stringify((await modelScript.requestAt(start)).body)
-    fastExpect(tools).toContain('"tools"')
-    fastExpect(tools).not.toMatch(/"name"\s*:\s*"(?:todo|todowrite|update_plan|plan_update|task_list)"/i)
-    await fastExpect(goalsAndTodosSection(page)).toHaveCount(0)
+    expect(tools).toContain('"tools"')
+    expect(tools).not.toMatch(/"name"\s*:\s*"(?:todo|todowrite|update_plan|plan_update|task_list)"/i)
+    await expect(goalsAndTodosSection(page)).toHaveCount(0)
   })
 })

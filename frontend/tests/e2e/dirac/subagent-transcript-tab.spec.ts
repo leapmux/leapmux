@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { diracTest, expect } from '../dirac-fixtures'
+import { diracTest } from '../dirac-fixtures'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, openWorkspace, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'

@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test'
 import type { MockModelProtocol, MockModelScenarioStatus } from './mockModelScript'
 import { readFileSync } from 'node:fs'
-import { expect, test } from '../fixtures'
+import { expect } from '@playwright/test'
+import { test } from '../fixtures'
 import { expectNativeAttachmentProof, expectNoRejectedContent } from './attachmentModelProbe'
 import { writeAttachmentFixture } from './attachments'
 

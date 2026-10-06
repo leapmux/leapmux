@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'

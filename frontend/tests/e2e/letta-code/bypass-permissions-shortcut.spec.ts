@@ -1,8 +1,9 @@
+import { expect } from '@playwright/test'
 import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, waitForNativeSettingsHydrated } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code bypass permissions', () => {

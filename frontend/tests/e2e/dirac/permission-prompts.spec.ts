@@ -1,4 +1,5 @@
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chatText, controlButton, expectNoControlBanner } from '../helpers/ui'

@@ -3,7 +3,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGroups'
 import { COPILOT_PERMISSION_MODE } from '../../src/generated/contracts/copilot-protocol'
 import { test as base } from './fixtures'
@@ -29,5 +28,3 @@ export const copilotTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCopilotWorkspace.workspaceId }))
   },
 })
-
-export { expect }

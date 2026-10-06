@@ -1,7 +1,8 @@
+import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { lettaTaskCreateToolCall, lettaTaskListToolCall, lettaTaskUpdateToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('tracks the Letta Code to-do list', () => {
   lettaTest('the sidebar follows task creation and updates, and keeps them after a reload', async ({ native }) => {

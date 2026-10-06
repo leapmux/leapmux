@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
+import { expect } from '@playwright/test'
 import { codebuddyTest } from '../codebuddy-fixtures'
-import { expect } from '../fixtures'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'

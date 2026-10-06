@@ -1,4 +1,5 @@
-import { clineTest, expect } from '../cline-fixtures'
+import { expect } from '@playwright/test'
+import { clineTest } from '../cline-fixtures'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { nativeContext } from './scenarios'
 

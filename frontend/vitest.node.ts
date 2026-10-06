@@ -199,6 +199,7 @@ export const NODE_TEST_FILES = [
   'src/test-support/composedClass.test.ts',
   'src/test-support/composedResetsAreLayered.test.ts',
   'src/test-support/e2eFiles.test.ts',
+  'src/test-support/expectImports.test.ts',
   'src/test-support/fixedWaits.test.ts',
   'src/test-support/focusRingsAreFocusVisible.test.ts',
   'src/test-support/installedCopies.test.ts',

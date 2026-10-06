@@ -1,8 +1,9 @@
+import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 
 junieTest.describe('junie unsupported controls', () => {
   junieTest('runs a steered prompt in the next turn', async ({ native }) => {

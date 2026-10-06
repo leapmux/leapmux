@@ -1,6 +1,5 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { CLAUDE_AGENT, nativeContext } from './claude-code/scenarios'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -27,5 +26,3 @@ export const claudeTest = base.extend<CliSkipFixture & NativeFixture & {
 export const claudeProcessTest = processTest.extend<CliSkipFixture>({
   cliSkip: cliSkipFixture(CLAUDE_E2E_SKIP_REASON),
 })
-
-export { expect }

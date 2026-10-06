@@ -1,6 +1,5 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { CURSOR_AGENT, nativeContext } from './cursor/scenarios'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -18,5 +17,3 @@ export const cursorTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId }))
   },
 })
-
-export { expect }

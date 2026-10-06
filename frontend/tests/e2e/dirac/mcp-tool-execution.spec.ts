@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'

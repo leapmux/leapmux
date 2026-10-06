@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chatText, expectNoControlBanner, savedControlAnswer } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code control requests', () => {

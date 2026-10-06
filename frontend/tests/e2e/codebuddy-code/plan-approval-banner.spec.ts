@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { enterPlanModeToolCall, exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { answerPlanReview, enterControlFeedback, expectNoControlBanner, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
 

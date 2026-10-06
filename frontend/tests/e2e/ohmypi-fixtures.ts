@@ -1,6 +1,5 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -44,5 +43,3 @@ export const ohMyPiTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId }))
   },
 })
-
-export { expect }

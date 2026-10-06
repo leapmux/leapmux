@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpers/attachments'
 import { lastUserText } from '../helpers/mockModelScript'

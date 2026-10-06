@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie basic chat', () => {
   junieTest('does not expose model reasoning as an ACP thought row', async ({ authenticatedResponsesJunieWorkspace, page, modelScript }) => {

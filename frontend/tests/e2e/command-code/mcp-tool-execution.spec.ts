@@ -1,5 +1,6 @@
 import { join } from 'node:path'
-import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expect } from '@playwright/test'
+import { commandCodeTest } from '../command-code-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'

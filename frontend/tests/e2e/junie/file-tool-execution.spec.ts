@@ -1,10 +1,11 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { exerciseFileToolExecution, expectFileDiff, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie tool execution', () => {

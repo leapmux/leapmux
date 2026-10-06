@@ -1,4 +1,5 @@
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { codebuddyTaskCreateToolCall, codebuddyTaskUpdateToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'

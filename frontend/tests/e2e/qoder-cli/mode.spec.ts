@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { QODER_MODE } from '../../../src/generated/contracts/qoder-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
@@ -8,7 +9,7 @@ import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectNoControlBanner, expectSettingsOptionChosen, openPlusMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
 import { expectQoderModeChip, nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI settings', () => {

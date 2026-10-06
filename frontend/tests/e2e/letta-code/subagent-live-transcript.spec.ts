@@ -1,11 +1,12 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 lettaTest.describe('Letta Code subagents', () => {

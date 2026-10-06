@@ -1,8 +1,9 @@
+import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 lettaTest.describe('Letta Code subagents', () => {

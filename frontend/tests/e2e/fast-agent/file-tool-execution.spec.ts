@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { exerciseFileToolExecution, expectFileDiff } from '../helpers/nativeToolExecution'
 import { bashToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'

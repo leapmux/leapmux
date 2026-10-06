@@ -1,4 +1,5 @@
-import { expect, test } from '../fixtures'
+import { expect } from '@playwright/test'
+import { test } from '../fixtures'
 import { expectRegistryRow } from './subagentRegistry'
 
 test('matches background task filters on each row before its nested content', async ({ page }) => {

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test } from '../fixtures'
+import { expect } from '@playwright/test'
+import { test } from '../fixtures'
 import { createTestDirectory } from './runDirectory'
 import { writeToolImage } from './toolImages'
 import { readAttached, readAttachedWithArgument } from './ui'

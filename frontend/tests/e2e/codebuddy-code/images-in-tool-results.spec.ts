@@ -1,4 +1,5 @@
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectImageDataUriInRequest, expectToolRowWithoutImage, runToolImageTurn } from '../helpers/toolImages'
 

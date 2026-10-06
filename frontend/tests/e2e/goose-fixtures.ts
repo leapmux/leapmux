@@ -3,7 +3,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { test as base } from './fixtures'
 import { GOOSE_AGENT, nativeContext } from './goose/scenarios'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -21,5 +20,3 @@ export const gooseTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId }))
   },
 })
-
-export { expect }

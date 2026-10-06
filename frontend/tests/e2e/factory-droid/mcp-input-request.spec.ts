@@ -1,6 +1,7 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { join } from 'node:path'
-import { droidTest, expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
+import { droidTest } from '../droid-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'

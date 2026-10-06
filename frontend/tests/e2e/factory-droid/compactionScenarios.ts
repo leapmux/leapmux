@@ -1,6 +1,6 @@
 import type { NativeCompactionOptions } from '../helpers/manualCompaction'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
-import { expect } from '../droid-fixtures'
+import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { exerciseNativeCompaction, OLDER_CONTEXT_MARKER } from '../helpers/manualCompaction'
 import { messageBubbles } from '../helpers/ui'

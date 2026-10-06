@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { chooseSettingsOption, expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'

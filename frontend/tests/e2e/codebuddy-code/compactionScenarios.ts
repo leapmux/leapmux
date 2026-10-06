@@ -1,6 +1,6 @@
 import type { NativeCompactionOptions } from '../helpers/manualCompaction'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
-import { expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 

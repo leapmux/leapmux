@@ -8,7 +8,6 @@ import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect } from '@playwright/test'
 import { DIRAC_AGENT, nativeContext } from './dirac/scenarios'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
@@ -54,5 +53,3 @@ export const diracTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId }))
   },
 })
-
-export { expect }

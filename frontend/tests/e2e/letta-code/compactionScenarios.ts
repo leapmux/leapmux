@@ -1,8 +1,8 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeScenarioModelContextText } from '../helpers/nativeScenario'
 import { exerciseCompactAsModelText } from '../helpers/unsupportedCompaction'
-import { expect } from '../letta-fixtures'
 
 /**
  * Prove that Letta Code's App Server path sends `/compact` to the model as ordinary text, and that the next turn

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
@@ -7,7 +8,7 @@ import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code modes', () => {

@@ -1,4 +1,5 @@
-import { CODEBUDDY_BYPASS, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expect } from '@playwright/test'
+import { CODEBUDDY_BYPASS, codebuddyTest } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'

@@ -1,4 +1,5 @@
-import { expect, fastAgentTest } from '../fastagent-fixtures'
+import { expect } from '@playwright/test'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { exerciseContextUsage } from '../helpers/contextUsage'
 
 fastAgentTest.describe('Fast Agent thinking and context usage', () => {

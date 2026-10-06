@@ -1,4 +1,5 @@
-import { expect, test } from '../fixtures'
+import { expect } from '@playwright/test'
+import { test } from '../fixtures'
 import { openPermissionShortcut } from './ui'
 
 // `applyPermissionPreset` first reads the native settings of the selected agent

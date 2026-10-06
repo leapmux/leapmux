@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome } from '../helpers/attachments'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 
 lettaTest('refuses a pdf attachment before it reaches the actual native model', async ({ native, page, modelScript }) => {
   const before = (await modelScript.status()).requests.length

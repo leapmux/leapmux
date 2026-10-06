@@ -1,4 +1,5 @@
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'

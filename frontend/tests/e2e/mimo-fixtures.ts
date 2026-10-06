@@ -7,7 +7,6 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { expect } from '@playwright/test'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -25,5 +24,3 @@ export const mimoTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedMiMoWorkspace.workspaceId }))
   },
 })
-
-export { expect }

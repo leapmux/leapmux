@@ -1,6 +1,6 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, expectEmptyGoalCard, pauseResumeClearGoal, setGoal } from '../helpers/goalsAndTodos'
-import { expect } from '../qoder-fixtures'
 
 /**
  * Set, pause, resume, and clear a native Qoder session goal through the goal card.

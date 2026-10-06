@@ -1,4 +1,5 @@
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseContextUsage } from '../helpers/contextUsage'
 
 diracTest.describe('Dirac thinking and context usage', () => {

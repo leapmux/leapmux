@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expect } from '@playwright/test'
+import { commandCodeTest } from '../command-code-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { ensureGitRepositoryRoot } from '../helpers/worktree'

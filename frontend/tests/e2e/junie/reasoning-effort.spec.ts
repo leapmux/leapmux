@@ -1,9 +1,10 @@
 import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import { expect } from '@playwright/test'
 import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER } from '../helpers/mockAgentEnvironment'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { closeComposerMenus, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 /** Open the model picker of the composer and return its visible popover. */

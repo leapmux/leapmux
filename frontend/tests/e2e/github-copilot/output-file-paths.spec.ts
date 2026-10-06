@@ -1,5 +1,6 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { copilotTest, expect } from '../copilot-fixtures'
+import { expect } from '@playwright/test'
+import { copilotTest } from '../copilot-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { resolveNativeProcessOwnership } from '../helpers/nativeProcessOwnership'

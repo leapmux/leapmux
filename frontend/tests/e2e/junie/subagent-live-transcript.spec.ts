@@ -1,12 +1,13 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { junieAnswerToolCall, junieSubagentSubmitToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT } from './scenarios'
 
 junieTest.describe('Junie subagents and background tasks', () => {

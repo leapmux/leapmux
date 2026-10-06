@@ -1,7 +1,8 @@
+import { expect } from '@playwright/test'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { userBubbles } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 
 lettaTest('stops a native model turn and resumes its paused queue', async ({ native }) => {
   // `abort_message` stops Letta's loop at once (`WAITING_ON_INPUT` and an `Interrupted`

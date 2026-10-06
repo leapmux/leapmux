@@ -1,9 +1,10 @@
 import { readdirSync } from 'node:fs'
 
+import { expect } from '@playwright/test'
 import { DROID_CONFIRMATION_TYPE, DROID_PERMISSION_OPTION, DROID_REPLY, DROID_TOOL } from '../../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickString } from '../../../src/lib/jsonPick'
-import { droidTest, expect } from '../droid-fixtures'
+import { droidTest } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { watchNativeControls } from '../helpers/nativeControlWatch'

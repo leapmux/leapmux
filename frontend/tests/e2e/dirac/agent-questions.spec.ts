@@ -1,5 +1,6 @@
 import type { NativeControlFrame } from '../helpers/nativeControlWatch'
-import { diracTest, expect } from '../dirac-fixtures'
+import { expect } from '@playwright/test'
+import { diracTest } from '../dirac-fixtures'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { controlButton, waitForSettingsHydrated } from '../helpers/ui'

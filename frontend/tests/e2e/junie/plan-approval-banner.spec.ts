@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import { KIND_REJECT_ONCE } from '../../../src/components/chat/model/controlPrompt'
 import { ACP_PERMISSION_OUTCOME, ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
@@ -9,7 +10,7 @@ import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { junieSubmitPlanToolCall } from '../helpers/providerToolCalls'
 import { answerControl, chooseSettingsOption, controlBanner, expectSettingsChip, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { exerciseNativePlanReview } from './planScenarios'
 
 junieTest.describe('Junie plan review', () => {
