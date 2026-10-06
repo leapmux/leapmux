@@ -2,10 +2,11 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
-import { AgentActivityState, AgentProvider, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from '../helpers/api'
+import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
+import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
@@ -445,10 +446,8 @@ claudeTest.describe('Agent Settings', () => {
     // WAITING_FOR_USER to IDLE is not a settle edge, because the agent was not
     // working. The stop therefore rings no second alert and records no receipt.
     expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()
-    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     await retryUntilPass(async () => {
-      const queue = await channel.callWorker(leapmuxServer.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })
-      expect(queue.snapshot?.paused, 'the Worker pauses the input queue after the interrupt').toBe(true)
+      expect((await readNativeInputQueue(leapmuxServer, agent.id)).paused, 'the Worker pauses the input queue after the interrupt').toBe(true)
     })
     await resumePausedQueue(page)
 

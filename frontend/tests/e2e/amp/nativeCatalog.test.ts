@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
-import { ampCatalogCommandTimeout, ampCatalogPermission, ampCatalogProcess, ampExecutorToolNames, ampPidReceipt, ampSettingsPath, ampWorkspaceMcpAwaitingApproval, ampWorkspaceMcpConfiguration, assertAmpGeneratedSettings, readAmpExecutorCatalog } from './nativeCatalog'
+import { ampCatalogPermission, ampCatalogProcess, ampExecutorToolNames, ampPidReceipt, ampSettingsPath, ampWorkspaceMcpAwaitingApproval, ampWorkspaceMcpConfiguration, assertAmpGeneratedSettings, readAmpExecutorCatalog } from './nativeCatalog'
 
 const calls = vi.hoisted(() => ({ processes: vi.fn(), executable: vi.fn(), current: vi.fn(), catalog: vi.fn<AmpCatalogCommand>(), send: vi.fn(), idle: vi.fn(), watch: vi.fn(), cancelWatch: vi.fn(), channel: vi.fn(), nativeAgent: vi.fn(), state: { binaryPath: '', dataDir: '', tmpDir: '', ampPath: '' } }))
 vi.mock('../helpers/processTree', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/processTree')>(), listProcesses: calls.processes }))
@@ -632,23 +632,6 @@ describe('readAmpExecutorCatalog', () => {
     calls.processes.mockReturnValue([worker, { ...amp, command: amp.command.replace(settingsPath, outsideSettings) }, tool])
     await expect(readAmpExecutorCatalog(context, {}, calls.catalog)).rejects.toThrow('native Amp settings do not belong to the observed Worker directory')
     expect(calls.catalog).not.toHaveBeenCalled()
-  })
-})
-
-describe('ampCatalogCommandTimeout', () => {
-  it('uses a finite maximum without a test deadline and caps a large remaining duration', () => {
-    expect(ampCatalogCommandTimeout(undefined, 0)).toBe(60_000)
-    expect(ampCatalogCommandTimeout(Number.MAX_SAFE_INTEGER, 0)).toBe(60_000)
-    expect(ampCatalogCommandTimeout(100, 99)).toBe(1)
-    expect(() => ampCatalogCommandTimeout(100.5, 100)).toThrow('deadline')
-  })
-
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])('refuses an expired or invalid deadline: %s', (deadline) => {
-    expect(() => ampCatalogCommandTimeout(deadline, 0)).toThrow('deadline')
-  })
-
-  it('refuses an invalid current time even when no test deadline exists', () => {
-    expect(() => ampCatalogCommandTimeout(undefined, Number.NaN)).toThrow('current time')
   })
 })
 

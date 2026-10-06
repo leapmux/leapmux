@@ -55,10 +55,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
   getTestChannel: async () => ({
-    callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { text?: string }) => {
+    callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string, text?: string }) => {
       fake.log.push(method)
       if (method === 'ListAgentInputQueue')
-        return { snapshot: { items: [] } }
+        return { snapshot: { agentId: payload.agentId, items: [] } }
       if (method === 'EnqueueAgentInput') {
         const text = payload.text ?? ''
         fake.refused.push(text)

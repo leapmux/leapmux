@@ -85,9 +85,9 @@ vi.mock('./nativeScenario', async (importOriginal) => {
 
 vi.mock('./api', () => ({
   getTestChannel: async () => ({
-    callWorker: async (_workerId: string, method: string) => {
+    callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string }) => {
       if (method === 'ListAgentInputQueue')
-        return { snapshot: { items: harness.queue } }
+        return { snapshot: { agentId: payload.agentId, items: harness.queue } }
       harness.events.push(`worker:${method}`)
       throw harness.steerFailure ?? Object.assign(new Error('agent provider does not support steering'), { source: 'rpc', code: 9 })
     },

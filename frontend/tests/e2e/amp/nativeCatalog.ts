@@ -28,6 +28,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
+import { nativeCommandTimeout } from '../helpers/testDeadline'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { ampToolResultReader } from './toolResult'
@@ -104,18 +105,6 @@ export type AmpCatalogCommand = (
   args: string[],
   options: { cwd: string, env: NodeJS.ProcessEnv, maxBuffer: number, timeout?: number },
 ) => Promise<{ stdout: string, stderr: string }>
-
-/** Use the current whole-test deadline and a finite maximum for each local command. */
-export function ampCatalogCommandTimeout(deadline: number | undefined, now = Date.now()): number {
-  if (!Number.isFinite(now) || (deadline !== undefined && !Number.isFinite(deadline)))
-    throw new RangeError('The native Amp catalog requires a finite test deadline and current time.')
-  if (deadline === undefined)
-    return NATIVE_CATALOG_COMMAND_LIMIT_MS
-  const remaining = Math.floor(deadline - now)
-  if (remaining <= 0)
-    throw new Error('The native Amp catalog deadline leaves no complete millisecond for its command.')
-  return Math.min(remaining, NATIVE_CATALOG_COMMAND_LIMIT_MS)
-}
 
 function flagPositions(command: string, flag: string): number[] {
   const positions: number[] = []
@@ -264,7 +253,8 @@ export async function readAmpExecutorCatalog(
   const workerDataDir = options.workerDataDir ?? state.dataDir
   assertPrivateNativePath(workerDataDir, state.tmpDir)
   assertPrivateNativePath(home, state.tmpDir)
-  ampCatalogCommandTimeout(context.modelScript.testDeadline())
+  // Refuse a deadline that leaves no time for the catalog commands before the held tool starts.
+  nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS)
   const before = await currentNativeAgent(context)
   assertPrivateNativePath(before.workingDir, state.tmpDir)
   const marker = randomUUID()
@@ -415,13 +405,13 @@ export async function readAmpExecutorCatalog(
     const mode = nativeOptionValue(agent, 'agent_mode')
     if (!mode)
       throw new Error('The native Amp catalog requires the actual thread mode.')
-    const output = await command(binary, ['tools', 'list', '--json', '--mode', mode, '--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color'], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: ampCatalogCommandTimeout(context.modelScript.testDeadline()) })
+    const output = await command(binary, ['tools', 'list', '--json', '--mode', mode, '--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color'], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
     let workspaceMcpConfiguration: Record<string, unknown> | undefined
     if (options.workspaceMcpServer !== undefined) {
       const common = ['--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color']
-      const listing = await command(binary, ['mcp', 'list', '--json', ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: ampCatalogCommandTimeout(context.modelScript.testDeadline()) })
+      const listing = await command(binary, ['mcp', 'list', '--json', ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
       workspaceMcpConfiguration = ampWorkspaceMcpConfiguration(listing.stdout, options.workspaceMcpServer)
-      const doctor = await command(binary, ['mcp', 'doctor', options.workspaceMcpServer, ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: ampCatalogCommandTimeout(context.modelScript.testDeadline()) })
+      const doctor = await command(binary, ['mcp', 'doctor', options.workspaceMcpServer, ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
       ampWorkspaceMcpAwaitingApproval(doctor.stdout, options.workspaceMcpServer)
     }
     const after = await currentNativeAgent(context)

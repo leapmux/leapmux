@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { currentTestDeadline, startTestDeadline, startWaitLimitForTests, WAIT_REPORT_MARGIN_MS, waitTimeoutBeforeTestDeadline } from './testDeadline'
+import { currentTestDeadline, nativeCommandTimeout, startTestDeadline, startWaitLimitForTests, WAIT_REPORT_MARGIN_MS, waitTimeoutBeforeTestDeadline } from './testDeadline'
 
 const ends: Array<() => void> = []
 
@@ -96,5 +96,43 @@ describe('waitTimeoutBeforeTestDeadline', () => {
   ])('returns 1 so that a wait $label fails at once, never 0 which would remove the limit', ({ now }) => {
     start(1_000_000, () => 120_000)
     expect(waitTimeoutBeforeTestDeadline(now)).toBe(1)
+  })
+})
+
+describe('nativeCommandTimeout', () => {
+  it('returns the limit when no test deadline exists', () => {
+    expect(nativeCommandTimeout(undefined, 60_000, 0)).toBe(60_000)
+  })
+
+  it('caps a large remaining time at the limit', () => {
+    expect(nativeCommandTimeout(Number.MAX_SAFE_INTEGER, 60_000, 0)).toBe(60_000)
+  })
+
+  it('returns the whole milliseconds left before the deadline when they are fewer than the limit', () => {
+    expect(nativeCommandTimeout(100, 60_000, 99)).toBe(1)
+    expect(nativeCommandTimeout(100.9, 60_000, 50)).toBe(50)
+  })
+
+  it.each([100, 100.5])('refuses a deadline of %s that leaves no whole millisecond at time 100', (deadline) => {
+    expect(() => nativeCommandTimeout(deadline, 60_000, 100)).toThrow('The test deadline leaves no time for the native command.')
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])('refuses the deadline %s, which is not a finite time', (deadline) => {
+    expect(() => nativeCommandTimeout(deadline, 60_000, 0)).toThrow('a finite test deadline and current time')
+  })
+
+  it('refuses a current time that is not finite, also when no test deadline exists', () => {
+    expect(() => nativeCommandTimeout(undefined, 60_000, Number.NaN)).toThrow('a finite test deadline and current time')
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('refuses the limit %s, which is not a positive whole number of milliseconds', (limit) => {
+    expect(() => nativeCommandTimeout(undefined, limit, 0)).toThrow('positive whole number of milliseconds')
+  })
+
+  it('reads the current time when the caller gives none', () => {
+    const deadline = Date.now() + 1_000_000
+    const timeout = nativeCommandTimeout(deadline, 2_000_000)
+    expect(timeout).toBeGreaterThan(990_000)
+    expect(timeout).toBeLessThanOrEqual(1_000_000)
   })
 })

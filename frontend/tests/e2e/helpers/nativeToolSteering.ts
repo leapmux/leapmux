@@ -2,9 +2,10 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
-import { AgentActivityState, AgentInputState, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputState, SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
+import { readNativeInputQueue } from './nativeInputQueueIdle'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
@@ -136,15 +137,15 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
     await sendMessage(context.page, context.modelScript.prompt('Hold the first ordinary native turn.'))
     await context.modelScript.waitForGate(gate)
     await sendMessage(context.page, context.modelScript.prompt(nextPrompt))
-    const readQueue = async () => channel.callWorker(server.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })
+    const readQueue = () => readNativeInputQueue(server, agent.id)
     // The held turn is active, so the Worker lets the queued head preempt it.
     await retryUntilPass(async () => {
       expect(
-        (await readQueue()).snapshot?.items.filter(item => item.text.includes(nextPrompt)).map(item => ({ state: item.state, canSteer: item.canSteer, canPreempt: item.canPreempt })),
+        (await readQueue()).items.filter(item => item.text.includes(nextPrompt)).map(item => ({ state: item.state, canSteer: item.canSteer, canPreempt: item.canPreempt })),
         'the queued prompt waits, offers no steer, and can preempt the held turn',
       ).toEqual([{ state: AgentInputState.QUEUED, canSteer: false, canPreempt: true }])
     })
-    const item = (await readQueue()).snapshot?.items.find(candidate => candidate.text.includes(nextPrompt))
+    const item = (await readQueue()).items.find(candidate => candidate.text.includes(nextPrompt))
     if (!item)
       throw new Error('The unsupported steering probe has no queued Worker input.')
     const row = queuedInputRow(context.page, nextPrompt).filter({ visible: true })
@@ -159,7 +160,7 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
     await expect(channel.callWorker(server.workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, { agentId: agent.id, inputId: item.id }))
       .rejects
       .toMatchObject({ source: 'rpc', code: Code.FailedPrecondition, message: 'agent provider does not support steering' })
-    expect((await readQueue()).snapshot?.items.find(candidate => candidate.id === item.id)?.state).toBe(AgentInputState.QUEUED)
+    expect((await readQueue()).items.find(candidate => candidate.id === item.id)?.state).toBe(AgentInputState.QUEUED)
     expect((await context.modelScript.status()).nextStep, 'the queued prompt waits for the held turn').toBeLessThanOrEqual(start + 1)
     await context.modelScript.releaseGate(gate)
     await context.modelScript.waitForSteps(start + 2)
@@ -175,7 +176,7 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
     // a hidden row that the page kept also fails the check.
     await expect(queuedInputRow(context.page, nextPrompt)).toHaveCount(0)
     await expect(context.page.locator('[data-testid="result-divider"]:visible')).toHaveCount(2)
-    expect((await readQueue()).snapshot?.items).toEqual([])
+    expect((await readQueue()).items).toEqual([])
   }, async () => {
     await context.modelScript.releaseGateIfHeld(gate)
   })

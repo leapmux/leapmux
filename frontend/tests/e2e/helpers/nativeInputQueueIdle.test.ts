@@ -1,9 +1,9 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fakeChannelStream } from '~/test-support/channelStreamFake'
-import { AgentInputKind, AgentInputState, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { NativeInputQueueIdleCollector, waitForNativeInputQueueIdle } from './nativeInputQueueIdle'
+import { NativeInputQueueIdleCollector, readNativeInputQueue, waitForNativeInputQueueIdle } from './nativeInputQueueIdle'
 import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 const { getTestChannel } = vi.hoisted(() => ({ getTestChannel: vi.fn() }))
@@ -420,5 +420,38 @@ describe('waitForNativeInputQueueIdle', () => {
     await expect(secondWait).resolves.toMatchObject({ agentId: 'agent-2' })
     expect(first.cancel).toHaveBeenCalledOnce()
     expect(second.cancel).toHaveBeenCalledOnce()
+  })
+})
+
+describe('readNativeInputQueue', () => {
+  const snapshot = create(AgentInputQueueSnapshotSchema, { agentId: 'agent-1', revision: 3n, activeTurn: true, paused: true })
+
+  it('returns the queue snapshot that the Worker of the agent states', async () => {
+    const callWorker = vi.fn(async () => create(ListAgentInputQueueResponseSchema, { snapshot }))
+    getTestChannel.mockResolvedValue({ callWorker })
+    await expect(readNativeInputQueue(server, 'agent-1')).resolves.toEqual(snapshot)
+    expect(getTestChannel).toHaveBeenCalledWith('http://mock.invalid', 'mock-admin')
+    expect(callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: 'agent-1' })
+  })
+
+  it('refuses a response with no snapshot, which states no queue', async () => {
+    getTestChannel.mockResolvedValue({ callWorker: async () => create(ListAgentInputQueueResponseSchema, {}) })
+    await expect(readNativeInputQueue(server, 'agent-1')).rejects.toThrow('The Worker sent no input queue snapshot for agent agent-1.')
+  })
+
+  it('refuses a snapshot of another agent', async () => {
+    getTestChannel.mockResolvedValue({ callWorker: async () => create(ListAgentInputQueueResponseSchema, { snapshot: { ...snapshot, agentId: 'agent-2' } }) })
+    await expect(readNativeInputQueue(server, 'agent-1')).rejects.toThrow('The Worker sent the input queue of agent agent-2 for agent agent-1.')
+  })
+
+  it('keeps the error of a failed Worker read', async () => {
+    const failure = new Error('The Worker channel reconnects.')
+    getTestChannel.mockResolvedValue({ callWorker: async () => Promise.reject(failure) })
+    await expect(readNativeInputQueue(server, 'agent-1')).rejects.toBe(failure)
+  })
+
+  it.each(['', ' '])('refuses the agent ID %j before it reads', async (agentId) => {
+    await expect(readNativeInputQueue(server, agentId)).rejects.toThrow('requires an agent ID')
+    expect(getTestChannel).not.toHaveBeenCalled()
   })
 })

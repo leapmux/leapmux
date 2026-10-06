@@ -125,7 +125,7 @@ describe('queryClineCompleteCatalog', () => {
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an expired or invalid deadline before a process starts: %j', async (deadline) => {
     const execute = vi.fn<ClineCatalogCommand>()
-    await expect(queryClineCompleteCatalog({ ...privateQuery(), deadline }, execute)).rejects.toThrow('remaining command time')
+    await expect(queryClineCompleteCatalog({ ...privateQuery(), deadline }, execute)).rejects.toThrow(/test deadline/)
     expect(execute).not.toHaveBeenCalled()
   })
 

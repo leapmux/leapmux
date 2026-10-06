@@ -2,11 +2,11 @@ import type { QoderWorkflowLaunch } from './codeExecution'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { expect } from '@playwright/test'
-import { BackgroundTaskKind, BackgroundTaskStatus, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { getTestChannel } from '../helpers/api'
+import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
@@ -45,13 +45,12 @@ qoderTest('executes native Workflow code and preserves the computed result and s
     await withCleanup(async () => {
       await sendMessage(page, modelScript.prompt(`Run the native Workflow ${failed ? 'error' : 'output'} script.`))
       await waitForNativeToolSteps(context, start + 2, { beforeIdle: async () => {
-        const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
         const [messages, sidebar, current, status, queue] = await Promise.all([
           readNativeMessageSnapshot(context, agent.id),
           readNativeSidebarSnapshot(context, agent.id),
           nativeAgentById(context, agent.id),
           modelScript.status(),
-          channel.callWorker(leapmuxServer.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id }),
+          readNativeInputQueue(leapmuxServer, agent.id),
         ])
         evidence.beforeIdle = {
           agent: current,

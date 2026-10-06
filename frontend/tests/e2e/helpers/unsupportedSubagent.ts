@@ -5,9 +5,10 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { RunningNativeChild } from './runningChildProof'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
-import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, InterruptAgentRequestSchema, InterruptAgentResponseSchema, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, InterruptAgentRequestSchema, InterruptAgentResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
+import { readNativeInputQueue } from './nativeInputQueueIdle'
 import { nativeAgentsByIds } from './nativeScenario'
 import { uniqueMarker } from './shellArguments'
 import { openChildTabFromRow } from './subagentRegistry'
@@ -84,16 +85,14 @@ export async function expectUnsupportedSubagent(
       await expect(composerEditor(context.page)).toHaveAttribute('contenteditable', 'false')
       await expectReadOnlySubagentReason(context.page)
       const inputId = crypto.randomUUID()
-      const before = await channel.callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: child.childId })
-      expect(before.snapshot).toBeDefined()
+      const before = await readNativeInputQueue(context.leapmuxServer, child.childId)
       await expect(channel.callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, {
         agentId: child.childId,
         inputId,
         text: refusedMessage,
         kind: AgentInputKind.USER_MESSAGE,
       })).rejects.toMatchObject({ source: 'rpc', code: Code.InvalidArgument, message: 'invalid queued agent input: this agent does not accept that input' })
-      const after = await channel.callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: child.childId })
-      expect(after.snapshot).toEqual(before.snapshot)
+      expect(await readNativeInputQueue(context.leapmuxServer, child.childId)).toEqual(before)
       await expectNoModelRequestCarries(context.modelScript, refusedMessage)
     }
     await expect(child.row).toHaveAttribute('data-status', 'running')

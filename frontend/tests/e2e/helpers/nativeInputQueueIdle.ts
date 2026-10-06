@@ -1,6 +1,7 @@
 import type { AgentInputQueueSnapshot } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ChannelManager } from '../../../src/lib/channel'
 import type { AgentWatchServer } from './agentEventWatch'
+import { ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentWatchRequest, readAgentWatchFrame } from './agentEventWatch'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
@@ -9,6 +10,24 @@ import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
 /** The name of this watch in the shared refusal and frame messages. */
 const WATCH_LABEL = 'input queue subscription'
 const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+/**
+ * Read the input queue of one agent from its Worker, once. A failed read throws its error, so a wait over this read
+ * retries it inside `retryUntilPass` (`./retryUntilPass.ts`). A response with no snapshot, or with the snapshot of
+ * another agent, throws, because it states no queue of the agent.
+ */
+export async function readNativeInputQueue(server: AgentWatchServer, agentId: string): Promise<AgentInputQueueSnapshot> {
+  if (!agentId.trim())
+    throw new Error('The input queue read requires an agent ID.')
+  const channel = await getTestChannel(server.hubUrl, server.adminToken)
+  const response = await channel.callWorker(server.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId })
+  const snapshot = response.snapshot
+  if (!snapshot)
+    throw new Error(`The Worker sent no input queue snapshot for agent ${agentId}.`)
+  if (snapshot.agentId !== agentId)
+    throw new Error(`The Worker sent the input queue of agent ${snapshot.agentId} for agent ${agentId}.`)
+  return snapshot
+}
 
 /** Read authoritative input queue state for one acknowledged Worker subscription. */
 export class NativeInputQueueIdleCollector {

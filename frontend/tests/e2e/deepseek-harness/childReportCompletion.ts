@@ -3,9 +3,8 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { deepseekHarnessEventData } from '../../../src/components/chat/providers/deepseekharness/protocol'
 import { DEEPSEEK_HARNESS_EVENT } from '../../../src/generated/contracts/deepseek-harness-protocol'
-import { ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
-import { getTestChannel } from '../helpers/api'
+import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
@@ -52,7 +51,6 @@ export async function waitForDeepseekHarnessChildReport(context: ManagedNativeSc
     throw new Error('The native child report has no exact stored parent and child Session owners.')
   const rule = deepseekHarnessChildReportRule(child.agentSessionId)
   const server = context.leapmuxServer
-  const channel = await getTestChannel(server.hubUrl, server.adminToken)
   await retryUntilPass(async () => {
     const status = await context.modelScript.status()
     const count = status.ruleMatches[rule.name] ?? 0
@@ -69,9 +67,6 @@ export async function waitForDeepseekHarnessChildReport(context: ManagedNativeSc
       throw new Error('The native parent Session changed before its child report completed.')
     expect(deepseekHarnessCompletedReport(request, parent.agentSessionId, snapshot.messages.map(nativeMessageBody)), 'the Worker stores the completed parent turn of the report')
       .toBe(true)
-    const queue = await channel.callWorker(server.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: parentAgentId })
-    if (!queue.snapshot)
-      throw new Error('The native parent report has no authoritative Worker input state.')
-    expect(queue.snapshot.activeTurn, 'the native parent ended its report turn').toBe(false)
+    expect((await readNativeInputQueue(server, parentAgentId)).activeTurn, 'the native parent ended its report turn').toBe(false)
   })
 }

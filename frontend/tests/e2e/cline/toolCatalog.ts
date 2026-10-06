@@ -8,6 +8,7 @@ import { requireBinary } from '../helpers/binaryOnPath'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
+import { nativeCommandTimeout } from '../helpers/testDeadline'
 
 export interface ClineCatalogTool {
   id: string
@@ -105,11 +106,8 @@ export async function queryClineCompleteCatalog(query: ClineCatalogQuery, execut
   assertPrivateNativePath(query.workingDir, query.runDir)
   const env = hubSpawnEnv(privateEnv)
   const executable = requireBinary('cline', 'The native Cline catalog requires the installed CLI', env)
-  const deadline = query.deadline
-  const remaining = deadline === undefined ? CATALOG_COMMAND_LIMIT_MS : Math.floor(deadline - Date.now())
-  if (!Number.isFinite(remaining) || remaining <= 0)
-    throw new Error('The native Cline catalog has no remaining command time.')
-  const result = await execute(executable, ['config', 'tools', '--json'], { cwd: query.workingDir, env, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: Math.min(remaining, CATALOG_COMMAND_LIMIT_MS) })
+  const timeout = nativeCommandTimeout(query.deadline, CATALOG_COMMAND_LIMIT_MS)
+  const result = await execute(executable, ['config', 'tools', '--json'], { cwd: query.workingDir, env, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout })
   await query.onReceipt?.(result)
   let decoded: unknown
   try {

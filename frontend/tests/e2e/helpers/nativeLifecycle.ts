@@ -9,12 +9,13 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AgentInputState, AgentStatus, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputState, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { getTestChannel, openAgentViaAPI } from './api'
+import { openAgentViaAPI } from './api'
 import { newNativeWorkingDir } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
+import { readNativeInputQueue } from './nativeInputQueueIdle'
 import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
 import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
@@ -365,13 +366,7 @@ export async function exerciseAgentStartup(
       title: 'Controlled native startup',
     })
     await tabById(context.page, agentId).click()
-    const channel = await getTestChannel(server.hubUrl, server.adminToken)
-    const readQueue = async () => {
-      const response = await channel.callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId })
-      if (!response.snapshot)
-        throw new Error('The controlled startup input queue has no Worker snapshot.')
-      return response.snapshot
-    }
+    const readQueue = () => readNativeInputQueue(server, agentId)
     if (!options.launch.lazy) {
       await wrapper.entry
       expect((await nativeAgentById(privateContext, agentId))?.status).toBe(AgentStatus.STARTING)

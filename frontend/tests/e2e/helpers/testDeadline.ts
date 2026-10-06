@@ -64,6 +64,27 @@ export function currentTestDeadline(): number | undefined {
 }
 
 /**
+ * The timeout of one native command that a test runs itself, such as a catalog read of an installed CLI: `limitMs`, or
+ * the whole milliseconds left before `deadline` when they are fewer. With no deadline, `limitMs` applies alone, so the
+ * command never runs without a limit.
+ *
+ * A deadline that leaves no whole millisecond throws, so the command does not start. A deadline or a current time that
+ * is not finite throws also, because it states no time.
+ */
+export function nativeCommandTimeout(deadline: number | undefined, limitMs: number, now: number = Date.now()): number {
+  if (!Number.isSafeInteger(limitMs) || limitMs <= 0)
+    throw new RangeError(`A native command limit must be a positive whole number of milliseconds, not ${limitMs}.`)
+  if (!Number.isFinite(now) || (deadline !== undefined && !Number.isFinite(deadline)))
+    throw new RangeError('A native command timeout requires a finite test deadline and current time.')
+  if (deadline === undefined)
+    return limitMs
+  const remaining = Math.floor(deadline - now)
+  if (remaining <= 0)
+    throw new Error('The test deadline leaves no time for the native command.')
+  return Math.min(remaining, limitMs)
+}
+
+/**
  * The Playwright timeout of a wait that must end {@link WAIT_REPORT_MARGIN_MS} before the test's deadline.
  * Return 0, which Playwright reads as "no limit", when the test has no deadline.
  * Return at least 1 when the deadline is near or past, so that the wait fails at once with its own message.
