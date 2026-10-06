@@ -11,12 +11,13 @@
  * exerciseChildInterrupt uses this registry to open and stop a native child.
  */
 import type { Locator, Page } from '@playwright/test'
-import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelMatcher, MockModelStep } from './mockModelScript'
-import type { ModelScript } from './modelScriptFixture'
+import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
+import type { RunningNativeChild } from './unsupportedSubagent'
 import { expect } from '@playwright/test'
 import { cleanupOnFailure } from './cleanup'
+import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import {
@@ -156,9 +157,11 @@ export const HELD_CHILD_NAME = 'count_to_one_hundred'
 const HELD_CHILD_RULE = 'the child counts until something stops it'
 const HELD_CHILD_GATE = 'held-child-answer'
 
+/** The fixtures that a held child needs. The provider decides the spawn call. */
+export type HeldChildContext = Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'leapmuxServer' | 'provider'>
+
 /** What one provider needs to open the tab of a subagent that keeps working. */
 export interface HeldChildCase {
-  provider: AgentProvider
   /** Register provider-owned report handling after the child starts and before its release. */
   beforeRelease?: () => Promise<void>
   /** The provider's display title when it differs from the task description. */
@@ -188,24 +191,20 @@ export interface HeldChildCase {
  * The answer that holds the child's turn open: the provider's own ending under the
  * hold gate, so a caller that supplies `heldAnswer` cannot drop the gate with it.
  */
-export function heldChildAnswer(test: HeldChildCase): MockModelStep {
+export function heldChildAnswer(test: Pick<HeldChildCase, 'heldAnswer'>): MockModelStep {
   return { ...(test.heldAnswer ?? { text: 'One, two, three.' }), gate: HELD_CHILD_GATE }
 }
 
-/** The subagent that {@link openHeldChildTab} leaves working. */
-export interface HeldChild {
-  /** Its registry row. */
-  row: Locator
-  /** The id of the child's tab, which is the child agent's id. */
-  childTabId: string
-  /** The id of the root's tab, which the child's tab opened beside. */
-  rootTabId: string
-  /** How many requests the rule that holds the child's turn answered. */
+/**
+ * The subagent that {@link openHeldChildTab} leaves working.
+ * `childId` is the ID of the child agent and of its tab. `parentId` is the ID of the root, beside which the child tab
+ * opened. `finish` releases the hold, waits for the root turns, selects the root, and requires a final row status.
+ */
+export interface HeldChild extends RunningNativeChild {
+  /** How many requests the rule that holds the child's turn answered. A repeated child request counts again. */
   heldTurns: () => Promise<number>
   /** Release the model response without waiting on browser state. */
   release: () => Promise<boolean>
-  /** Release the held native child and confirm the parent returns to idle. */
-  finish: () => Promise<void>
 }
 
 /**
@@ -213,22 +212,29 @@ export interface HeldChild {
  *
  * The mock holds the child's answer at an explicit gate. When this returns,
  * the child's model request is open, its row is running, and its tab is active.
+ *
+ * The Worker registry must be empty before the spawn. The helper takes the first subagent row as the child, so a row
+ * of an earlier state that hydrates late would otherwise become the child.
+ *
+ * The hold rule is not `once` on purpose. A repeated child request matches it again, so `heldTurns` counts the repeat,
+ * and {@link exerciseChildInterrupt} refuses it. A `once` rule would let a fallback answer the repeat and hide it.
  */
-export async function openHeldChildTab(page: Page, modelScript: ModelScript, test: HeldChildCase): Promise<HeldChild> {
+export async function openHeldChildTab(context: HeldChildContext, test: HeldChildCase): Promise<HeldChild> {
+  const { page, modelScript } = context
   // The step count after the root's turns. The queue below sets it before the prompt is sent.
   let target = 0
-  const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
-  await expect(agentTabs).toHaveCount(1)
-  const rootTabId = await agentTabs.getAttribute('data-tab-id') ?? ''
-  expect(rootTabId, 'the root tab has an ID').not.toBe('')
+  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]:visible'), 'the workspace holds only the root agent').toHaveCount(1)
+  const parentId = await selectedAgentTabId(page)
+  await expectNoRegistryRows(page, context.leapmuxServer)
   let sent = false
   const release = () => modelScript.releaseGateIfHeld(HELD_CHILD_GATE)
-  const finish = async () => {
+  // A failed setup can stop before the row exists, so this step requires no row.
+  const settle = async () => {
     await release()
     if (!sent)
       return
     await modelScript.waitForSteps(target)
-    await tabById(page, rootTabId).click()
+    await tabById(page, parentId).click()
     await waitForAgentIdle(page)
   }
   return cleanupOnFailure(async () => {
@@ -239,7 +245,7 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(test.provider, 'spawn-held-child', {
+        toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-held-child', {
           description: HELD_CHILD_TITLE,
           prompt: modelScript.prompt(`${HELD_CHILD_TASK}.`),
         })],
@@ -257,10 +263,13 @@ export async function openHeldChildTab(page: Page, modelScript: ModelScript, tes
     await modelScript.waitForGate(HELD_CHILD_GATE)
     expect(await heldTurns()).toBe(1)
     await test.beforeRelease?.()
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
-    const childTabId = await openChildTabFromRow(page, row)
-    return { row, childTabId, rootTabId, heldTurns, release, finish }
-  }, finish)
+    const childId = await openChildTabFromRow(page, row)
+    const finish = async () => {
+      await settle()
+      await expectRowBecomesFinal(page, row)
+    }
+    return { row, childId, parentId, heldTurns, release, finish }
+  }, settle)
 }
 
 /** The root's answer after the spawn's result states the stop. */
@@ -288,43 +297,64 @@ export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'> & {
  * - The Interrupt control disappears.
  * - The parent continues and accepts its next prompt.
  */
-export async function exerciseChildInterrupt(page: Page, modelScript: ModelScript, test: ChildInterruptCase): Promise<void> {
-  const finalStatus = test.finalStatus ?? 'interrupted'
-  const child = await openHeldChildTab(page, modelScript, { ...test, rootTurnsAfterSpawn: [{ text: ROOT_AFTER_CHILD_STOP }] })
+export async function exerciseChildInterrupt(context: HeldChildContext, test: ChildInterruptCase): Promise<void> {
+  const { page, modelScript } = context
+  const child = await openHeldChildTab(context, { ...test, rootTurnsAfterSpawn: [{ text: ROOT_AFTER_CHILD_STOP }] })
+  // A failed stop leaves the child answer held. The release lets the child end, so the stop failure stays the report.
+  await cleanupOnFailure(async () => {
+    // The held answer never arrives. Registry status and activity report the stop.
+    await stopChildWithInterrupt(page, child.row, test.finalStatus ?? 'interrupted')
 
+    // The root reads the spawn's result and answers with its next turn.
+    await modelScript.waitForSteps()
+    await tabById(page, child.parentId).click()
+    await expect(assistantBubbles(page).filter({ hasText: ROOT_AFTER_CHILD_STOP })).toBeVisible()
+    // Require the visible parent indicator to disappear.
+    // Each tab mounts its own chat, and the hidden child chat can retain an indicator.
+    // An unscoped indicator locator can match both chats and fail strict mode.
+    await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
+    // The stop paused the child's input queue, not the root's, so the next prompt
+    // reaches the root at once.
+    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
+    await modelScript.waitForSteps()
+    await expectAssistantAnswer(page)
+    // Nothing asked for the child's turn again after the stop.
+    expect(await child.heldTurns()).toBe(1)
+    // The stop adds no divider and leaves no indicator in the child transcript, also after a reload.
+    for (const reload of [false, true]) {
+      if (reload)
+        await page.reload()
+      await tabById(page, child.childId).click()
+      await expect(subagentEndDivider(page)).toHaveCount(0)
+      await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
+    }
+    await tabById(page, child.parentId).click()
+  }, async () => {
+    await child.release()
+  })
+}
+
+/** Locate the visible divider that ends a subagent transcript with a final status. */
+export function subagentEndDivider(page: Page): Locator {
+  return page.locator('[data-testid="notification-divider"]:visible').filter({ hasText: /^Subagent (?:completed|failed|stopped|interrupted)$/ })
+}
+
+/**
+ * Stop the child of the selected tab through its Interrupt control, and require the stop:
+ *
+ * - The tab offers Interrupt before the click.
+ * - The registry row of the child reports `finalStatus`.
+ * - The tab shows no thinking indicator. Each tab mounts its own chat, so the locator reads the visible chat only.
+ * - The Interrupt control leaves the tab.
+ */
+export async function stopChildWithInterrupt(page: Page, row: Locator, finalStatus: 'stopped' | 'interrupted' | 'paused'): Promise<void> {
   const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
   await expect(interrupt).toBeVisible()
   await interrupt.click()
-
-  // The held answer never arrives. Registry status and activity report the stop.
-  await expect(child.row).toHaveAttribute('data-status', finalStatus)
+  await expect(row).toHaveAttribute('data-status', finalStatus)
   await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
   await expect(interrupt).toHaveCount(0)
-
-  // The root reads the spawn's result and answers with its next turn.
-  await modelScript.waitForSteps()
-  await tabById(page, child.rootTabId).click()
-  await expect(assistantBubbles(page).filter({ hasText: ROOT_AFTER_CHILD_STOP })).toBeVisible()
-  // Require the visible parent indicator to disappear.
-  // Each tab mounts its own chat, and the hidden child chat can retain an indicator.
-  // An unscoped indicator locator can match both chats and fail strict mode.
-  await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
-  // The stop paused the child's input queue, not the root's, so the next prompt
-  // reaches the root at once.
-  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-  await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await modelScript.waitForSteps()
-  await expectAssistantAnswer(page)
-  // Nothing asked for the child's turn again after the stop.
-  expect(await child.heldTurns()).toBe(1)
-  await tabById(page, child.childTabId).click()
-  await expect(page.locator('[data-testid="notification-divider"]:visible').filter({ hasText: /^Subagent (?:completed|failed|stopped|interrupted)$/ })).toHaveCount(0)
-  await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
-  await page.reload()
-  await tabById(page, child.childTabId).click()
-  await expect(page.locator('[data-testid="notification-divider"]:visible').filter({ hasText: /^Subagent (?:completed|failed|stopped|interrupted)$/ })).toHaveCount(0)
-  await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
-  await tabById(page, child.rootTabId).click()
 }
 
 /**

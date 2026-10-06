@@ -1,6 +1,6 @@
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseChildInterrupt, expectNoRegistryRows, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
+import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
@@ -21,11 +21,9 @@ qwenTest.describe('Qwen Code subagent registry', () => {
   }) => {
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await expectNoRegistryRows(page, leapmuxServer)
     // Qwen asks no session title for a child, so the task alone selects the
     // child's own turn.
-    await exerciseChildInterrupt(page, modelScript, {
-      provider: AgentProvider.QWEN_CODE,
+    await exerciseChildInterrupt({ page, modelScript, leapmuxServer, provider: AgentProvider.QWEN_CODE }, {
       childTurn: { user: HELD_CHILD_TASK },
     })
   })

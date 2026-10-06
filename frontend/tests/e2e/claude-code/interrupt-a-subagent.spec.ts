@@ -1,7 +1,7 @@
 /** Test native child interruption without stopping the parent. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { exerciseChildInterrupt, expectNoRegistryRows, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
+import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 
 claudeTest.describe('Claude subagent background tasks', () => {
   // Claude's native stop_task control stops only the selected child.
@@ -14,12 +14,10 @@ claudeTest.describe('Claude subagent background tasks', () => {
     leapmuxServer,
   }) => {
     void authenticatedWorkspace
-    await expectNoRegistryRows(page, leapmuxServer)
     // Claude can start more root turns when it reports a stopped background
     // task. Their count depends on when the stop reaches its pending turn.
     await modelScript.fallback({ text: 'Notification noted.' })
-    await exerciseChildInterrupt(page, modelScript, {
-      provider: AgentProvider.CLAUDE_CODE,
+    await exerciseChildInterrupt({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE }, {
       childTurn: { user: HELD_CHILD_TASK },
     })
   })

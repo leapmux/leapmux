@@ -7,9 +7,9 @@ import { applyPermissionPreset, tabById } from '../helpers/ui'
 clineTest('keeps the actual native background task row through completion and reload', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE }
   await applyPermissionPreset(page, 'bypass')
-  const child = await openHeldChildTab(page, modelScript, { provider: context.provider, childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }] })
+  const child = await openHeldChildTab(context, { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }] })
   try {
-    await tabById(page, child.rootTabId).click()
+    await tabById(page, child.parentId).click()
     await expect(backgroundTasksSection(page)).toBeVisible()
     await expect(child.row).toHaveAttribute('data-status', 'running')
     await expect(child.row).toContainText('Count to one hundred')

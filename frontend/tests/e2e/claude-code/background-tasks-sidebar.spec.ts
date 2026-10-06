@@ -45,7 +45,7 @@ claudeTest.describe('Claude subagent background tasks', () => {
 /** The Worker registry must govern an empty-state assertion before browser hydration. */
 claudeTest('refuses an early empty DOM while an actual native task remains in the Worker registry', async ({ page, modelScript, leapmuxServer, authenticatedClaudeWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClaudeWorkspace.workspaceId, provider: AgentProvider.CLAUDE_CODE }
-  const child = await openHeldChildTab(page, modelScript, { provider: AgentProvider.CLAUDE_CODE, childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The real child completed after registry hydration.' }] })
+  const child = await openHeldChildTab(context, { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The real child completed after registry hydration.' }] })
   const forwards: Array<() => void> = []
   let held = true
   let sockets = 0
@@ -57,10 +57,10 @@ claudeTest('refuses an early empty DOM while an actual native task remains in th
       completionStatus: 'completed',
       completionReply: 'The native child completion notification arrived.',
     })
-    const before = await readNativeSidebarSnapshot(context, child.rootTabId)
+    const before = await readNativeSidebarSnapshot(context, child.parentId)
     expect(before.backgroundTasks).toHaveLength(1)
-    expect(before.backgroundTasks[0]).toMatchObject({ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: child.childTabId })
-    await tabById(page, child.rootTabId).click()
+    expect(before.backgroundTasks[0]).toMatchObject({ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: child.childId })
+    await tabById(page, child.parentId).click()
     await page.routeWebSocket(url => url.pathname === WS_CHANNEL_ROUTE, (browser) => {
       sockets += 1
       const server = browser.connectToServer()
@@ -76,7 +76,7 @@ claudeTest('refuses an early empty DOM while an actual native task remains in th
     await expect.poll(() => sockets).toBeGreaterThan(0)
     await expect.poll(() => forwards.length).toBeGreaterThan(0)
     await expect(page.locator('[data-testid="bg-task-row"]')).toHaveCount(0)
-    const actual = await readNativeSidebarSnapshot(context, child.rootTabId)
+    const actual = await readNativeSidebarSnapshot(context, child.parentId)
     expect(actual.backgroundTasks).toHaveLength(1)
     expect(actual.backgroundTasks[0]?.status).toBe(BackgroundTaskStatus.RUNNING)
     await expect(expectNoRegistryRows(page, leapmuxServer)).rejects.toThrow(/registry|task|rows/i)
@@ -84,7 +84,7 @@ claudeTest('refuses an early empty DOM while an actual native task remains in th
     try {
       await finishCleanup([
         child.release(),
-        closeAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, child.rootTabId),
+        closeAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, child.parentId),
       ])
     }
     finally {

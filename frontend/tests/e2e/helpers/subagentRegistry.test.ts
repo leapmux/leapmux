@@ -7,13 +7,26 @@
  * Both runner configurations and testFileNaming.test.ts enforce that distinction.
  */
 import type { Locator, Page } from '@playwright/test'
+import type { ModelScript } from './modelScriptFixture'
+import type { HeldChildCase, HeldChildContext } from './subagentRegistry'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
+import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+
+/** The Worker registry that the fake snapshot read returns, and the order of the reads and model script calls. */
+const registry = vi.hoisted(() => ({ tasks: [] as unknown[], log: [] as string[] }))
+
+vi.mock('./nativeSidebarSnapshot', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeSidebarSnapshot')>(),
+  readNativeSidebarSnapshot: async () => {
+    registry.log.push('registry')
+    return { backgroundTasks: registry.tasks }
+  },
+}))
 
 const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'utf-8')
 
@@ -107,7 +120,7 @@ describe('HELD_CHILD_NAME', () => {
  * the hold gate onto a provider's own answer is checked here.
  */
 describe('heldChildAnswer', () => {
-  const base = { provider: AgentProvider.OH_MY_PI, childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [] }
+  const base: Pick<HeldChildCase, 'heldAnswer'> = {}
 
   it('answers with the shared text under the hold gate by default', () => {
     const answer = heldChildAnswer(base)
@@ -232,6 +245,68 @@ describe('requireRegistryRow', () => {
       throw closed
     })
     await expect(requireRegistryRow(view.page)).rejects.toBe(closed)
+  })
+})
+
+describe('openHeldChildTab', () => {
+  beforeEach(() => {
+    registry.tasks = []
+    registry.log = []
+  })
+
+  /** A locator probe that the fake `expect` reads, with a count and attributes. */
+  function probe(count: number, attributes: Record<string, string> = {}): Locator {
+    const locator: Locator = Object.assign({} as Locator, {
+      readCount: () => count,
+      readAttribute: (name: string) => attributes[name] ?? null,
+      first: () => locator,
+      getAttribute: async (name: string) => attributes[name] ?? null,
+    })
+    return locator
+  }
+
+  /**
+   * A context with one root agent tab and an empty registry in the DOM.
+   * The model script logs each call. Its queue fails, which ends the setup after the spawn is scripted.
+   */
+  function context(): HeldChildContext {
+    const page = Object.assign({} as Page, {
+      locator: (selector: string) => {
+        if (selector.includes('[data-tab-type="agent"]'))
+          return probe(1, { 'data-tab-id': 'root-agent' })
+        if (selector.startsWith('[data-testid="bg-task-'))
+          return probe(0)
+        throw new Error(`The fake page has no locator for ${selector}.`)
+      },
+    })
+    const modelScript = Object.assign({} as ModelScript, {
+      prompt: (text: string) => text,
+      rule: async () => {
+        registry.log.push('rule')
+      },
+      queue: async () => {
+        registry.log.push('queue')
+        throw new Error('The fake model script stops after the queue.')
+      },
+      releaseGateIfHeld: async () => {
+        registry.log.push('release')
+        return false
+      },
+    })
+    return { page, modelScript, provider: AgentProvider.KIRO, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  }
+
+  const heldCase: HeldChildCase = { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The root completed.' }] }
+
+  it('reads the Worker registry before it scripts the spawn, and releases the hold when the setup fails', async () => {
+    await expect(openHeldChildTab(context(), heldCase)).rejects.toThrow('stops after the queue')
+    expect(registry.log).toEqual(['registry', 'rule', 'queue', 'release'])
+  })
+
+  it('refuses a Worker registry that holds a row before it scripts the spawn', async () => {
+    registry.tasks = [{ id: 'earlier-task', childAgentId: 'earlier-child' }]
+    await expect(openHeldChildTab(context(), heldCase)).rejects.toThrow('the Worker registry must hold no task rows before a spawn')
+    expect(registry.log).toEqual(['registry'])
   })
 })
 

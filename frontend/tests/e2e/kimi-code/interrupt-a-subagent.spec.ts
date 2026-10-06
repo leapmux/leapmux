@@ -1,9 +1,6 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseChildInterrupt, expectNoRegistryRows, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
+import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, expectSettingsChip, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
-
-const KIMI = AgentProvider.KIMI_CODE
 
 /**
  * The statement that opens a Kimi Code subagent's system prompt, and that the
@@ -24,10 +21,8 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
 
   // Kimi Code runs a subagent as a task of its session, and the Interrupt
   // control of the subagent's tab cancels that task alone.
-  kimiTest('the Interrupt control of a working subagent\'s tab stops that subagent alone', async ({ page, modelScript, leapmuxServer }) => {
-    await expectNoRegistryRows(page, leapmuxServer)
-    await exerciseChildInterrupt(page, modelScript, {
-      provider: KIMI,
+  kimiTest('the Interrupt control of a working subagent\'s tab stops that subagent alone', async ({ native }) => {
+    await exerciseChildInterrupt(native, {
       childTurn: { system: SUBAGENT_SYSTEM, body: HELD_CHILD_TASK },
     })
   })
