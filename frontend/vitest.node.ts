@@ -255,6 +255,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/processTree.test.ts',
   'tests/e2e/helpers/providerToolCalls.test.ts',
   'tests/e2e/helpers/rateLimit.test.ts',
+  'tests/e2e/helpers/relatedTodoProof.test.ts',
   'tests/e2e/helpers/responsePause.test.ts',
   'tests/e2e/helpers/runBinary.test.ts',
   'tests/e2e/helpers/runDirectory.test.ts',

@@ -1,6 +1,5 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset, expectSettingsChip, openPlusMenu, waitForSettingsHydrated } from '../helpers/ui'
 import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfiguration'
@@ -18,6 +17,6 @@ zcodeTest('smart-permissions-shortcut: offers only the bypass permission shortcu
 
 zcodeTest('proves the native smart-permissions-shortcut limit after a real sidebar operation', async ({ authenticatedZCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }
-  const relatedProof = () => exerciseRelatedTodo(context, { toolCall: updateTodosToolCall(AgentProvider.ZCODE, 'related-native-todo', [{ step: 'Native capability proof', status: 'pending' }]), item: 'Native capability proof', prepare: () => applyPermissionPreset(page, 'bypass') })
+  const relatedProof = () => exerciseRelatedTodo(context, { prepare: () => applyPermissionPreset(page, 'bypass') })
   await expectMissingPermissionShortcut(context, { preset: 'smart', relatedProof })
 })
