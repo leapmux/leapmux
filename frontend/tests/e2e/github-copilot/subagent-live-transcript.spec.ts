@@ -2,14 +2,14 @@ import { copilotTest } from '../copilot-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { copilotChildTaskMatcher } from './childIdentity'
 
 copilotTest('shows a child tool before the child finishes', async ({ native }) => {
   const { page } = native
   await applyPermissionPreset(page, 'bypass')
   await waitForSettingsIdle(page)
-  // Copilot puts a `<current_datetime>` block before each user turn, so the matcher is not anchored.
   const child = await exerciseLiveChildTranscript(native, {
-    childWhen: { user: 'Run printf copilot-child-live' },
+    childWhen: copilotChildTaskMatcher('Run printf copilot-child-live'),
     childTask: 'Run printf copilot-child-live, then report the result.',
     parentTask: 'Spawn one child to run the shell probe.',
     toolProof: { shell: { command: 'printf copilot-child-live' } },

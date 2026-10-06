@@ -31,11 +31,9 @@ export async function exerciseCopilotChildTranscript(context: ManagedNativeScena
   // the parent's own turn would take this answer instead of the queued spawn.
   await modelScript.rule({
     name: 'the child answers with its exact word',
-    // Not anchored. Copilot puts a `<current_datetime>` block before each user
-    // turn, so `^` never matches the task. No anchor is necessary: Copilot
-    // returns a tool result as a `tool` message, so the last user text of a
-    // parent turn stays the original prompt and never holds the child prompt.
-    when: { user: 'Reply with exactly COPILOT_CHILD_PONG' },
+    // The matcher anchors the task at the start of a line of the last user turn, and only the child's own turn has
+    // such a line. `copilotChildTaskMatcher` states why the anchor cannot be `^`.
+    when: copilotChildTaskMatcher('Reply with exactly COPILOT_CHILD_PONG'),
     respond: { text: 'COPILOT_CHILD_PONG' },
   })
   const start = await modelScript.queue(
