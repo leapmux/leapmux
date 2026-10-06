@@ -106,8 +106,33 @@ describe('copilotRateLimitHeaders', () => {
     })
   })
 
-  it('preserves native utilization validation and ignores unrelated quota types', () => {
-    expect(() => copilotRateLimitHeaders({ type: 'chat', status: 'allowed', utilization: -1 })).toThrow('between zero and one')
-    expect(copilotRateLimitHeaders({ type: 'five_hour', status: 'allowed' })).toEqual({})
+  it.each(['premium_interactions', 'chat', 'completions'])('encodes the native query fields for %s', (type) => {
+    const headers = copilotRateLimitHeaders({ type, status: 'allowed_warning', utilization: 0.73, resetsAt: 0 })
+    expect(headers[`x-quota-snapshot-${type}`]).toBe('ent=100&rem=27&ov=0&ovPerm=false&rst=1970-01-01T00:00:00.000Z')
+  })
+
+  it('keeps unused and exhausted quotas distinct and leaves an absent reset absent', () => {
+    const unused = new URLSearchParams(copilotRateLimitHeaders({ type: 'chat', status: 'allowed', utilization: 0 })['x-quota-snapshot-chat'])
+    const exhausted = new URLSearchParams(copilotRateLimitHeaders({ type: 'chat', status: 'exceeded', utilization: 1 })['x-quota-snapshot-chat'])
+    expect(unused.get('rem')).toBe('100')
+    expect(exhausted.get('rem')).toBe('0')
+    expect(unused.has('rst')).toBe(false)
+    expect(exhausted.has('rst')).toBe(false)
+  })
+
+  it('uses unused quota when the neutral utilization field is absent', () => {
+    expect(copilotRateLimitHeaders({ type: 'chat', status: 'allowed' })).toEqual({ 'x-quota-snapshot-chat': 'ent=100&rem=100&ov=0&ovPerm=false' })
+  })
+
+  it.each(['five_hour', '', 'chat\nprivate', 'chat:private', 'chat/other'])('ignores the unsupported native resource %s', (type) => {
+    expect(copilotRateLimitHeaders({ type, status: 'allowed' })).toEqual({})
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01])('refuses the invalid utilization %s', (utilization) => {
+    expect(() => copilotRateLimitHeaders({ type: 'chat', status: 'allowed', utilization })).toThrow('The native Copilot quota utilization must be between zero and one.')
+  })
+
+  it('refuses a reset date that the native protocol cannot encode', () => {
+    expect(() => copilotRateLimitHeaders({ type: 'chat', status: 'allowed', resetsAt: Number.MAX_SAFE_INTEGER })).toThrow(RangeError)
   })
 })
