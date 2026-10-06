@@ -1,30 +1,16 @@
-import { execSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
-
-/**
- * Create a git repo inside the server's data directory.
- */
-function createGitRepo(dataDir: string, name: string): string {
-  const repoDir = join(dataDir, name)
-  mkdirSync(repoDir, { recursive: true })
-  execSync('git init', { cwd: repoDir })
-  execSync('git config user.email "test@test.com"', { cwd: repoDir })
-  execSync('git config user.name "Test"', { cwd: repoDir })
-  writeFileSync(join(repoDir, 'README.md'), '# Test\n')
-  execSync('git add .', { cwd: repoDir })
-  execSync('git commit -m "init"', { cwd: repoDir })
-  return repoDir
-}
+import { agentTabs, loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
+import { createGitRepo } from './helpers/worktree'
 
 test.describe('Diff Stat Isolation', () => {
   test('diff stats do not leak from one workspace to another', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const { adminToken, dataDir } = leapmuxServer
 
-    // Create two separate git repos with different content.
+    // Create two separate git repos with different content. The shared helper
+    // pins the settings that keep a second writer out of `.git`.
     const repoA = createGitRepo(dataDir, 'repo-a')
     const repoB = createGitRepo(dataDir, 'repo-b')
 
@@ -35,53 +21,45 @@ test.describe('Diff Stat Isolation', () => {
     writeFileSync(join(repoB, 'new-file.txt'), 'hello\nworld\n')
 
     // Create two workspaces, each pointing to a different repo.
-    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Clean WS')
-    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dirty WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, repoA)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, wsB, repoB)
+    const { workspaceId: wsA } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Clean WS', { workingDir: repoA })
+    const { workspaceId: wsB } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Dirty WS', { workingDir: repoB })
 
-    try {
-      await loginViaToken(page, adminToken)
+    await loginViaToken(page, adminToken)
 
-      // Navigate to workspace B first to load its diff stats.
-      await openWorkspace(page, wsB)
+    // Navigate to workspace B first to load its diff stats.
+    await openWorkspace(page, wsB)
 
-      // The DiffStatsBadge is rendered inside the workspace-item div.
-      const wsBItem = workspaceRow(page, wsB)
-      const wsAItem = workspaceRow(page, wsA)
+    // The DiffStatsBadge is rendered inside the workspace-item div.
+    const wsBItem = workspaceRow(page, wsB)
+    const wsAItem = workspaceRow(page, wsA)
 
-      // Wait for workspace B's diff stats badge to appear on the workspace item.
-      // The git status refresh is triggered when the active tab context is set.
-      // First wait for the agent tab to be visible (confirms restore is done).
-      await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor()
+    // Wait for workspace B's diff stats badge to appear on the workspace item.
+    // The git status refresh is triggered when the active tab context is set.
+    // First wait for the agent tab to be visible (confirms restore is done).
+    await agentTabs(page).first().waitFor()
 
-      // Wait for any git-diff-stats badge on the page (workspace item or tab tree).
-      await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
+    // Wait for any git-diff-stats badge on the page (workspace item or tab tree).
+    await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
-      // Now switch to workspace A.
-      await wsAItem.click()
-      await waitForWorkspaceReady(page)
+    // Now switch to workspace A.
+    await wsAItem.click()
+    await waitForWorkspaceReady(page)
 
-      // After switching, workspace A should still have no diff stats.
-      // Before the fix, workspace B's diff stats would leak into workspace A
-      // because the reactive effect applied stale git data during the switch.
-      await page.waitForTimeout(3000) // Allow time for any stale effect to fire
-      await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
+    // After switching, workspace A should still have no diff stats.
+    // Before the fix, workspace B's diff stats would leak into workspace A
+    // because the reactive effect applied stale git data during the switch.
+    await page.waitForTimeout(3000) // Allow time for any stale effect to fire
+    await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
 
-      // Switch back to workspace B — diff stats should reappear.
-      await wsBItem.click()
-      await waitForWorkspaceReady(page)
-      await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
+    // Switch back to workspace B — diff stats should reappear.
+    await wsBItem.click()
+    await waitForWorkspaceReady(page)
+    await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
-      // Switch to workspace A one more time — still no diff stats.
-      await wsAItem.click()
-      await waitForWorkspaceReady(page)
-      await page.waitForTimeout(3000)
-      await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsA).catch(() => {})
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsB).catch(() => {})
-    }
+    // Switch to workspace A one more time — still no diff stats.
+    await wsAItem.click()
+    await waitForWorkspaceReady(page)
+    await page.waitForTimeout(3000)
+    await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
   })
 })

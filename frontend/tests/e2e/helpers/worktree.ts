@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import type { AgentServer } from './workspace'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -26,14 +26,17 @@ import {
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
 import { API_POLL_INTERVAL_MS, callHub, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
-import { expectAnyVisible, isMaybeVisible } from './ui'
+import { activeWorkspaceRow, expectAnyVisible, isMaybeVisible, loginViaToken, sidebarSectionHeader } from './ui'
+
+/** Run one git command in `cwd` with no shell, so a path or a name reaches git as one argument. */
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' })
+}
 
 /**
- * Create a git repo inside the server's data directory so the worker can access it.
+ * The settings that every test repository pins, so that the machine's global gitconfig cannot change them.
  *
- * The repo pins three settings that would otherwise be inherited from the
- * machine's global gitconfig, because each of them puts a SECOND writer inside
- * `.git` that the test never asked for:
+ * Each of the first three would otherwise put a SECOND writer inside `.git` that the test never asked for:
  *
  * - `core.fsmonitor` (commonly on for macOS dev machines) makes git spawn a
  *   filesystem-monitor daemon per repo. It outlives the command that started
@@ -44,31 +47,108 @@ import { expectAnyVisible, isMaybeVisible } from './ui'
  *   commit can fire a background `git gc` that writes after the command
  *   returns.
  *
+ * The identity lets a test commit on a host with no global `user.name`.
+ * A linked worktree reads the config of its main repository, so it needs no copy of these settings.
+ */
+const PINNED_GIT_CONFIG: ReadonlyArray<readonly [string, string]> = [
+  ['core.fsmonitor', 'false'],
+  ['gc.auto', '0'],
+  ['maintenance.auto', 'false'],
+  ['user.email', 'test@test.com'],
+  ['user.name', 'Test'],
+]
+
+/** Write the pinned settings into the config of the repository at `repoDir`. */
+function pinGitConfig(repoDir: string): void {
+  for (const [key, value] of PINNED_GIT_CONFIG)
+    git(repoDir, ['config', key, value])
+}
+
+/**
+ * Initialize an empty repository at `dir` on branch `main`, with the pinned settings.
+ *
  * `--initial-branch=main` is pinned for the same reason it is in the Go
  * helpers: a host without `init.defaultBranch` lands on `master`, and the
- * specs address the initial branch by name.
+ * specs address the initial branch by name. The init itself runs with
+ * `core.fsmonitor=false`, because no repository config exists yet to pin it.
+ */
+export function initGitRepo(dir: string): void {
+  mkdirSync(dir, { recursive: true })
+  git(dir, ['-c', 'core.fsmonitor=false', 'init', '--initial-branch=main'])
+  pinGitConfig(dir)
+}
+
+/**
+ * Write `content` to `path` inside the repository, stage that file, and commit it with `message`.
+ * The parent directories of `path` are created first.
+ */
+export function commitFile(repoDir: string, path: string, content: string, message: string): void {
+  const file = join(repoDir, path)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, content)
+  git(repoDir, ['add', '--', path])
+  git(repoDir, ['commit', '-m', message])
+}
+
+/**
+ * Create a git repo inside the server's data directory so the worker can access it.
+ * The repository holds one commit of `README.md` on `main`, and carries the pinned settings of `initGitRepo`.
  */
 export function createGitRepo(dataDir: string, name: string): string {
   const repoDir = join(dataDir, name)
-  mkdirSync(repoDir, { recursive: true })
-  execSync('git -c core.fsmonitor=false init --initial-branch=main', { cwd: repoDir })
-  execSync('git config core.fsmonitor false', { cwd: repoDir })
-  execSync('git config gc.auto 0', { cwd: repoDir })
-  execSync('git config maintenance.auto false', { cwd: repoDir })
-  execSync('git config user.email "test@test.com"', { cwd: repoDir })
-  execSync('git config user.name "Test"', { cwd: repoDir })
-  writeFileSync(join(repoDir, 'README.md'), '# Test\n')
-  execSync('git add .', { cwd: repoDir })
-  execSync('git commit -m "init"', { cwd: repoDir })
+  initGitRepo(repoDir)
+  commitFile(repoDir, 'README.md', '# Test\n', 'init')
   return repoDir
 }
 
 /**
+ * Create a bare repository as a remote, and a clone of it whose `main` holds one pushed commit, so the clone's
+ * branch has an upstream. The bare repository is `<dataDir>/<name>-bare`, and the clone is `<dataDir>/<name>`.
+ * Both carry the pinned settings.
+ */
+export function createGitRepoWithRemote(dataDir: string, name: string): { repoDir: string, bareDir: string } {
+  const bareDir = join(dataDir, `${name}-bare`)
+  mkdirSync(bareDir, { recursive: true })
+  git(bareDir, ['-c', 'core.fsmonitor=false', 'init', '--bare', '--initial-branch=main'])
+  pinGitConfig(bareDir)
+  const repoDir = join(dataDir, name)
+  git(dataDir, ['-c', 'core.fsmonitor=false', 'clone', bareDir, repoDir])
+  // The clone of an empty repository takes its unborn branch from the host's `init.defaultBranch`, not from the
+  // remote, so the branch is named here.
+  git(repoDir, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
+  pinGitConfig(repoDir)
+  commitFile(repoDir, 'README.md', '# Test\n', 'init')
+  git(repoDir, ['push', '-u', 'origin', 'HEAD'])
+  return { repoDir, bareDir }
+}
+
+/**
+ * Add a linked worktree of `repoDir` at `<dataDir>/<name>` on the new branch `branch`, and return its real path.
+ * The real path, because the Worker reports a resolved path: the temporary directory of macOS is a symlink
+ * (`/var` to `/private/var`).
+ */
+export function addWorktree(repoDir: string, dataDir: string, name: string, branch: string): string {
+  const target = join(dataDir, name)
+  git(repoDir, ['worktree', 'add', target, '-b', branch])
+  return realpathSync(target)
+}
+
+/**
  * Check if a git branch exists in a repository.
+ * The check reads the exact ref `refs/heads/<branchName>`. A `git branch --list` lookup treats the name as a pattern,
+ * and git reads a name that starts with `-` as an option.
  */
 export function branchExists(repoDir: string, branchName: string): boolean {
-  const output = execSync(`git branch --list ${branchName}`, { cwd: repoDir }).toString().trim()
-  return output.length > 0
+  try {
+    git(repoDir, ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`])
+    return true
+  }
+  catch (error) {
+    // show-ref exits with 1 for an absent ref. Another status is a real failure, such as a directory that is not a repository.
+    if ((error as { status?: unknown }).status === 1)
+      return false
+    throw error
+  }
 }
 
 /**
@@ -109,7 +189,7 @@ export async function waitForPathExists(path: string): Promise<void> {
  */
 export async function expectRepoBranch(repoDir: string, branch: string): Promise<void> {
   await expect
-    .poll(() => execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim())
+    .poll(() => git(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim())
     .toBe(branch)
 }
 
@@ -128,7 +208,7 @@ export async function waitForPathDeleted(path: string): Promise<void> {
  * Unlike waitForWorkspaceReady, this works on non-workspace routes like /.
  */
 export async function waitForAppPageReady(page: Page) {
-  await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
+  await expect(sidebarSectionHeader(page, 'workspaces_in_progress')).toBeVisible()
 }
 
 /**
@@ -174,15 +254,84 @@ export async function openNewWorkspaceDialog(page: Page) {
  * Open the "New Agent" dialog from within a workspace via the tab menu.
  */
 export async function openNewAgentDialog(page: Page) {
-  const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
-  await addMenu.click()
-  await page.getByRole('menuitem', { name: 'New agent...' }).click()
-  await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
+  await openTabMenuDialog(page, 'New agent...', 'New Agent')
+}
+
+/**
+ * Open the "New Terminal" dialog from within a workspace via the tab menu.
+ */
+export async function openNewTerminalDialog(page: Page) {
+  await openTabMenuDialog(page, 'New terminal...', 'New Terminal')
+}
+
+/** Click one item of the tab bar's `+` menu, and wait for the heading of the dialog that it opens. */
+async function openTabMenuDialog(page: Page, item: string, heading: string): Promise<void> {
+  await page.locator('[data-testid="tab-more-menu"]').first().click()
+  await page.getByRole('menuitem', { name: item }).click()
+  await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+}
+
+/**
+ * Sign in, open the app home, open the New Workspace dialog, wait for a Worker, and set the working directory to
+ * `dir`. The dialog then shows the git options of `dir`.
+ */
+export async function openNewWorkspaceDialogAt(page: Page, token: string, dir: string): Promise<void> {
+  await loginViaToken(page, token)
+  await page.goto('/')
+  await waitForAppPageReady(page)
+  await openNewWorkspaceDialog(page)
+  await waitForWorker(page)
+  await setWorkingDir(page, dir)
+}
+
+/**
+ * Replace the title that the New Workspace dialog generates with `title`.
+ * By ROLE and NAME, not by placeholder. The placeholder became "Type a name" when the dialog started to generate a
+ * title, so a lookup by the old placeholder matches nothing and waits out its whole timeout. `fill` replaces the
+ * generated name.
+ */
+export async function fillWorkspaceTitle(page: Page, title: string): Promise<void> {
+  await page.getByRole('dialog').getByRole('textbox', { name: 'Title' }).fill(title)
+}
+
+/**
+ * Select one git mode of the open dialog by its label, such as "Create new worktree".
+ * The options appear only after the Worker reports the git state of the working directory, so the label is awaited first.
+ */
+export async function chooseGitMode(page: Page, label: string): Promise<void> {
+  const option = page.getByRole('dialog').getByText(label, { exact: true })
+  await expect(option).toBeVisible()
+  await option.click()
+}
+
+/**
+ * Submit the New Workspace dialog with its Create button, and wait until the dialog closes and the workspace titled
+ * `title` is the active one. The dialog closes when the create RPC returns, and a new workspace activates in place,
+ * so no URL changes.
+ */
+export async function submitNewWorkspaceDialog(page: Page, title: string): Promise<void> {
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(activeWorkspaceRow(page)).toContainText(title)
+}
+
+/**
+ * The directory where the Worker places the managed worktree of `branch` for the repository of `repoDir`:
+ * `<main repository>-worktrees/<branch>`, beside the main repository.
+ *
+ * The path is anchored on the MAIN REPO ROOT, matching the worker's placement convention. A path derived from
+ * `repoDir` is wrong whenever `repoDir` is itself a linked worktree: the worker still places the new worktree beside
+ * the main repository.
+ */
+export function managedWorktreePath(repoDir: string, branch: string): string {
+  const repoRoot = mainRepoRoot(repoDir)
+  return join(dirname(repoRoot), `${basename(repoRoot)}-worktrees`, branch)
 }
 
 /**
  * Create a workspace on the hub, then open an agent with worktree enabled.
- * Returns the workspace ID.
+ * Returns the workspace ID and the directory of the new worktree.
  */
 export async function createWorkspaceWithWorktreeViaAPI(
   hubUrl: string,
@@ -191,7 +340,7 @@ export async function createWorkspaceWithWorktreeViaAPI(
   title: string,
   workingDir: string,
   worktreeBranch: string,
-): Promise<string> {
+): Promise<{ workspaceId: string, worktreeDir: string }> {
   const workspaceId = await createWorkspaceViaAPI(hubUrl, token, title)
   await openAgentViaAPI(hubUrl, token, workerId, workspaceId, workingDir, {
     createWorktree: true,
@@ -202,25 +351,9 @@ export async function createWorkspaceWithWorktreeViaAPI(
   // created asynchronously during phased startup (#194). Tests expect
   // `existsSync(worktreeDir)` to be true immediately after this helper returns,
   // so wait until the worker has actually materialized it on disk.
-  //
-  // The path is anchored on the MAIN REPO ROOT, matching the worker's placement
-  // convention. Deriving it from `workingDir` (as this did) is wrong whenever the
-  // working dir is itself a linked worktree: the worker still places the new
-  // worktree beside the main repo, so the helper waited out its full timeout on a
-  // path that never appears.
-  const repoRoot = mainRepoRoot(workingDir)
-  const expectedWorktreeDir = join(dirname(repoRoot), `${basename(repoRoot)}-worktrees`, worktreeBranch)
-  const deadline = Date.now() + 30_000
-  while (!existsSync(expectedWorktreeDir)) {
-    if (Date.now() > deadline) {
-      throw new Error(
-        `createWorkspaceWithWorktreeViaAPI: worktree did not appear at ${expectedWorktreeDir} within 30s`,
-      )
-    }
-    await new Promise(r => setTimeout(r, 25))
-  }
-
-  return workspaceId
+  const worktreeDir = managedWorktreePath(workingDir, worktreeBranch)
+  await waitForPathExists(worktreeDir)
+  return { workspaceId, worktreeDir }
 }
 
 /**
@@ -231,9 +364,7 @@ export async function createWorkspaceWithWorktreeViaAPI(
  * `.git` from any worktree, so its parent is the main root.
  */
 function mainRepoRoot(dir: string): string {
-  const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', { cwd: dir })
-    .toString()
-    .trim()
+  const commonDir = git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()
   return realpathSync(dirname(commonDir))
 }
 

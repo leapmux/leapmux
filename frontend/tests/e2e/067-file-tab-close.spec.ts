@@ -1,12 +1,11 @@
-import { execSync } from 'node:child_process'
-import { existsSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { clearRecordedToasts, getRecordedToasts } from './helpers/toast'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { createGitRepo, createWorkspaceWithWorktreeViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
+import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, treeRow } from './helpers/ui'
+import { showWorkspaceWithAgents } from './helpers/workspace'
+import { commitFile, createGitRepo, createWorkspaceWithWorktreeViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
 
 /**
  * How long to let a toast show up before concluding none is coming. The close
@@ -32,50 +31,38 @@ const TOAST_SETTLE_MS = 1500
  */
 test.describe('file tab close', () => {
   test('closes without a git warning when the repo has other tabs open', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const repoDir = createGitRepo(dataDir, 'file-tab-close-repo')
-    writeFileSync(join(repoDir, 'notes.md'), '# notes\n')
-    execSync('git add notes.md', { cwd: repoDir })
-    execSync('git commit -m "add notes"', { cwd: repoDir })
+    const repoDir = createGitRepo(leapmuxServer.dataDir, 'file-tab-close-repo')
+    commitFile(repoDir, 'notes.md', '# notes\n', 'add notes')
     // Uncommitted work on the branch, so a last-tab close would prompt.
     writeFileSync(join(repoDir, 'notes.md'), '# notes\nedited\n')
 
-    await loginViaToken(page, adminToken)
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close')
     // The agent tab is the sibling that keeps the branch alive, and the tab
     // whose working dir the file tab inherits.
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
+    await showWorkspaceWithAgents(page, leapmuxServer, 'File Tab Close', { workingDir: repoDir })
 
-    try {
-      await openWorkspace(page, workspaceId)
+    // Open the file from the tree, the way a user does.
+    await treeRow(page, 'notes.md').click()
+    const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
+    await expect(fileTab).toHaveCount(1)
 
-      // Open the file from the tree, the way a user does.
-      await page.getByText('notes.md').click()
-      const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toHaveCount(1)
+    await clearRecordedToasts(page)
+    await fileTab.locator('[data-testid="tab-close"]').click()
 
-      await clearRecordedToasts(page)
-      await fileTab.locator('[data-testid="tab-close"]').click()
+    // The tab goes and no dialog stands in the way: the worker resolved the
+    // repo and found the agent still on the branch.
+    await expect(fileTab).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
 
-      // The tab goes and no dialog stands in the way: the worker resolved the
-      // repo and found the agent still on the branch.
-      await expect(fileTab).toHaveCount(0)
-      await expect(page.getByRole('dialog')).toHaveCount(0)
+    // Nothing was warned about. The wait is load-bearing: the toast is
+    // rendered a beat after the close resolves, so asserting its absence the
+    // instant the tab disappears passes whether or not one is coming.
+    await page.waitForTimeout(TOAST_SETTLE_MS)
+    const toasts = await getRecordedToasts(page)
+    expect(toasts.map(t => `${t.variant}: ${t.message}`).join('\n')).toBe('')
 
-      // Nothing was warned about. The wait is load-bearing: the toast is
-      // rendered a beat after the close resolves, so asserting its absence the
-      // instant the tab disappears passes whether or not one is coming.
-      await page.waitForTimeout(TOAST_SETTLE_MS)
-      const toasts = await getRecordedToasts(page)
-      expect(toasts.map(t => `${t.variant}: ${t.message}`).join('\n')).toBe('')
-
-      // The agent tab is untouched — closing a file viewer is not a close of
-      // anything else.
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // The agent tab is untouched — closing a file viewer is not a close of
+    // anything else.
+    await expectAgentTabCount(page, 1)
   })
 
   /**
@@ -93,14 +80,8 @@ test.describe('file tab close', () => {
   test('closes without a git warning inside a worktree', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'file-tab-close-wt-repo')
-    const worktreeDir = join(
-      dirname(realpathSync(repoDir)),
-      'file-tab-close-wt-repo-worktrees',
-      'ftc-branch',
-    )
 
-    await loginViaToken(page, adminToken)
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -113,30 +94,26 @@ test.describe('file tab close', () => {
     // is what a degraded close claims it could not check for.
     writeFileSync(join(worktreeDir, 'README.md'), '# Test\nedited\n')
 
-    try {
-      await openWorkspace(page, workspaceId)
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
 
-      // The tree is rooted at the agent's working dir, which IS the worktree.
-      await page.getByText('README.md').click()
-      const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toHaveCount(1)
+    // The tree is rooted at the agent's working dir, which IS the worktree.
+    await treeRow(page, 'README.md').click()
+    const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
+    await expect(fileTab).toHaveCount(1)
 
-      await clearRecordedToasts(page)
-      await fileTab.locator('[data-testid="tab-close"]').click()
+    await clearRecordedToasts(page)
+    await fileTab.locator('[data-testid="tab-close"]').click()
 
-      await expect(fileTab).toHaveCount(0)
-      await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(fileTab).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
 
-      await page.waitForTimeout(TOAST_SETTLE_MS)
-      const toasts = await getRecordedToasts(page)
-      expect(toasts.map(t => `${t.variant}: ${t.message}`).join('\n')).toBe('')
+    await page.waitForTimeout(TOAST_SETTLE_MS)
+    const toasts = await getRecordedToasts(page)
+    expect(toasts.map(t => `${t.variant}: ${t.message}`).join('\n')).toBe('')
 
-      // The sibling agent still holds the worktree, so nothing was removed.
-      expect(existsSync(worktreeDir)).toBe(true)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // The sibling agent still holds the worktree, so nothing was removed.
+    expect(existsSync(worktreeDir)).toBe(true)
   })
 
   /**
@@ -153,57 +130,46 @@ test.describe('file tab close', () => {
   test('prompts when the file tab is the last tab on its branch', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'file-tab-close-last-repo')
-    writeFileSync(join(repoDir, 'notes.md'), '# notes\n')
-    execSync('git add notes.md', { cwd: repoDir })
-    execSync('git commit -m "add notes"', { cwd: repoDir })
+    commitFile(repoDir, 'notes.md', '# notes\n', 'add notes')
     writeFileSync(join(repoDir, 'notes.md'), '# notes\nedited\n')
 
-    await loginViaToken(page, adminToken)
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close Last')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
+    await showWorkspaceWithAgents(page, leapmuxServer, 'File Tab Close Last', { workingDir: repoDir })
 
-    try {
-      await openWorkspace(page, workspaceId)
+    await treeRow(page, 'notes.md').click()
+    const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
+    const agentTab = agentTabs(page)
+    await expect(fileTab).toHaveCount(1)
 
-      await page.getByText('notes.md').click()
-      const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-      await expect(fileTab).toHaveCount(1)
+    // The file tab is a live sibling on this branch, so closing the agent is
+    // not a last-tab close.
+    await agentTab.locator('[data-testid="tab-close"]').click()
+    await expectAgentTabCount(page, 0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
 
-      // The file tab is a live sibling on this branch, so closing the agent is
-      // not a last-tab close.
-      await agentTab.locator('[data-testid="tab-close"]').click()
-      await expect(agentTab).toHaveCount(0)
-      await expect(page.getByRole('dialog')).toHaveCount(0)
+    // The tab count above is OPTIMISTIC local state: the CRDT tombstone
+    // applies speculatively, so the tab leaves the bar while CloseAgent is
+    // still running its teardown on the worker. The next close asks the
+    // WORKER whether a sibling tab still holds this branch, and an agent
+    // row that is not closed YET answers yes -- which takes the no-prompt
+    // fast path in inspectLastTabClose's hasOtherNonWorktreeTabOnBranch.
+    // The hub's tab list cannot answer this, because the tombstone clears
+    // it the instant it applies; only the worker knows when its own row
+    // closed. Poll the worker's own verdict for this file tab, so the
+    // assertion below tests the UI rather than racing the previous close.
+    const fileTabId = await fileTab.getAttribute('data-tab-id')
+    expect(fileTabId, 'the file tab must carry its id for the worker probe').toBeTruthy()
+    await expect
+      .poll(async () => (await inspectLastTabCloseViaAPI(
+        hubUrl,
+        adminToken,
+        workerId,
+        TabType.FILE,
+        fileTabId!,
+      )).shouldPrompt)
+      .toBe(true)
 
-      // The tab count above is OPTIMISTIC local state: the CRDT tombstone
-      // applies speculatively, so the tab leaves the bar while CloseAgent is
-      // still running its teardown on the worker. The next close asks the
-      // WORKER whether a sibling tab still holds this branch, and an agent
-      // row that is not closed YET answers yes -- which takes the no-prompt
-      // fast path in inspectLastTabClose's hasOtherNonWorktreeTabOnBranch.
-      // The hub's tab list cannot answer this, because the tombstone clears
-      // it the instant it applies; only the worker knows when its own row
-      // closed. Poll the worker's own verdict for this file tab, so the
-      // assertion below tests the UI rather than racing the previous close.
-      const fileTabId = await fileTab.getAttribute('data-tab-id')
-      expect(fileTabId, 'the file tab must carry its id for the worker probe').toBeTruthy()
-      await expect
-        .poll(async () => (await inspectLastTabCloseViaAPI(
-          hubUrl,
-          adminToken,
-          workerId,
-          TabType.FILE,
-          fileTabId!,
-        )).shouldPrompt)
-        .toBe(true)
-
-      // Now it IS the last tab, on a branch with uncommitted work.
-      await fileTab.locator('[data-testid="tab-close"]').click()
-      await expect(page.getByRole('dialog')).toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // Now it IS the last tab, on a branch with uncommitted work.
+    await fileTab.locator('[data-testid="tab-close"]').click()
+    await expect(page.getByRole('dialog')).toBeVisible()
   })
 })

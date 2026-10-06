@@ -43,7 +43,7 @@ test.describe('repository row menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createRepoWithOrigin(dataDir, 'repo-menu-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -105,7 +105,7 @@ test.describe('repository row menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createRepoWithOrigin(dataDir, 'repo-collapse-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,

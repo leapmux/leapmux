@@ -1,11 +1,23 @@
 import type { Page } from '@playwright/test'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { branchGroupRow, clickBranchMenuItem, loginViaToken, openBranchMenu, openWorkspace, pickMenuOption, workspaceRow } from './helpers/ui'
+import {
+  agentTabs,
+  archiveWorkspaceViaUI,
+  branchGroupRow,
+  clickBranchMenuItem,
+  expectAgentTabCount,
+  loginViaToken,
+  openBranchMenu,
+  openWorkspace,
+  pickMenuOption,
+  terminalTabs,
+  workspaceChildren,
+  workspaceRow,
+} from './helpers/ui'
+import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import {
   branchExists,
   createGitRepo,
@@ -36,7 +48,7 @@ test.describe('Branch context menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-menu-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -100,7 +112,7 @@ test.describe('Branch context menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-archived-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -112,31 +124,22 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    // Scoped to THIS workspace's subtree, not `branchGroupRow`: that one takes
-    // the first visible row in the whole sidebar, and every workspace an
-    // earlier test expanded still has one. Archiving moves this workspace to
-    // another section, so the unscoped locator drifted onto a live workspace's
-    // row and read its menu as this row's.
-    // `:visible` as well, because a collapsed sidebar keeps its rows mounted
-    // under `display: none`.
-    const row = page
-      .locator(`[data-testid="workspace-children-${workspaceId}"] [data-testid="tab-tree-branch-group"]:visible`)
-      .first()
+    // Scoped to THIS workspace's subtree, not to the page: a page-level lookup
+    // takes the first visible row in the whole sidebar. Archiving moves this
+    // workspace to another section, so an unscoped locator could drift onto
+    // another workspace's row and read its menu as this row's. The row is
+    // `:visible`, because a collapsed sidebar keeps its rows mounted under
+    // `display: none`.
+    const row = branchGroupRow(workspaceChildren(page, workspaceId))
 
     // The menu is there while the workspace is live, so its absence below is
     // the archive doing it rather than the row never having had one.
     await expect(row).toContainText('archived-branch')
     await expect(row.locator('[aria-expanded]')).toHaveCount(1)
 
-    const wsRow = workspaceRow(page, workspaceId)
-    await wsRow.hover()
-    await wsRow.locator('button').first().click()
-    // `exact`: this is the WORKSPACE row's menu, whose info block and
-    // repository rows carry names of their own -- and Playwright matches an
-    // accessible name by substring unless told otherwise.
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
-    await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
+    // The helper picks the WORKSPACE row's Archive item by its exact name and
+    // waits for the archived section.
+    await archiveWorkspaceViaUI(page, workspaceId)
 
     // The row itself survives — it still groups the tabs and carries the diff
     // badge — but its kebab is gone, and with it every item.
@@ -155,7 +158,7 @@ test.describe('Branch context menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-mode-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -203,7 +206,7 @@ test.describe('Branch context menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-newtab-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -215,12 +218,12 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const terminalTabs = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    const before = await terminalTabs.count()
+    const terminals = terminalTabs(page)
+    const before = await terminals.count()
     await openBranchMenu(page, branchGroupRow(page))
     await page.locator('menu[popover]:visible').getByRole('menuitem', { name: /\/bin\// }).first().click()
 
-    await expect(terminalTabs).toHaveCount(before + 1)
+    await expect(terminals).toHaveCount(before + 1)
     // Under the branch row it was opened from, not in the ungrouped bucket.
     await expect(branchGroupRow(page)).toContainText('newtab-branch')
   })
@@ -236,7 +239,7 @@ test.describe('Branch context menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-glyph-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -248,14 +251,13 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    const before = await agentTabs.count()
+    const before = await agentTabs(page).count()
     await openBranchMenu(page, branchGroupRow(page))
     // The first provider the branch's Worker reports. Which one it is depends
     // on what the test machine has installed, so the test states none.
     await page.locator('menu[popover]:visible [data-testid^="menu-new-agent-"]').first().click()
 
-    await expect(agentTabs).toHaveCount(before + 1)
+    await expectAgentTabCount(page, before + 1)
     // Under the branch row it was opened from, not in the ungrouped bucket.
     await expect(branchGroupRow(page)).toContainText('glyph-branch')
   })
@@ -278,7 +280,7 @@ test.describe('Branch context menu', () => {
     const homeRepo = createGitRepo(dataDir, 'branch-home-repo')
     const awayRepo = createGitRepo(dataDir, 'branch-away-repo')
 
-    const homeWs = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId: homeWs } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -286,7 +288,7 @@ test.describe('Branch context menu', () => {
       homeRepo,
       'home-branch',
     )
-    const awayWs = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId: awayWs } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -305,28 +307,22 @@ test.describe('Branch context menu', () => {
     await expect(workspaceRow(page, homeWs)).toHaveAttribute('data-active', 'true')
     await expect(workspaceRow(page, awayWs)).toHaveAttribute('data-active', 'false')
 
-    // Scoped to the AWAY subtree: `branchGroupRow` takes the first visible row
-    // in the whole sidebar, which is the active workspace's. `:visible` as well,
-    // because a collapsed sidebar keeps its rows mounted under
-    // `display: none`.
-    const awayBranchRow = page
-      .locator(`[data-testid="workspace-children-${awayWs}"] [data-testid="tab-tree-branch-group"]:visible`)
-      .first()
+    // Scoped to the AWAY subtree: a page-level `branchGroupRow` takes the first
+    // visible row in the whole sidebar, which is the active workspace's.
+    const awayBranchRow = branchGroupRow(workspaceChildren(page, awayWs))
     await expect(awayBranchRow).toContainText('away-branch')
 
-    const terminalTabs = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    const before = await terminalTabs.count()
+    const terminals = terminalTabs(page)
+    const before = await terminals.count()
     await openBranchMenu(page, awayBranchRow)
     await page.locator('menu[popover]:visible').getByRole('menuitem', { name: /\/bin\// }).first().click()
 
     // The switch, then the tab -- in that order, which is the whole point.
     await expect(workspaceRow(page, awayWs)).toHaveAttribute('data-active', 'true')
     await expect(workspaceRow(page, homeWs)).toHaveAttribute('data-active', 'false')
-    await expect(terminalTabs).toHaveCount(before + 1)
+    await expect(terminals).toHaveCount(before + 1)
     // Filed under the branch it was opened from, in the workspace that owns it.
-    await expect(
-      page.locator(`[data-testid="workspace-children-${awayWs}"] [data-testid="tab-tree-branch-group"]:visible`).first(),
-    ).toContainText('away-branch')
+    await expect(awayBranchRow).toContainText('away-branch')
   })
 
   test('opens the New agent dialog from the menu', async ({
@@ -337,7 +333,7 @@ test.describe('Branch context menu', () => {
     const repoDir = createGitRepo(dataDir, 'branch-prefill-repo')
     const realRepoDir = realpathSync(repoDir)
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -367,10 +363,8 @@ test.describe('Branch context menu', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-delete-repo')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'branch-delete-repo-worktrees', 'delete-branch')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -378,7 +372,6 @@ test.describe('Branch context menu', () => {
       repoDir,
       'delete-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
     // `createWorkspaceWithWorktreeViaAPI` waits only for the worktree
     // DIRECTORY. The worker writes the `worktree_tabs` row later, on the same
     // async startup goroutine, and the REMOVE below reclaims the worktree only
@@ -429,10 +422,8 @@ test.describe('Branch context menu', () => {
     // firing it.
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-delete-locked-repo')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'branch-delete-locked-repo-worktrees', 'locked-branch')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -440,9 +431,8 @@ test.describe('Branch context menu', () => {
       repoDir,
       'locked-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
     await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    execSync(`git worktree lock --reason "held by the e2e test" "${worktreeDir}"`, { cwd: repoDir })
+    execFileSync('git', ['worktree', 'lock', '--reason', 'held by the e2e test', worktreeDir], { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
@@ -497,10 +487,8 @@ test.describe('Branch context menu', () => {
     // dialog's "Close anyway".
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-keep-locked-repo')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'branch-keep-locked-repo-worktrees', 'keep-locked-branch')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -509,7 +497,7 @@ test.describe('Branch context menu', () => {
       'keep-locked-branch',
     )
     await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    execSync(`git worktree lock --reason "held by the e2e test" "${worktreeDir}"`, { cwd: repoDir })
+    execFileSync('git', ['worktree', 'lock', '--reason', 'held by the e2e test', worktreeDir], { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
@@ -545,10 +533,9 @@ test.describe('Branch context menu', () => {
     // -D` in place. Every tab stays on the new branch.
     // `createGitRepo` already persists `core.fsmonitor false` into this
     // repo's config, so this command needs no `-c` override.
-    execSync('git checkout -b doomed-branch', { cwd: repoDir })
+    execFileSync('git', ['checkout', '-b', 'doomed-branch'], { cwd: repoDir })
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Branch Delete In Place WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
+    const { workspaceId } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Branch Delete In Place WS', { workingDir: repoDir })
     // Wait for the agent to leave STARTING before the browser subscribes.
     // `activeTabReady` keys AppShell's git-status effect, so a STARTING to
     // ACTIVE flip that lands AFTER the delete re-runs that effect and
@@ -603,7 +590,7 @@ test.describe('Branch context menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'branch-change-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,

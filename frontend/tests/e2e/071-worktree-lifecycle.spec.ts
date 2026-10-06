@@ -1,5 +1,5 @@
-import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import {
@@ -8,23 +8,28 @@ import {
 } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
+import { getTestChannel } from './helpers/api'
+import { agentTabs, loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
+import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import {
+  addWorktree,
   branchExists,
+  chooseGitMode,
   closeAgentViaAPI,
   closeTerminalViaAPI,
+  commitFile,
   createGitRepo,
+  createGitRepoWithRemote,
   createWorkspaceWithWorktreeViaAPI,
+  fillWorkspaceTitle,
   inspectLastTabCloseViaAPI,
-  openNewWorkspaceDialog,
+  managedWorktreePath,
+  openNewWorkspaceDialogAt,
   pushBranchViaAPI,
-  setWorkingDir,
-  waitForAgentsViaAPI,
-  waitForAppPageReady,
+  submitNewWorkspaceDialog,
   waitForPathDeleted,
   waitForPathExists,
-  waitForWorker,
+  waitForSoleAgentViaAPI,
 } from './helpers/worktree'
 
 test.describe('Worktree Lifecycle', () => {
@@ -35,48 +40,29 @@ test.describe('Worktree Lifecycle', () => {
     const { adminToken, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-create')
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    // By ROLE and NAME, not by placeholder. The field's placeholder became
-    // "Type a name" when the dialog started generating a title, so
-    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
-    // whole timeout. `fill` replaces the generated name.
-    await page.getByRole('textbox', { name: 'Title' }).fill('Worktree Test WS')
-
-    const dialog = page.getByRole('dialog')
-    await setWorkingDir(page, repoDir)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await fillWorkspaceTitle(page, 'Worktree Test WS')
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
-    await page.getByText('Create new worktree', { exact: true }).click()
+    await chooseGitMode(page, 'Create new worktree')
 
+    const dialog = page.getByRole('dialog')
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     await branchInput.clear()
     await branchInput.fill('e2e-test-branch')
 
     await expect(page.getByText('e2e-test-branch')).toBeVisible()
 
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-
-    // Wait for the dialog to close first — this signals the API call
-    // (including the git worktree creation) has completed.
-    await expect(page.getByRole('dialog')).not.toBeVisible()
-    // Creating a workspace activates it in place; there is no URL to check.
-    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
+    // The dialog closes when the API call (including the git worktree
+    // creation) has completed, and the new workspace is then the active one.
+    await submitNewWorkspaceDialog(page, 'Worktree Test WS')
     await waitForWorkspaceReady(page)
 
     // Verify the worktree directory was created on disk. Polled, not read
     // once: the dialog closing means the RPC returned, and `git worktree add`
-    // lands shortly after that.
-    // Use realpathSync to resolve macOS symlinks (e.g. /var -> /private/var).
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-create-worktrees', 'e2e-test-branch')
-    await waitForPathExists(worktreeDir)
+    // lands shortly after that. The path is where the Worker places a managed
+    // worktree, with macOS symlinks (e.g. /var -> /private/var) resolved.
+    await waitForPathExists(managedWorktreePath(repoDir, 'e2e-test-branch'))
   })
 
   test('clean worktree last tab prompts and can be scheduled for deletion', async ({
@@ -84,11 +70,10 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-autoclean')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-autoclean-worktrees', 'autoclean-branch')
 
-    // Create workspace with worktree via API
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    // Create workspace with worktree via API. The helper returns once the
+    // worktree exists on disk.
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -96,15 +81,10 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'autoclean-branch',
     )
-
-    // Worktree should now exist on disk
-    expect(existsSync(worktreeDir)).toBe(true)
+    expect(worktreeDir).toContain('test-repo-autoclean-worktrees/autoclean-branch')
 
     // Get the initial agent that was auto-created with the workspace
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
 
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
@@ -121,11 +101,9 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-shared')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-shared-worktrees', 'shared-branch')
 
     // Create workspace with worktree
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -133,7 +111,6 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'shared-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     // Open a second terminal using the existing worktree (use-worktree mode, not create)
     const channel = await getTestChannel(hubUrl, adminToken)
@@ -151,10 +128,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now close the agent (last tab)
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id, WorktreeAction.REMOVE)
@@ -169,26 +143,16 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-existing')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a worktree MANUALLY outside of LeapMux
-    const manualWorktreeDir = join(realDataDir, 'manual-worktree')
-    execSync(`git worktree add ${join(dataDir, 'manual-worktree')} -b manual-branch`, { cwd: repoDir })
+    const manualWorktreeDir = addWorktree(repoDir, dataDir, 'manual-worktree', 'manual-branch')
     expect(existsSync(manualWorktreeDir)).toBe(true)
 
     // Create a workspace and open an agent directly in the manual worktree.
-    const workspaceId = await createWorkspaceViaAPI(
-      hubUrl,
-      adminToken,
-      'Existing WT WS',
-    )
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, manualWorktreeDir)
+    const { workspaceId } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Existing WT WS', { workingDir: manualWorktreeDir })
 
     // Get the auto-created agent
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
 
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
@@ -206,13 +170,9 @@ test.describe('Worktree Lifecycle', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-branch-prompt')
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Branch Prompt WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
+    const { workspaceId } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Branch Prompt WS', { workingDir: repoDir })
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
 
     const cleanInspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(cleanInspect.shouldPrompt).toBe(false)
@@ -231,11 +191,9 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dirty')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-dirty-worktrees', 'dirty-branch')
 
     // Create workspace with worktree
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -243,15 +201,11 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'dirty-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     // Make the worktree dirty: add an uncommitted file
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted change\n')
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
 
     expect(inspect.shouldPrompt).toBe(true)
@@ -268,11 +222,9 @@ test.describe('Worktree Lifecycle', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     // Use a plain local repo (no remote configured) so branches have no upstream.
     const repoDir = createGitRepo(dataDir, 'test-repo-no-upstream')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-no-upstream-worktrees', 'no-upstream-branch')
 
     // Create workspace with worktree
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -280,19 +232,12 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'no-upstream-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
-    // Make a local commit in the worktree (no upstream to push to)
-    execSync('git config user.email "test@test.com"', { cwd: worktreeDir })
-    execSync('git config user.name "Test"', { cwd: worktreeDir })
-    writeFileSync(join(worktreeDir, 'local-only.txt'), 'would be lost\n')
-    execSync('git add .', { cwd: worktreeDir })
-    execSync('git commit -m "local only"', { cwd: worktreeDir })
+    // Make a local commit in the worktree (no upstream to push to). The
+    // worktree reads the commit identity from its main repository's config.
+    commitFile(worktreeDir, 'local-only.txt', 'would be lost\n', 'local only')
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
 
     expect(inspect.shouldPrompt).toBe(true)
@@ -308,26 +253,13 @@ test.describe('Worktree Lifecycle', () => {
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const realDataDir = realpathSync(dataDir)
 
-    // Create a bare "remote" and clone from it so there is an upstream
-    const bareDir = join(dataDir, 'test-repo-unpushed-bare')
-    mkdirSync(bareDir, { recursive: true })
-    execSync('git init --bare', { cwd: bareDir })
-
-    const repoDir = join(dataDir, 'test-repo-unpushed')
-    execSync(`git clone ${bareDir} ${repoDir}`)
-    execSync('git config user.email "test@test.com"', { cwd: repoDir })
-    execSync('git config user.name "Test"', { cwd: repoDir })
-    writeFileSync(join(repoDir, 'README.md'), '# Test\n')
-    execSync('git add .', { cwd: repoDir })
-    execSync('git commit -m "init"', { cwd: repoDir })
-    execSync('git push -u origin HEAD', { cwd: repoDir })
-
-    const worktreeDir = join(realDataDir, 'test-repo-unpushed-worktrees', 'unpushed-branch')
+    // Create a bare "remote" and clone from it so there is an upstream. Both
+    // repositories carry the pinned settings.
+    const { repoDir, bareDir } = createGitRepoWithRemote(dataDir, 'test-repo-unpushed')
 
     // Create workspace with worktree
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -335,19 +267,13 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'unpushed-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     // Make an uncommitted change in the worktree; the close action should
     // create a WIP commit and push it.
-    execSync('git config user.email "test@test.com"', { cwd: worktreeDir })
-    execSync('git config user.name "Test"', { cwd: worktreeDir })
     writeFileSync(join(worktreeDir, 'extra.txt'), 'local only\n')
-    execSync('git push -u origin unpushed-branch', { cwd: worktreeDir })
+    execFileSync('git', ['push', '-u', 'origin', 'unpushed-branch'], { cwd: worktreeDir })
 
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the workspace agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.hasUncommittedChanges).toBe(true)
@@ -361,7 +287,7 @@ test.describe('Worktree Lifecycle', () => {
     // command died with "fatal: Unable to read current working directory".
     // The remote is also the stronger assertion: it proves the WIP commit was
     // both made AND pushed, which is what this test is named for.
-    const remoteMessage = execSync('git log -1 --pretty=%s unpushed-branch', { cwd: bareDir }).toString().trim()
+    const remoteMessage = execFileSync('git', ['log', '-1', '--pretty=%s', 'unpushed-branch'], { cwd: bareDir, encoding: 'utf8' }).trim()
     expect(remoteMessage).toBe('WIP')
   })
 
@@ -371,10 +297,8 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dialog-cancel')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-dialog-cancel-worktrees', 'cancel-branch')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -382,7 +306,6 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'cancel-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
@@ -391,7 +314,7 @@ test.describe('Worktree Lifecycle', () => {
     const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
 
     // Close the agent tab via UI
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const agentTab = agentTabs(page)
     await expect(agentTab).toBeVisible()
     const agentCloseBtn = agentTab.locator('[data-testid="tab-close"]')
     await agentCloseBtn.dispatchEvent('click')
@@ -431,10 +354,8 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dialog')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-dialog-worktrees', 'dialog-branch')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -442,14 +363,13 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'dialog-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const agentTab = agentTabs(page)
     await expect(agentTab).toBeVisible()
     await agentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
@@ -494,10 +414,8 @@ test.describe('Worktree Lifecycle', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dialog-keep')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-dialog-keep-worktrees', 'keep-branch')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -505,14 +423,13 @@ test.describe('Worktree Lifecycle', () => {
       repoDir,
       'keep-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     writeFileSync(join(worktreeDir, 'dirty.txt'), 'uncommitted\n')
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const agentTab = agentTabs(page)
     await expect(agentTab).toBeVisible()
     await agentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 

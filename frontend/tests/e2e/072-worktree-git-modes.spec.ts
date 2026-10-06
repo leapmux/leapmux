@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
@@ -6,22 +6,33 @@ import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { loginViaToken, menuOptionTexts, openWorkspace, pickMenuOption, waitForActiveTabContext } from './helpers/ui'
+import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import {
+  addWorktree,
   branchExists,
+  chooseGitMode,
   closeAgentViaAPI,
+  commitFile,
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
   expectRepoBranch,
+  fillWorkspaceTitle,
   inspectLastTabCloseViaAPI,
-  openNewWorkspaceDialog,
-  setWorkingDir,
+  managedWorktreePath,
+  openNewAgentDialog,
+  openNewTerminalDialog,
+  openNewWorkspaceDialogAt,
+  submitNewWorkspaceDialog,
   waitForAgentStartupViaAPI,
-  waitForAgentsViaAPI,
-  waitForAppPageReady,
   waitForPathDeleted,
   waitForPathExists,
-  waitForWorker,
+  waitForSoleAgentViaAPI,
 } from './helpers/worktree'
+
+/** The commit that HEAD of `dir` points at. */
+function headCommit(dir: string): string {
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
+}
 
 test.describe('Worktree Git Modes', () => {
   // ─── Worktree-from-Worktree ──────────────────────────────────────
@@ -31,27 +42,24 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-wt-from-wt')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a worktree with an extra commit that diverges from main
-    const firstWorktreeDir = join(realDataDir, 'test-repo-wt-from-wt-worktrees', 'source-branch')
-    execSync(`git worktree add ${join(dataDir, 'test-repo-wt-from-wt-worktrees/source-branch')} -b source-branch`, { cwd: repoDir })
+    const firstWorktreeDir = addWorktree(repoDir, dataDir, 'test-repo-wt-from-wt-worktrees/source-branch', 'source-branch')
     expect(existsSync(firstWorktreeDir)).toBe(true)
 
-    // Add an extra commit on the source-branch worktree
-    execSync('git config user.email "test@test.com"', { cwd: firstWorktreeDir })
-    execSync('git config user.name "Test"', { cwd: firstWorktreeDir })
-    writeFileSync(join(firstWorktreeDir, 'extra.txt'), 'diverged\n')
-    execSync('git add .', { cwd: firstWorktreeDir })
-    execSync('git commit -m "diverge from main"', { cwd: firstWorktreeDir })
+    // Add an extra commit on the source-branch worktree. The worktree reads the
+    // commit identity from its main repository's config.
+    commitFile(firstWorktreeDir, 'extra.txt', 'diverged\n', 'diverge from main')
 
     // Get the HEAD of source-branch (should differ from main)
-    const sourceBranchHead = execSync('git rev-parse HEAD', { cwd: firstWorktreeDir }).toString().trim()
-    const mainHead = execSync('git rev-parse HEAD', { cwd: repoDir }).toString().trim()
+    const sourceBranchHead = headCommit(firstWorktreeDir)
+    const mainHead = headCommit(repoDir)
     expect(sourceBranchHead).not.toBe(mainHead)
 
-    // Create workspace from the worktree root (source-branch) with createWorktree enabled
-    await createWorkspaceWithWorktreeViaAPI(
+    // Create workspace from the worktree root (source-branch) with createWorktree enabled.
+    // The Worker places the new worktree beside the MAIN repository, not beside
+    // the source worktree, and the helper returns that directory once it exists.
+    const { worktreeDir: derivedWorktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -59,13 +67,10 @@ test.describe('Worktree Git Modes', () => {
       firstWorktreeDir,
       'derived-branch',
     )
-
-    // The new worktree should exist
-    const derivedWorktreeDir = join(realDataDir, 'test-repo-wt-from-wt-worktrees', 'derived-branch')
-    expect(existsSync(derivedWorktreeDir)).toBe(true)
+    expect(derivedWorktreeDir).toBe(join(realpathSync(dataDir), 'test-repo-wt-from-wt-worktrees', 'derived-branch'))
 
     // The new worktree's HEAD should match the source-branch's HEAD (not main's HEAD)
-    const derivedHead = execSync('git rev-parse HEAD', { cwd: derivedWorktreeDir }).toString().trim()
+    const derivedHead = headCommit(derivedWorktreeDir)
     expect(derivedHead).toBe(sourceBranchHead)
     expect(derivedHead).not.toBe(mainHead)
   })
@@ -81,7 +86,7 @@ test.describe('Worktree Git Modes', () => {
     const realRepoDir = realpathSync(repoDir)
 
     // Create workspace with worktree so the initial agent tab is in the worktree
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -102,11 +107,7 @@ test.describe('Worktree Git Modes', () => {
     await waitForActiveTabContext(page)
 
     // Open "New agent..." dialog via the tab menu
-    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
-    await addMenu.click()
-    await page.getByRole('menuitem', { name: 'New agent...' }).click()
-
-    await expect(page.getByRole('heading', { name: 'New Agent' })).toBeVisible()
+    await openNewAgentDialog(page)
 
     const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')
@@ -126,7 +127,7 @@ test.describe('Worktree Git Modes', () => {
     const realRepoDir = realpathSync(repoDir)
 
     // Create workspace with worktree so the initial agent tab is in the worktree
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -142,11 +143,7 @@ test.describe('Worktree Git Modes', () => {
     await waitForActiveTabContext(page)
 
     // Open "New terminal..." dialog via the tab menu
-    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
-    await addMenu.click()
-    await page.getByRole('menuitem', { name: 'New terminal...' }).click()
-
-    await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
+    await openNewTerminalDialog(page)
 
     const dialog = page.getByRole('dialog')
     const pathInput = dialog.getByPlaceholder('Enter path...')
@@ -167,37 +164,20 @@ test.describe('Worktree Git Modes', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-switch-ui')
 
     // Create a second branch to switch to.
-    execSync('git branch feature-switch', { cwd: repoDir })
+    execFileSync('git', ['branch', 'feature-switch'], { cwd: repoDir })
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    // By ROLE and NAME, not by placeholder: the field's placeholder became
-    // "Type a name" when the dialog started generating a title, so
-    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
-    // whole timeout. `fill` replaces the generated name.
-    await page.getByRole('textbox', { name: 'Title' }).fill('Switch Branch WS')
-
-    const dialog = page.getByRole('dialog')
-    await setWorkingDir(page, repoDir)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await fillWorkspaceTitle(page, 'Switch Branch WS')
 
     // Wait for git options and select "Switch to branch"
-    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
-    await page.getByText('Switch to branch', { exact: true }).click()
+    await chooseGitMode(page, 'Switch to branch')
 
     // Branch dropdown should load with local branches
+    const dialog = page.getByRole('dialog')
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
     await pickMenuOption(dialog, 'branch-select-menu', 'feature-switch')
 
-    // Submit
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible()
-    // Creating a workspace activates it in place; there is no URL to check.
-    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
+    await submitNewWorkspaceDialog(page, 'Switch Branch WS')
 
     // Verify the repo is now on the feature-switch branch. Polled: the dialog
     // closing means the RPC returned, and the checkout runs after that.
@@ -211,11 +191,10 @@ test.describe('Worktree Git Modes', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-switch-api')
 
     // Create a second branch.
-    execSync('git branch api-switch-target', { cwd: repoDir })
+    execFileSync('git', ['branch', 'api-switch-target'], { cwd: repoDir })
 
     // Verify we start on main.
-    const before = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
-    expect(before).toBe('main')
+    await expectRepoBranch(repoDir, 'main')
 
     // Create workspace with checkout_branch.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch API WS')
@@ -233,20 +212,12 @@ test.describe('Worktree Git Modes', () => {
     const { adminToken, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-switch-dirty')
 
-    execSync('git branch dirty-switch-target', { cwd: repoDir })
+    execFileSync('git', ['branch', 'dirty-switch-target'], { cwd: repoDir })
     writeFileSync(join(repoDir, 'dirty.txt'), 'uncommitted\n')
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
 
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    await setWorkingDir(page, repoDir)
-
-    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
-    await page.getByText('Switch to branch', { exact: true }).click()
+    await chooseGitMode(page, 'Switch to branch')
 
     // Warning about uncommitted changes should appear
     await expect(page.getByText('uncommitted changes')).toBeVisible()
@@ -261,11 +232,9 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-api')
-    const realDataDir = realpathSync(dataDir)
 
     // Create an existing worktree manually.
-    const worktreeDir = join(realDataDir, 'test-repo-use-wt-api-existing')
-    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-api-existing')} -b existing-wt-branch`, { cwd: repoDir })
+    const worktreeDir = addWorktree(repoDir, dataDir, 'test-repo-use-wt-api-existing', 'existing-wt-branch')
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Create workspace using the use_worktree_path field.
@@ -275,10 +244,7 @@ test.describe('Worktree Git Modes', () => {
     })
 
     // Verify the agent's working dir is the worktree path.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the opened agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     expect(agent.workingDir).toBe(worktreeDir)
   })
 
@@ -287,11 +253,9 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-managed')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-use-wt-managed-worktrees', 'managed-branch')
 
     // Create workspace with a managed worktree (via create-worktree mode).
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -299,7 +263,6 @@ test.describe('Worktree Git Modes', () => {
       repoDir,
       'managed-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     // Now open a second agent using "use existing worktree" pointing to the same managed worktree.
     const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
@@ -328,11 +291,9 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-unmanaged')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a worktree manually (not via LeapMux).
-    const worktreeDir = join(realDataDir, 'test-repo-use-wt-unmanaged-ext')
-    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-unmanaged-ext')} -b ext-branch`, { cwd: repoDir })
+    const worktreeDir = addWorktree(repoDir, dataDir, 'test-repo-use-wt-unmanaged-ext', 'ext-branch')
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Create workspace using "use existing worktree" pointing to the unmanaged worktree.
@@ -342,10 +303,7 @@ test.describe('Worktree Git Modes', () => {
     })
 
     // Close the agent.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the opened agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
 
     // Unmanaged worktree should NOT be cleaned up.
@@ -361,29 +319,16 @@ test.describe('Worktree Git Modes', () => {
     const repoDir = createGitRepo(dataDir, 'test-repo-use-wt-ui')
 
     // Create a worktree manually.
-    execSync(`git worktree add ${join(dataDir, 'test-repo-use-wt-ui-wt')} -b ui-wt-branch`, { cwd: repoDir })
+    addWorktree(repoDir, dataDir, 'test-repo-use-wt-ui-wt', 'ui-wt-branch')
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    // By ROLE and NAME, not by placeholder: the field's placeholder became
-    // "Type a name" when the dialog started generating a title, so
-    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
-    // whole timeout. `fill` replaces the generated name.
-    await page.getByRole('textbox', { name: 'Title' }).fill('Use WT UI WS')
-
-    const dialog = page.getByRole('dialog')
-    await setWorkingDir(page, repoDir)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await fillWorkspaceTitle(page, 'Use WT UI WS')
 
     // Wait for git options and select "Use existing worktree"
-    await expect(page.getByText('Use existing worktree')).toBeVisible()
-    await page.getByText('Use existing worktree').click()
+    await chooseGitMode(page, 'Use existing worktree')
 
     // Worktree dropdown should load
+    const dialog = page.getByRole('dialog')
     await expect(dialog.getByTestId('worktree-select-menu-trigger')).toBeEnabled()
 
     // Select the worktree entry (label format: "branch — path")
@@ -391,11 +336,7 @@ test.describe('Worktree Git Modes', () => {
     const wtMenu = dialog.getByTestId('worktree-select-menu')
     await wtMenu.getByRole('menuitemradio', { name: /ui-wt-branch/ }).first().click()
 
-    // Submit
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible()
-    // Creating a workspace activates it in place; there is no URL to check.
-    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
+    await submitNewWorkspaceDialog(page, 'Use WT UI WS')
   })
 
   // ─── Git Mode: Use Current State ────────────────────────────────────
@@ -405,11 +346,9 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-current-managed')
-    const realDataDir = realpathSync(dataDir)
-    const worktreeDir = join(realDataDir, 'test-repo-current-managed-worktrees', 'current-branch')
 
     // Create a workspace with a managed worktree.
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId, worktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -417,7 +356,6 @@ test.describe('Worktree Git Modes', () => {
       repoDir,
       'current-branch',
     )
-    expect(existsSync(worktreeDir)).toBe(true)
 
     // Open a second agent using "use current state" (no git mode fields) pointing directly
     // at the managed worktree path. The backend should detect it's a managed worktree and
@@ -446,22 +384,16 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-current-unmanaged')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a worktree manually (not via LeapMux).
-    const worktreeDir = join(realDataDir, 'test-repo-current-unmanaged-ext')
-    execSync(`git worktree add ${join(dataDir, 'test-repo-current-unmanaged-ext')} -b ext-branch`, { cwd: repoDir })
+    const worktreeDir = addWorktree(repoDir, dataDir, 'test-repo-current-unmanaged-ext', 'ext-branch')
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Create workspace using "use current state" (default) pointing at the manual worktree.
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Current Unmanaged WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
+    const { workspaceId } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Current Unmanaged WS', { workingDir: worktreeDir })
 
     // Close the agent.
-    const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const agent = agents[0]
-    if (agent === undefined)
-      throw new Error('expected the opened agent to be listed')
+    const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id)
 
     // No cleanup — unmanaged worktree should still exist.
@@ -476,20 +408,15 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-base-branch')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a feature branch with an extra commit.
-    execSync('git checkout -b feature-base', { cwd: repoDir })
-    execSync('git config user.email "test@test.com"', { cwd: repoDir })
-    execSync('git config user.name "Test"', { cwd: repoDir })
-    writeFileSync(join(repoDir, 'feature.txt'), 'feature content\n')
-    execSync('git add .', { cwd: repoDir })
-    execSync('git commit -m "feature commit"', { cwd: repoDir })
-    const featureHead = execSync('git rev-parse HEAD', { cwd: repoDir }).toString().trim()
+    execFileSync('git', ['checkout', '-b', 'feature-base'], { cwd: repoDir })
+    commitFile(repoDir, 'feature.txt', 'feature content\n', 'feature commit')
+    const featureHead = headCommit(repoDir)
 
     // Go back to main.
-    execSync('git checkout main', { cwd: repoDir })
-    const mainHead = execSync('git rev-parse HEAD', { cwd: repoDir }).toString().trim()
+    execFileSync('git', ['checkout', 'main'], { cwd: repoDir })
+    const mainHead = headCommit(repoDir)
     expect(featureHead).not.toBe(mainHead)
 
     // Create workspace with worktree based on feature-base branch.
@@ -503,11 +430,11 @@ test.describe('Worktree Git Modes', () => {
     await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
 
     // Verify worktree was created.
-    const worktreeDir = join(realDataDir, 'test-repo-base-branch-worktrees', 'derived-from-feature')
+    const worktreeDir = managedWorktreePath(repoDir, 'derived-from-feature')
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Verify the new worktree's HEAD matches the feature branch HEAD (not main).
-    const derivedHead = execSync('git rev-parse HEAD', { cwd: worktreeDir }).toString().trim()
+    const derivedHead = headCommit(worktreeDir)
     expect(derivedHead).toBe(featureHead)
     expect(derivedHead).not.toBe(mainHead)
   })
@@ -518,38 +445,20 @@ test.describe('Worktree Git Modes', () => {
   }) => {
     const { adminToken, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-base-branch-ui')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a feature branch.
-    execSync('git checkout -b feature-ui-base', { cwd: repoDir })
-    execSync('git config user.email "test@test.com"', { cwd: repoDir })
-    execSync('git config user.name "Test"', { cwd: repoDir })
-    writeFileSync(join(repoDir, 'feature.txt'), 'feature content\n')
-    execSync('git add .', { cwd: repoDir })
-    execSync('git commit -m "feature commit"', { cwd: repoDir })
-    execSync('git checkout main', { cwd: repoDir })
+    execFileSync('git', ['checkout', '-b', 'feature-ui-base'], { cwd: repoDir })
+    commitFile(repoDir, 'feature.txt', 'feature content\n', 'feature commit')
+    execFileSync('git', ['checkout', 'main'], { cwd: repoDir })
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    // By ROLE and NAME, not by placeholder: the field's placeholder became
-    // "Type a name" when the dialog started generating a title, so
-    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
-    // whole timeout. `fill` replaces the generated name.
-    await page.getByRole('textbox', { name: 'Title' }).fill('Base Branch UI WS')
-
-    const dialog = page.getByRole('dialog')
-    await setWorkingDir(page, repoDir)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await fillWorkspaceTitle(page, 'Base Branch UI WS')
 
     // Wait for git options, select "Create new worktree"
-    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
-    await page.getByText('Create new worktree', { exact: true }).click()
+    await chooseGitMode(page, 'Create new worktree')
 
     // Base Branch label and selector should be visible
+    const dialog = page.getByRole('dialog')
     await expect(dialog.getByText('Base Branch')).toBeVisible()
 
     // The base branch selector should default to "main" (current)
@@ -571,15 +480,12 @@ test.describe('Worktree Git Modes', () => {
     await branchInput.clear()
     await branchInput.fill('from-feature-base')
 
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(page.getByRole('dialog')).not.toBeVisible()
-    // Creating a workspace activates it in place; there is no URL to check.
-    await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
+    await submitNewWorkspaceDialog(page, 'Base Branch UI WS')
 
     // Verify the worktree was created from the feature branch. Polled: the
     // dialog closing means the RPC returned, and the checkout populates the
     // tree just after that.
-    const worktreeDir = join(realDataDir, 'test-repo-base-branch-ui-worktrees', 'from-feature-base')
+    const worktreeDir = managedWorktreePath(repoDir, 'from-feature-base')
     await waitForPathExists(worktreeDir)
     await waitForPathExists(join(worktreeDir, 'feature.txt'))
   })

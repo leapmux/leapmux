@@ -1,6 +1,5 @@
-import path from 'node:path'
+import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
-import { API_POLL_INTERVAL_MS, createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { branchGroupRow, clickBranchMenuItem, loginViaToken, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
@@ -8,48 +7,29 @@ import {
   listAgentsViaAPI,
   listTerminalsViaAPI,
   openNewAgentDialog,
+  openNewTerminalDialog,
   setWorkingDir,
   waitForWorker,
+  waitForWorkerTabTitle,
 } from './helpers/worktree'
 
-const frontendDir = path.resolve(import.meta.dirname, '../..')
-
-/**
- * Polls the hub until a tab with `title` appears among `list`'s results.
- *
- * The local tab list is optimistic CRDT state, so asserting against the
- * sidebar would pass on what this client wrote rather than on what the worker
- * stored -- and the title the worker stores is the CLEANED one, which is the
- * whole point of sending it. This reads the worker-backed RPC instead.
- */
-async function waitForTabTitle(
-  list: () => Promise<Array<{ title: string }>>,
-  title: string,
-  timeoutMs = 15_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  let seen: string[] = []
-  while (Date.now() < deadline) {
-    seen = (await list()).map(t => t.title)
-    if (seen.includes(title))
-      return
-    await new Promise(resolve => setTimeout(resolve, API_POLL_INTERVAL_MS))
-  }
-  throw new Error(`timed out waiting for a tab titled ${JSON.stringify(title)}; saw ${JSON.stringify(seen)}`)
-}
+// The title checks below read the Worker-backed RPC, never the sidebar. The local
+// tab list is optimistic CRDT state, so a sidebar check would pass on what this
+// client wrote rather than on what the worker stored -- and the title the worker
+// stores is the CLEANED one, which is the whole point of sending it.
 
 test.describe('Tab title in the create dialogs', () => {
+  // The dialogs open from a workspace whose agent works in the frontend directory.
+  test.use({ agentWorkingDir: frontendRoot })
+
   test('new agent dialog pre-fills a pooled title, re-rolls it, and sends what the user typed', async ({
     page,
+    authenticatedWorkspace,
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
+    const { workspaceId } = authenticatedWorkspace
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent Title WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, workspaceId)
     await openNewAgentDialog(page)
     await waitForWorker(page)
 
@@ -75,33 +55,27 @@ test.describe('Tab title in the create dialogs', () => {
     await expect(dialog.getByRole('button', { name: 'Create' })).toBeDisabled()
 
     await titleInput.fill('  Auth   fix  ')
-    await setWorkingDir(page, frontendDir)
+    await setWorkingDir(page, frontendRoot)
     await dialog.getByRole('button', { name: 'Create' }).click()
 
     // The CLEANED title, folded and trimmed -- what the worker stored, read
     // back from the worker rather than from this client's own state.
-    await waitForTabTitle(
+    await waitForWorkerTabTitle(
       () => listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId),
       'Auth fix',
+      'the Worker stores the cleaned agent title',
     )
   })
 
   test('new terminal dialog pre-fills a pooled title and sends what the user typed', async ({
     page,
+    authenticatedWorkspace,
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
+    const { workspaceId } = authenticatedWorkspace
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Terminal Title WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, workspaceId)
-
-    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
-    await addMenu.click()
-    await page.getByRole('menuitem', { name: 'New terminal...' }).click()
-    await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
+    await openNewTerminalDialog(page)
     await waitForWorker(page)
 
     const dialog = page.getByRole('dialog')
@@ -118,12 +92,13 @@ test.describe('Tab title in the create dialogs', () => {
     await expect(dialog.getByRole('button', { name: 'Create' })).toBeDisabled()
 
     await titleInput.fill('Build  logs')
-    await setWorkingDir(page, frontendDir)
+    await setWorkingDir(page, frontendRoot)
     await dialog.getByRole('button', { name: 'Create' }).click()
 
-    await waitForTabTitle(
+    await waitForWorkerTabTitle(
       () => listTerminalsViaAPI(hubUrl, adminToken, workerId, workspaceId),
       'Build logs',
+      'the Worker stores the cleaned terminal title',
     )
   })
 
@@ -134,7 +109,7 @@ test.describe('Tab title in the create dialogs', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'title-change-branch-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -168,9 +143,10 @@ test.describe('Tab title in the create dialogs', () => {
 
     await dialog.getByRole('button', { name: 'Apply' }).click()
 
-    await waitForTabTitle(
+    await waitForWorkerTabTitle(
       () => listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId),
       'Auth fix',
+      'the Worker stores the title of the worktree tab',
     )
   })
 })

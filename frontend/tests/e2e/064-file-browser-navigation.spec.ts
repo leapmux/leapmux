@@ -1,79 +1,56 @@
-import path from 'node:path'
+import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, treeRow } from './helpers/ui'
-
-const frontendDir = path.resolve(import.meta.dirname, '../..')
+import { treeRow } from './helpers/ui'
 
 test.describe('File Browser Navigation', () => {
-  test('should open file browser tab and show files', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Browser Nav Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+  // The agent works in the frontend directory, so the tree shows its files.
+  test.use({ agentWorkingDir: frontendRoot })
 
-      // The Files sidebar should be visible in the right panel
-      await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
+  test('should open file browser tab and show files', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
 
-      // Wait for file entries to load (working dir is the frontend dir)
-      // package.json should exist in the frontend directory
-      await expect(treeRow(page, 'package.json')).toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // The Files sidebar should be visible in the right panel
+    await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
+
+    // Wait for file entries to load (working dir is the frontend dir)
+    // package.json should exist in the frontend directory
+    await expect(treeRow(page, 'package.json')).toBeVisible()
   })
 
-  test('should navigate into a directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Into Dir')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+  test('should navigate into a directory', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
 
-      // Wait for the tree to load — "src" directory should be visible
-      await expect(page.getByText('src')).toBeVisible()
+    // Wait for the tree to load — "src" directory should be visible.
+    // `exact`, because `src-tauri` also contains the name.
+    const src = treeRow(page, 'src', { exact: true })
+    await expect(src).toBeVisible()
 
-      // Click on "src" to expand/navigate into it
-      await page.getByText('src').click()
+    // Click on "src" to expand/navigate into it
+    await src.click()
 
-      // Should show files inside src/ (app.tsx should be there)
-      await expect(page.getByText('app.tsx')).toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // Should show files inside src/ (app.tsx should be there)
+    await expect(treeRow(page, 'app.tsx', { exact: true })).toBeVisible()
   })
 
-  test('should navigate to parent directory', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Nav Parent Dir')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+  test('should navigate to parent directory', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
 
-      // Wait for the tree to load — "src" directory should be visible
-      await expect(page.getByText('src')).toBeVisible()
+    // Wait for the tree to load — "src" directory should be visible
+    const src = treeRow(page, 'src', { exact: true })
+    await expect(src).toBeVisible()
 
-      // Navigate into "src"
-      await page.getByText('src').click()
-      await expect(page.getByText('app.tsx')).toBeVisible()
+    // Navigate into "src"
+    await src.click()
+    const appFile = treeRow(page, 'app.tsx', { exact: true })
+    await expect(appFile).toBeVisible()
 
-      // Click on "src" again to collapse the directory (navigate back up)
-      await page.getByText('src').click()
+    // Click on "src" again to collapse the directory (navigate back up)
+    await src.click()
 
-      // After collapsing, the child file "app.tsx" should no longer be visible
-      await expect(page.getByText('app.tsx')).not.toBeVisible()
+    // After collapsing, the child file "app.tsx" should no longer be visible
+    await expect(appFile).not.toBeVisible()
 
-      // The root-level entries should still be visible
-      await expect(treeRow(page, 'package.json')).toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // The root-level entries should still be visible
+    await expect(treeRow(page, 'package.json')).toBeVisible()
   })
 })

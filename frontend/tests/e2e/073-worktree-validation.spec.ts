@@ -1,19 +1,14 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { expect, test } from './fixtures'
-import { loginViaToken, menuOptionTexts } from './helpers/ui'
-import { createGitRepo, openNewWorkspaceDialog, setWorkingDir, waitForAppPageReady, waitForWorker } from './helpers/worktree'
+import { menuOptionTexts } from './helpers/ui'
+import { chooseGitMode, createGitRepo, openNewWorkspaceDialogAt, setWorkingDir } from './helpers/worktree'
 
 // NewWorkspaceDialog and GitOptions unit tests cover validation and mode selection.
 // These cases retain the real directory picker, repository discovery, and refresh path.
 async function openBranchDialog(page: Page, token: string, repository: string) {
-  await loginViaToken(page, token)
-  await page.goto('/')
-  await waitForAppPageReady(page)
-  await openNewWorkspaceDialog(page)
-  await waitForWorker(page)
-  await setWorkingDir(page, repository)
-  await page.getByText('Switch to branch', { exact: true }).click()
+  await openNewWorkspaceDialogAt(page, token, repository)
+  await chooseGitMode(page, 'Switch to branch')
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
   return dialog
@@ -34,7 +29,7 @@ test.describe('repository branch discovery', () => {
 
     await setWorkingDir(page, second)
     await expect(page.getByLabel('Use current state')).toBeChecked()
-    await page.getByText('Switch to branch', { exact: true }).click()
+    await chooseGitMode(page, 'Switch to branch')
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
     await expect.poll(async () => {
       const options = await menuOptionTexts(dialog, 'branch-select-menu')

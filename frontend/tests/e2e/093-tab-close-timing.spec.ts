@@ -6,14 +6,12 @@
  */
 import type { Page, TestInfo } from '@playwright/test'
 import type { ClockAnchor, LogLine, PhaseMark, RpcMark, TimingWorker } from './helpers/timingFixture'
-import { existsSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
 import process from 'node:process'
 import { test as base, expect } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from './helpers/timingFixture'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, loginViaToken, openAgentViaUI, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
@@ -204,7 +202,7 @@ test.describe('Tab close timing', () => {
 
     // The first agent creates scn1-branch. The second agent reuses the active worktree.
     // Closing one agent leaves another tab, so the Worker returns shouldPrompt=false.
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -216,17 +214,19 @@ test.describe('Tab close timing', () => {
     await withCleanup(async () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
-      await page.locator('[data-testid^="new-agent-button"]').first().click()
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
+      await expectAgentTabCount(page, 1)
+      // The helper waits for the tab directory before it clicks, and for the new
+      // tab and its composer after the click.
+      await openAgentViaUI(page)
+      await expectAgentTabCount(page, 2)
 
       await installObservers(page)
 
       const anchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
       const logsBefore = srv.logLines.length
-      await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().locator('[data-testid="tab-close"]').dispatchEvent('click')
+      await agentTabs(page).first().locator('[data-testid="tab-close"]').dispatchEvent('click')
 
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
+      await expectAgentTabCount(page, 1)
       const raw = await captureCloseTimeline(
         page,
         srv,
@@ -248,7 +248,7 @@ test.describe('Tab close timing', () => {
     const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn2')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -260,13 +260,13 @@ test.describe('Tab close timing', () => {
     await withCleanup(async () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
+      await expectAgentTabCount(page, 1)
 
       await installObservers(page)
 
       const anchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
       const logsBefore = srv.logLines.length
-      await page.locator('[data-testid="tab"][data-tab-type="agent"]')
+      await agentTabs(page)
         .locator('[data-testid="tab-close"]')
         .dispatchEvent('click')
 
@@ -275,7 +275,7 @@ test.describe('Tab close timing', () => {
       await page.getByRole('button', { name: 'Close anyway' }).click()
       await page.getByRole('button', { name: 'Confirm?' }).click()
 
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(0)
+      await expectAgentTabCount(page, 0)
       const raw = await captureCloseTimeline(
         page,
         srv,
@@ -296,11 +296,9 @@ test.describe('Tab close timing', () => {
     const srv = { ...timingWorker.server, logLines: timingWorker.logLines, dataDir: timingWorker.dataDir }
     const { hubUrl, adminToken, workerId, dataDir } = srv
     const ctx = getRepoCtx(dataDir, 'close-timing-scn3')
-    const worktreeDir = ctx.synthetic
-      ? join(realpathSync(dataDir), 'close-timing-scn3-worktrees', 'scn3-branch')
-      : null
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    // The helper returns once the worktree exists on disk.
+    const { workspaceId, worktreeDir: createdWorktreeDir } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -308,18 +306,18 @@ test.describe('Tab close timing', () => {
       ctx.repoDir,
       'scn3-branch',
     )
+    // The removal is checked only in a repository that the test owns.
+    const worktreeDir = ctx.synthetic ? createdWorktreeDir : null
     await withCleanup(async () => {
-      if (worktreeDir)
-        await expect.poll(() => existsSync(worktreeDir), { intervals: [100] }).toBe(true)
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
+      await expectAgentTabCount(page, 1)
 
       await installObservers(page)
 
       const anchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
       const logsBefore = srv.logLines.length
-      await page.locator('[data-testid="tab"][data-tab-type="agent"]')
+      await agentTabs(page)
         .locator('[data-testid="tab-close"]')
         .dispatchEvent('click')
 
@@ -328,7 +326,7 @@ test.describe('Tab close timing', () => {
       await page.getByRole('button', { name: 'Delete worktree' }).click()
       await page.getByRole('button', { name: 'Confirm?' }).click()
 
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(0)
+      await expectAgentTabCount(page, 0)
       const raw = await captureCloseTimeline(
         page,
         srv,

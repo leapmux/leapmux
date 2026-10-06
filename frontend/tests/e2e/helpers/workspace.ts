@@ -143,6 +143,23 @@ export async function createWorkspaceWithAgentsViaAPI(
   return { workspaceId, agentIds }
 }
 
+/**
+ * Create a workspace with its agents through `createWorkspaceWithAgentsViaAPI`, sign the page in, and show the
+ * workspace. For a test that needs a working directory of its own, which the `agentWorkingDir` option of its file
+ * cannot state for one test alone.
+ */
+export async function showWorkspaceWithAgents(
+  page: Page,
+  server: AgentServer,
+  title: string,
+  options: { agentCount?: number, workingDir?: string } = {},
+): Promise<WorkspaceWithAgents> {
+  const created = await createWorkspaceWithAgentsViaAPI(server, title, options)
+  await loginViaToken(page, server.adminToken)
+  await openWorkspace(page, created.workspaceId)
+  return created
+}
+
 /** What a test states for one more agent that it opens in an existing workspace. */
 export interface ProviderAgentOpenOptions extends AgentOpenOverrides {
   /** The directory that the agent works in. The default is a new directory of the provider. */

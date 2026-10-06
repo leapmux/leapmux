@@ -6,7 +6,7 @@ import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { createTestDirectory } from './runDirectory'
 import { loginViaToken, openWorkspace } from './ui'
-import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, withAgentWorkspace, withTestWorkspace } from './workspace'
+import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, showWorkspaceWithAgents, withAgentWorkspace, withTestWorkspace } from './workspace'
 
 vi.mock('./api', () => ({ createWorkspaceViaAPI: vi.fn(), deleteWorkspaceViaAPI: vi.fn(), openAgentViaAPI: vi.fn() }))
 vi.mock('./runDirectory', () => ({ createTestDirectory: vi.fn(() => '/private-directory') }))
@@ -261,6 +261,33 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
   it('deletes nothing, because the per-test reset of the suite hub owns the cleanup', async () => {
     await createWorkspaceWithAgentsViaAPI(server, 'Docs')
     expect(deleteWorkspaceViaAPI).not.toHaveBeenCalled()
+  })
+})
+
+describe('showWorkspaceWithAgents', () => {
+  it('creates the workspace with its agent, then signs the page in and shows that workspace', async () => {
+    const order: string[] = []
+    const page = {} as Page
+    vi.mocked(openAgentViaAPI).mockImplementation(async (_hub, _token, _worker, _workspace, workingDir) => {
+      order.push(`open in ${workingDir}`)
+      return 'agent'
+    })
+    vi.mocked(loginViaToken).mockImplementation(async () => {
+      order.push('login')
+    })
+    vi.mocked(openWorkspace).mockImplementation(async (_page, workspaceId) => {
+      order.push(`show ${workspaceId}`)
+    })
+    await expect(showWorkspaceWithAgents(page, server, 'Docs', { workingDir: '/repo' })).resolves.toEqual({ workspaceId: 'workspace', agentIds: ['agent'] })
+    expect(order).toEqual(['open in /repo', 'login', 'show workspace'])
+    expect(loginViaToken).toHaveBeenCalledWith(page, server.adminToken)
+  })
+
+  it('signs nothing in when the workspace cannot be created', async () => {
+    vi.mocked(createWorkspaceViaAPI).mockRejectedValueOnce(new Error('create refused'))
+    await expect(showWorkspaceWithAgents({} as Page, server, 'Docs')).rejects.toThrow('create refused')
+    expect(loginViaToken).not.toHaveBeenCalled()
+    expect(openWorkspace).not.toHaveBeenCalled()
   })
 })
 
