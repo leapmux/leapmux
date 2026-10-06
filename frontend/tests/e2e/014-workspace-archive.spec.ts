@@ -12,6 +12,7 @@ import {
   openTerminalViaUI,
   openTreeContextMenu,
   openWorkspaceRowMenu,
+  sidebarSectionHeader,
   terminalTabs,
   treeRow,
   workspaceMenuItem,
@@ -50,7 +51,7 @@ test.describe('workspace archive', () => {
     await dialog.getByRole('button', { name: 'Archive' }).click()
 
     // Workspace should now be in the archived section (auto-expanded)
-    const archivedSection = page.locator('[data-testid="section-header-workspaces_archived"]')
+    const archivedSection = sidebarSectionHeader(page, 'workspaces_archived')
     await expect(archivedSection).toBeVisible()
 
     // Workspace item should be visible inside the archived section (auto-expanded)

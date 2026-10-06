@@ -1,28 +1,19 @@
 import { expect, test } from './fixtures'
-import { expectClipsLongText, expectClipsToOneLine } from './helpers/ui'
+import { expandSidebarSection, expectClipsLongText, expectClipsToOneLine, sidebarSectionHeader } from './helpers/ui'
 
 test.describe('Worker Management', () => {
   test('should show Workers section with registered worker', async ({ page, authenticatedWorkspace }) => {
-    // Workers section should be visible in the sidebar
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-
-    // Expand the section if collapsed
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
+    // Workers section should be visible in the sidebar, and open
+    const workersSection = sidebarSectionHeader(page, 'workers')
+    await expandSidebarSection(workersSection)
 
     // Should contain the worker named "Local" (dev mode sets LEAPMUX_WORKER_NAME=Local)
     await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'Local' })).toBeVisible()
   })
 
   test('should show green status dot for online worker', async ({ page, authenticatedWorkspace }) => {
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
+    const workersSection = sidebarSectionHeader(page, 'workers')
+    await expandSidebarSection(workersSection)
 
     // The status dot should indicate "connected"
     await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()
@@ -44,12 +35,8 @@ test.describe('Worker Management', () => {
    */
   test('clips the worker name and never scrolls the section sideways', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const workersSection = page.getByTestId('section-header-workers')
-    await expect(workersSection).toBeVisible()
-
-    const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-    if (!isOpen)
-      await workersSection.locator('> [role="button"]').click()
+    const workersSection = sidebarSectionHeader(page, 'workers')
+    await expandSidebarSection(workersSection)
 
     const name = workersSection.getByTestId('worker-name').filter({ hasText: 'Local' })
     await expect(name).toBeVisible()

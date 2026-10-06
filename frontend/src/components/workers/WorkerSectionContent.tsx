@@ -66,7 +66,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
   }
 
   return (
-    <div class={styles.workerItems}>
+    <div class={styles.workerItems} data-testid="worker-list">
       <Show
         when={props.workers.length > 0}
         fallback={<div class={listStyles.emptySection}>No workers</div>}

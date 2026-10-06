@@ -172,6 +172,8 @@ describe('WorkerSectionContent', () => {
     const { container } = renderSection()
     expect(container.firstElementChild!.className).toMatch(/workerItems/)
     expect(container.firstElementChild!.className).not.toMatch(/sectionItems/)
+    // The E2E suite finds the container by this test id, not by its generated class name.
+    expect(screen.getByTestId('worker-list')).toBe(container.firstElementChild)
   })
 
   it('clips the worker name and keeps its test id on the label', () => {

@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { expandSidebarSection, loginViaToken, openWorkspace, sidebarSectionHeader } from './helpers/ui'
 
 // The tunnel feature requires desktop capabilities, which aren't available in
 // normal browser E2E runs. These tests inject a mock desktop bridge before page
@@ -172,11 +172,8 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
 
 /** Open the worker context menu in the Workers sidebar section. */
 async function openWorkerMenu(page: import('@playwright/test').Page) {
-  const workersSection = page.getByTestId('section-header-workers')
-  await expect(workersSection).toBeVisible()
-  const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
-  if (!isOpen)
-    await workersSection.locator('> [role="button"]').click()
+  const workersSection = sidebarSectionHeader(page, 'workers')
+  await expandSidebarSection(workersSection)
 
   await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'Local' })).toBeVisible()
 

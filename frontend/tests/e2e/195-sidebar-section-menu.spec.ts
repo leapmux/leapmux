@@ -188,7 +188,7 @@ test.describe('sidebar section menu', () => {
     await dialog.getByTestId('title-input').fill('Reviews')
     await dialog.getByRole('button', { name: 'Create' }).click()
 
-    const custom = page.locator('[data-testid="section-header-workspaces_custom"]:visible').first()
+    const custom = sidebarSectionHeader(page, 'workspaces_custom')
     await expect(custom).toBeVisible()
     await expect(custom).toContainText('Reviews')
 
