@@ -3,18 +3,22 @@ import type { ManagedNativeScenarioContext, NativeToolOutcome, NativeToolResultR
 import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from './ampSurface'
 import { currentNativeAgent } from './nativeScenario'
+import { nativeToolResultContent } from './nativeToolResult'
 
 /** Read one actual executor run from the recorded Amp model request. */
 export function ampToolResult(request: MockModelRequestRecord, nativeCallId: string): NativeToolOutcome {
-  const body = isObject(request.body) ? request.body : undefined
-  const messages = Array.isArray(body?.messages) ? body.messages.filter(isObject) : []
-  const matches = messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(isObject) : [])
-    .filter(block => block.type === 'tool_result' && block.tool_use_id === nativeCallId)
-  if (matches.length !== 1 || typeof matches[0]?.content !== 'string')
+  let content: unknown
+  try {
+    content = nativeToolResultContent(request, nativeCallId)
+  }
+  catch (cause) {
+    throw new Error(`Amp returned no unique executor run for ${nativeCallId}.`, { cause })
+  }
+  if (typeof content !== 'string')
     throw new Error(`Amp returned no unique executor run for ${nativeCallId}.`)
   let run: unknown
   try {
-    run = JSON.parse(matches[0].content)
+    run = JSON.parse(content)
   }
   catch {
     throw new Error(`Amp executor run ${nativeCallId} contains invalid JSON.`)

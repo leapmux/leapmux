@@ -39,8 +39,11 @@ describe('ampToolResult', () => {
     expect(() => ampToolResult(request(run), 'native-call')).toThrow(/executor run|no result/)
   })
 
-  it('refuses an unrelated call ID', () => {
-    expect(() => ampToolResult(request({ result: 'Native result.' }), 'another-call')).toThrow('no unique executor run')
+  it('refuses an unrelated call ID, and keeps the count of the shared reader as the cause', () => {
+    expect(() => ampToolResult(request({ result: 'Native result.' }), 'another-call')).toThrow(expect.objectContaining({
+      message: 'Amp returned no unique executor run for another-call.',
+      cause: expect.objectContaining({ message: expect.stringContaining('contains 0 results for another-call') }),
+    }))
   })
 
   it('refuses duplicate results for the same native call ID', () => {

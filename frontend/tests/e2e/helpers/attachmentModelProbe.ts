@@ -12,6 +12,7 @@ import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
 import { expectAttachmentOutcome, PDF_PAGE_MARKER, sendWithAttachment } from './attachments'
 import { CURSOR_RUN_PATH } from './cursorSurface'
 import { jsonStringValues } from './jsonStringValues'
+import { kiroCurrentUserInput } from './kiroSurface'
 import { stepRequest } from './mockModelScript'
 import { nativeTextStep } from './nativeScenario'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from './ui'
@@ -237,14 +238,8 @@ function chatCompletionFileParts(body: unknown): TypedFilePart[] {
     part.type === 'file' ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data) : undefined)
 }
 
-/** Return the user input message of Kiro's current turn. */
-function kiroCurrentUserInput(body: unknown): Record<string, unknown> | null {
-  const state = pickObject(isObject(body) ? body : null, 'conversationState')
-  return pickObject(pickObject(state, 'currentMessage'), 'userInputMessage')
-}
-
 /** Read the entries of one file list of Kiro's current user input message. */
-function kiroFileParts(user: Record<string, unknown> | null, field: 'documents' | 'images'): TypedFilePart[] {
+function kiroFileParts(user: Record<string, unknown> | undefined, field: 'documents' | 'images'): TypedFilePart[] {
   const entries = user?.[field]
   if (!Array.isArray(entries))
     return []

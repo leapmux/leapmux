@@ -1,6 +1,6 @@
 import type { MockModelRequestRecord } from './mockModelScript'
 import { describe, expect, it } from 'vitest'
-import { nativeToolResult, nativeToolResultContent } from './nativeToolResult'
+import { nativeToolResult, nativeToolResultContent, nativeToolResultEntry } from './nativeToolResult'
 
 function request(protocol: MockModelRequestRecord['protocol'], body: unknown): MockModelRequestRecord {
   return { protocol, path: '/mock', body }
@@ -192,10 +192,52 @@ describe('nativeToolResult', () => {
     expect(() => nativeToolResult(duplicate, 'color')).toThrow('contains 2 results')
   })
 
-  it('rejects a result without content or an unsupported protocol', () => {
+  it('rejects a result without content', () => {
     expect(() => nativeToolResult(request('openai-chat-completions', {
       messages: [{ role: 'tool', tool_call_id: 'color' }],
     }), 'color')).toThrow('has no content')
-    expect(() => nativeToolResult(request('aws-event-stream', {}), 'color')).toThrow('unavailable')
+  })
+
+  // Kiro's service carries the results of a turn in the context of its current user input.
+  const kiroRequest = (toolResults: unknown, history: unknown[] = []) => request('aws-event-stream', { conversationState: {
+    history,
+    currentMessage: { userInputMessage: { content: 'REQUEST_ONLY', userInputMessageContext: { toolResults } } },
+  } })
+
+  it('reads only the current Kiro service result', () => {
+    const content = [{ text: 'ACTUAL_RESULT' }]
+    const record = kiroRequest([{ toolUseId: 'other', content: [{ text: 'OTHER_RESULT' }] }, { toolUseId: 'color', content, status: 'success' }], [
+      { userInputMessage: { content: '', userInputMessageContext: { toolResults: [{ toolUseId: 'color', content: [{ text: 'HISTORY_RESULT' }] }] } } },
+    ])
+    expect(nativeToolResultContent(record, 'color')).toBe(content)
+    expect(nativeToolResult(record, 'color')).toBe(JSON.stringify(content))
+  })
+
+  it.each([
+    { label: 'no current input', record: request('aws-event-stream', {}), count: 0 },
+    { label: 'no result list', record: kiroRequest(undefined), count: 0 },
+    { label: 'another call', record: kiroRequest([{ toolUseId: 'other', content: [] }]), count: 0 },
+    { label: 'a duplicate call', record: kiroRequest([{ toolUseId: 'color', content: [] }, { toolUseId: 'color', content: [] }]), count: 2 },
+  ])('rejects a Kiro service request with $label', ({ record, count }) => {
+    expect(() => nativeToolResult(record, 'color')).toThrow(`contains ${count} results for color`)
+  })
+})
+
+describe('nativeToolResultEntry', () => {
+  it('returns the whole entry, so a reader can read a field beside the content', () => {
+    const entry = { toolUseId: 'color', content: [{ text: 'Red' }], status: 'error' }
+    const record = request('aws-event-stream', { conversationState: { currentMessage: { userInputMessage: { userInputMessageContext: { toolResults: [entry] } } } } })
+    expect(nativeToolResultEntry(record, 'color')).toBe(entry)
+  })
+
+  it('returns an entry whose content is absent, which the content reader refuses', () => {
+    const entry = { role: 'tool', tool_call_id: 'color' }
+    expect(nativeToolResultEntry(request('openai-chat-completions', { messages: [entry] }), 'color')).toBe(entry)
+  })
+
+  it('rejects an absent request and an ambiguous call', () => {
+    expect(() => nativeToolResultEntry(undefined, 'color')).toThrow('No native model request exists for tool call color.')
+    const duplicate = { type: 'function_call_output', call_id: 'color', output: 'Red' }
+    expect(() => nativeToolResultEntry(request('openai-responses', { input: [duplicate, duplicate] }), 'color')).toThrow('contains 2 results')
   })
 })

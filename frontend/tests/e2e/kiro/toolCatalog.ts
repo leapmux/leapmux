@@ -1,14 +1,12 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { NativeToolDescriptor } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
+import { kiroCurrentUserInput } from '../helpers/kiroSurface'
 
 function currentTools(request: MockModelRequestRecord): unknown[] {
   if (request.protocol !== 'aws-event-stream')
     throw new Error('The native Kiro catalog requires an actual AWS model request.')
-  const body = isObject(request.body) ? request.body : undefined
-  const state = isObject(body?.conversationState) ? body.conversationState : undefined
-  const current = isObject(state?.currentMessage) ? state.currentMessage : undefined
-  const user = isObject(current?.userInputMessage) ? current.userInputMessage : undefined
+  const user = kiroCurrentUserInput(request.body)
   const context = isObject(user?.userInputMessageContext) ? user.userInputMessageContext : undefined
   if (!Array.isArray(context?.tools) || context.tools.length === 0)
     throw new Error('The native Kiro request contains no tool catalog.')

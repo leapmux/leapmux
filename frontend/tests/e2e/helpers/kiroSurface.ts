@@ -232,8 +232,11 @@ export function kiroModelCatalog() {
   return { models, defaultModel: models[0] }
 }
 
-/** The current message of one model turn: the user's text and its tool results. */
-function kiroCurrentMessage(body: unknown): Record<string, unknown> | undefined {
+/**
+ * The user input message of the current model turn: the user's text, and the context that carries the tool results
+ * and the offered tools. Undefined when the body states no current user input.
+ */
+export function kiroCurrentUserInput(body: unknown): Record<string, unknown> | undefined {
   if (!isObject(body) || !isObject(body.conversationState) || !isObject(body.conversationState.currentMessage))
     return undefined
   const message = body.conversationState.currentMessage.userInputMessage
@@ -250,7 +253,7 @@ function kiroScenarioID(body: unknown): string {
         messages.push({ role: 'user', content: entry.userInputMessage.content })
     }
   }
-  const current = kiroCurrentMessage(body)
+  const current = kiroCurrentUserInput(body)
   if (typeof current?.content === 'string')
     messages.push({ role: 'user', content: current.content })
   return selectScenarioID({ messages })
@@ -262,7 +265,7 @@ function kiroScenarioID(body: unknown): string {
  * results alone.
  */
 export function kiroUserText(body: unknown): string {
-  const message = kiroCurrentMessage(body)
+  const message = kiroCurrentUserInput(body)
   if (!message)
     return ''
   const parts = [typeof message.content === 'string' ? message.content : '']

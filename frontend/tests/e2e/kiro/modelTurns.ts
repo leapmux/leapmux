@@ -1,6 +1,7 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { NativeModelTurn } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
+import { kiroCurrentUserInput } from '../helpers/kiroSurface'
 import { nativeToolArgumentText } from '../helpers/nativeScenario'
 
 /**
@@ -32,7 +33,7 @@ export function kiroModelTurns(request: MockModelRequestRecord): NativeModelTurn
     const text = [typeof message.content === 'string' ? message.content : '', ...toolInputs].filter(part => part !== '').join('\n')
     return [{ role: 'assistant', text }]
   })
-  const current = isObject(state.currentMessage) && isObject(state.currentMessage.userInputMessage) ? state.currentMessage.userInputMessage : undefined
+  const current = kiroCurrentUserInput(request.body)
   if (!current || typeof current.content !== 'string')
     throw new Error('The native Kiro request contains no current user message.')
   return [...turns, { role: 'user', text: current.content }]

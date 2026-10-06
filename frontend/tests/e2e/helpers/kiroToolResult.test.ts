@@ -44,6 +44,18 @@ describe('kiroToolResult', () => {
     expect(() => kiroToolResult(request(rows), 'native-call')).toThrow('no unique native result')
   })
 
+  it('keeps the cause of a duplicate native call result', () => {
+    const duplicate = { toolUseId: 'native-call', content: [{ text: 'Native result.' }] }
+    expect(() => kiroToolResult(request([duplicate, duplicate]), 'native-call')).toThrow(expect.objectContaining({
+      message: 'Kiro returned no unique native result for native-call.',
+      cause: expect.objectContaining({ message: expect.stringContaining('contains 2 results') }),
+    }))
+  })
+
+  it('refuses a request of another protocol', () => {
+    expect(() => kiroToolResult({ ...request([]), protocol: 'anthropic-messages' }, 'native-call')).toThrow('requires a Kiro service request, not anthropic-messages')
+  })
+
   it('refuses conflicting native exit codes', () => {
     expect(() => kiroToolResult(request([{ toolUseId: 'native-call', content: [{ text: 'Exit Code: 7' }, { json: { exitCode: 0 } }] }]), 'native-call'))
       .toThrow('conflicting native exit codes')
