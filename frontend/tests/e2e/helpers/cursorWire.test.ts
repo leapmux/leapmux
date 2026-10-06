@@ -489,7 +489,7 @@ describe('cursorGenerateImageStarted and cursorGenerateImageCompleted', () => {
 describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
   function reply(id: number, field: number, payload: Uint8Array): Uint8Array {
     return encodeLengthDelimited(6, Buffer.concat([
-      Uint8Array.from([0x08, ...encodeVarint(id)]),
+      encodeVarintField(1, id),
       encodeLengthDelimited(field, payload),
     ]))
   }
@@ -548,7 +548,7 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
 describe('cursorMcpExec and cursorMcpResponseOf', () => {
   function reply(id: number | undefined, result: Uint8Array): Uint8Array {
     return encodeLengthDelimited(2, Buffer.concat([
-      ...(id === undefined ? [] : [Uint8Array.from([0x08, ...encodeVarint(id)])]),
+      ...(id === undefined ? [] : [encodeVarintField(1, id)]),
       encodeLengthDelimited(11, result),
     ]))
   }
@@ -617,7 +617,7 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
 describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
   function reply(id: number | undefined, result: Uint8Array): Uint8Array {
     return encodeLengthDelimited(2, Buffer.concat([
-      ...(id === undefined ? [] : [Uint8Array.from([0x08, ...encodeVarint(id)])]),
+      ...(id === undefined ? [] : [encodeVarintField(1, id)]),
       encodeLengthDelimited(10, result),
     ]))
   }
