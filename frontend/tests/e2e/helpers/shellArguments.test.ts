@@ -1,10 +1,35 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
+import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from './shellArguments'
 
 /** A Windows host has no /bin/sh. The cases that run the command in a shell need one. */
 const hasPosixShell = existsSync('/bin/sh')
+
+describe('uniqueMarker', () => {
+  it('returns the prefix and 32 hexadecimal digits, with no hyphen', () => {
+    expect(uniqueMarker('NATIVEGOAL')).toMatch(/^NATIVEGOAL[0-9a-f]{32}$/)
+  })
+
+  it('returns 32 hexadecimal digits alone for no prefix', () => {
+    expect(uniqueMarker()).toMatch(/^[0-9a-f]{32}$/)
+    expect(uniqueMarker('')).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  it('returns a new marker on each call', () => {
+    const markers = new Set(Array.from({ length: 100 }, () => uniqueMarker('X')))
+    expect(markers.size).toBe(100)
+  })
+
+  it.each(['NATIVE-GOAL', 'NATIVE_GOAL', 'with space', 'a.b', '$(x)', 'é'])('refuses the prefix %j, which holds a character other than a letter or a digit', (prefix) => {
+    expect(() => uniqueMarker(prefix)).toThrow('holds only letters and digits')
+  })
+
+  it.skipIf(!hasPosixShell)('passes through a shell with no quote', () => {
+    const marker = uniqueMarker('SHELL')
+    expect(execFileSync('/bin/sh', ['-c', `printf %s ${marker}`], { encoding: 'utf8' })).toBe(marker)
+  })
+})
 
 describe('quotePosixShellArgument', () => {
   it.each([

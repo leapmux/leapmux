@@ -1,5 +1,4 @@
 import type { ClaudeWorkflowLaunch } from './codeExecution'
-import { randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -16,6 +15,7 @@ import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { openWorkspace, sendMessage } from '../helpers/ui'
 import { claudeWorkflowLaunch, claudeWorkflowModelOutcome, claudeWorkflowOutput, claudeWorkflowOutputFile, claudeWorkflowSnapshot } from './codeExecution'
@@ -28,7 +28,7 @@ claudeTest('executes native Workflow code and preserves the computed result and 
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')
   await testInfo.attach('claude-workflow-catalog', { body: JSON.stringify(catalogRequest, null, 2), contentType: 'application/json' })
   const agent = await currentNativeAgent(context)
-  const marker = `NATIVEWORKFLOW${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('NATIVEWORKFLOW')
   // Workflow completion can start another parent turn after the launch turn ends.
   await modelScript.fallback({ text: 'The native Workflow notification arrived.' })
   const runs: { launch: ClaudeWorkflowLaunch, failed: boolean }[] = []

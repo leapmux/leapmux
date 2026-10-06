@@ -4,9 +4,8 @@ import type { NativeMessageSnapshot } from './nativeMessages'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { GatedOutput } from './outputGate'
 import { Buffer } from 'node:buffer'
-import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
@@ -15,7 +14,8 @@ import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeS
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
-import { quotePosixShellArgument } from './shellArguments'
+import { isFileNameComponent } from './runDirectory'
+import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { answerControl, assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
@@ -39,7 +39,7 @@ interface NativePermissionFileOptions {
 
 /** Prepare a real file creation without replacing its absent-file guard with a seeded file. */
 export async function createNativePermissionFileWrite(context: ManagedNativeScenarioContext, options: NativePermissionFileOptions): Promise<NativePermissionOperationPlan> {
-  if (!options.fileName || options.fileName === '.' || options.fileName === '..' || basename(options.fileName) !== options.fileName || options.fileName.includes('\\') || options.fileName.includes('\0'))
+  if (!isFileNameComponent(options.fileName))
     throw new Error('The native permission file requires one filename component.')
   if (!options.callId || !options.outputPrefix)
     throw new Error('The native permission file requires a call ID and output prefix.')
@@ -207,7 +207,7 @@ async function nativeWriteScenario(context: ManagedNativeScenarioContext, option
   const agent = await currentNativeAgent(context)
   if (!agent.workingDir)
     throw new Error('The native permission write requires a working directory.')
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const file = join(agent.workingDir, options?.fileName ?? `native-permission-${marker}.txt`)
   const before = options?.initialContent ?? `BEFORE${marker}`
   const afterPrefix = options?.outputPrefix ?? `AFTER${marker}`

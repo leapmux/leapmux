@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { userBubbles } from '../helpers/ui'
 import { expect, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
@@ -20,7 +20,7 @@ lettaTest('stops an actual native tool and accepts the next queued turn', async 
 
 lettaTest('draws the message that the reader sends after an interrupt once', async ({ authenticatedLettaWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId })
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const prompt = `Continue after the interrupt AFTERSTOP${marker}.`
   // Letta Code 0.34.2 queues the first message after an interrupt, and it echoes a queued
   // message as a `user_message` when the message starts. LeapMux stored the message when the

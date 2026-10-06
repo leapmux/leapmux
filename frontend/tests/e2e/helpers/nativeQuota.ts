@@ -1,14 +1,14 @@
 import type { MockModelError, MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
+import { uniqueMarker } from './shellArguments'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from './ui'
 
 /** Prove quota headers came from the actual emitted generic model response. */
 export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioContext): Promise<void> {
-  const answer = `NATIVEQUOTAHEADERS${randomUUID().replaceAll('-', '')}`
+  const answer = uniqueMarker('NATIVEQUOTAHEADERS')
   const start = await context.modelScript.queue({
     ...nativeTextStep(context, answer),
     rateLimits: { type: 'five_hour', status: 'allowed', utilization: 0.73, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
@@ -32,7 +32,7 @@ export async function exerciseNativeQuotaRefusal(
 ): Promise<void> {
   const agent = await currentNativeAgent(context)
   const after = await observeSettledReceipts(context.page)
-  const answer = `QUOTARECOVERED${randomUUID().replaceAll('-', '')}`
+  const answer = uniqueMarker('QUOTARECOVERED')
   const start = await context.modelScript.queue({ error: options.error }, nativeTextStep(context, answer))
   await sendMessage(context.page, context.modelScript.prompt('Run the native service quota-refusal probe.'))
   await waitForIdleSoundReceipt(context.page, { agentId: agent.id, after })

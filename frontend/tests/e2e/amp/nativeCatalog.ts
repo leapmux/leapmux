@@ -14,7 +14,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { getTestChannel } from '../helpers/api'
-import { lookupBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -279,9 +279,7 @@ export async function readAmpExecutorCatalog(
   const endpoint = environment.AMP_URL
   if (!home || !endpoint)
     throw new Error('The native Amp catalog requires its private HOME and mock endpoint.')
-  const binary = lookupBinary('amp', 'The native Amp catalog requires the installed CLI.', hubSpawnEnv(environment)).path
-  if (!binary)
-    throw new Error('The native Amp catalog requires the installed CLI.')
+  const binary = requireBinary('amp', 'The native Amp catalog requires the installed CLI', hubSpawnEnv(environment))
   const state = getGlobalState()
   const workerDataDir = options.workerDataDir ?? state.dataDir
   assertPrivateNativePath(workerDataDir, state.tmpDir)

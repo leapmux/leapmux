@@ -7,6 +7,7 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { diracChildResultRule } from './childResult'
 
 /** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
@@ -21,7 +22,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 
 /** Open this provider's actual child task and hold its native final answer. */
 export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean, childTool?: MockModelToolCall } = {}) {
-  const taskMarker = `NATIVECHILDTASK${randomUUID().replaceAll('-', '')}`
+  const taskMarker = uniqueMarker('NATIVECHILDTASK')
   const task = `${taskMarker} report one word.`
   const description = `Native held child ${randomUUID()}`
   const spawn = spawnSubagentToolCall(context.provider, 'native-held-child', { description, prompt: context.modelScript.prompt(task) })

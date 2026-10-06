@@ -2,6 +2,7 @@ import type { MockModelRequestRecord, MockModelRule } from '../helpers/mockModel
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 
 export interface PiChildLaunch {
@@ -29,10 +30,6 @@ export interface PiWorkflowNoticeOptions {
   reports: readonly string[]
   reply: string
   once?: boolean
-}
-
-function literalPattern(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // Pi escapes these three characters in its XML text. Quotes stay unchanged.
@@ -94,13 +91,13 @@ export function piChildNoticeRule(launch: PiChildLaunch, options: PiNoticeOption
     + '(?:<context_percent>\\d+</context_percent>)?(?:<compactions>\\d+</compactions>)?'
     + '(?:<estimated_cost_usd>\\d+\\.\\d+</estimated_cost_usd>)?<duration_ms>\\d+</duration_ms></usage>'
   const envelope = `^<task-notification>\\n`
-    + `<task-id>${literalPattern(launch.childId)}</task-id>\\n`
-    + `<tool-use-id>${literalPattern(xmlText(options.spawnCallId))}</tool-use-id>\\n${
-      launch.outputFile === undefined ? '' : `<output-file>${literalPattern(xmlText(launch.outputFile))}</output-file>\\n`
+    + `<task-id>${escapeRegExp(launch.childId)}</task-id>\\n`
+    + `<tool-use-id>${escapeRegExp(xmlText(options.spawnCallId))}</tool-use-id>\\n${
+      launch.outputFile === undefined ? '' : `<output-file>${escapeRegExp(xmlText(launch.outputFile))}</output-file>\\n`
     }<status>Done</status>\\n`
-    + `<summary>Agent "${literalPattern(xmlText(options.description))}" completed</summary>\\n`
-    + `<result>${literalPattern(xmlText(options.report))}</result>\\n${usage}\\n</task-notification>${
-      launch.outputFile === undefined ? '' : `\\nFull transcript available at: ${literalPattern(launch.outputFile)}`
+    + `<summary>Agent "${escapeRegExp(xmlText(options.description))}" completed</summary>\\n`
+    + `<result>${escapeRegExp(xmlText(options.report))}</result>\\n${usage}\\n</task-notification>${
+      launch.outputFile === undefined ? '' : `\\nFull transcript available at: ${escapeRegExp(launch.outputFile)}`
     }$`
   return {
     name: options.name,
@@ -140,16 +137,16 @@ export function piWorkflowNoticeRule(options: PiWorkflowNoticeOptions): MockMode
     requireText(report, 'report')
   if (options.scriptPath !== undefined)
     requireText(options.scriptPath, 'scriptPath')
-  const reports = options.reports.map(report => `(?=[^<]*${literalPattern(xmlText(report))})`).join('')
+  const reports = options.reports.map(report => `(?=[^<]*${escapeRegExp(xmlText(report))})`).join('')
   // Pi's formatter counts raw progress records in the denominator.
   // Keep the completed child count exact and reject a smaller total.
   const smallerTotals = Array.from({ length: options.reports.length }, (_, index) => String(index)).join('|')
   const rawTotal = `(?!(?:${smallerTotals}) agents)[1-9]\\d*`
   const envelope = `^<task-notification>\\n`
-    + `<task-id>${literalPattern(options.taskId)}</task-id>\\n<tool-use-id>${literalPattern(xmlText(options.callId))}</tool-use-id>\\n${
-      options.scriptPath === undefined ? '' : `<script>${literalPattern(xmlText(options.scriptPath))}</script>\\n`
+    + `<task-id>${escapeRegExp(options.taskId)}</task-id>\\n<tool-use-id>${escapeRegExp(xmlText(options.callId))}</tool-use-id>\\n${
+      options.scriptPath === undefined ? '' : `<script>${escapeRegExp(xmlText(options.scriptPath))}</script>\\n`
     }<status>Done</status>\\n`
-    + `<summary>Workflow "${literalPattern(xmlText(options.workflowName))}" completed — ${options.reports.length}/${rawTotal} agents</summary>\\n`
+    + `<summary>Workflow "${escapeRegExp(xmlText(options.workflowName))}" completed — ${options.reports.length}/${rawTotal} agents</summary>\\n`
     + `<result>${reports}[^<]*</result>\\n`
     + `<usage><total_tokens>\\d+</total_tokens><tool_uses>\\d+</tool_uses><duration_ms>\\d+</duration_ms></usage>\\n</task-notification>$`
   return {

@@ -3,12 +3,13 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
 import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedOpencodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOpencodeWorkspace.workspaceId, provider: AgentProvider.OPENCODE }
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   await exerciseUngroupedNativeChildren(context, {
     openChild: async (index) => {
       const gate = `group-child-${index}-${suffix}`

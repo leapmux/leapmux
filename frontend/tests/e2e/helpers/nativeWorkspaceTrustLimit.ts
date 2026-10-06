@@ -1,6 +1,5 @@
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
@@ -10,7 +9,7 @@ import { nativeAgentById } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { resolveNativeStartupLaunch } from './nativeStartupWrapper'
 import { createTestDirectory } from './runDirectory'
-import { hubSpawnEnv } from './server'
+import { uniqueMarker } from './shellArguments'
 import { tabById } from './ui'
 
 export interface NativeProjectConfiguration {
@@ -44,8 +43,8 @@ export type NativeWorkspaceTrustOptions = NativeWorkspaceTrustBaseOptions & (
  * its agent on a private Worker where the variable is `false`. The shared environment must
  * disable it, which also refuses a misspelled variable that would leave the configuration off.
  *
- * The executable is the one that a Worker spawned with the agent environment finds
- * (`hubSpawnEnv`), because the agent environment holds no PATH where it needs no change.
+ * `resolveNativeStartupLaunch` finds the executable that a Worker spawned with the agent
+ * environment finds.
  */
 export function projectConfigurationWorker(
   environment: Record<string, string> | undefined,
@@ -55,7 +54,7 @@ export function projectConfigurationWorker(
   if (environment?.[disableVariable] !== 'true')
     throw new Error(`The shared agent environment does not turn off project configuration through ${disableVariable}.`)
   return {
-    launch: resolveNativeStartupLaunch(hubSpawnEnv(environment), launch),
+    launch: resolveNativeStartupLaunch(environment, launch),
     workerEnvironment: () => ({ [disableVariable]: 'false' }),
   }
 }
@@ -71,7 +70,7 @@ export async function exerciseNativeWorkspaceTrustLimit(
     throw new Error('The workspace trust startup must be active or failed.')
   if (options.startup === 'failed' && (typeof options.startupError !== 'string' || options.startupError.trim().length === 0))
     throw new Error('The failed workspace startup requires the native configuration error.')
-  const project = { directory: createTestDirectory('native-workspace-trust-'), marker: `NATIVEWORKSPACECONFIG${randomUUID().replaceAll('-', '')}` }
+  const project = { directory: createTestDirectory('native-workspace-trust-'), marker: uniqueMarker('NATIVEWORKSPACECONFIG') }
   await options.projectConfiguration.prepare(project)
   const run = async (privateContext: ManagedNativeScenarioContext, wrapper?: NativeStartupWrapper) => {
     let agentId = ''

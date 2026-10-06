@@ -1,5 +1,4 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -7,6 +6,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 
 export function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider'>): ManagedNativeScenarioContext {
   return { ...context, provider: AgentProvider.COMMAND_CODE }
@@ -19,7 +19,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext) {
 /** Hold the native final reply after an actual child file read. */
 export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}) {
   const parent = await currentNativeAgent(context)
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const task = `COMMANDCODECHILD${marker} read the supplied file and report one word.`
   const path = join(parent.workingDir, `native-child-${marker}.txt`)
   writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)

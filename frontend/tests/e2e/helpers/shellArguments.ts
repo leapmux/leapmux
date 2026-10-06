@@ -1,3 +1,18 @@
+import { randomUUID } from 'node:crypto'
+
+/**
+ * Return `prefix` followed by 32 random hexadecimal digits.
+ *
+ * The marker holds only letters and digits. So a shell command holds it with no quote, a regular expression holds it
+ * with no escape, and a JSON string holds it unchanged. A model script can then match the marker in a request body
+ * without knowing how the provider encoded it.
+ */
+export function uniqueMarker(prefix = ''): string {
+  if (!/^[A-Z0-9]*$/i.test(prefix))
+    throw new Error(`A unique marker prefix holds only letters and digits, not ${JSON.stringify(prefix)}.`)
+  return `${prefix}${randomUUID().replaceAll('-', '')}`
+}
+
 /** Quote one argument without executing shell substitutions or metacharacters. */
 export function quotePosixShellArgument(value: string): string {
   return `'${value.replaceAll('\'', `'"'"'`)}'`

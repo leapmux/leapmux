@@ -1,14 +1,14 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { deepseekHarnessModelContextText } from './modelContextText'
 
 /** Run the native summarizer and prove that its checkpoint replaces the older model context. */
 export async function exerciseDeepseekHarnessCompaction(context: ManagedNativeScenarioContext): Promise<void> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const old = `DEEPSEEKOLD${marker}`
   for (let index = 0; index < 6; index++) {
     await sendNativeAnswer(context, index === 0 ? `Keep ${old} in the older task.` : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`)

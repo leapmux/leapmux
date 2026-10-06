@@ -4,7 +4,7 @@ import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { openAgentViaAPI } from '../helpers/api'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
@@ -26,7 +26,7 @@ vi.mock('../helpers/nativeWorker', () => ({ withNativeWorker: vi.fn() }))
 vi.mock('../helpers/runDirectory', () => ({ createTestDirectory: vi.fn() }))
 vi.mock('../helpers/binaryOnPath', async original => ({
   ...await original<typeof import('../helpers/binaryOnPath')>(),
-  findBinary: vi.fn(),
+  requireBinary: vi.fn(),
 }))
 vi.mock('../helpers/api', async original => ({
   ...await original<typeof import('../helpers/api')>(),
@@ -41,7 +41,7 @@ beforeEach(() => {
   vi.mocked(createTestDirectory).mockReset().mockReturnValue(directory)
   vi.mocked(createMockAgentEnvironment).mockReset()
   vi.mocked(withNativeWorker).mockReset()
-  vi.mocked(findBinary).mockReset().mockReturnValue(process.execPath)
+  vi.mocked(requireBinary).mockReset().mockReturnValue(process.execPath)
   vi.mocked(openAgentViaAPI).mockReset().mockResolvedValue('controlled-native-agent')
 })
 afterEach(() => rmSync(directory, { recursive: true, force: true }))

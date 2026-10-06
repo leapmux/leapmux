@@ -6,6 +6,7 @@ import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { messageBubbles } from '../helpers/ui'
 import { runCursorNativeOperations } from './nativeExecutionScenario'
 
@@ -14,7 +15,7 @@ cursorTest('reads and changes actual native file bytes with spaces and shell met
   const directory = authenticatedCursorWorkspace.workingDir
   if (!directory)
     throw new Error('The native Cursor file proof requires a working directory.')
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const file = join(directory, 'native $(printf WRONG_PATH) source file.txt')
   const created = join(directory, 'new native file with spaces.txt')
   const before = `CURSORBEFORE${suffix}`

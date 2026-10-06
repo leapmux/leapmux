@@ -5,6 +5,7 @@ import { nativeModelContextText, nativeModelToolNames } from '../helpers/nativeS
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piWorkflowToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
@@ -13,7 +14,7 @@ import { piWorkflowNoticeRule } from './childNoticeRule'
 
 piTest('runs a native two-stage workflow without workflow grouping or stage rows', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const gate = `pi-wf-first-${suffix}`
   const firstAnswer = `ACTUAL_FIRST_WORKFLOW_ANSWER_${suffix}`
   const secondAnswer = `ACTUAL_SECOND_WORKFLOW_ANSWER_${suffix}`

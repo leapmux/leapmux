@@ -8,6 +8,7 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { droidChildNoticeRule } from './childNotice'
 import { readDroidToolResult } from './toolResult'
 
@@ -29,7 +30,7 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
 
 /** Build the actual native child script without browser operations. */
 export function runningChildOptions(context: NativeChildScriptContext, options: { allowExistingRows?: boolean } = {}) {
-  const task = `NATIVECHILDTASK${randomUUID().replaceAll('-', '')} report one word.`
+  const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
   const description = `Native held child ${randomUUID()}`
   const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.prompt(task), background: true })
   return {

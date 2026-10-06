@@ -6,7 +6,6 @@ import type { NativeResumeTexts } from './nativeResume'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
 import type { ProcessRow } from './processTree'
-import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -24,7 +23,7 @@ import { isAlive, listProcesses } from './processTree'
 import { bashToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
-import { quotePosixShellArgument } from './shellArguments'
+import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
@@ -114,7 +113,7 @@ export async function exerciseInterruptTurn(
   if (options.holdModelTurn !== undefined && options.kind === 'tool')
     throw new Error('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
   await options.prepare?.()
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   await sendNativeAnswer(context, `Keep INTERRUPTCONTEXT${marker} for this session.`, `INTERRUPTANSWER${marker}`)
   const before = await currentNativeAgent(context)
   if (!before.workingDir)
@@ -200,7 +199,7 @@ export async function exerciseCloseAgent(
   const agent = await currentNativeAgent(context)
   if (!agent.workingDir)
     throw new Error('The native close scenario requires a working directory.')
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const pidFile = join(agent.workingDir, `native-close-${marker}.pid`)
   const script = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>{},600000)`
   const stepIndex = await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] })
@@ -248,7 +247,7 @@ export async function exerciseSessionReset(
   options: LifecyclePreparation & { command?: '/clear' | '/reset' } = {},
 ): Promise<void> {
   await options.prepare?.()
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const prompt = `Keep RESETOLDPROMPT${marker} in this session.`
   const answer = `RESETOLDANSWER${marker}`
   await sendNativeAnswer(context, prompt, answer)
@@ -339,7 +338,7 @@ export async function exerciseAgentStartup(
     workerEnvironment?: (wrapper: NativeStartupWrapper) => NodeJS.ProcessEnv
   },
 ): Promise<void> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const prompt = options.prompt ?? `Reply to STARTUPPROMPT${marker}.`
   const answer = options.answer ?? `STARTUPANSWER${marker}`
   if (!prompt.trim() || !answer.trim())

@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { lookupBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
+import { hubSpawnEnv } from '../helpers/server'
 
 /** Read the complete generated native tool union without executing the installed CLI module. */
 export function cursorToolCasesFromBundle(source: string): string[] {
@@ -18,9 +19,8 @@ export function cursorToolCasesFromBundle(source: string): string[] {
   return cases
 }
 
-export function readInstalledCursorToolCases(environment: NodeJS.ProcessEnv): string[] {
-  const binary = lookupBinary('cursor-agent', 'The native Cursor catalog requires its installed CLI.', environment).path
-  if (!binary)
-    throw new Error('The native Cursor catalog requires its installed CLI.')
+/** Read the tool cases of the Cursor CLI that a Worker started with the agent environment finds. */
+export function readInstalledCursorToolCases(environment: Record<string, string | undefined>): string[] {
+  const binary = requireBinary('cursor-agent', 'The native Cursor catalog requires its installed CLI', hubSpawnEnv(environment))
   return cursorToolCasesFromBundle(readFileSync(join(dirname(realpathSync(binary)), 'index.js'), 'utf8'))
 }

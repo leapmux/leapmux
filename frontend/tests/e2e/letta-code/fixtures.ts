@@ -9,7 +9,7 @@ import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
@@ -55,10 +55,10 @@ export const mcpLettaTest = lettaTest.extend<{ privateMcpLettaWorkspace: Private
     let workerStopped = false
     await withCleanup(async () => {
       const environment = await createMockAgentEnvironment(runDirectory, leapmuxServer.mockModelUrl)
-      const nodeExecutable = findBinary('node', environment.env)
+      const nodeExecutable = requireBinary('node', 'The private Letta MCP fixture requires the Node executable', environment.env)
       const backendDirectory = environment.env.LETTA_LOCAL_BACKEND_DIR
-      if (!nodeExecutable || !backendDirectory)
-        throw new Error('The private Letta MCP fixture requires Node and a local backend directory.')
+      if (!backendDirectory)
+        throw new Error('The private Letta MCP fixture requires a local backend directory.')
       workerAttempted = true
       await withNativeWorker({ ...leapmuxServer, agentEnv: environment.env }, {
         dataDirPrefix: 'letta-mcp-worker',

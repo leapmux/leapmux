@@ -3,14 +3,14 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { REASONIX_CAPABILITY_ACTION, REASONIX_CAPABILITY_PREFIX, REASONIX_TOOL } from '../../../src/generated/contracts/reasonix-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 
 /** Match the unique current task inside Reasonix's native child context pack. */
 export function reasonixChildTaskMatcher(marker: string): MockModelMatcher {
   if (marker.trim() === '')
     throw new Error('The native Reasonix child matcher requires a nonempty task marker.')
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return { user: `^<subagent-context event="SubagentStart">[\\s\\S]*?</subagent-context>\\n[\\s\\S]*?\\n## Task\\n${escaped}(?=[:\\s]|$)` }
+  return { user: `^<subagent-context event="SubagentStart">[\\s\\S]*?</subagent-context>\\n[\\s\\S]*?\\n## Task\\n${escapeRegExp(marker)}(?=[:\\s]|$)` }
 }
 
 /** Resolve the exact native read-only task receipt without guessing its display title. */

@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { quotePosixShellArgument } from '../helpers/shellArguments'
+import { quotePosixShellArgument, uniqueMarker } from '../helpers/shellArguments'
 import { expectNoControlBanner, expectSettingsChip, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 /** Prove a native permission decision through a real removal in the private workspace. */
@@ -13,7 +13,7 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
   const agent = await currentNativeAgent(context)
   if (!agent.workingDir)
     throw new Error('The ZCode permission proof requires a private working directory.')
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const path = join(agent.workingDir, `zcode-permission-${suffix}.txt`)
   const content = 'Keep the private permission fixture.\n'
   const output = `ZCODEREMOVAL${suffix}42`

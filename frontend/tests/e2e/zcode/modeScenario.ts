@@ -5,6 +5,7 @@ import { expect } from '@playwright/test'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 /** Prove the selected native ZCode mode through its actual mutation and permission path. */
@@ -13,7 +14,7 @@ export async function exerciseZCodeMode(context: ManagedNativeScenarioContext, m
   if (!agent.workingDir)
     throw new Error('The native ZCode mode proof requires a working directory.')
   expect(agent.optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe(mode)
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const path = join(agent.workingDir, `zcode-mode-write-${suffix}.txt`)
   const callId = `zcode-${mode}-write-${suffix}`
   const content = `${mode} mutation\n`

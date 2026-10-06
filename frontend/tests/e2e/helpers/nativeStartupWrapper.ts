@@ -3,12 +3,14 @@ import type { Server, Socket } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { basename, isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { StringDecoder } from 'node:string_decoder'
 import { isObject } from '../../../src/lib/jsonPick'
-import { findBinary } from './binaryOnPath'
+import { requireBinary } from './binaryOnPath'
 import { cleanupOnFailure } from './cleanup'
+import { isFileNameComponent } from './runDirectory'
+import { hubSpawnEnv } from './server'
 
 /** The provider call site supplies its executable and runtime invocation. */
 export interface NativeStartupLaunch {
@@ -42,16 +44,20 @@ function passThroughWords(launch: NativeStartupLaunch): string[] {
   return words
 }
 
-/** Resolve a provider's runtime invocation through the private agent environment. */
+/**
+ * Resolve a provider's runtime invocation to the executable that a Worker started with the private agent
+ * environment finds. That Worker receives `hubSpawnEnv(environment)`, and the agent environment holds no PATH
+ * where it needs no change, so the lookup reads the same merged environment.
+ */
 export function resolveNativeStartupLaunch(
-  environment: NodeJS.ProcessEnv | undefined,
+  environment: Record<string, string | undefined> | undefined,
   launch: Omit<NativeStartupLaunch, 'executable'>,
 ): NativeStartupLaunch {
   if (!environment)
     throw new Error('The native startup scenario requires the private agent environment.')
-  const executable = findBinary(launch.binaryName, environment)
-  if (!executable)
-    throw new Error('The isolated provider executable is absent.')
+  if (!isFileNameComponent(launch.binaryName))
+    throw new Error(`The native startup executable name must be one file-name component, not ${JSON.stringify(launch.binaryName)}.`)
+  const executable = requireBinary(launch.binaryName, `The isolated ${launch.binaryName} executable is absent from the PATH that the Worker receives`, hubSpawnEnv(environment))
   return { ...launch, executable }
 }
 
@@ -137,7 +143,7 @@ export async function createNativeStartupWrapper(
   launch: NativeStartupLaunch,
   options: NativeStartupWrapperOptions = {},
 ): Promise<NativeStartupWrapper> {
-  if (!launch.binaryName || launch.binaryName === '.' || launch.binaryName === '..' || basename(launch.binaryName) !== launch.binaryName || launch.binaryName.includes('\\'))
+  if (!isFileNameComponent(launch.binaryName))
     throw new Error('The startup wrapper requires one executable filename.')
   if (!launch.executable)
     throw new Error('The startup wrapper requires the real native executable.')

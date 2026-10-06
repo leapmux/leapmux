@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
+import { withCleanupSync } from '../helpers/cleanup'
 
 export interface GrokWorkflowLaunch {
   runId: string
@@ -113,31 +114,13 @@ const manifestReader: GrokManifestReader = {
 /** The reader argument lets tests control read and close failures on the same descriptor. */
 export function readGrokWorkflowManifest(path: string, io: GrokManifestReader = manifestReader): unknown {
   const fd = io.open(path)
-  let value: unknown
-  let failed = false
-  let primary: unknown
-  try {
+  return withCleanupSync((): unknown => {
     const stat = io.stat(fd)
     if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > 512 * 1024)
       throw new Error('The native Grok manifest exceeds its file limit.')
     const text = io.read(fd)
     if (Buffer.byteLength(text) > 512 * 1024)
       throw new Error('The native Grok manifest exceeds its byte limit.')
-    value = JSON.parse(text)
-  }
-  catch (error) {
-    failed = true
-    primary = error
-  }
-  try {
-    io.close(fd)
-  }
-  catch (error) {
-    if (failed)
-      throw new AggregateError([primary, error], 'The native Grok manifest read and close failed.')
-    throw error
-  }
-  if (failed)
-    throw primary
-  return value
+    return JSON.parse(text)
+  }, () => io.close(fd))
 }

@@ -1,5 +1,4 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -7,7 +6,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { printfMarkerCommand, quotePosixShellArgument } from '../helpers/shellArguments'
+import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, toolCallRow } from '../helpers/ui'
 import { readGeminiToolOutput } from './toolResult'
 
@@ -26,7 +25,7 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
   const agent = await currentNativeAgent(context)
   const hostileFile = join(createNativeToolDirectory(agent.workingDir), 'native shell output.txt')
   const safeFile = join(mkdtempSync(join(agent.workingDir, 'native shell safe-')), 'native shell output.txt')
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const cases = [
     { name: 'double-quoted path refusal', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > "${hostileFile}"; cat "${hostileFile}"`, output: INJECTION_REFUSAL, status: 'completed', rejected: true },
     { name: 'printed stdout', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(safeFile)}; cat ${quotePosixShellArgument(safeFile)}`, output: `SHELL${marker}42`, status: 'completed', rejected: false },

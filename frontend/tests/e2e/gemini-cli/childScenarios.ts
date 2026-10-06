@@ -1,6 +1,5 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { RunningNativeChild } from '../helpers/unsupportedSubagent'
-import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -10,6 +9,7 @@ import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiCompleteTaskToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { nativeChildRuleId, openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { chooseSettingsOption, messageContents, waitForSettingsIdle } from '../helpers/ui'
 import { geminiNativeProject } from './nativeStore'
@@ -31,7 +31,7 @@ export async function openGeminiRunningChild(context: ManagedNativeScenarioConte
   await chooseSettingsOption(context.page, 'permissionMode-yolo')
   await waitForSettingsIdle(context.page)
   const parent = await currentNativeAgent(context)
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const prompt = context.modelScript.prompt(`GEMINICHILDPROMPT${marker}: read the actual child file and complete the native task.`)
   const progress = `GEMINICHILDPROGRESS${marker}`
   const thought = `GEMINICHILDTHOUGHT${marker}`

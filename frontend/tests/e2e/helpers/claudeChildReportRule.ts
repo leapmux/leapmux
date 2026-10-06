@@ -3,6 +3,7 @@ import type { ModelScript } from './modelScriptFixture'
 import { expect } from '@playwright/test'
 import { CLAUDE_TOOL_NAMES } from '../../../src/components/chat/providers/claude/toolNames'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 
 export interface ClaudeChildReportOptions {
   spawnCallId: string
@@ -54,10 +55,6 @@ export function claudeSpawnedChildId(requestBody: unknown, spawnCallId: string):
   return callCount === 1 ? childId : undefined
 }
 
-function escapePattern(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 function validateOptions(options: ClaudeChildReportOptions): void {
   if (!options)
     throw new Error('The Claude parent report rule requires text options.')
@@ -78,7 +75,7 @@ export function claudeChildReportRule(requestBody: unknown, options: ClaudeChild
     name: `claude-parent-report-${childId}`,
     when: {
       protocol: 'anthropic-messages',
-      user: `^Another Claude session sent a message:\\n<agent-message from="${escapePattern(childId)}">\\n\\[Subagent hand-back\\] [^\\n]*The report follows:\\n${escapePattern(indentedReport)}\\n</agent-message>(?:\\n|$)`,
+      user: `^Another Claude session sent a message:\\n<agent-message from="${escapeRegExp(childId)}">\\n\\[Subagent hand-back\\] [^\\n]*The report follows:\\n${escapeRegExp(indentedReport)}\\n</agent-message>(?:\\n|$)`,
     },
     respond: { text: options.reply },
     once: true,
@@ -92,17 +89,17 @@ export function claudeChildCompletionRule(requestBody: unknown, options: ClaudeC
   if (!childId)
     throw new Error('The Claude completion rule has no matching actual Agent spawn result.')
   const betweenFields = '(?:(?!<task-id>|<tool-use-id>|<status>|<result>|</?task-notification>)[\\s\\S])*'
-  const directReport = escapePattern(options.report)
-  const deliveredReport = `This agent's report was delivered to you as a message from "${escapePattern(childId)}" \\(its SubagentHandback call\\)\\. Read it there; it is not repeated here\\.\\n`
+  const directReport = escapeRegExp(options.report)
+  const deliveredReport = `This agent's report was delivered to you as a message from "${escapeRegExp(childId)}" \\(its SubagentHandback call\\)\\. Read it there; it is not repeated here\\.\\n`
   return {
     name: `claude-parent-completion-${childId}`,
     when: {
       protocol: 'anthropic-messages',
       user: '^<system-reminder>\\n\\[SYSTEM NOTIFICATION - NOT USER INPUT\\]\\n'
         + '(?:(?!<task-notification>)[\\s\\S])*\\n<task-notification>\\n'
-        + `<task-id>${escapePattern(childId)}</task-id>\\n<tool-use-id>${escapePattern(options.spawnCallId)}</tool-use-id>\\n`
+        + `<task-id>${escapeRegExp(childId)}</task-id>\\n<tool-use-id>${escapeRegExp(options.spawnCallId)}</tool-use-id>\\n`
         + '<output-file>[^\\n]*</output-file>\\n'
-        + `<status>${escapePattern(options.completionStatus)}</status>\\n${betweenFields}`
+        + `<status>${escapeRegExp(options.completionStatus)}</status>\\n${betweenFields}`
         + `<result>(?:${directReport}|${deliveredReport})</result>\\n`
         + `${betweenFields}</task-notification>\\n</system-reminder>$`,
     },

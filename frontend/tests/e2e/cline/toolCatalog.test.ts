@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseClineCompleteCatalog, queryClineCompleteCatalog } from './toolCatalog'
 
-const runtime = vi.hoisted(() => ({ lookup: vi.fn(), environment: vi.fn() }))
-vi.mock('../helpers/binaryOnPath', () => ({ lookupBinary: runtime.lookup }))
+const runtime = vi.hoisted(() => ({ require: vi.fn(), environment: vi.fn() }))
+vi.mock('../helpers/binaryOnPath', () => ({ requireBinary: runtime.require }))
 vi.mock('../helpers/server', () => ({ hubSpawnEnv: runtime.environment }))
 
 let directory = ''
@@ -17,7 +17,7 @@ beforeEach(() => {
   directory = mkdtempSync(join(scratchRoot, 'cline-catalog-unit-'))
   for (const part of ['home', 'profile', 'data', 'working'])
     mkdirSync(join(directory, part))
-  runtime.lookup.mockReturnValue({ path: '/actual/installed/cline', skipReason: null })
+  runtime.require.mockReturnValue('/actual/installed/cline')
   runtime.environment.mockImplementation((environment: NodeJS.ProcessEnv) => ({ ...environment, ONLY_PRIVATE: 'yes' }))
 })
 afterEach(() => {
@@ -112,6 +112,8 @@ describe('queryClineCompleteCatalog', () => {
     const result = await queryClineCompleteCatalog(query, execute)
     expect(result.find(tool => tool.id === 'run_commands')?.headlessToolNames).toEqual(['run_commands'])
     expect(execute).toHaveBeenCalledExactlyOnceWith('/actual/installed/cline', ['config', 'tools', '--json'], { cwd: query.workingDir, env: { ...query.environment, ONLY_PRIVATE: 'yes' }, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 60_000 })
+    // The lookup reads the environment of the command, so it finds the executable that the command starts.
+    expect(runtime.require).toHaveBeenCalledExactlyOnceWith('cline', expect.any(String), { ...query.environment, ONLY_PRIVATE: 'yes' })
   })
 
   it('restricts the command to the remaining whole-test time', async () => {
@@ -163,10 +165,13 @@ describe('queryClineCompleteCatalog', () => {
     await expect(queryClineCompleteCatalog({ ...privateQuery(), onReceipt }, execute)).rejects.toBe(cause)
   })
 
-  it('rejects an unavailable installed binary before a process starts', async () => {
-    runtime.lookup.mockReturnValue({ path: null, skipReason: 'Missing native CLI.' })
+  it('rejects an unavailable installed binary with the reason of the lookup before a process starts', async () => {
+    const missing = new Error('The native Cline catalog requires the installed CLI. The cline on PATH is a mise shim.')
+    runtime.require.mockImplementation(() => {
+      throw missing
+    })
     const execute = vi.fn<ClineCatalogCommand>()
-    await expect(queryClineCompleteCatalog(privateQuery(), execute)).rejects.toThrow('installed executable')
+    await expect(queryClineCompleteCatalog(privateQuery(), execute)).rejects.toBe(missing)
     expect(execute).not.toHaveBeenCalled()
   })
 })

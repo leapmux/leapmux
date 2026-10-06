@@ -1,11 +1,11 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { RunningNativeChild } from '../helpers/unsupportedSubagent'
-import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 
 export interface CursorRunningChild extends RunningNativeChild {
   prompt: string
@@ -22,7 +22,7 @@ export async function openCursorRunningChild(
   const parent = await currentNativeAgent(context)
   if (!parent.workingDir)
     throw new Error('The actual Cursor child requires a private working directory.')
-  const suffix = randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const gate = `cursor-native-child-${suffix}`
   const prompt = `NATIVECURSORCHILD${suffix}: read the supplied file and report once.`
   const marker = `CURSORCHILDREAD${suffix}`

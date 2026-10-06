@@ -1,15 +1,15 @@
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { geminiTest } from '../gemini-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { nativeContext } from './scenarios'
 
 geminiTest('changes the native model and restores the selected model after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const before = await currentNativeAgent(context)
-  const marker = `GEMINIMODELCONTEXT${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('GEMINIMODELCONTEXT')
   await sendNativeAnswer(context, `Preserve ${marker} before the model change.`, `The previous model preserved ${marker}.`)
   await exerciseNativeOption(context, {
     groupId: 'model',

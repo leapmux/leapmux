@@ -1,15 +1,15 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { nativeModelContextText } from '../helpers/nativeScenario'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
 /** The actual ACP path submits the slash command as model text and retains prior context. */
 export async function proveNoNativeManualCompaction(page: Page, modelScript: ModelScript): Promise<void> {
   const start = (await modelScript.status()).stepCount
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const firstPrompt = `Create context before the compact command. ${marker}`
   const firstAnswer = `The earlier context is present. ANSWER${marker}`
   await modelScript.queue({ text: firstAnswer }, { text: 'The slash command reached the model as text.' })

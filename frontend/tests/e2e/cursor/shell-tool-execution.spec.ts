@@ -7,13 +7,13 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { quotePosixShellArgument } from '../helpers/shellArguments'
+import { quotePosixShellArgument, uniqueMarker } from '../helpers/shellArguments'
 import { messageBubbles } from '../helpers/ui'
 import { cursorNativeToolOutput, runCursorNativeOperations } from './nativeExecutionScenario'
 
 cursorTest('executes actual native shell output and preserves a nonzero exit status', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const success = `CURSORSHELL${suffix}42`
   const failure = `CURSORSTDERR${suffix}77`
   const agent = await currentNativeAgent(context)

@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
@@ -12,6 +11,7 @@ import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { openWorkspace, sendMessage } from '../helpers/ui'
 import { diracScriptReceipt } from './codeExecution'
 import { nativeContext } from './scenarios'
@@ -23,7 +23,7 @@ diracTest('executes native scripts with computed, failed, and empty output after
   const catalog = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
   nativeCodeExecutionSchema(catalog, 'execute_command', { script: 'string', language: 'string' })
   const agent = await currentNativeAgent(context)
-  const marker = `DIRACSCRIPT${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('DIRACSCRIPT')
   const scripts = [
     { label: 'output', source: `console.log(${JSON.stringify(marker)} + (40 + 2));`, expected: `${marker}42\n`, exitCode: 0 },
     { label: 'failure', source: `console.error(${JSON.stringify(marker)} + (70 + 7)); process.exit(7);`, expected: `${marker}77\n`, exitCode: 7 },

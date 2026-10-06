@@ -8,6 +8,7 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 
 /** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
 export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep'>): Promise<ManagedNativeScenarioContext> {
@@ -26,8 +27,8 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
 
 /** Build the actual native child script without browser operations. */
 export function runningChildOptions(context: NativeChildScriptContext, options: { allowExistingRows?: boolean, childTool?: MockModelToolCall } = {}) {
-  const report = `NATIVECHILDCOMPLETE${randomUUID().replaceAll('-', '')}`
-  const task = `NATIVECHILDTASK${randomUUID().replaceAll('-', '')} report exactly ${report}.`
+  const report = uniqueMarker('NATIVECHILDCOMPLETE')
+  const task = `${uniqueMarker('NATIVECHILDTASK')} report exactly ${report}.`
   const description = `Native held child ${randomUUID().slice(0, 8)}`
   const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.prompt(task) })
   return {

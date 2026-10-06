@@ -119,6 +119,22 @@ function reportServerCloseFailure(failure: Error) {
 }
 
 describe('resolveNativeStartupLaunch', () => {
+  // `hubSpawnEnv` merges the shared agent environment that global setup records. A unit run records none.
+  beforeEach(() => {
+    vi.stubEnv('E2E_STATE_PATH', '')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  /** Write a file that the lookup can find. The lookup must never run it. */
+  function nativeExecutable(parent: string, name: string): string {
+    mkdirSync(parent, { recursive: true })
+    const executable = join(parent, name)
+    writeFileSync(executable, 'This fixture must never run.\n', { mode: 0o755 })
+    return executable
+  }
+
   it('finds the isolated executable and retains native arguments without running it', () => {
     const executable = join(directory, 'private-native')
     writeFileSync(executable, 'This fixture must never run.\n', { mode: 0o755 })
@@ -127,10 +143,33 @@ describe('resolveNativeStartupLaunch', () => {
     expect(launch).toEqual({ binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], passThroughWhen: ['--probe'], lazy: true })
   })
 
-  it('rejects absent environments and executables without reading the host path', () => {
+  // The Worker starts with `hubSpawnEnv(agentEnv)`, and an agent environment with no PATH inherits the process PATH.
+  it('finds the executable through the process PATH when the agent environment holds no PATH', () => {
+    const executable = nativeExecutable(join(directory, 'inherited'), 'inherited-native')
+    vi.stubEnv('PATH', join(directory, 'inherited'))
+    expect(resolveNativeStartupLaunch({ HOME: directory }, { binaryName: 'inherited-native' }).executable).toBe(executable)
+  })
+
+  it('prefers the PATH of the agent environment to the process PATH, as the Worker does', () => {
+    nativeExecutable(join(directory, 'process'), 'shared-native')
+    const agentExecutable = nativeExecutable(join(directory, 'agent'), 'shared-native')
+    vi.stubEnv('PATH', join(directory, 'process'))
+    expect(resolveNativeStartupLaunch({ PATH: join(directory, 'agent') }, { binaryName: 'shared-native' }).executable).toBe(agentExecutable)
+  })
+
+  it('rejects an absent agent environment', () => {
     expect(() => resolveNativeStartupLaunch(undefined, { binaryName: 'native-fixture' })).toThrow('private agent environment')
-    expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName: 'absent-native' })).toThrow('executable is absent')
-    expect(() => resolveNativeStartupLaunch({}, { binaryName: 'absent-native' })).toThrow('executable is absent')
+  })
+
+  it('rejects an executable that neither PATH holds, and states its name', () => {
+    vi.stubEnv('PATH', directory)
+    const reason = 'The isolated absent-native executable is absent from the PATH that the Worker receives'
+    expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName: 'absent-native' })).toThrow(reason)
+    expect(() => resolveNativeStartupLaunch({}, { binaryName: 'absent-native' })).toThrow(reason)
+  })
+
+  it.each(['', '.', '..', 'bin/native', 'bin\\native', 'native\0'])('rejects the executable name %j, which is not one file-name component', (binaryName) => {
+    expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName })).toThrow('one file-name component')
   })
 })
 

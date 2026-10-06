@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { PrivateMcpLettaWorkspace } from './fixtures'
 import { realpathSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { lettaMcpCatalogArguments, lettaMcpCatalogToolCall } from '../helpers/providerToolCalls'
@@ -15,10 +15,7 @@ export async function exerciseLettaMcpCatalog(context: ManagedNativeScenarioCont
   const start = (await context.modelScript.status()).stepCount
   const callId = `letta-native-${server}-catalog`
   const answer = `The ${server} native catalog reached the agent.`
-  const resolved = findBinary('letta', workspace.server.agentEnv)
-  if (!resolved)
-    throw new Error('The private Letta MCP catalog requires its actual resolved CLI executable.')
-  const executable = realpathSync(resolved)
+  const executable = realpathSync(requireBinary('letta', 'The private Letta MCP catalog requires its actual resolved CLI executable', workspace.server.agentEnv))
   const capture = writeLettaMcpCliCapture(workspace.runDirectory)
   const toolCall = lettaMcpCatalogToolCall(callId, {
     agentId,

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
@@ -13,6 +12,7 @@ import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { zcodeCreateWorkflowToolCall, zcodeGetWorkflowRunToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
@@ -21,7 +21,7 @@ import { zcodeStoredWorkflowCompletion, zcodeWorkflowCompletion, zcodeWorkflowLa
 zcodeTest('runs native workflow scripts and retains computed output and errors after reload', async ({ authenticatedZCodeWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }
   const agent = await currentNativeAgent(context)
-  const marker = `NATIVEZCODE${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('NATIVEZCODE')
   await modelScript.fallback({ text: 'The native workflow notification arrived.' })
   for (const failed of [false, true]) {
     const label = failed ? 'error' : 'output'

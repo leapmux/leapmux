@@ -1,15 +1,15 @@
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from './nativeConversation'
 import { currentNativeAgent, nativeModelContextText, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { bashToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
 
 /** Prove that the launched protocol carries /plan as text and offers no Plan setting. */
 export async function exerciseMissingNativePlanMode(context: ManagedNativeScenarioContext, options: { reload?: boolean } = {}): Promise<void> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   await sendNativeAnswer(context, `Keep NOPLANCONTEXT${marker} for the next command.`, 'The actual native mode is ready.')
   const callId = `no-plan-${marker}`
   const output = `NOPLAN${marker}42`

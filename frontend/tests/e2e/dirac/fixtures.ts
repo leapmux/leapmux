@@ -7,7 +7,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { createMockAgentEnvironment, MODEL_KEY } from '../helpers/mockAgentEnvironment'
@@ -87,10 +87,8 @@ export const mcpDiracTest = diracTest.extend<{ configuredMcpDiracWorkspace: Conf
     let workerStopped = false
     await withCleanup(async () => {
       const environment = await createMockAgentEnvironment(runDirectory, leapmuxServer.mockModelUrl)
-      const executable = findBinary('dirac', environment.env)
-      const nodeExecutable = findBinary('node', environment.env)
-      if (!executable || !nodeExecutable)
-        throw new Error('The private Dirac MCP fixture requires its actual CLI and Node executable.')
+      const executable = requireBinary('dirac', 'The private Dirac MCP fixture requires its actual CLI', environment.env)
+      const nodeExecutable = requireBinary('node', 'The private Dirac MCP fixture requires the Node executable', environment.env)
       const formReceipt = join(runDirectory, 'configured-form-receipt.json')
       const script = writeMcpFormServer(runDirectory, 'configured-form.mjs', { receiptLog: formReceipt })
       const configuredServers = [{ name: 'form_probe', command: nodeExecutable, args: [script], env: [] }]

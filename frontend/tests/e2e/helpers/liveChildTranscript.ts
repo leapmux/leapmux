@@ -2,7 +2,6 @@ import type { Page } from '@playwright/test'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelMatcher, MockModelRule, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -10,6 +9,7 @@ import { finishCleanup, withCleanup } from './cleanup'
 import { expandNativeResultView } from './nativeResultView'
 import { selectedAgentTabId } from './nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
 import { assistantBubbles, messageContents, sendMessage, tabById, toolCallRow, toolRows, userBubbles } from './ui'
 
@@ -80,7 +80,7 @@ export async function exerciseLiveChildTranscript(page: Page, modelScript: Model
   const gate = `live-child-${spec.provider}`
   const parentGate = spec.holdParentAnswer ? `live-parent-${spec.provider}` : undefined
   const read: MarkerRead | undefined = spec.toolProof
-    ? { filePath: join(spec.toolProof.workingDir, `live-child-${spec.provider}.txt`), marker: `CHILDREAD${randomUUID().replaceAll('-', '')}` }
+    ? { filePath: join(spec.toolProof.workingDir, `live-child-${spec.provider}.txt`), marker: uniqueMarker('CHILDREAD') }
     : undefined
   // The parent is the agent on screen before the child spawns.
   const parentTabID = read ? await selectedAgentTabId(page) : ''

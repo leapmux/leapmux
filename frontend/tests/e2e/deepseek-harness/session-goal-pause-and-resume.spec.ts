@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { waitForAgentIdle } from '../helpers/ui'
 import { captureDeepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
@@ -10,7 +10,7 @@ import { nativeContext } from './scenarios'
 deepseekHarnessTest('pauses the native goal driver and resumes its own second model round after reload', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
   const owner = await captureDeepseekHarnessGoalOwner(context)
-  const marker = `DEEPSEEKGOAL${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('DEEPSEEKGOAL')
   const firstGate = 'deepseek-goal-first'
   const secondGate = 'deepseek-goal-second'
   await withDeepseekHarnessGoalCleanup(context, owner, [firstGate, secondGate], async () => {

@@ -6,6 +6,7 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { nativeChildRuleId, openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { LETTA_TITLE_RULE } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
@@ -22,7 +23,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 
 /** Open this provider's actual child task and hold its native final answer. */
 export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}) {
-  const task = `NATIVECHILDTASK${randomUUID().replaceAll('-', '')} report one word.`
+  const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
   const description = `Native held child ${randomUUID()}`
   const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.modelScript.prompt(task) })
   const gate = `native-child-${randomUUID()}`

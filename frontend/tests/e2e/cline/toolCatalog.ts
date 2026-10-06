@@ -4,7 +4,7 @@ import { promisify } from 'node:util'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { lookupBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
@@ -104,9 +104,7 @@ export async function queryClineCompleteCatalog(query: ClineCatalogQuery, execut
   }
   assertPrivateNativePath(query.workingDir, query.runDir)
   const env = hubSpawnEnv(privateEnv)
-  const executable = lookupBinary('cline', 'The native Cline catalog requires the installed CLI.', env).path
-  if (!executable)
-    throw new Error('The native Cline catalog cannot resolve its installed executable.')
+  const executable = requireBinary('cline', 'The native Cline catalog requires the installed CLI', env)
   const deadline = query.deadline
   const remaining = deadline === undefined ? CATALOG_COMMAND_LIMIT_MS : Math.floor(deadline - Date.now())
   if (!Number.isFinite(remaining) || remaining <= 0)

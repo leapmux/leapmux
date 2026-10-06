@@ -1,14 +1,14 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /** Supply real conversation context before the native summarizer runs. */
 export async function exerciseCommandCodeCompaction(context: ManagedNativeScenarioContext): Promise<void> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const old = `COMMANDCODEOLD${marker}`
   for (let index = 0; index < 6; index++) {
     // The native compactor keeps the last 30000 tokens (`keepRecentTokens`) and summarizes the earlier turns.

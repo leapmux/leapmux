@@ -1,7 +1,6 @@
 import type { Locator } from '@playwright/test'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampToolResultReader } from '../helpers/ampToolResult'
@@ -9,6 +8,7 @@ import { cleanupOnFailure } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { requireRegistryRow } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
@@ -39,7 +39,7 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
   ruleName?: string
   callId?: string
 } = {}): Promise<OpaqueAmpTask> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const gate = `amp-opaque-${marker}`
   const rule = options.ruleName ?? `amp-opaque-child-${marker}`
   const progress = options.report ? options.report.slice(0, 10) : `AMPCHILDPROGRESS${marker}`

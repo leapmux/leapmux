@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, sy
 import { delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { agentSearchPath, agentSearchPathEnv, findBinary, findBinaryOnPath, lookupBinary, missingBinaryReason, unusableBinaryReason, versionOutput } from './binaryOnPath'
+import { agentSearchPath, agentSearchPathEnv, findBinary, findBinaryOnPath, lookupBinary, missingBinaryReason, requireBinary, unusableBinaryReason, versionOutput } from './binaryOnPath'
 
 let directory: string
 
@@ -299,6 +299,33 @@ describe('lookupBinary', () => {
     const lookup = lookupBinary('agent', 'needs agent', { PATH: join(directory, 'shims') })
     expect(lookup.path).toBeNull()
     expect(lookup.skipReason).toBe(`needs agent. ${unusableBinaryReason('agent', shim)}`)
+  })
+
+  // A reason that ends with its own period must not gain a second one.
+  it.skipIf(process.platform === 'win32')('adds no second period after a reason that ends a sentence', () => {
+    const shim = miseShim('agent', join(directory, 'shims'))
+    for (const reason of ['Needs agent.', 'Needs agent!', 'Needs agent?']) {
+      const lookup = lookupBinary('agent', reason, { PATH: join(directory, 'shims') })
+      expect(lookup.skipReason).toBe(`${reason} ${unusableBinaryReason('agent', shim)}`)
+    }
+  })
+})
+
+describe('requireBinary', () => {
+  it('returns the file that the run starts', () => {
+    const agent = file('agent', 0o755)
+    expect(requireBinary('agent', 'needs agent', { PATH: directory })).toBe(agent)
+  })
+
+  it('throws the reason when the path holds no such file', () => {
+    expect(() => requireBinary('agent', 'needs agent', { PATH: directory })).toThrow(new Error('needs agent'))
+  })
+
+  // The four native catalog readers once threw their own reason and lost this cause.
+  it.skipIf(process.platform === 'win32')('throws the mise-shim cause for a shim that mise does not list', () => {
+    const shim = miseShim('agent', join(directory, 'shims'))
+    expect(() => requireBinary('agent', 'needs agent', { PATH: join(directory, 'shims') }))
+      .toThrow(new Error(`needs agent. ${unusableBinaryReason('agent', shim)}`))
   })
 })
 

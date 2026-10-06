@@ -9,6 +9,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { findBinary } from '../helpers/binaryOnPath'
+import { withCleanupSync } from '../helpers/cleanup'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { resolveNativeProcessOwnership } from '../helpers/nativeProcessOwnership'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -109,28 +110,10 @@ const nativeHeaderIO: KimiNativeHeaderIO = {
 /** Read only the first native file line and close the same descriptor, including descriptor zero. */
 export function readKimiNativeHeader(executable: string, io: KimiNativeHeaderIO = nativeHeaderIO): string {
   const descriptor = io.open(executable)
-  const header = Buffer.alloc(512)
-  let readFailed = false
-  let readCause: unknown
-  let firstLine = ''
-  try {
-    firstLine = header.subarray(0, io.read(descriptor, header)).toString('utf8').split('\n')[0]!.trim()
-  }
-  catch (cause) {
-    readFailed = true
-    readCause = cause
-  }
-  try {
-    io.close(descriptor)
-  }
-  catch (closeCause) {
-    if (readFailed)
-      throw new AggregateError([readCause, closeCause], 'The native Kimi header read and descriptor close failed.')
-    throw closeCause
-  }
-  if (readFailed)
-    throw readCause
-  return firstLine
+  return withCleanupSync(() => {
+    const header = Buffer.alloc(512)
+    return header.subarray(0, io.read(descriptor, header)).toString('utf8').split('\n')[0]!.trim()
+  }, () => io.close(descriptor))
 }
 
 /** Pass the real native process bytes through unchanged and capture its actual private ready line. */

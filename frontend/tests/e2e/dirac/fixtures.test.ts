@@ -6,7 +6,7 @@ import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { openAgentViaAPI } from '../helpers/api'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { withNativeWorker } from '../helpers/nativeWorker'
@@ -33,7 +33,7 @@ vi.mock('../helpers/nativeWorker', () => ({ withNativeWorker: vi.fn() }))
 vi.mock('../helpers/runDirectory', () => ({ createTestDirectory: vi.fn() }))
 vi.mock('../helpers/binaryOnPath', async original => ({
   ...await original<typeof import('../helpers/binaryOnPath')>(),
-  findBinary: vi.fn(),
+  requireBinary: vi.fn(),
 }))
 vi.mock('../helpers/api', async original => ({
   ...await original<typeof import('../helpers/api')>(),
@@ -65,7 +65,7 @@ beforeEach(() => {
   vi.mocked(createTestDirectory).mockReset().mockReturnValue(directory)
   vi.mocked(createMockAgentEnvironment).mockReset()
   vi.mocked(withNativeWorker).mockReset()
-  vi.mocked(findBinary).mockReset().mockReturnValue(process.execPath)
+  vi.mocked(requireBinary).mockReset().mockReturnValue(process.execPath)
   vi.mocked(openAgentViaAPI).mockReset().mockResolvedValue('controlled-dirac-agent')
   vi.mocked(currentNativeAgent).mockReset()
   vi.mocked(readDiracMcpSessionObservation).mockReset()

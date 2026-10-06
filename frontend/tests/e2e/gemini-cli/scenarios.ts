@@ -11,6 +11,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /** Use the native Gemini model protocol with the shared browser scenarios. */
@@ -42,7 +43,7 @@ export async function exerciseGeminiAutoEditWrite(context: ManagedNativeScenario
 
 /** Prove the installed ACP command catalog does not compact this conversation. */
 export async function exerciseNativeCompactCommandLimit(context: ManagedNativeScenarioContext): Promise<void> {
-  const marker = `GEMINICOMPACT${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('GEMINICOMPACT')
   await sendNativeAnswer(context, `Preserve ${marker} in the native conversation.`, `The native context contains ${marker}.`)
   const start = (await context.modelScript.status()).stepCount
   await context.modelScript.queue({ text: 'The native compact command reached the model as text.' })

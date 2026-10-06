@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -10,6 +9,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
@@ -17,7 +17,7 @@ import { nativeContext } from './scenarios'
 fastAgentTest('keeps the actual child read out of live rows and restores it from the final archive', async ({ authenticatedFastAgentWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedFastAgentWorkspace.workspaceId })
   const parent = await currentNativeAgent(context)
-  const suffix = randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const task = `FASTLIVEREADTASK${suffix} read the supplied file.`
   const marker = `FASTLIVEREADVALUE${suffix}`
   const path = join(parent.workingDir, 'native-child-read.txt')

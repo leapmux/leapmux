@@ -20,7 +20,7 @@ const calls = vi.hoisted(() => ({ processes: vi.fn(), executable: vi.fn(), curre
 vi.mock('../helpers/processTree', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/processTree')>(), listProcesses: calls.processes }))
 vi.mock('../helpers/processExecutable', () => ({ processExecutable: calls.executable }))
 vi.mock('../helpers/nativeScenario', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/nativeScenario')>(), currentNativeAgent: calls.current, nativeAgentById: calls.nativeAgent }))
-vi.mock('../helpers/binaryOnPath', () => ({ lookupBinary: () => ({ path: calls.state.ampPath, skipReason: null }) }))
+vi.mock('../helpers/binaryOnPath', () => ({ requireBinary: () => calls.state.ampPath }))
 vi.mock('../helpers/server', () => ({ getGlobalState: () => calls.state, hubSpawnEnv: (environment: NodeJS.ProcessEnv) => ({ ...environment }) }))
 vi.mock('../helpers/ui', () => ({ sendMessage: calls.send, waitForAgentIdle: calls.idle }))
 vi.mock('../helpers/nativeControlWatch', () => ({ watchNativeControls: calls.watch }))

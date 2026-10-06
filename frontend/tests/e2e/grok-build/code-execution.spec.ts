@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'
@@ -11,6 +10,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { grokWorkflowCompletion, grokWorkflowLaunch, grokWorkflowManifestPath, grokWorkflowName, grokWorkflowReportLabel, readGrokWorkflowManifest } from './codeExecution'
@@ -24,7 +24,7 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
   const home = leapmuxServer.agentEnv.GROK_HOME
   if (!home)
     throw new Error('The native Grok script requires its private profile.')
-  const marker = `NATIVEGROK${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('NATIVEGROK')
   await modelScript.fallback({ text: 'The native workflow completion arrived.' })
   for (const failed of [false, true]) {
     const label = failed ? 'error' : 'output'

@@ -82,7 +82,24 @@ export function lookupBinary(binary: string, reason: string, env: NodeJS.Process
   if (path === null)
     return { path: null, skipReason: reason }
   const unusable = unusableBinaryReason(binary, path)
-  return unusable === null ? { path, skipReason: null } : { path: null, skipReason: `${reason}. ${unusable}` }
+  return unusable === null ? { path, skipReason: null } : { path: null, skipReason: `${asSentence(reason)} ${unusable}` }
+}
+
+/**
+ * The file that the E2E run starts for a CLI. It throws the skip reason of
+ * {@link lookupBinary} when the run cannot start one, so the failure keeps the
+ * mise-shim cause.
+ */
+export function requireBinary(binary: string, reason: string, env: NodeJS.ProcessEnv = process.env): string {
+  const lookup = lookupBinary(binary, reason, env)
+  if (lookup.path === null)
+    throw new Error(lookup.skipReason)
+  return lookup.path
+}
+
+/** End `text` with a period unless it already ends with a sentence mark. */
+function asSentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`
 }
 
 /**

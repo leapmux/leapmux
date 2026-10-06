@@ -1,4 +1,5 @@
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
@@ -13,10 +14,9 @@ mimoTest.describe('MiMo Code basic chat', () => {
     await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
-    const firstPromptPattern = ARITHMETIC_PROMPT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     await modelScript.rule({
       name: 'the second turn carries the first exchange',
-      when: { body: [firstPromptPattern, ARITHMETIC_ANSWER_TEXT, '1111 \\+ 2222'] },
+      when: { body: [escapeRegExp(ARITHMETIC_PROMPT), ARITHMETIC_ANSWER_TEXT, '1111 \\+ 2222'] },
       respond: { text: SECOND_ARITHMETIC_ANSWER_TEXT },
       once: true,
     })

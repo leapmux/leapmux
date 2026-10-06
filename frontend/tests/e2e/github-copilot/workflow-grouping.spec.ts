@@ -4,13 +4,14 @@ import { copilotTest } from '../copilot-fixtures'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { applyPermissionPreset } from '../helpers/ui'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
 import { readCopilotChildTaskId } from './childIdentity'
 
 copilotTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCopilotWorkspace.workspaceId, provider: AgentProvider.GITHUB_COPILOT }
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   await exerciseUngroupedNativeChildren(context, {
     openChild: async (index) => {
       const gate = `group-child-${index}-${suffix}`

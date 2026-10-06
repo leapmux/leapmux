@@ -1,5 +1,4 @@
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
 import { AgentActivityState, AgentInputState, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -7,6 +6,7 @@ import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText, nativeTextStep } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { expectSteeredReply, queuedInputRow, steerQueuedInput } from './steer'
 import { createToolOutputControl } from './toolOutputControl'
 import { assistantBubbles, messageContents, sendMessage, userBubbles, waitForAgentIdle } from './ui'
@@ -57,7 +57,7 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
 export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeScenarioContext): Promise<void> {
   const agent = await currentNativeAgent(context)
   expect(agent.supportsSteering).toBe(false)
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const gate = `native-queued-turn-${marker}`
   const nextPrompt = `NEXTQUEUEDPROMPT${marker}`
   const firstAnswer = `FIRSTQUEUEDANSWER${marker}`

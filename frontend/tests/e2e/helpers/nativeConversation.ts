@@ -1,9 +1,9 @@
 import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import type { MessageEntry } from './ui'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
+import { uniqueMarker } from './shellArguments'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 
 /** How `sendNativeAnswer` enters the prompt and what the model does before it answers. */
@@ -36,7 +36,7 @@ export async function sendNativeAnswer(
 
 /** Verify native prompt delivery, completed output, and saved browser transcript rows. */
 export async function exerciseBasicChat(context: NativeScenarioContext): Promise<void> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const prompt = `Reply once for BASICCHAT${marker}.`
   const answer = `BASICANSWER${marker}`
   await sendNativeAnswer(context, prompt, answer)
@@ -50,7 +50,7 @@ export async function exerciseBasicChat(context: NativeScenarioContext): Promise
 
 /** Prove that a later native request can use the first prompt and answer. */
 export async function exerciseConversationContext(context: NativeScenarioContext): Promise<void> {
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const firstPrompt = `Keep CONTEXTPROMPT${marker} for the conversation.`
   const firstAnswer = `CONTEXTANSWER${marker}`
   await sendNativeAnswer(context, firstPrompt, firstAnswer)

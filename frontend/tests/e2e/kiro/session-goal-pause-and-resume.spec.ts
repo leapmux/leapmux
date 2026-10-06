@@ -1,8 +1,7 @@
 import type { MockModelScenarioStatus } from '../helpers/mockModelScript'
 import { Buffer } from 'node:buffer'
-import { randomUUID } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { toJson } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
 import { AgentGoalStatus, AgentProvider, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -14,7 +13,9 @@ import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
+import { isFileNameComponent } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection, expandGoalsAndTodosSection, expectGoalStatus, goalAction, openChildTabFromRow, openGoalMenu } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
@@ -42,7 +43,7 @@ kiroTest.describe('Kiro session goal', () => {
   // Require the native cancelled executor before releasing and rejecting its old model answer.
   kiroTest('pauses, resumes and clears a running goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
     const testStartedAt = Date.now()
-    const marker = randomUUID().replaceAll('-', '')
+    const marker = uniqueMarker()
     const setGate = `kiro-goal-set-${marker}`
     const resumeGate = `kiro-goal-resume-${marker}`
     const setRule = `kiro-goal-set-rule-${marker}`
@@ -130,7 +131,7 @@ kiroTest.describe('Kiro session goal', () => {
         // The feature reader instead requires complete records and the exact child-parent relation.
         evidence.nativeFiles = [parent.agentSessionId, sessionId].map((id) => {
           try {
-            if (basename(id) !== id || id === '.' || id === '..' || id.includes('\\'))
+            if (!isFileNameComponent(id))
               throw new Error('The Kiro diagnostic session must be one filename component.')
             assertPrivateNativePath(home, identity.runDir)
             const sessions = join(home, '.kiro', 'sessions')

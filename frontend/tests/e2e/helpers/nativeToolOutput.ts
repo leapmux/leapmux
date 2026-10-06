@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
+import { uniqueMarker } from './shellArguments'
 
 export interface NativeToolOutput {
   source: string
@@ -18,7 +19,7 @@ export interface ComputedNativeToolOutput extends NativeToolOutput {
 
 /** Compute output in a native JavaScript process. Keep the complete markers outside its source. */
 export function computedNativeToolOutput(options: { prefix?: string, lineCount?: number, padding?: number } = {}): ComputedNativeToolOutput {
-  const prefix = options.prefix ?? `NATIVETOOLOUTPUT${randomUUID().replaceAll('-', '')}`
+  const prefix = options.prefix ?? uniqueMarker('NATIVETOOLOUTPUT')
   const lineCount = options.lineCount ?? 3000
   const padding = options.padding ?? 0
   if (!/^[A-Z][A-Z0-9]{0,79}$/i.test(prefix))

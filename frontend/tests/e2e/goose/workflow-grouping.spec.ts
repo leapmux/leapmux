@@ -4,13 +4,14 @@ import { gooseTest } from '../goose-fixtures'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { applyPermissionPreset } from '../helpers/ui'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
 import { readGooseChildTaskId } from './childIdentity'
 
 gooseTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId, provider: AgentProvider.GOOSE }
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   await exerciseUngroupedNativeChildren(context, {
     openChild: async (index) => {
       const gate = `group-child-${index}-${suffix}`

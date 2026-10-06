@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer'
-import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, statSync, watch, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
+import { uniqueMarker } from './shellArguments'
 
 const FILE_SIGNAL_DEADLINE_MS = 30_000
 const NATIVE_OUTPUT_DEADLINE_MS = 600_000
@@ -110,8 +110,8 @@ export function createToolOutputControl(workingDir: string, markers?: { first: s
   const releaseStart = join(directory, 'release-start')
   const releaseFirst = join(directory, 'release-first')
   const releaseFinal = join(directory, 'release-final')
-  const firstMarker = markers?.first ?? `NATIVEFIRST${randomUUID().replaceAll('-', '')}`
-  const secondMarker = markers?.second ?? `NATIVESECOND${randomUUID().replaceAll('-', '')}`
+  const firstMarker = markers?.first ?? uniqueMarker('NATIVEFIRST')
+  const secondMarker = markers?.second ?? uniqueMarker('NATIVESECOND')
   const firstPadding = 'x'.repeat(SEGMENT_PADDING_CHARS)
   const secondPadding = 'y'.repeat(SEGMENT_PADDING_CHARS)
   const source = `

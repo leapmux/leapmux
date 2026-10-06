@@ -22,7 +22,7 @@ const calls = vi.hoisted(() => ({
   environment: vi.fn(),
 }))
 vi.mock('./nativeWorker', () => ({ withNativeWorker: calls.worker }))
-vi.mock('./runDirectory', () => ({ createTestDirectory: calls.directory }))
+vi.mock('./runDirectory', async importOriginal => ({ ...await importOriginal<typeof import('./runDirectory')>(), createTestDirectory: calls.directory }))
 vi.mock('./server', () => ({ hubSpawnEnv: calls.environment }))
 
 const scratchRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.tmp')

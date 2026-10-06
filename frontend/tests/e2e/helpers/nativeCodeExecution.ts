@@ -1,12 +1,12 @@
 import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { googleFunctionDeclarations } from './googleModelContent'
 import { nativeModelToolNames, nativeToolOutcome } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { codeExecutionToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { assistantBubbles, toolCallRow } from './ui'
 
 interface NativeScriptCase {
@@ -40,7 +40,7 @@ export async function exerciseNativeCodeExecution(
   },
 ): Promise<void> {
   await options.prepare?.()
-  const marker = `NATIVECODE${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('NATIVECODE')
   const cases = options.scripts(marker)
   validateNativeScriptCases(cases)
   for (const [index, script] of cases.entries()) {

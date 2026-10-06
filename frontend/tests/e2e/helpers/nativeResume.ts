@@ -1,11 +1,11 @@
 import type { Page } from '@playwright/test'
 import type { AgentChatMessage, AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext, NativeModelTurn } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMessages'
 import { nativeAgentById, selectedAgentTab } from './nativeScenario'
+import { uniqueMarker } from './shellArguments'
 import { assistantBubbles, userBubbles } from './ui'
 
 const RESUME_MARKER = /^[a-f0-9]{32}$/
@@ -34,7 +34,7 @@ export interface NativeResumeContextOrder {
 }
 
 /** Build the texts of one resume scenario. No text contains another, so a search for one text never finds another. */
-export function nativeResumeTexts(marker: string = randomUUID().replaceAll('-', '')): NativeResumeTexts {
+export function nativeResumeTexts(marker: string = uniqueMarker()): NativeResumeTexts {
   if (!RESUME_MARKER.test(marker))
     throw new Error('The native resume marker must be 32 lowercase hexadecimal digits.')
   return {

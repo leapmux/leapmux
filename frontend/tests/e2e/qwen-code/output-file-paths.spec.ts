@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { QwenOutputPathReceipt } from './outputFilePaths'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { unlinkSync } from 'node:fs'
 import { isAbsolute, relative } from 'node:path'
 import { resolveMessageForRendering } from '../../../src/components/chat/providers/registry'
@@ -22,6 +22,7 @@ import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFile
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, readAttachedWithArgument, sendMessage } from '../helpers/ui'
 import { expect, qwenTest } from '../qwen-fixtures'
@@ -121,7 +122,7 @@ for (const exitCode of [0, 7]) {
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-output-path-qwen-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)) })
     await openWorkspace(page, native.workspaceId)
     const owner = await currentNativeAgent(native)
-    const generated = qwenOutputPathCommand(`NATIVEOUTPUTPATH${randomUUID().replaceAll('-', '')}`, exitCode)
+    const generated = qwenOutputPathCommand(uniqueMarker('NATIVEOUTPUTPATH'), exitCode)
     const callId = `native-output-path-${exitCode}`
     const step = (await modelScript.status()).stepCount
     await modelScript.queue({ toolCalls: [bashToolCall(native.provider, callId, generated.command)] }, nativeTextStep(native, 'The native output path command ended.'))
@@ -154,7 +155,7 @@ for (const background of [false, true]) {
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-output-path-qwen-child-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)), optionValues: { ...agentOpenOptions(agentSettings(native.provider)).optionValues, [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     await openWorkspace(page, native.workspaceId)
     const initialRoot = await currentNativeAgent(native)
-    const generated = qwenOutputPathCommand(`NATIVEOUTPUTPATH${randomUUID().replaceAll('-', '')}`)
+    const generated = qwenOutputPathCommand(uniqueMarker('NATIVEOUTPUTPATH'))
     const childTask = `CHILD_NATIVE_OUTPUT_PATH_${background ? 'BACKGROUND' : 'FOREGROUND'}`
     const spawnId = background ? 'spawn-native-output-path-background' : 'spawn-native-output-path-foreground'
     const callId = background ? 'native-output-path-background-child' : 'native-output-path-foreground-child'

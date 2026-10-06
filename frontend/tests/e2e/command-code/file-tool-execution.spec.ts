@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer'
-import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { commandCodeTest, expect } from '../command-code-fixtures'
@@ -8,6 +7,7 @@ import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { nativeToolResultAt, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { messageContents, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -15,7 +15,7 @@ commandCodeTest('reads and changes actual native files and preserves the native 
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const directory = createNativeToolDirectory(agent.workingDir)
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const cases = [
     { id: 'exact', before: `OLD${marker}\n`, after: `NEW${marker}\n`, requestedBefore: `OLD${marker}\n`, requestedAfter: `NEW${marker}\n`, nativeBefore: `OLD${marker}`, nativeAfter: `NEW${marker}` },
     { id: 'fuzzy', before: '\uFEFFconst value = “old”;\r\n', after: '\uFEFFconst value = “new”;\r\n', requestedBefore: 'const value = "old";\n', requestedAfter: 'const value = "new";\n', nativeBefore: 'const value = “old”;', nativeAfter: 'const value = “new”;' },

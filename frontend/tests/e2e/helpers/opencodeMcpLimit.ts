@@ -4,9 +4,9 @@ import process from 'node:process'
 import { isObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { openAgentViaAPI } from './api'
-import { findBinary } from './binaryOnPath'
 import { writeMcpFormServer } from './mcpFormServer'
 import { withNativeStartupWorker } from './nativeStartupWorker'
+import { resolveNativeStartupLaunch } from './nativeStartupWrapper'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { mcpToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
@@ -39,14 +39,14 @@ export async function exerciseOpencodeMcpInputLimit(
   options: { binaryName: string, configurationVariable: string },
 ): Promise<void> {
   const original = context.leapmuxServer.agentEnv?.[options.configurationVariable]
-  const executable = findBinary(options.binaryName)
-  if (!original || !executable)
-    throw new Error('The native MCP limit requires its actual binary and isolated inline configuration.')
+  if (!original)
+    throw new Error('The native MCP limit requires its isolated inline configuration.')
+  const launch = resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: options.binaryName, holdWhen: ['acp'] })
   const directory = createTestDirectory('opencode-family-mcp-limit-')
   const receiptLog = join(directory, 'native-mcp-receipt.json')
   const script = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
   const configuration = opencodeMcpFormConfiguration(original, [process.execPath, script])
-  await withNativeStartupWorker(context, { binaryName: options.binaryName, executable, holdWhen: ['acp'] }, {
+  await withNativeStartupWorker(context, launch, {
     workerEnvironment: () => ({ [options.configurationVariable]: configuration }),
   }, async (workerId, wrapper) => {
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }

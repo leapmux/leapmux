@@ -1,8 +1,9 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { isFileNameComponent } from '../helpers/runDirectory'
 
 export interface KiroGoalMessage {
   id: string
@@ -87,7 +88,7 @@ export function readKiroGoalMessages(identity: KiroGoalSessionIdentity): KiroGoa
   if (!isAbsolute(identity.home) || !isAbsolute(identity.workingDir) || !identity.parentSessionId.trim())
     throw new Error('The native Kiro goal read requires its private HOME, working directory, and parent session.')
   const sessionId = identity.sessionId
-  if (!sessionId || sessionId === '.' || sessionId === '..' || sessionId.trim() !== sessionId || basename(sessionId) !== sessionId || sessionId.includes('\\') || sessionId.includes('\0'))
+  if (!isFileNameComponent(sessionId) || sessionId.trim() !== sessionId)
     throw new Error('The native Kiro goal session ID must be one filename component.')
   assertPrivateNativePath(identity.home, identity.runDir)
   assertPrivateNativePath(identity.workingDir, identity.runDir)

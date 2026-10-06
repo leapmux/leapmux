@@ -6,6 +6,7 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 
 /** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
 export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep'>): Promise<ManagedNativeScenarioContext> {
@@ -19,7 +20,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 
 /** Open this provider's actual child task and hold its native final answer. */
 export async function runningChild(context: ManagedNativeScenarioContext) {
-  const task = `NATIVECHILDTASK${randomUUID().replaceAll('-', '')} report one word.`
+  const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
   const spawn = spawnSubagentToolCall(context.provider, 'native-held-child', { description: 'Native held child', prompt: context.modelScript.prompt(task) })
   return openRunningNativeChild(context, {
     gate: `native-child-${randomUUID()}`,

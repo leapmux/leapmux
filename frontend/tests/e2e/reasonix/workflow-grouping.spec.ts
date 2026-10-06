@@ -3,6 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { applyPermissionPreset } from '../helpers/ui'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
 import { reasonixTest } from '../reasonix-fixtures'
@@ -10,7 +11,7 @@ import { readReasonixChildTaskId, reasonixChildTaskMatcher } from './childIdenti
 
 reasonixTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedReasonixWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedReasonixWorkspace.workspaceId, provider: AgentProvider.REASONIX }
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   await exerciseUngroupedNativeChildren(context, {
     openChild: async (index) => {
       const gate = `group-child-${index}-${suffix}`

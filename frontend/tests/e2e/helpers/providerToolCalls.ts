@@ -14,6 +14,7 @@ import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { CURSOR_CREATE_PLAN_TOOL, CURSOR_GENERATE_IMAGE_TOOL, CURSOR_MCP_TOOL, CURSOR_QUESTION_TOOL, CURSOR_REQUEST_CONTEXT_TOOL, CURSOR_TASK_TOOL, CURSOR_WEB_FETCH_TOOL } from './cursorSurface'
 import { quotePosixShellArgument } from './shellArguments'
 
@@ -2122,7 +2123,7 @@ export function diracCondenseToolCall(id: string, context: string): MockModelToo
 }
 
 export function diracEditAnchorCapture(content: string): Record<string, string> {
-  return { editAnchor: `([A-Z][a-zA-Z]*§${content.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})` }
+  return { editAnchor: `([A-Z][a-zA-Z]*§${escapeRegExp(content)})` }
 }
 
 /**

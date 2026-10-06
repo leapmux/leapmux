@@ -1,11 +1,11 @@
 import type { MockModelStep } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ToolOutputControl } from './toolOutputControl'
-import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { finishCleanup, withCleanup } from './cleanup'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { createToolOutputControl } from './toolOutputControl'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
 import { answerControl, assistantBubbles, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
@@ -191,7 +191,7 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
       })
     }
     else {
-      const suffix = randomUUID().replaceAll('-', '')
+      const suffix = uniqueMarker()
       const firstGate = `progress-first-${suffix}`
       const secondGate = `progress-second-${suffix}`
       configuredGates.push(firstGate, secondGate)

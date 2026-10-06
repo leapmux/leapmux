@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { isObject } from '../../../src/lib/jsonPick'
-import { lookupBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { stopProcess } from '../helpers/process'
@@ -210,10 +210,10 @@ export async function readCopilotBuiltinCatalog(context: ManagedNativeScenarioCo
   const environment = context.leapmuxServer.agentEnv
   if (!environment?.HOME)
     throw new Error('The complete Copilot catalog requires the isolated native environment.')
-  const binary = lookupBinary('copilot', 'The native Copilot catalog requires its installed CLI.', environment).path
-  if (!binary)
-    throw new Error('The native Copilot catalog requires its installed CLI.')
+  // The lookup reads the environment of the spawn, so it finds the executable that the spawn starts.
+  const env = hubSpawnEnv(environment)
+  const binary = requireBinary('copilot', 'The native Copilot catalog requires its installed CLI', env)
   const agent = await currentNativeAgent(context)
   const model = agent.optionGroups.find(group => group.id === 'model')?.currentValue
-  return queryCopilotBuiltinCatalog({ executable: binary, args: ['--server', '--stdio', '--no-remote', '--no-remote-export'], cwd: agent.workingDir, env: hubSpawnEnv(environment), ...(model === undefined ? {} : { model }) })
+  return queryCopilotBuiltinCatalog({ executable: binary, args: ['--server', '--stdio', '--no-remote', '--no-remote-export'], cwd: agent.workingDir, env, ...(model === undefined ? {} : { model }) })
 }

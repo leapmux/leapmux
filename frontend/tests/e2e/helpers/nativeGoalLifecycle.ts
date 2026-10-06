@@ -1,12 +1,12 @@
 import type { MockModelPattern, MockModelRule } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { withCleanup } from './cleanup'
 import { currentNativeAgent } from './nativeScenario'
 import { writeToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from './subagentRegistry'
 import { applyPermissionPreset } from './ui'
 
@@ -50,7 +50,7 @@ export async function exerciseNativeGoalPauseAndResume(
 ): Promise<void> {
   await applyPermissionPreset(context.page, 'bypass')
   const agent = await currentNativeAgent(context)
-  const marker = `NATIVEGOAL${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('NATIVEGOAL')
   const progressFile = join(agent.workingDir, 'native-goal-progress.txt')
   const gate = `native-goal-first-${marker}`
   const rule = `native-goal-following-${marker}`

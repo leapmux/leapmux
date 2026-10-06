@@ -3,6 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -23,10 +24,6 @@ interface LettaNoticeOptions {
   report: string
   reply: string
   once?: boolean
-}
-
-function literalPattern(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // Letta escapes these characters before it writes summary and result text.
@@ -89,16 +86,16 @@ export function lettaChildNoticeRule(launch: LettaChildLaunch, childId: string, 
     if (launch[field] !== undefined)
       requireText(launch[field], field)
   }
-  const header = `subagent_type=general-purpose subagent_id=${literalPattern(childId)} subagent_status=success${
-    launch.agentId === undefined ? '(?: agent_id=[^\\s<>]+)?' : ` agent_id=${literalPattern(xmlText(launch.agentId))}`
-  }${launch.conversationId === undefined ? '(?: conversation_id=[^\\s<>]+)?' : ` conversation_id=${literalPattern(xmlText(launch.conversationId))}`
+  const header = `subagent_type=general-purpose subagent_id=${escapeRegExp(childId)} subagent_status=success${
+    launch.agentId === undefined ? '(?: agent_id=[^\\s<>]+)?' : ` agent_id=${escapeRegExp(xmlText(launch.agentId))}`
+  }${launch.conversationId === undefined ? '(?: conversation_id=[^\\s<>]+)?' : ` conversation_id=${escapeRegExp(xmlText(launch.conversationId))}`
   }(?: runtime_session_id=[^\\s<>]+)?`
   const usage = '(?:\\n<usage>(?:total_tokens: \\d+(?:\\ntool_uses: \\d+)?(?:\\nduration_ms: \\d+)?|tool_uses: \\d+(?:\\nduration_ms: \\d+)?|duration_ms: \\d+)</usage>)?'
   const envelope = '^<task-notification>\\n'
-    + `<task-id>${literalPattern(launch.taskId)}</task-id>\\n<status>completed</status>\\n`
-    + `<summary>${literalPattern(xmlText(`Agent "${options.description}" completed`))}</summary>\\n`
-    + `<result>${header}\\n\\n(?=[^<]*${literalPattern(xmlText(options.report))})[^<]*</result>${usage}\\n</task-notification>\\n`
-    + `Full transcript available at: ${literalPattern(launch.outputFile)}$`
+    + `<task-id>${escapeRegExp(launch.taskId)}</task-id>\\n<status>completed</status>\\n`
+    + `<summary>${escapeRegExp(xmlText(`Agent "${options.description}" completed`))}</summary>\\n`
+    + `<result>${header}\\n\\n(?=[^<]*${escapeRegExp(xmlText(options.report))})[^<]*</result>${usage}\\n</task-notification>\\n`
+    + `Full transcript available at: ${escapeRegExp(launch.outputFile)}$`
   return {
     name: options.name,
     when: { protocol: 'openai-chat-completions', user: envelope, lastMessage: { role: 'user', text: envelope } },

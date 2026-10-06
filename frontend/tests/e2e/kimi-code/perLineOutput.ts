@@ -1,9 +1,9 @@
 import type { NativeToolOutput } from '../helpers/nativeToolOutput'
-import { randomUUID } from 'node:crypto'
+import { uniqueMarker } from '../helpers/shellArguments'
 
 /** Force native per-line shaping while keeping the complete middle marker outside the model's preview. */
 export function computedKimiPerLineOutputFileOutput(): NativeToolOutput {
-  const prefix = `KIMIPERLINE${randomUUID().replaceAll('-', '')}`
+  const prefix = uniqueMarker('KIMIPERLINE')
   const firstMarker = `${prefix}-first`
   const omittedMarker = `${prefix}-middle-77`
   const lastMarker = `${prefix}-complete-42`

@@ -2,16 +2,16 @@ import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolResultReader } from './nativeScenario'
-import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { createNativeToolDirectory } from './nativeToolDirectory'
 import { nativeToolResult } from './nativeToolResult'
 import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './providerToolCalls'
-import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
+import { isFileNameComponent } from './runDirectory'
+import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { assistantBubbles, controlButton, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
 
 interface ToolPreparation {
@@ -163,7 +163,7 @@ export async function exerciseShellToolExecution(
   const directory = createNativeToolDirectory(agent.workingDir)
   const outputFile = join(directory, 'native shell output.txt')
   expect(existsSync(outputFile)).toBe(false)
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const commands = [
     { command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, output: `SHELL${marker}42`, failed: false },
     ...(options.includeFailure === false ? [] : [{ command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, failed: true }]),
@@ -224,10 +224,8 @@ export interface NativeFileSequence {
 function sequenceFilePath(options: FileSequenceOptions): string {
   if (!isAbsolute(options.workingDir))
     throw new Error('The native file sequence requires an absolute private working directory.')
-  if (!options.fileName || options.fileName === '.' || options.fileName === '..'
-    || basename(options.fileName) !== options.fileName || options.fileName.includes('\\') || options.fileName.includes('\0')) {
+  if (!isFileNameComponent(options.fileName))
     throw new Error('The native file sequence requires one filename component.')
-  }
   return join(options.workingDir, options.fileName)
 }
 
@@ -297,7 +295,7 @@ export async function exerciseFileToolExecution(
   const agent = await currentNativeAgent(context)
   if (!agent.workingDir)
     throw new Error('The native file scenario requires a working directory.')
-  const marker = randomUUID().replaceAll('-', '')
+  const marker = uniqueMarker()
   const directory = createNativeToolDirectory(agent.workingDir)
   const file = join(directory, `native-file-${marker}.txt`)
   const created = join(directory, `native-created-${marker}.txt`)

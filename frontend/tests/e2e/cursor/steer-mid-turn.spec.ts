@@ -4,13 +4,14 @@ import { cursorTest } from '../cursor-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 cursorTest('queues a normal prompt until the native turn ends without a steering route', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
   const agent = await currentNativeAgent(context)
-  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const suffix = uniqueMarker()
   const gate = `cursor-no-steer-${suffix}`
   const queuedText = `CURSORQUEUED${suffix}: deliver after the first turn ends.`
   const start = (await modelScript.status()).stepCount

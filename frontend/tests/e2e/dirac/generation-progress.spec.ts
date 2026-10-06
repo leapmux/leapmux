@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
 import { diracTest } from '../dirac-fixtures'
 import { exerciseGenerationProgress } from '../helpers/generationProgress'
 import { expandNativeResultView } from '../helpers/nativeResultView'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { nativeContext } from './scenarios'
 
 diracTest('reports an advancing token count while native output arrives', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
@@ -15,8 +15,8 @@ diracTest('reports an advancing token count while native output arrives', async 
 diracTest('reports no byte count throughout an actual native shell output stream', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
   const markers = {
-    first: `NATIVEFIRST${randomUUID().replaceAll('-', '')}`,
-    second: `NATIVESECOND${randomUUID().replaceAll('-', '')}`,
+    first: uniqueMarker('NATIVEFIRST'),
+    second: uniqueMarker('NATIVESECOND'),
   }
   await exerciseGenerationProgress(context, {
     supported: false,

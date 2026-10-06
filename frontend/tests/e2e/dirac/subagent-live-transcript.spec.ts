@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -10,6 +9,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall } from '../helpers/providerToolCalls'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { messageContents, tabById } from '../helpers/ui'
 import { nativeContext, runningChild } from './scenarios'
@@ -17,7 +17,7 @@ import { nativeContext, runningChild } from './scenarios'
 diracTest('keeps an actual child read out of live rows and restores it after the final native report', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
   const parent = await currentNativeAgent(context)
-  const marker = `NATIVECHILDREAD${randomUUID().replaceAll('-', '')}`
+  const marker = uniqueMarker('NATIVECHILDREAD')
   const path = join(parent.workingDir, 'native-child-read.txt')
   writeFileSync(path, marker)
   const child = await runningChild(context, { childTool: readToolCall(context.provider, 'native-live-read', path) })
