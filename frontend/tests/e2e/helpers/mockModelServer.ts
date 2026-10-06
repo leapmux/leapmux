@@ -18,6 +18,7 @@ import type { ModelStream } from './modelStream'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
 import { isObject } from '../../../src/lib/jsonPick'
+import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
 import { AMP_ACTOR_PATH_PREFIX, ampScriptOptions, createAmpSurface, isAmpPath } from './ampSurface'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
@@ -107,9 +108,6 @@ export interface MockModelServer {
 function isAbsoluteForm(target: string): boolean {
   return /^[a-z][\w+.-]*:\/\//i.test(target)
 }
-
-/** The host names that reach the mock itself. */
-const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '[::1]'])
 
 /** Whether an absolute-form target addresses the mock itself. */
 function isOwnOrigin(target: URL, ownPort: number): boolean {

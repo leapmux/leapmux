@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import { requireLoopbackHttpURL } from '../helpers/agentEnvironmentInputs'
 import { withCleanup } from '../helpers/cleanup'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -30,9 +31,7 @@ export async function withMockPiModel<T>(
 ): Promise<T> {
   if (!server || typeof server.mockModelUrl !== 'string' || server.mockModelUrl === '')
     throw new Error('The Pi mock model requires the suite server URL.')
-  const origin = new URL(server.mockModelUrl)
-  if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname) || origin.pathname !== '/')
-    throw new Error('The Pi mock server URL must be a loopback HTTP origin')
+  const origin = requireLoopbackHttpURL(server.mockModelUrl, 'The Pi mock server URL', { originOnly: true })
   const nativeEnvironment = server.agentEnv
   if (!nativeEnvironment || typeof nativeEnvironment.HOME !== 'string' || nativeEnvironment.HOME === ''
     || typeof nativeEnvironment.PI_CODING_AGENT_DIR !== 'string' || nativeEnvironment.PI_CODING_AGENT_DIR === '') {

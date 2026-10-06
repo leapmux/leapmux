@@ -1,5 +1,7 @@
+import type { McpServerLaunch } from './agentEnvironmentInputs'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
+import { requireLoopbackHttpURL, validatedMcpServers } from './agentEnvironmentInputs'
 
 export const DEEPSEEK_HARNESS_PROVIDER_ID = 'deepseek-official'
 export const DEEPSEEK_HARNESS_MODEL_ID = `${DEEPSEEK_HARNESS_PROVIDER_ID}/deepseek-flash`
@@ -17,18 +19,14 @@ export interface DeepseekHarnessEnvironmentOptions {
    */
   agentPreset?: 'standard' | 'ptc'
   /** Existing shared MCP server executable and arguments. */
-  mcpServers?: readonly { name: string, command: string, args: readonly string[] }[]
+  mcpServers?: readonly McpServerLaunch[]
 }
 
 /** Create a private native profile that can reach only the supplied model endpoint. */
 export function createDeepseekHarnessEnvironment(options: DeepseekHarnessEnvironmentOptions): Record<string, string> {
   if (!isAbsolute(options.runDirectory))
     throw new Error('The DeepSeek Harness run directory must be absolute.')
-  const endpoint = new URL(options.modelURL)
-  if (endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)
-    || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-    throw new Error('The DeepSeek Harness model endpoint must be a loopback HTTP URL.')
-  }
+  const endpoint = requireLoopbackHttpURL(options.modelURL, 'The DeepSeek Harness model endpoint')
   if (!options.modelKey)
     throw new Error('The DeepSeek Harness mock model key must be present.')
   const home = join(options.runDirectory, 'deepseek-harness-home')
@@ -49,14 +47,9 @@ export function createDeepseekHarnessEnvironment(options: DeepseekHarnessEnviron
   // The native registry reads its default preset from this row. An absent selection keeps the shipped default.
   if (options.agentPreset !== undefined)
     rows.push({ id: 'agent-preset-registry', config: { default: options.agentPreset } })
-  if (options.mcpServers?.length) {
-    const names = new Set<string>()
-    const servers = options.mcpServers.map((server) => {
-      if (!/^[\w-]{1,32}$/.test(server.name) || names.has(server.name))
-        throw new Error('DeepSeek Harness MCP server names must be valid and distinct.')
-      if (!isAbsolute(server.command))
-        throw new Error('The DeepSeek Harness MCP command must be absolute.')
-      names.add(server.name)
+  const mcpServers = validatedMcpServers(options.mcpServers, 'DeepSeek Harness', 32)
+  if (mcpServers.length > 0) {
+    const servers = mcpServers.map((server) => {
       return { id: `leapmux-mcp-${server.name}`, name: '@deepseek-ai/dsh-mcp-client', config: {
         transport: 'stdio',
         serverName: server.name,
