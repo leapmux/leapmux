@@ -25,11 +25,56 @@ import { stopProcesses } from './process'
 const require = createRequire(import.meta.url)
 const scratch = resolve(import.meta.dirname, '../../../../.tmp')
 
+/** The name of the module of the project that waits for a record file. The build script and each case import it. */
+export const WAIT_FOR_FILE_MODULE = 'wait-for-file.mjs'
+
+/**
+ * The time between two existence checks of a file wait, in milliseconds. It sets how late a wait sees a file whose
+ * watch event was lost. It never sets when a wait ends: the wait ends when the file exists.
+ */
+const FILE_CHECK_INTERVAL_MS = 50
+
+const waitForFileModule = String.raw`
+import { existsSync, watch } from 'node:fs'
+import { dirname } from 'node:path'
+
+/**
+ * Wait until the file at path exists. A test passes its own watchDirectory to control the watch events.
+ *
+ * A directory watch alone cannot end this wait. macOS starts the FSEvents stream of a watcher after watch() returns,
+ * so a file that appears in that window gives no event, and the first check can run before the file appears. The
+ * test side can write a release a few milliseconds after the entry record that it answers, which is inside that
+ * window. The interval check finds such a file. The watcher only ends the wait sooner.
+ */
+export function waitForFile(path, watchDirectory = watch) {
+  return new Promise((accept, reject) => {
+    let settled = false;
+    const listener = watchDirectory(dirname(path), check);
+    const timer = setInterval(check, ${FILE_CHECK_INTERVAL_MS});
+    listener.once('error', error => settle(() => reject(error)));
+    function settle(action) {
+      if (settled)
+        return;
+      settled = true;
+      clearInterval(timer);
+      listener.close();
+      action();
+    }
+    function check() {
+      if (existsSync(path))
+        settle(accept);
+    }
+    check();
+  });
+}
+`
+
 const buildScript = String.raw`
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, watch, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
+import { waitForFile } from './${WAIT_FOR_FILE_MODULE}'
 
 const records = join(process.cwd(), 'records');
 const policy = JSON.parse(readFileSync(join(records, 'policy.json'), 'utf8'));
@@ -40,20 +85,7 @@ if (policy.holdBuild) {
   const processTable = process.platform === 'win32' ? null : execFileSync('ps', ['-o', 'pid=,ppid=,pgid=,command=', '-p', process.pid + ',' + process.ppid], { encoding: 'utf8' });
   writeFileSync(draft, JSON.stringify({ processId: process.pid, parentProcessId: process.ppid, processTable }));
   renameSync(draft, entry);
-  await new Promise((accept, reject) => {
-    const listener = watch(records, check);
-    listener.once('error', error => {
-      listener.close();
-      reject(error);
-    });
-    function check() {
-      if (existsSync(join(records, 'release-build'))) {
-        listener.close();
-        accept();
-      }
-    }
-    check();
-  });
+  await waitForFile(join(records, 'release-build'));
 }
 const receipt = join(process.cwd(), 'build-count');
 const count = existsSync(receipt) ? Number(readFileSync(receipt, 'utf8')) + 1 : 1;
@@ -128,31 +160,15 @@ export default async function setup(config) {
 const fixtureRuntime = String.raw`
 import { expect } from '@playwright/test'
 import { fork } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, watch, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { waitForFile } from '../../${WAIT_FOR_FILE_MODULE}'
 
 function writeRecord(path, record) {
   const draft = path + '.writing-' + process.pid;
   writeFileSync(draft, JSON.stringify(record));
   renameSync(draft, path);
-}
-
-function waitForRelease(path) {
-  return new Promise((accept, reject) => {
-    const listener = watch(resolve(path, '..'), check);
-    listener.once('error', error => {
-      listener.close();
-      reject(error);
-    });
-    function check() {
-      if (existsSync(path)) {
-        listener.close();
-        accept();
-      }
-    }
-    check();
-  });
 }
 
 export async function runCase(label, testInfo, page) {
@@ -188,7 +204,7 @@ export async function runCase(label, testInfo, page) {
   }
   const entered = { label, nonce: state.nonce, runDir: state.runDir, port: state.port, processId: state.processId, workerProcessId: process.pid, ownedChildProcessId, browserUrl, parallelIndex: testInfo.parallelIndex, started: process.hrtime.bigint().toString() };
   writeRecord(join(records, 'entry-' + label + '.json'), entered);
-  await waitForRelease(join(records, 'release-' + label));
+  await waitForFile(join(records, 'release-' + label));
   const attachment = testInfo.outputPath('receipt.txt');
   writeFileSync(attachment, 'fixture-case-' + label);
   await testInfo.attach('isolation-receipt', { path: attachment, contentType: 'text/plain' });
@@ -306,6 +322,7 @@ export function createLauncherFixtureProject(policy: FixturePolicy = {}): string
   symlinkSync(resolve(import.meta.dirname, '../../../node_modules'), join(frontend, 'node_modules'), 'junction')
   writeFileSync(join(frontend, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   writeFileSync(join(root, 'Taskfile.yaml'), 'version: \'3\'\ntasks:\n  build-backend:\n    cmds:\n      - node build.mjs\n')
+  writeFileSync(join(root, WAIT_FOR_FILE_MODULE), waitForFileModule)
   writeFileSync(join(root, 'build.mjs'), buildScript)
   writeFileSync(join(records, 'policy.json'), JSON.stringify(policy))
   writeFileSync(join(frontend, 'playwright.config.mjs'), String.raw`

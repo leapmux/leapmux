@@ -1,11 +1,14 @@
 import type { Buffer } from 'node:buffer'
 import type { FSWatcher } from 'node:fs'
 import { ChildProcess, execFileSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanupLauncherFixtureProject, createLauncherFixtureProject, fixtureCases, fixtureStringField, launcherFixtureDiagnostics, readFixtureRecord, readPlaywrightZipEntries, runLauncherFixtureProject, startLauncher } from './launcherFixtureProject'
+import { isObject } from '../../../src/lib/jsonPick'
+import { cleanupLauncherFixtureProject, createLauncherFixtureProject, fixtureCases, fixtureStringField, launcherFixtureDiagnostics, readFixtureRecord, readPlaywrightZipEntries, runLauncherFixtureProject, startLauncher, WAIT_FOR_FILE_MODULE } from './launcherFixtureProject'
 import * as processHelpers from './process'
 
 interface ArchiveBoundary {
@@ -57,6 +60,7 @@ afterEach(() => {
   boundary.close.mockClear()
   boundary.spawn.mockClear()
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 function directory(): string {
@@ -65,6 +69,31 @@ function directory(): string {
   const root = mkdtempSync(join(scratch, 'launcher-fixture-unit-'))
   roots.add(root)
   return root
+}
+
+/** The file wait of the generated project: the path, and the directory watch that the test controls. */
+type ProjectWaitForFile = (path: string, watchDirectory: () => EventEmitter) => Promise<void>
+
+/** Load the file wait from the module that a new fixture project holds, so the test reads the generated code. */
+async function projectWaitForFile(): Promise<{ root: string, waitForFile: ProjectWaitForFile }> {
+  const root = createLauncherFixtureProject()
+  roots.add(root)
+  const loaded: unknown = await import(pathToFileURL(join(root, WAIT_FOR_FILE_MODULE)).href)
+  if (!isObject(loaded) || typeof loaded.waitForFile !== 'function')
+    throw new Error('The fixture project holds no file wait.')
+  const waitForFile = loaded.waitForFile
+  return { root, waitForFile: (path, watchDirectory) => Reflect.apply(waitForFile, undefined, [path, watchDirectory]) }
+}
+
+/**
+ * A directory watch that reports no event. A watcher whose FSEvents stream starts after a change reports none for it.
+ * `close` counts the closes of the watcher.
+ */
+function silentWatch(): { watchDirectory: () => EventEmitter, watcher: EventEmitter, close: ReturnType<typeof vi.fn> } {
+  const watcher = new EventEmitter()
+  const close = vi.fn()
+  Object.assign(watcher, { close })
+  return { watchDirectory: () => watcher, watcher, close }
 }
 
 describe('cleanupLauncherFixtureProject', () => {
@@ -242,6 +271,55 @@ describe('createLauncherFixtureProject', () => {
 
     expect(config).toEqual({ use: browserTrace ? { browserName: 'chromium', headless: true, trace: 'retain-on-failure' } : {}, workers: 1, fullyParallel: false })
     expect(JSON.parse(readFileSync(join(root, 'records', 'policy.json'), 'utf8'))).toEqual({ browserTrace })
+  })
+
+  it('writes a file wait that ends at once for a file that exists, and stops watching', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const { root, waitForFile } = await projectWaitForFile()
+    const path = join(root, 'records', 'release-alpha')
+    writeFileSync(path, 'release')
+    const watch = silentWatch()
+
+    await waitForFile(path, watch.watchDirectory)
+
+    expect(watch.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('writes a file wait that finds a file that appears with no watch event', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const { root, waitForFile } = await projectWaitForFile()
+    const path = join(root, 'records', 'release-beta')
+    const watch = silentWatch()
+    let ended = false
+    const waiting = waitForFile(path, watch.watchDirectory).then(() => {
+      ended = true
+    })
+    await Promise.resolve()
+    expect(ended).toBe(false)
+
+    // The file appears after the first check, and the watcher reports nothing, as a watcher whose stream starts late.
+    writeFileSync(path, 'release')
+    vi.runOnlyPendingTimers()
+    await waiting
+
+    expect(ended).toBe(true)
+    expect(watch.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('writes a file wait that fails with the error of its watcher, and stops checking', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const { root, waitForFile } = await projectWaitForFile()
+    const watch = silentWatch()
+    const failure = new Error('The controlled directory watch failed.')
+    const waiting = waitForFile(join(root, 'records', 'release-build'), watch.watchDirectory)
+
+    watch.watcher.emit('error', failure)
+
+    await expect(waiting).rejects.toBe(failure)
+    expect(watch.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 
