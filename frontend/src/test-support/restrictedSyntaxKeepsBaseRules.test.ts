@@ -91,7 +91,28 @@ const RESTRICTED_ASSERTION_SAMPLES: LintSample[] = [
   { label: 'imported resolved content assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'value as import(\'../rowExtractionTypes\').ResolvedMessageContent' },
 ]
 
+/**
+ * A working directory of a native agent that a file opening real agents makes by hand. The `tests/e2e` block of
+ * `eslint.config.ts` refuses a cast to the brand in every spelling, and the import of the brand for unit tests. A block
+ * that stops matching its tree leaves the type check as the only guard, and a cast passes it.
+ */
+const WORKING_DIR_BRAND_SAMPLES: LintSample[] = [
+  { label: 'as assertion in a spec', file: 'tests/e2e/auditProbe.spec.ts', source: 'const dir = \'/run\' as ProviderWorkingDir\nvoid dir' },
+  { label: 'angle-bracket assertion in a helper', file: 'tests/e2e/helpers/auditProbe.ts', source: 'const dir = <ProviderWorkingDir>\'/run\'\nvoid dir' },
+  { label: 'double assertion', file: 'tests/e2e/auditProbe.spec.ts', source: 'const dir = \'/run\' as unknown as ProviderWorkingDir\nvoid dir' },
+  { label: 'qualified assertion', file: 'tests/e2e/auditProbe.spec.ts', source: 'const dir = \'/run\' as WorkingDirs.ProviderWorkingDir\nvoid dir' },
+  { label: 'imported type assertion', file: 'tests/e2e/auditProbe.spec.ts', source: 'const dir = \'/run\' as import(\'./helpers/providerWorkingDir\').ProviderWorkingDir\nvoid dir' },
+  { label: 'wrapped assertion', file: 'tests/e2e/auditProbe.spec.ts', source: 'const dir = \'/run\' as Readonly<ProviderWorkingDir>\nvoid dir' },
+  { label: 'unit-test brand in a spec', file: 'tests/e2e/auditProbe.spec.ts', source: 'import { unitWorkingDir } from \'~/test-support/unitWorkingDir\'\nvoid unitWorkingDir' },
+  { label: 'unit-test brand by a relative path in a helper', file: 'tests/e2e/helpers/auditProbe.ts', source: 'import { unitWorkingDir } from \'../../../src/test-support/unitWorkingDir\'\nvoid unitWorkingDir' },
+]
+
 const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
+  // The module of the brand makes it, and a unit test opens no agent.
+  { label: 'working directory brand in its own module', file: 'tests/e2e/helpers/providerWorkingDir.ts', source: 'const dir = \'/run\' as ProviderWorkingDir\nvoid dir' },
+  { label: 'working directory assertion in a unit test', file: 'tests/e2e/helpers/auditProbe.test.ts', source: 'const dir = \'/run\' as ProviderWorkingDir\nvoid dir' },
+  { label: 'unit-test brand in a unit test', file: 'tests/e2e/helpers/auditProbe.test.ts', source: 'import { unitWorkingDir } from \'~/test-support/unitWorkingDir\'\nvoid unitWorkingDir' },
+  { label: 'working directory annotation in a spec', file: 'tests/e2e/auditProbe.spec.ts', source: 'declare function make(): ProviderWorkingDir\nconst dir: ProviderWorkingDir = make()\nvoid dir' },
   { label: 'native block table const assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'const blocks = { ToolResult: \'tool_result\', Text: \'text\' } as const\nvoid blocks' },
   { label: 'native block table angle const assertion', file: 'src/components/chat/providers/auditProbe.ts', source: 'const blocks = <const>{ ToolResult: \'tool_result\', Text: \'text\' }\nvoid blocks' },
   { label: 'model allowed dynamic diff import', file: 'src/components/chat/model/auditProbe.ts', source: 'void import(\'../diff/diffTypes\')' },
@@ -309,7 +330,7 @@ function selectorsFor(entry: unknown): string[] {
     .filter((selector): selector is string => typeof selector === 'string')
 }
 
-const SAMPLES: LintSample[] = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...PROVIDER_DECISION_SAMPLES, ...WIRE_TOKEN_SAMPLES, ...CONTRACT_TABLE_SAMPLES, ...REGISTRATION_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
+const SAMPLES: LintSample[] = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...PROVIDER_DECISION_SAMPLES, ...WIRE_TOKEN_SAMPLES, ...CONTRACT_TABLE_SAMPLES, ...REGISTRATION_SAMPLES, ...WORKING_DIR_BRAND_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
 
 describe('no-restricted-syntax keeps the base selectors', () => {
   let resolved: Record<string, unknown>
@@ -409,6 +430,10 @@ describe('no-restricted-syntax keeps the base selectors', () => {
 
   it.each(REGISTRATION_SAMPLES)('rejects an inline plugin hook: $label', ({ label }) => {
     expect(ruleIds[label] ?? []).toContain('chat-pipeline/plugin-registration-only')
+  })
+
+  it.each(WORKING_DIR_BRAND_SAMPLES)('rejects a working directory of a native agent that is not made by its rule: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('no-restricted-syntax')
   })
 
   it.each(ALLOWED_ARCHITECTURE_SAMPLES)('keeps the intentional exception: $label', ({ label }) => {

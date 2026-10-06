@@ -19,6 +19,9 @@ declare const providerWorkingDirBrand: unique symbol
  * Each open of an agent of a stated provider requires this type: `openProviderAgent`, `openNativeAgent`, the
  * `openAgentViaAPI` call that states a provider, and the New Agent dialog of `./nativeResume.ts`. A plain string has
  * no brand, so a spec that opens such an agent in a directory that it made by hand fails to compile.
+ *
+ * A cast can still make the brand from a plain string. The `no-restricted-syntax` block for `tests/e2e` in
+ * `eslint.config.ts` refuses that cast outside this module and outside a unit test, which opens no agent.
  */
 export type ProviderWorkingDir = string & { readonly [providerWorkingDirBrand]: true }
 
