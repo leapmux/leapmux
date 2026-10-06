@@ -7,7 +7,7 @@ import { currentNativeAgent, nativeOptionValue, nativeTextStep } from '../helper
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 /** Prove the selected native ZCode mode through its actual mutation and permission path. */
 export async function exerciseZCodeMode(context: ManagedNativeScenarioContext, mode: 'plan' | 'yolo' | 'build'): Promise<void> {
@@ -50,6 +50,18 @@ export async function exerciseZCodeMode(context: ManagedNativeScenarioContext, m
     expect(existsSync(path)).toBe(false)
     expect(result).toMatch(/plan|not available|denied/i)
   }
+}
+
+/**
+ * Prove that the composer offers only the bypass permission shortcut, and that the shortcut selects Yolo mode.
+ * ZCode declares no Smart preset, so the composer draws no Smart shortcut. The smart and the bypass shortcut cells
+ * both run this scenario.
+ */
+export async function exerciseZCodeShortcutOffer(context: Pick<ManagedNativeScenarioContext, 'page'>): Promise<void> {
+  await waitForSettingsHydrated(context.page)
+  await expectPermissionShortcuts(context.page, { smart: 'absent', bypass: 'offered' })
+  await applyPermissionPreset(context.page, 'bypass')
+  await expectSettingsChip(context.page, 'Yolo')
 }
 
 /**
