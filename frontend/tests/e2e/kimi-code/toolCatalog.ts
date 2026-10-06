@@ -11,7 +11,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanupSync } from '../helpers/cleanup'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { resolveNativeProcessOwnership } from '../helpers/nativeProcessOwnership'
+import { resolveNativeProcessOwnership, workerDataDirectory } from '../helpers/nativeProcessOwnership'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
@@ -319,10 +319,8 @@ export async function assertKimiCatalogOwnership(
     throw new Error('The captured Kimi native CLI has another process title or exact command.')
   const ownership = resolveNativeProcessOwnership(rows, native.pid, workerExecutable)
   const worker = rows.find(row => row.pid === ownership.workerPid)
-  const command = worker?.rawCommand ?? worker?.command ?? ''
-  const exactDirectory = [` --data-dir ${workerDataDir}`, ` --data-dir "${workerDataDir}"`, ` --data-dir '${workerDataDir}'`]
-    .some(suffix => command.endsWith(suffix))
-  if (!ownership.ownedPids.includes(wrapper.pid) || !worker || !exactDirectory)
+  const exactDirectory = worker !== undefined && workerDataDirectory(worker.rawCommand ?? worker.command) === workerDataDir
+  if (!ownership.ownedPids.includes(wrapper.pid) || !exactDirectory)
     throw new Error('The captured Kimi native server does not belong to the exact private Worker.')
 }
 

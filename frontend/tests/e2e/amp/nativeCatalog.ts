@@ -18,7 +18,7 @@ import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { resolveNativeProcessOwnership } from '../helpers/nativeProcessOwnership'
+import { commandStartsWithExecutable, resolveNativeProcessOwnership, sameExecutablePath, workerDataDirectory } from '../helpers/nativeProcessOwnership'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { clickNativeToolApproval, processNativeToolApproval } from '../helpers/nativeToolExecution'
 import { processExecutable } from '../helpers/processExecutable'
@@ -159,20 +159,6 @@ export function ampExecutorToolNames(text: string): string[] {
   })
 }
 
-/** The suite and private Worker launchers put their data directory last. */
-export function ampWorkerDataDirectory(command: string): string {
-  const flags = [...flagPositions(command, '-data-dir'), ...flagPositions(command, '--data-dir')]
-  const position = flags[0]
-  if (flags.length !== 1 || position === undefined)
-    throw new Error('The owning Worker requires one data-directory argument.')
-  const flag = command.startsWith('--data-dir', position) ? '--data-dir' : '-data-dir'
-  const raw = command.slice(position + flag.length).trim()
-  const path = (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith('\'') && raw.endsWith('\'')) ? raw.slice(1, -1) : raw
-  if (!isAbsolute(path) || path.includes('\n'))
-    throw new Error('The owning Worker data directory must be an absolute path.')
-  return path
-}
-
 interface AmpProcessProof {
   toolPid: number
   toolParentPid: number
@@ -189,23 +175,14 @@ export function ampCatalogProcess(rows: readonly ProcessRow[], proof: AmpProcess
   const ownership = resolveNativeProcessOwnership(rows, proof.toolPid, proof.workerExecutable)
   const workers = rows.filter(row => row.pid === ownership.workerPid)
   const worker = workers[0]
-  if (workers.length !== 1 || !worker || realpathSync(ampWorkerDataDirectory(worker.rawCommand ?? worker.command)) !== realpathSync(proof.workerDataDir))
+  if (workers.length !== 1 || !worker || realpathSync(workerDataDirectory(worker.rawCommand ?? worker.command)) !== realpathSync(proof.workerDataDir))
     throw new Error('The actual Amp tool belongs to another Worker data directory.')
   const owned = new Set(ownership.ownedPids)
   const candidates = rows.filter((row) => {
     if (!owned.has(row.pid))
       return false
     const command = row.rawCommand ?? row.command
-    const executableMatches = proof.ampExecutables.some((path) => {
-      const normalize = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value
-      if (row.executable)
-        return normalize(row.executable) === normalize(path)
-      const actual = normalize(command)
-      return [path, `"${path}"`, `'${path}'`].some((prefix) => {
-        const expected = normalize(prefix)
-        return actual === expected || actual.startsWith(`${expected} `) || actual.startsWith(`${expected}\t`)
-      })
-    })
+    const executableMatches = proof.ampExecutables.some(path => row.executable ? sameExecutablePath(row.executable, path) : commandStartsWithExecutable(command, path))
     return executableMatches && ['--execute', '--stream-json', '--stream-json-input', '--settings-file'].every(flag => flagPositions(command, flag).length === 1)
   })
   const candidate = candidates[0]

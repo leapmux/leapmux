@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
-import { ampCatalogCommandTimeout, ampCatalogPermission, ampCatalogProcess, ampExecutorToolNames, ampPidReceipt, ampSettingsPath, ampWorkerDataDirectory, ampWorkspaceMcpAwaitingApproval, ampWorkspaceMcpConfiguration, assertAmpGeneratedSettings, readAmpExecutorCatalog } from './nativeCatalog'
+import { ampCatalogCommandTimeout, ampCatalogPermission, ampCatalogProcess, ampExecutorToolNames, ampPidReceipt, ampSettingsPath, ampWorkspaceMcpAwaitingApproval, ampWorkspaceMcpConfiguration, assertAmpGeneratedSettings, readAmpExecutorCatalog } from './nativeCatalog'
 
 const calls = vi.hoisted(() => ({ processes: vi.fn(), executable: vi.fn(), current: vi.fn(), catalog: vi.fn<AmpCatalogCommand>(), send: vi.fn(), idle: vi.fn(), watch: vi.fn(), cancelWatch: vi.fn(), channel: vi.fn(), nativeAgent: vi.fn(), state: { binaryPath: '', dataDir: '', tmpDir: '', ampPath: '' } }))
 vi.mock('../helpers/processTree', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/processTree')>(), listProcesses: calls.processes }))
@@ -632,16 +632,6 @@ describe('ampCatalogCommandTimeout', () => {
   })
 })
 
-describe('ampWorkerDataDirectory', () => {
-  it.each(['-data-dir', '--data-dir'])('reads the actual last Worker argument with %s', (flag) => {
-    expect(ampWorkerDataDirectory(`leapmux worker ${flag} "/private/worker with spaces"`)).toBe('/private/worker with spaces')
-  })
-
-  it.each(['', 'leapmux --data-dir', 'leapmux --data-dir relative', 'leapmux --data-dir-more /private/worker', 'leapmux -data-dir /private/one --data-dir /private/two', 'leapmux --data-dir /private/worker\nother'])('refuses an absent or ambiguous data directory: %s', (command) => {
-    expect(() => ampWorkerDataDirectory(command)).toThrow('data')
-  })
-})
-
 describe('ampCatalogProcess', () => {
   it('selects only the held tool owner and excludes another Amp sibling', () => {
     const { worker, amp, tool, proof, settingsPath } = processFixture()
@@ -666,6 +656,12 @@ describe('ampCatalogProcess', () => {
     const { worker, amp, tool, proof } = processFixture()
     expect(() => ampCatalogProcess([worker, amp, { ...tool, ppid: 99 }], proof)).toThrow('matching parent')
     expect(() => ampCatalogProcess([worker, amp, tool, tool], proof)).toThrow('matching parent')
+  })
+
+  it('reads the Worker data directory when arguments follow it, as spawnRegisteredWorker orders them', () => {
+    const { worker, amp, tool, proof } = processFixture()
+    const registered = { ...worker, command: `${worker.command} --registration-key private-key --encryption-mode post-quantum` }
+    expect(ampCatalogProcess([registered, amp, tool], proof)).toMatchObject({ workerPid: 10, ampPid: 20 })
   })
 
   it('refuses another Worker data directory despite a matching executable', () => {

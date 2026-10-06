@@ -206,6 +206,12 @@ describe('assertKimiCatalogOwnership', () => {
     await expect(checkOwnership(receipt(), processRows, workerExecutable, workerDataDir)).resolves.toBeUndefined()
   })
 
+  it('reads the private Worker directory when arguments follow it, as spawnRegisteredWorker orders them', async () => {
+    const rows = processRows.map(row => row.pid === 10 ? { ...row, command: `${row.command} --registration-key private-key --encryption-mode post-quantum` } : row)
+    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).resolves.toBeUndefined()
+    await expect(checkOwnership(receipt(), rows, workerExecutable, `${workerDataDir}-other`)).rejects.toThrow('exact private Worker')
+  })
+
   it('rejects a different native child parent and a missing wrapper', async () => {
     await expect(checkOwnership(receipt(), processRows.map(row => row.pid === 30 ? { ...row, ppid: 40 } : row), workerExecutable, workerDataDir)).rejects.toThrow('wrapper')
     await expect(checkOwnership(receipt(), processRows.filter(row => row.pid !== 20), workerExecutable, workerDataDir)).rejects.toThrow('wrapper')
