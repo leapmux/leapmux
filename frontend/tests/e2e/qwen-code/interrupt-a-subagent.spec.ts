@@ -1,7 +1,8 @@
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
-import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
+import { exerciseChildInterrupt } from '../helpers/subagentRegistry'
 import { qwenTest } from '../qwen-fixtures'
+import { QWEN_HELD_CHILD_TURN } from './childScenario'
 import { nativeContext } from './scenarios'
 
 /**
@@ -23,7 +24,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     // Qwen asks no session title for a child, so the task alone selects the
     // child's own turn.
     await exerciseChildInterrupt(context, {
-      childTurn: { user: HELD_CHILD_TASK },
+      childTurn: QWEN_HELD_CHILD_TURN,
     })
   })
 })

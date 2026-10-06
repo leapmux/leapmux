@@ -2,6 +2,7 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { qwenTest } from '../qwen-fixtures'
+import { qwenChildTurn } from './childScenario'
 import { nativeContext } from './scenarios'
 
 /**
@@ -15,9 +16,10 @@ qwenTest.describe('Qwen Code subagent registry', () => {
   qwenTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     const { workingDir } = await openNativeAgent(context, { overrides: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } } })
+    const childTask = 'Reply with CHILD_LIVE_DONE.'
     await exerciseLiveChildTranscript(context, {
-      childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
-      childTask: 'Reply with CHILD_LIVE_DONE.',
+      childWhen: qwenChildTurn(childTask),
+      childTask,
       parentTask: 'Delegate the live child task.',
       toolProof: { read: { workingDir } },
     })

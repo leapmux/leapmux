@@ -9,6 +9,7 @@ import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, ope
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { qwenTest } from '../qwen-fixtures'
+import { qwenChildTurn } from './childScenario'
 import { QWEN_AGENT } from './scenarios'
 
 /**
@@ -24,7 +25,7 @@ const CHILD_TASK = 'Reply with the single word PONG'
 async function answerTheChild(script: ModelScript): Promise<void> {
   await script.rule({
     name: 'the child answers its one-word task',
-    when: { user: CHILD_TASK },
+    when: qwenChildTurn(CHILD_TASK),
     respond: { text: 'PONG' },
   })
 }

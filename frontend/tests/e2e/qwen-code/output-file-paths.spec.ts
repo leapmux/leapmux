@@ -24,6 +24,7 @@ import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '
 import { openWorkspace, sendMessage } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, qwenTest } from '../qwen-fixtures'
+import { qwenChildTurn } from './childScenario'
 import { qwenModelOutputPath, qwenOutputPathCommand, qwenOutputPathReceipt } from './outputFilePaths'
 import { nativeContext, QWEN_AGENT } from './scenarios'
 
@@ -148,7 +149,7 @@ for (const background of [false, true]) {
     const commandRule = 'the native child runs its output path command'
     const finishedRule = 'the native child reports its output path'
     await modelScript.rule(
-      { name: commandRule, when: { user: childTask }, respond: { toolCalls: [bashToolCall(context.provider, callId, generated.command)] }, once: true },
+      { name: commandRule, when: qwenChildTurn(childTask), respond: { toolCalls: [bashToolCall(context.provider, callId, generated.command)] }, once: true },
       { name: finishedRule, when: { body: callId }, respond: { text: 'The native child command ended.' }, once: true },
     )
     await modelScript.queue(

@@ -6,6 +6,7 @@ import { qwenWorkflowToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectOpaqueNativeWorkflowResult } from '../helpers/workflowGrouping'
 import { qwenTest } from '../qwen-fixtures'
+import { qwenChildTurn } from './childScenario'
 import { nativeContext } from './scenarios'
 
 /** How the agent of each test opens: in YOLO mode, so its workflow children run with no permission request. */
@@ -16,7 +17,8 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     await openNativeAgent(context, YOLO_OPEN)
 
-    const childPrompt = modelScript.prompt('Reply with QWEN_WORKFLOW_CHILD.')
+    const childTask = 'Reply with QWEN_WORKFLOW_CHILD.'
+    const childPrompt = modelScript.prompt(childTask)
     const script = [
       'export const meta = { name: "qwen-e2e-workflow", description: "Ask one child." }',
       'phase("Probe")',
@@ -25,7 +27,7 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
     ].join('\n')
     await modelScript.rule({
       name: 'the workflow child answers',
-      when: { user: 'Reply with QWEN_WORKFLOW_CHILD' },
+      when: qwenChildTurn(childTask),
       respond: { text: 'QWEN_WORKFLOW_CHILD' },
       once: true,
     })
@@ -44,14 +46,15 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
 qwenTest('keeps two actual native workflow units inside one opaque workflow row', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await openNativeAgent(context, YOLO_OPEN)
+  const workUnit = (label: string, task: string, answer: string) => ({ label, task, answer, prompt: modelScript.prompt(task) })
   const children = [
-    { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.'), answer: 'FIRSTNATIVEWORKUNIT' },
-    { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.'), answer: 'SECONDNATIVEWORKUNIT' },
+    workUnit('First native unit', 'Reply with FIRSTNATIVEWORKUNIT.', 'FIRSTNATIVEWORKUNIT'),
+    workUnit('Second native unit', 'Reply with SECONDNATIVEWORKUNIT.', 'SECONDNATIVEWORKUNIT'),
   ] as const
   for (const [index, child] of children.entries()) {
     await modelScript.rule({
       name: `native-work-unit-${index}`,
-      when: { user: child.prompt },
+      when: qwenChildTurn(child.task),
       respond: { text: child.answer },
       once: true,
     })
