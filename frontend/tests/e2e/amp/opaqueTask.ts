@@ -4,13 +4,13 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampToolResultReader } from '../helpers/ampToolResult'
-import { cleanupOnFailure } from '../helpers/cleanup'
+import { cleanupOnFailure, withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { requireRegistryRow } from '../helpers/subagentRegistry'
-import { messageContents, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
+import { messageContents, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 
 export interface OpaqueAmpTask {
   row: Locator
@@ -47,13 +47,12 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
   const callId = options.callId ?? `amp-task-${marker}`
   const task = options.task ?? { description: 'Run the remote counting task', prompt: `AMPREMOTETASK${marker} Count to forty-two and report the result.` }
   const agent = await currentNativeAgent(context)
-  const start = (await context.modelScript.status()).stepCount
   const release = async () => {
     await context.modelScript.releaseGateIfHeld(gate)
   }
   return cleanupOnFailure(async () => {
     await context.modelScript.rule({ name: rule, when: { user: task.prompt }, respond: { text: report, stream: { chunkChars: progress.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } } })
-    await context.modelScript.queue(
+    const start = await context.modelScript.queue(
       { toolCalls: [spawnSubagentToolCall(context.provider, callId, { description: task.description, prompt: context.modelScript.prompt(task.prompt) })] },
       { text: options.parentAnswer ?? 'The parent consumed the actual remote report.' },
     )
@@ -82,12 +81,10 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
         if (finished)
           return
         await release()
-        const completed = await context.modelScript.waitForSteps(start + 2)
+        // The second queued step answers the parent request that carries the report of the task.
+        const request = await context.modelScript.requestAt(start + 1)
         await tabById(context.page, agent.id).click()
         await waitForAgentIdle(context.page)
-        const request = completed.requests.find(value => value.stepIndex === start + 1)
-        if (!request)
-          throw new Error('The remote Amp Task report reached no native parent request.')
         expect((await ampToolResultReader(context)(request, callId)).text).toContain(report)
         await expect(messageContents(context.page).filter({ hasText: report }).first()).toBeVisible()
         await expect(row).toHaveAttribute('data-status', 'completed')
@@ -95,4 +92,22 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
       },
     }
   }, release)
+}
+
+/**
+ * Hold an actual remote Amp Task, run `proveLimit` while the task runs, and finish the task even when the proof fails.
+ * After a reload, require one saved task that holds no child agent: the stream of Amp carries the remote Task call and
+ * its report without a child session ID.
+ */
+export async function exerciseOpaqueAmpTaskLimit(
+  context: ManagedNativeScenarioContext,
+  proveLimit: (task: OpaqueAmpTask) => Promise<void>,
+): Promise<void> {
+  const task = await openOpaqueAmpTask(context)
+  await withCleanup(() => proveLimit(task), task.finish)
+  await context.page.reload()
+  await waitForSettingsHydrated(context.page, 'permissionMode')
+  const saved = await readNativeSidebarSnapshot(context, task.parentId)
+  expect(saved.backgroundTasks).toHaveLength(1)
+  expect(saved.backgroundTasks[0]?.childAgentId).toBe('')
 }
