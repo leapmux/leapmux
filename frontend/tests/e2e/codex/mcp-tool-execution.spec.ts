@@ -1,9 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { agentOpenOptions } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -12,7 +10,7 @@ import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
-import { newProviderWorkingDir } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { CODEX_AGENT, nativeContext } from './scenarios'
 
 codexTest('executes the native MCP echo tool and preserves its argument refusal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
@@ -30,7 +28,7 @@ codexTest('executes the native MCP echo tool and preserves its argument refusal'
   await withCleanup(async () => {
     const server = writeMcpFormServer(codexHome, 'form-server.mjs', { receiptLog, expectedEchoArguments })
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
+    await openProviderAgent(leapmuxServer, context.workspaceId, CODEX_AGENT, { workingDir: directory })
     await openWorkspace(page, context.workspaceId)
     for (const valid of [true, false]) {
       const callId = valid ? 'codex-native-mcp-accepted' : 'codex-native-mcp-refused'

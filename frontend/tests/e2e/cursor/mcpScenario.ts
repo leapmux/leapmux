@@ -5,8 +5,6 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { mcpReceiptListsTool, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -16,6 +14,7 @@ import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { hubSpawnEnv } from '../helpers/server'
 import { assistantBubbles, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 
 /** Validate Cursor's automatic decline through its actual SDK capabilities and correlated native reply. */
@@ -60,7 +59,7 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
     encoding: 'utf8',
   })
   expect(tools).toContain('ask')
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, workingDir, agentOpenOptions(context.provider))
+  await openProviderAgent(leapmuxServer, context.workspaceId, context.providerAgent, { workingDir })
   await loginViaToken(page, leapmuxServer.adminToken)
   await openWorkspace(page, context.workspaceId)
 

@@ -1,9 +1,6 @@
 import { Buffer } from 'node:buffer'
-import { agentOpenOptions } from '../agentSettings'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { expect } from '../fixtures'
-import { openAgentViaAPI } from '../helpers/api'
-import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
@@ -11,6 +8,7 @@ import { withNativeStartupWorker } from '../helpers/nativeStartupWorker'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { codebuddyReplToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 import { codebuddyReplSchema } from './toolCatalog'
 
@@ -21,7 +19,7 @@ codebuddyTest('runs native code and retains computed output and script errors af
   await withNativeStartupWorker(initial, launch, {}, async (workerId, wrapper) => {
     const server = { ...leapmuxServer, workerId }
     const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const opening = openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, newNativeWorkingDir(context, 'native-code-execution-'), agentOpenOptions(context.provider))
+    const opening = openProviderAgent(server, context.workspaceId, context.providerAgent, { directoryPrefix: 'native-code-execution-' })
     const entered = await Promise.race([wrapper.entry, opening.then(() => wrapper.entry)])
     expect(entered.argv).toContain('--input-format')
     await wrapper.release()
