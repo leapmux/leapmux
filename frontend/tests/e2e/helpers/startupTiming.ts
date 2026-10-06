@@ -32,14 +32,6 @@ export const LTE_NETWORK_PROFILE = {
   uploadThroughput: (3 * 1024 * 1024) / 8,
 } as const
 
-/** Lighthouse Slow 4G -- optional stress profile, not the primary ranker. */
-export const SLOW_4G_NETWORK_PROFILE = {
-  label: 'Slow 4G (150ms RTT, 1.6 Mbps down, 750 Kbps up)',
-  latency: 150,
-  downloadThroughput: (1.6 * 1024 * 1024) / 8,
-  uploadThroughput: (750 * 1024) / 8,
-} as const
-
 export interface NetworkProfile {
   label: string
   latency: number

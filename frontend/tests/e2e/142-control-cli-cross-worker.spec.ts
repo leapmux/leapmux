@@ -44,17 +44,8 @@ const test = base.extend<{ crossWorker: CrossWorkerEnv }, {
   // eslint-disable-next-line no-empty-pattern -- Playwright requires first arg to be a destructuring pattern
   crossWorkerHarness: [async ({}, use) => {
     const harness = await startMultiWorkerHarness(2)
-    // The CLI's credential file uses the hub URL as its lookup key,
-    // and the harness's hub data dir is what `admin api-token issue`
-    // opens. Pass both via the focused token-source interface.
-    const cli = await mintCLITokenForAdmin({
-      hubUrl: harness.hubUrl,
-      adminToken: harness.adminToken,
-      // Standalone `leapmux hub` doesn't split the data dir the way
-      // `dev` mode does (`<root>/hub` + `<root>/worker`); the hub
-      // opens hubDataDir verbatim.
-      dataDir: harness.hubDataDir,
-    })
+    // The CLI's credential file uses the hub URL as its lookup key.
+    const cli = await mintCLITokenForAdmin(harness)
     try {
       await use({ harness, cli })
     }

@@ -8,14 +8,12 @@
  * The resulting CLI requests use the same credential path as a user login, without repeating the OAuth login flow.
  */
 
-import type { ChildProcess } from 'node:child_process'
 import { execFile } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { TEST_ADMIN_PASSWORD } from './api'
-import { spawnTestProcess } from './processRegistry'
+import { elevateSessionViaAPI, getCurrentUser, TEST_ADMIN_PASSWORD } from './api'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 
@@ -35,19 +33,13 @@ export interface CLIConfigDir {
 
 /**
  * The hub details that mintCLITokenForAdmin requires.
- * Both ServerInfo and MultiWorkerHarness satisfy this interface without adapting unrelated fixture fields.
+ * ServerInfo, DevServerHandle, and MultiWorkerHarness satisfy this interface without an adapter.
  */
 export interface CLITokenSource {
   /** http(s) URL the hub listens on. */
   hubUrl: string
-  /** Session cookie (e.g. `leapmux-session=…`) for the admin user. */
+  /** Session cookie (e.g. `leapmux-session=…`) for the admin user, whose password is TEST_ADMIN_PASSWORD. */
   adminToken: string
-  /** Data dir the running hub opens. Kept for the interface's callers. */
-  dataDir: string
-  /** Admin password; when set the mint logs in itself for a fresh session. */
-  adminPassword?: string
-  /** Admin username; when set the mint logs in itself for a fresh session. */
-  adminUsername?: string
 }
 
 /**
@@ -81,29 +73,23 @@ const E2E_CLI_SCOPES = [
  * Issue an administrator API token through the hub and write it in a new private credential directory.
  * Return the directory and token for later CLI requests. This avoids repeating the device-code or local-redirect login flow.
  * The recover command supports bootstrap only. Token issuance uses AdminUserService/IssueAPIToken.
- * Use a fresh login when the caller supplies credentials. Otherwise, use its adminToken cookie.
+ * The token belongs to the user of the adminToken session, and the credential file targets source.hubUrl.
  */
-export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
-  /** Override the hub URL written into the credential file (defaults to source.hubUrl). */
-  hubURL?: string
-  /** User ID to mint the token for. Defaults to the admin user. */
-  userID?: string
-}): Promise<CLIConfigDir> {
-  const userID = options?.userID ?? await fetchAdminUserID(source)
-  const hubURL = options?.hubURL ?? source.hubUrl
-
-  const cookie = source.adminPassword && source.adminUsername
-    ? await loginForMint(source.hubUrl, source.adminUsername, source.adminPassword)
-    : source.adminToken
-  // Elevate the issuing session before requesting an admin credential, as the OAuth consent flow does.
+export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIConfigDir> {
+  const hubURL = source.hubUrl
+  const cookie = source.adminToken
+  const user = await mintStep('read the administrator', () => getCurrentUser(hubURL, cookie))
+  if (!user.id || !user.username)
+    throw new Error('mintCLITokenForAdmin: the session user has no ID or username.')
+  const userID = user.id
+  // IssueAPIToken and OAuth consent require a recent factor check. A session does not start elevated.
+  // Elevate the issuing session before the request, as the OAuth consent flow does.
   // The request below gives the new credential a one-hour lifetime.
-  // Elevate both a fresh login and a supplied signup session. Neither starts elevated.
-  // Use the supplied password or the shared administrator fixture password.
-  await elevateForMint(source.hubUrl, cookie, source.adminPassword ?? TEST_ADMIN_PASSWORD)
+  await mintStep('elevate the issuing session', () => elevateSessionViaAPI(hubURL, cookie, TEST_ADMIN_PASSWORD))
 
   // Connect-JSON: the body is the message object directly (int64s as
   // strings), and the response JSON is the message object.
-  const res = await fetch(`${source.hubUrl}/leapmux.v1.AdminUserService/IssueAPIToken`, {
+  const res = await fetch(`${hubURL}/leapmux.v1.AdminUserService/IssueAPIToken`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
     body: JSON.stringify({
@@ -143,7 +129,7 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     refresh_token: '',
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
     user_id: userID,
-    username: 'admin',
+    username: user.username,
     // This local scope list lets auth status describe the grant without a request.
     // The hub remains authoritative. Keep the list equal to the issuance request.
     scope: E2E_CLI_SCOPES.join(' '),
@@ -153,9 +139,19 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   // Elevate the new credential separately from the session that issued it.
   // Hub settings and some admin procedures check the acting credential, so the issuer elevation does not transfer.
   // The required approval uses a browser ceremony. The fixture performs that ceremony for the CLI.
-  await elevateMintedCredential(source.hubUrl, bearer, cookie)
+  await elevateMintedCredential(hubURL, bearer, cookie)
 
   return { path: configDir, hubURL, bearer, userID }
+}
+
+/** Run one setup step of mintCLITokenForAdmin, and name the step in its failure. */
+async function mintStep<T>(step: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  }
+  catch (cause) {
+    throw new Error(`mintCLITokenForAdmin: could not ${step}`, { cause })
+  }
 }
 
 /**
@@ -192,48 +188,6 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
   if (approved.status !== 200) {
     throw new Error(`mintCLITokenForAdmin: activate ${approved.status}: ${await approved.text()}`)
   }
-}
-
-/**
- * Prove a factor on the session before token issuance.
- * IssueAPIToken and OAuth consent require a recent factor check. Login alone is insufficient.
- * An existing elevation can be replaced with a new elevation period.
- */
-async function elevateForMint(hubUrl: string, cookie: string, password: string): Promise<void> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.UserService/ElevateSession`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-    body: JSON.stringify({ currentPassword: password }),
-  })
-  if (!res.ok) {
-    throw new Error(`mintCLITokenForAdmin: ElevateSession ${res.status}: ${await res.text()}`)
-  }
-}
-
-/**
- * A fresh admin session for the mint: POST the Connect-JSON Login and keep
- * the `leapmux-session=…` Set-Cookie value verbatim.
- */
-async function loginForMint(hubUrl: string, username: string, password: string): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/Login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-    redirect: 'manual',
-  })
-  if (!res.ok) {
-    throw new Error(`mintCLITokenForAdmin: Login ${res.status}`)
-  }
-  const setCookie = res.headers.get('set-cookie')
-  if (!setCookie?.includes('leapmux-session=')) {
-    throw new Error('mintCLITokenForAdmin: no session cookie in Login response')
-  }
-  for (const part of setCookie.split(';')) {
-    const trimmed = part.trim()
-    if (trimmed.startsWith('leapmux-session='))
-      return trimmed
-  }
-  throw new Error('mintCLITokenForAdmin: malformed session cookie in Login response')
 }
 
 /**
@@ -288,52 +242,6 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
 }
 
 /**
- * Spawn a long-running CLI subcommand (e.g. `events`,
- * `agent messages --follow`) and return the child process plus an
- * async iterator over JSON-line events. The caller must kill the process
- * when it finishes.
- */
-export function streamCLI(cfg: CLIConfigDir, args: string[]): {
-  child: ChildProcess
-  events: AsyncIterable<unknown>
-  done: Promise<void>
-} {
-  const { binaryPath } = getGlobalState()
-  const env = scrubLeapMuxEnv({
-    ...process.env,
-    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
-  })
-  const child = spawnTestProcess(binaryPath, ['control', ...withHubFlag(args, cfg.hubURL)], { env })
-
-  const events = (async function* () {
-    let buf = ''
-    for await (const chunk of child.stdout!) {
-      buf += chunk.toString()
-      let nl = buf.indexOf('\n')
-      while (nl !== -1) {
-        const line = buf.slice(0, nl).trim()
-        buf = buf.slice(nl + 1)
-        nl = buf.indexOf('\n')
-        if (!line)
-          continue
-        try {
-          yield JSON.parse(line) as unknown
-        }
-        catch {
-          // Skip non-JSON lines (e.g. logs leaking to stdout).
-        }
-      }
-    }
-  })()
-
-  const done = new Promise<void>((resolve) => {
-    child.on('close', () => resolve())
-  })
-
-  return { child, events, done }
-}
-
-/**
  * Run `leapmux control tab open --type=agent` and return the tab_id
  * the hub minted. The CLI envelope is `{"data": ...}` where the
  * payload has snake_case keys including `tab_id`, `workspace_id`,
@@ -377,25 +285,6 @@ export class CLIError extends Error {
 // ──────────────────────────────────────────────
 // Internals
 // ──────────────────────────────────────────────
-
-/**
- * Resolve the admin user's ID by calling the hub's GetCurrentUser
- * endpoint with the seeded admin cookie. This is one fetch during setup,
- * and it avoids re-implementing the admin-bootstrap query.
- */
-async function fetchAdminUserID(source: CLITokenSource): Promise<string> {
-  const res = await fetch(`${source.hubUrl}/leapmux.v1.AuthService/GetCurrentUser`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Cookie': source.adminToken },
-    body: '{}',
-  })
-  if (!res.ok)
-    throw new Error(`fetchAdminUserID: GetCurrentUser ${res.status}`)
-  const data = await res.json() as { user?: { id?: string } }
-  if (!data.user?.id)
-    throw new Error('fetchAdminUserID: no user.id in response')
-  return data.user.id
-}
 
 /**
  * Parse the CLI's JSON envelope. Both success (`{"data": …}`) and

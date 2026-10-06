@@ -45,7 +45,6 @@ import {
   droidExecuteToolCall,
   droidScriptToolCall,
   droidToolSearchToolCall,
-  droidWaitForScriptToolCall,
   editToolCall,
   enterPlanModeToolCall,
   exitPlanModeFromFileToolCall,
@@ -63,7 +62,6 @@ import {
   kimiReadMediaFileToolCall,
   kiroCompleteTodosToolCall,
   kiroSwitchToExecutionToolCall,
-  kiroToolSearchToolCall,
   lettaMcpCatalogArguments,
   lettaMcpCatalogToolCall,
   lettaMcpCliToolCall,
@@ -369,27 +367,6 @@ describe('codebuddyFindToolsToolCall', () => {
   })
 })
 
-describe('kiroToolSearchToolCall', () => {
-  it('preserves an empty native query and every optional field', () => {
-    expect(kiroToolSearchToolCall('native-search')).toEqual({ id: 'native-search', name: 'tool_search', arguments: {} })
-    const options = { toolId: 'server_한글::tool-name', query: '', maxResults: 100 }
-    expect(kiroToolSearchToolCall('native-search', options)).toEqual({
-      id: 'native-search',
-      name: 'tool_search',
-      arguments: { tool_id: options.toolId, query: '', max_results: 100 },
-    })
-    expect(options).toEqual({ toolId: 'server_한글::tool-name', query: '', maxResults: 100 })
-  })
-
-  it.each(['', 'tool', '::tool', 'server::', 'server::tool::extra', 'server name::tool'])('rejects an incomplete native tool identity: %s', (toolId) => {
-    expect(() => kiroToolSearchToolCall('native-search', { toolId })).toThrow('exact server and tool identity')
-  })
-
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid native result maximum: %s', (maxResults) => {
-    expect(() => kiroToolSearchToolCall('native-search', { maxResults })).toThrow('positive safe result maximum')
-  })
-})
-
 describe('droidToolSearchToolCall', () => {
   it('keeps exact selection text and the native call ID with an optional maximum', () => {
     expect(droidToolSearchToolCall('search', 'select:Read,Execute', 100)).toEqual({
@@ -424,22 +401,6 @@ describe('droidScriptToolCall', () => {
 
   it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid observation period: %s', (waitForMs) => {
     expect(() => droidScriptToolCall('script', 'return 0;', waitForMs)).toThrow('nonnegative milliseconds')
-  })
-})
-
-describe('droidWaitForScriptToolCall', () => {
-  it('keeps a zero timeout and native script identity and supports explicit kill', () => {
-    expect(droidWaitForScriptToolCall('wait', { toolCallId: 'script', timeoutMs: 0 })).toEqual({ id: 'call_wait', name: 'WaitForScript', arguments: { toolCallId: 'call_script', timeoutMs: 0 } })
-    expect(droidWaitForScriptToolCall('wait', { toolCallId: 'call_script', kill: true }).arguments).toEqual({ toolCallId: 'call_script', kill: true })
-  })
-
-  it('rejects an absent script identity and incompatible control fields', () => {
-    expect(() => droidWaitForScriptToolCall('wait', { toolCallId: '' })).toThrow('exact tool call ID')
-    expect(() => droidWaitForScriptToolCall('wait', { toolCallId: 'script', kill: true, timeoutMs: 0 })).toThrow('combine kill and timeout')
-  })
-
-  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid timeout: %s', (timeoutMs) => {
-    expect(() => droidWaitForScriptToolCall('wait', { toolCallId: 'script', timeoutMs })).toThrow('nonnegative milliseconds')
   })
 })
 

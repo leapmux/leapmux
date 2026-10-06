@@ -45,7 +45,7 @@ export const AMP_E2E_THREADS_PATH = '/__e2e/amp/threads'
 const RIVET_PROTOCOL = 'rivet'
 
 /** The tools that Amp runs on its SERVER as a subagent. The mock answers each with a child inference. */
-export const AMP_SERVER_SUBAGENT_TOOLS: ReadonlySet<string> = new Set(Object.values(AMP_SUBAGENT_TOOL))
+const AMP_SERVER_SUBAGENT_TOOLS: ReadonlySet<string> = new Set(Object.values(AMP_SUBAGENT_TOOL))
 
 /**
  * The executor's name for a tool whose name differs from the model's.

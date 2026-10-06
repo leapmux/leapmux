@@ -1,5 +1,8 @@
+import type { MockModelScenarioInput } from './mockModelScenario'
+import type { MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import { Buffer } from 'node:buffer'
+import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import {
@@ -10,7 +13,6 @@ import {
   registerAmbientScenario,
   registerMockModelScenario,
   removeMockModelScenario,
-  withMockModelScenario,
 } from './mockModelScenario'
 import { AMBIENT_SCENARIO_ID, SCENARIO_MARKER } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
@@ -26,6 +28,24 @@ async function startServer(): Promise<MockModelServer> {
   const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
   servers.push(server)
   return server
+}
+
+/** The scenario that {@link withScenario} gives a test body. */
+interface TestScenario {
+  id: string
+  prompt: (text: string) => string
+  status: () => Promise<MockModelScenarioStatus>
+}
+
+/**
+ * Register one scenario, run the test body, and require the server to remove the scenario as complete.
+ * A body that leaves a step unconsumed or causes an unexpected request fails the removal check.
+ */
+async function withScenario(server: MockModelServer, script: MockModelStep[] | MockModelScenarioInput, run: (scenario: TestScenario) => Promise<void>): Promise<void> {
+  const id = `scenario-${randomUUID()}`
+  await registerMockModelScenario(server.url, id, script)
+  await run({ id, prompt: text => mockScenarioPrompt(id, text), status: () => readScenarioStatus(server.url, id) })
+  expect(await removeMockModelScenario(server.url, id)).toBeUndefined()
 }
 
 function complete(server: MockModelServer, messages: Array<Record<string, unknown>>): Promise<string> {
@@ -66,7 +86,7 @@ describe('mockScenarioPrompt', () => {
 describe('HOUSEKEEPING_RULES', () => {
   it('answers a plain title prompt without consuming a step', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+    await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const marked = scenario.prompt('Inspect the parser.')
       const title = await complete(server, [
         { role: 'system', content: 'Generate a short title (four words or less) for this conversation.' },
@@ -80,7 +100,7 @@ describe('HOUSEKEEPING_RULES', () => {
 
   it('answers a JSON title prompt with a JSON object', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+    await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const marked = scenario.prompt('Inspect the parser.')
       const title = await complete(server, [
         { role: 'system', content: 'Generate a concise title.\nReturn exactly one valid JSON object: {"title":"..."}' },
@@ -93,7 +113,7 @@ describe('HOUSEKEEPING_RULES', () => {
 
   it('answers a title prompt a provider sends as a user turn', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+    await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const title = await complete(server, [
         { role: 'user', content: `Generate a title for this session.\n\n${SCENARIO_MARKER}${scenario.id}` },
       ])
@@ -106,7 +126,7 @@ describe('HOUSEKEEPING_RULES', () => {
   // offers no switch for that call.
   it('answers Grok\'s forced title tool with a call of that tool', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+    await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const marked = scenario.prompt('Inspect the parser.')
       const response = await fetch(`${server.url}/v1/chat/completions`, {
         method: 'POST',
@@ -134,7 +154,7 @@ describe('HOUSEKEEPING_RULES', () => {
   // prompt and its marker in the request.
   it('answers Kiro\'s intent classification without consuming a step', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+    await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const kiroTurn = (agentMode: string) => fetch(`${server.url}/`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'KiroRuntimeService.GenerateAssistantResponse' },
@@ -155,7 +175,7 @@ describe('HOUSEKEEPING_RULES', () => {
 
   it('leaves a coding system prompt that mentions Title Case to the queue', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'Primary answer' }], async (scenario) => {
+    await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const answer = await complete(server, [
         { role: 'system', content: 'You are a coding agent. Keep headers short and write them in **Title Case**.' },
         { role: 'user', content: scenario.prompt('Review the parser.') },
@@ -166,7 +186,7 @@ describe('HOUSEKEEPING_RULES', () => {
 
   it('lets a test rule win over the housekeeping rule for the same turn', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, {
+    await withScenario(server, {
       steps: [{ text: 'Primary answer' }],
       rules: [{ name: 'own-title', when: { system: 'generate a short title' }, respond: { text: 'Chosen title' } }],
     }, async (scenario) => {
@@ -182,7 +202,7 @@ describe('HOUSEKEEPING_RULES', () => {
 
   it('makes every request consume a step when a test drops the defaults', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, {
+    await withScenario(server, {
       steps: [{ text: 'Only step' }],
       housekeeping: [],
     }, async (scenario) => {
@@ -196,64 +216,6 @@ describe('HOUSEKEEPING_RULES', () => {
 
   it('states one name for each rule, so a status counts them unambiguously', () => {
     expect(new Set(HOUSEKEEPING_RULES.map(rule => rule.name)).size).toBe(HOUSEKEEPING_RULES.length)
-  })
-})
-
-describe('withMockModelScenario', () => {
-  it('runs and removes a complete scenario', async () => {
-    const server = await startServer()
-    let id = ''
-    const result = await withMockModelScenario(server.url, [{ text: 'Client response' }], async (scenario) => {
-      id = scenario.id
-      expect(await complete(server, [{ role: 'user', content: scenario.prompt('Run.') }])).toBe('Client response')
-      return 'done'
-    })
-
-    expect(result).toBe('done')
-    expect((await fetch(`${server.url}/__e2e/scenarios/${id}`)).status).toBe(404)
-  })
-
-  it('derives a script from its generated scenario identifier', async () => {
-    const server = await startServer()
-    await withMockModelScenario(server.url, scenario => [{ text: scenario.id }], async (scenario) => {
-      expect(await complete(server, [{ role: 'user', content: scenario.prompt('Run.') }])).toBe(scenario.id)
-    })
-  })
-
-  it('reports an unconsumed script with its status and removes the scenario', async () => {
-    const server = await startServer()
-    let id = ''
-    await expect(withMockModelScenario(server.url, [{ text: 'A' }, { text: 'B' }], async (scenario) => {
-      id = scenario.id
-      await complete(server, [{ role: 'user', content: scenario.prompt('Run.') }])
-    })).rejects.toThrow('1 of 2 steps consumed, 0 unexpected requests')
-    expect((await fetch(`${server.url}/__e2e/scenarios/${id}`)).status).toBe(404)
-  })
-
-  it('reports an unexpected request even when every step was consumed', async () => {
-    const server = await startServer()
-    await expect(withMockModelScenario(server.url, [{ text: 'A' }], async (scenario) => {
-      const marked = scenario.prompt('Run.')
-      await complete(server, [{ role: 'user', content: marked }])
-      expect((await fetch(`${server.url}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ messages: [{ role: 'user', content: marked }] }),
-      })).status).toBe(409)
-    })).rejects.toThrow('1 unexpected request')
-  })
-
-  it('preserves a callback failure and removes its scenario', async () => {
-    const server = await startServer()
-    let id = ''
-    const failure = new Error('scenario callback failed')
-    const result = withMockModelScenario(server.url, [{ text: 'Unused response' }], async (scenario) => {
-      id = scenario.id
-      throw failure
-    }).catch(error => error)
-
-    expect(await result).toBe(failure)
-    expect((await fetch(`${server.url}/__e2e/scenarios/${id}`)).status).toBe(404)
   })
 })
 
@@ -370,7 +332,7 @@ describe('native Claude Auto preflight', () => {
 describe('native rule priority selection', () => {
   it('leaves a different model protocol in the content queue despite both classifier signatures', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'The actual content turn.' }], async (scenario) => {
+    await withScenario(server, [{ text: 'The actual content turn.' }], async (scenario) => {
       expect(await complete(server, [
         { role: 'system', content: 'You are a security monitor for autonomous AI coding agents.' },
         { role: 'user', content: scenario.prompt('Respond with <severity>N</severity> ONLY.') },
@@ -380,7 +342,7 @@ describe('native rule priority selection', () => {
   })
   it('keeps declaration order and once guards within each priority', async () => {
     const server = await startServer()
-    await withMockModelScenario(server.url, {
+    await withScenario(server, {
       steps: [{ text: 'The original ordered turn.' }],
       rules: [
         { name: 'normal-first', priority: 'normal', when: { user: 'Select a rule' }, respond: { text: 'Normal first.' } },
@@ -404,7 +366,7 @@ describe('native rule priority selection', () => {
     { system: 'You are a security monitor for autonomous AI coding agents.', user: 'Answer this normal coding prompt.' },
   ])('leaves a classifier lookalike in the content queue: $system', async ({ system, user }) => {
     const server = await startServer()
-    await withMockModelScenario(server.url, [{ text: 'The actual content turn.' }], async (scenario) => {
+    await withScenario(server, [{ text: 'The actual content turn.' }], async (scenario) => {
       expect(await completeAnthropic(server, system, scenario.prompt(user))).toBe('The actual content turn.')
       expect((await scenario.status()).ruleMatches['claude-auto-harm'] ?? 0).toBe(0)
     })

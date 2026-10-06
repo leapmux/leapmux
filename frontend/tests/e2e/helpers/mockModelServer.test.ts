@@ -1,4 +1,4 @@
-import type { MockModelScript } from './mockModelScenario'
+import type { MockModelScenarioInput } from './mockModelScenario'
 import type { MockModelCredential, MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import { Buffer } from 'node:buffer'
@@ -36,7 +36,7 @@ async function startServer(): Promise<MockModelServer> {
   return server
 }
 
-async function registerScenario(server: MockModelServer, id: string, script: MockModelScript): Promise<void> {
+async function registerScenario(server: MockModelServer, id: string, script: MockModelScenarioInput): Promise<void> {
   await registerRawScenario(server, id, script)
 }
 

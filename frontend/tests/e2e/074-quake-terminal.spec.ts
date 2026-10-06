@@ -5,7 +5,6 @@ import { test as base, expect } from './fixtures'
 import { listWorkspacesViaAPI, openAgentViaAPI } from './helpers/api'
 import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { createTestDirectory } from './helpers/runDirectory'
-import { hubDataDir } from './helpers/server'
 import { getTerminalText, waitForTerminalReady } from './helpers/terminal'
 import { loginViaToken, openTerminalViaUI, openWorkspace, setInitialBrowserPref, waitForActiveTabContext } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
@@ -106,11 +105,6 @@ async function withQuakePref(page: Page, server: ServerInfo, field: string, valu
   await page.reload()
   await openWorkspace(page, workspaceId)
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
-}
-
-/** The command-line interface (CLI) credential source for this fixture's Hub. */
-function cliTokenSource(server: ServerInfo) {
-  return { hubUrl: server.hubUrl, adminToken: server.adminToken, dataDir: hubDataDir(server.dataDir) }
 }
 
 /** The panel's parent clip determines its containing area and size. */
@@ -642,7 +636,7 @@ test.describe('Quake-mode terminal', () => {
    */
   test('moves the panel from the Control CLI, in every open browser', async ({ page, browser, quakeServer }) => {
     const { workspaceId, workingDir } = await openAgentTab(page, quakeServer)
-    const cli = await mintCLITokenForAdmin(cliTokenSource(quakeServer))
+    const cli = await mintCLITokenForAdmin(quakeServer)
 
     const context = await browser.newContext({ baseURL: quakeServer.hubUrl })
     const second = await context.newPage()

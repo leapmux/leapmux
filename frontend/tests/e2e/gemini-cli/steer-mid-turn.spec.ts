@@ -1,7 +1,6 @@
 import { expect } from '@playwright/test'
 import { geminiTest } from '../gemini-fixtures'
 import { withCleanup } from '../helpers/cleanup'
-import { releaseNativeTurnGate } from '../helpers/nativeLifecycle'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
@@ -23,7 +22,7 @@ geminiTest('keeps a queued message in the input queue and offers no steer until 
     await expect(queued.getByRole('button', { name: 'Preempt' })).toBeVisible()
     await expect(steerButton(queued)).toHaveCount(0)
     expect((await modelScript.status()).requests.some(row => row.stepIndex === 1)).toBe(false)
-    await releaseNativeTurnGate(modelScript, gate)
+    await modelScript.releaseGateIfHeld(gate)
     const status = await modelScript.waitForSteps(2)
     await waitForAgentIdle(page)
     expect(JSON.stringify(status.requests.find(row => row.stepIndex === 0)?.body)).not.toContain('QUEUEDGEMINIINPUT')
@@ -31,5 +30,7 @@ geminiTest('keeps a queued message in the input queue and offers no steer until 
     await expect(assistantBubbles(page).filter({ hasText: 'The first native turn completed.' })).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'The queued native turn completed.' })).toBeVisible()
     await expect(queued).toHaveCount(0)
-  }, () => releaseNativeTurnGate(modelScript, gate))
+  }, async () => {
+    await modelScript.releaseGateIfHeld(gate)
+  })
 })

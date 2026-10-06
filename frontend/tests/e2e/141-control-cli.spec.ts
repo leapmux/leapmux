@@ -24,32 +24,15 @@
  * op-stream fan-out reaches every subscriber, not just the originator.
  */
 
-import type { ServerInfo } from './fixtures'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { cliAgentOpen, mintCLITokenForAdmin } from './helpers/cli'
-import { hubDataDir } from './helpers/server'
 import { expectAgentTabCount, loginViaToken, openWorkspace, tabById } from './helpers/ui'
-
-/**
- * Extract a CLI-token source from `leapmuxServer`. Dev mode splits
- * the data dir into `<root>/hub` and `<root>/worker`; the admin
- * `api-token issue` command must open the hub side. Centralising the
- * path computation here keeps the spec body free of this incidental
- * detail and makes the dependency on dev-mode layout explicit.
- */
-function devModeTokenSource(server: ServerInfo): { hubUrl: string, adminToken: string, dataDir: string } {
-  return {
-    hubUrl: server.hubUrl,
-    adminToken: server.adminToken,
-    dataDir: hubDataDir(server.dataDir),
-  }
-}
 
 test.describe('control CLI live broadcast', () => {
   test('single browser observes CLI-driven agent open', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const cli = await mintCLITokenForAdmin(devModeTokenSource(leapmuxServer))
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
 
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `cli-${Date.now()}`)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
@@ -76,7 +59,7 @@ test.describe('control CLI live broadcast', () => {
 
   test('two browsers viewing the same workspace both reflect the broadcast', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const cli = await mintCLITokenForAdmin(devModeTokenSource(leapmuxServer))
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
 
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `cli-2br-${Date.now()}`)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)

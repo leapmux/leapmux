@@ -70,6 +70,33 @@ describe('modelScriptFixtures', () => {
 })
 
 describe('startModelScript', () => {
+  // A cleanup that releases a gate runs after the native client may have cancelled the gated request.
+  // The cancelled request leaves the gate with nothing to release, and that cleanup must not fail.
+  it('reports no release, and does not fail, for a gated response that the client cancelled', async () => {
+    const server = await createMockModelServer({ models: ['native-cleanup-unit'] })
+    servers.push(server)
+    const { script, finish } = await startModelScript(server.url)
+    const controller = new AbortController()
+    try {
+      await script.queue({ text: 'The interrupted answer must not complete.', gate: 'native-cancelled-response' })
+      const pending = fetch(`${server.url}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': 'leapmux-e2e-model-key' },
+        body: JSON.stringify({ model: 'native-cleanup-unit', max_tokens: 100, stream: true, messages: [{ role: 'user', content: script.prompt('Hold the native cleanup test response.') }] }),
+        signal: controller.signal,
+      }).then(() => null, error => error)
+      await script.waitForGate('native-cancelled-response')
+      controller.abort()
+      await pending
+      await expect.poll(async () => (await script.status()).pendingGates).toEqual([])
+      await expect(script.releaseGateIfHeld('native-cancelled-response')).resolves.toBe(false)
+    }
+    finally {
+      controller.abort()
+      await finish(false)
+    }
+  })
+
   it('rejects native requests that arrive immediately before an allowed queue removal', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)

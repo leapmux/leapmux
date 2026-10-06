@@ -8,7 +8,7 @@ import { validateGateName } from './mockModelScript'
 import { currentNativeAgent } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { expandBackgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal } from './subagentRegistry'
-import { answerControl, sendMessage, tabById, waitForAgentIdle, waitForControlBanner } from './ui'
+import { sendMessage, tabById, waitForAgentIdle } from './ui'
 
 export interface RunningChildOptions {
   spawn: MockModelToolCall
@@ -21,7 +21,6 @@ export interface RunningChildOptions {
   parentSteps?: readonly MockModelStep[]
   rules?: readonly MockModelRule[]
   singleRequest?: boolean
-  approveSpawn?: boolean
   allowExistingRows?: boolean
   rowText?: string
   prepare?: () => Promise<void>
@@ -101,11 +100,6 @@ export async function openRunningNativeChild(
         : [{ toolCalls: [options.spawn] }, { text: 'The native parent received its child report.' }])
     const start = await context.modelScript.queue(...parentSteps)
     await sendMessage(context.page, context.modelScript.prompt('Create the scripted native child for its capability proof.'))
-    if (options.approveSpawn) {
-      await context.modelScript.waitForSteps(start + 1)
-      await waitForControlBanner(context.page)
-      await answerControl(context.page, 'allow')
-    }
     await context.modelScript.waitForGate(options.gate)
     await options.beforeRelease?.()
     const taskId = await options.resolveTaskId?.(parent.id)

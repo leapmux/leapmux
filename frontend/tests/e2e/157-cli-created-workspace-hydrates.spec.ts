@@ -9,8 +9,6 @@
  * Only hydration replaces its generic Agent label with the assigned Agent <Name> label.
  */
 
-import type { ServerInfo } from './fixtures'
-import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import {
   createWorkspaceViaAPI,
@@ -23,15 +21,10 @@ import { loginViaToken, openWorkspace, tabById, waitForWorkspaceReady, workspace
 /** The label a tab carries only once its agent record has arrived. */
 const HYDRATED_AGENT_LABEL = /^Agent .+/
 
-/** Dev mode splits the data dir; the admin token command opens the hub side. */
-function devModeTokenSource(server: ServerInfo): { hubUrl: string, adminToken: string, dataDir: string } {
-  return { hubUrl: server.hubUrl, adminToken: server.adminToken, dataDir: join(server.dataDir, 'hub') }
-}
-
 test.describe('cli-created workspace hydrates', () => {
   test('an agent the CLI opens in a workspace created after page load still hydrates', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const cli = await mintCLITokenForAdmin(devModeTokenSource(leapmuxServer))
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
 
     // Workspace ONE exists before the browser starts, so the page has somewhere
     // to land and opens its worker channel while only this workspace exists.

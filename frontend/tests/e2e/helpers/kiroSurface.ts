@@ -92,7 +92,7 @@ async function handleKiroRemoteRpc(request: IncomingMessage, response: ServerRes
 type KiroEvent = [eventType: string, payload: Record<string, unknown>]
 
 /** The operations the surface answers, by the last segment of `X-Amz-Target`. */
-export const KIRO_OPERATION = {
+const KIRO_OPERATION = {
   GenerateAssistantResponse: 'GenerateAssistantResponse',
   ListAvailableModels: 'ListAvailableModels',
 } as const
@@ -308,7 +308,7 @@ export interface KiroSurfaceOptions {
  *
  * `body` is the JSON body of the call. The caller reads it before the call.
  */
-export async function serveKiro(request: IncomingMessage, response: ServerResponse, body: unknown, options: KiroSurfaceOptions): Promise<void> {
+async function serveKiro(request: IncomingMessage, response: ServerResponse, body: unknown, options: KiroSurfaceOptions): Promise<void> {
   const operation = kiroOperation(request)
   // Refuse a bearer that differs from the isolated E2E key, including a real login credential.
   // The request log retains the refusal. A request without a credential remains permitted.

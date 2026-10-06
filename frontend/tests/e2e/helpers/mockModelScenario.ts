@@ -3,7 +3,6 @@ import type {
   MockModelScenarioStatus,
   MockModelStep,
 } from './mockModelScript'
-import { randomUUID } from 'node:crypto'
 import { AMBIENT_SCENARIO_ID, isRecord, SCENARIO_MARKER, validateGateName, validateScenarioID } from './mockModelScript'
 
 /**
@@ -85,8 +84,12 @@ export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
   },
 ]
 
-/** A script: the ordered queue, the rules that bypass it, or both. */
-export interface MockModelScript {
+/**
+ * The input that registers or extends a scenario: the ordered queue, the rules that bypass it, or both.
+ *
+ * It is not the `ModelScript` handle that `modelScriptFixture.ts` gives a test.
+ */
+export interface MockModelScenarioInput {
   steps?: MockModelStep[]
   rules?: MockModelRule[]
   /**
@@ -103,15 +106,7 @@ export interface MockModelScript {
   housekeeping?: MockModelRule[]
 }
 
-export interface MockModelScenarioClient {
-  id: string
-  /** Mark a prompt so its model requests reach this scenario. */
-  prompt: (text: string) => string
-  /** Read the live consumption state, for a test that asserts on it mid-run. */
-  status: () => Promise<MockModelScenarioStatus>
-}
-
-type ScriptInput = MockModelStep[] | MockModelScript
+type ScriptInput = MockModelStep[] | MockModelScenarioInput
 
 /**
  * Put a scenario identifier in a user prompt so a concurrent request finds the
@@ -124,46 +119,6 @@ type ScriptInput = MockModelStep[] | MockModelScript
 export function mockScenarioPrompt(id: string, prompt: string): string {
   validateScenarioID(id)
   return `${prompt}\n\n${SCENARIO_MARKER}${id}`
-}
-
-/** Register one script, run the test body, verify consumption, and remove it. */
-export async function withMockModelScenario<T>(
-  serverURL: string,
-  script: ScriptInput | ((scenario: MockModelScenarioClient) => ScriptInput),
-  run: (scenario: MockModelScenarioClient) => Promise<T>,
-): Promise<T> {
-  const id = `scenario-${randomUUID()}`
-  const scenario: MockModelScenarioClient = {
-    id,
-    prompt: (text: string) => mockScenarioPrompt(id, text),
-    status: () => readScenarioStatus(serverURL, id),
-  }
-  await registerMockModelScenario(serverURL, id, typeof script === 'function' ? script(scenario) : script)
-
-  let result: T
-  try {
-    result = await run(scenario)
-  }
-  catch (error) {
-    try {
-      await removeMockModelScenario(serverURL, id, { force: true })
-    }
-    catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], `Model scenario ${id} and its cleanup failed`)
-    }
-    throw error
-  }
-
-  const status = await removeMockModelScenario(serverURL, id)
-  if (!status)
-    return result
-  try {
-    await removeMockModelScenario(serverURL, id, { force: true })
-  }
-  catch (cleanupError) {
-    throw new AggregateError([incompleteScenario(id, status), cleanupError], `Model scenario ${id} verification and cleanup failed`)
-  }
-  throw incompleteScenario(id, status)
 }
 
 /** Register a script under a caller-chosen identifier. */
@@ -186,7 +141,7 @@ export async function registerMockModelScenario(serverURL: string, id: string, s
  * Registration installs the default housekeeping rules first.
  */
 export async function extendMockModelScenario(serverURL: string, id: string, script: ScriptInput): Promise<void> {
-  const declared: MockModelScript = Array.isArray(script) ? { steps: script } : script
+  const declared: MockModelScenarioInput = Array.isArray(script) ? { steps: script } : script
   const response = await fetch(scenarioEndpoint(serverURL, id), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -293,7 +248,7 @@ export async function registerAmbientScenario(serverURL: string): Promise<void> 
 }
 
 function resolveScript(script: ScriptInput): { steps: MockModelStep[], rules: MockModelRule[] } {
-  const declared: MockModelScript = Array.isArray(script) ? { steps: script } : script
+  const declared: MockModelScenarioInput = Array.isArray(script) ? { steps: script } : script
   const housekeeping = declared.housekeeping ?? HOUSEKEEPING_RULES
   return {
     steps: declared.steps ?? [],
@@ -306,10 +261,4 @@ function resolveScript(script: ScriptInput): { steps: MockModelStep[], rules: Mo
 
 function scenarioEndpoint(serverURL: string, id: string): URL {
   return new URL(`/__e2e/scenarios/${encodeURIComponent(id)}`, serverURL)
-}
-
-function incompleteScenario(id: string, status: MockModelScenarioStatus): Error {
-  const unexpected = status.unexpectedRequests.length
-  const summary = `${status.nextStep} of ${status.stepCount} steps consumed, ${unexpected} unexpected request${unexpected === 1 ? '' : 's'}`
-  return new Error(`Model scenario ${id} did not consume its complete script: ${summary}.\n${JSON.stringify(status, null, 2)}`)
 }

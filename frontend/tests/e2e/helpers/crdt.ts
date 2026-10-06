@@ -61,7 +61,7 @@ export interface UserEventsSubscription {
  * once the initial `UserMaterialized` frame lands so callers can rely
  * on a stable bootstrap before triggering further hub state changes.
  */
-export async function openUserEventsSubscription(
+async function openUserEventsSubscription(
   hubUrl: string,
   cookie: string,
 ): Promise<UserEventsSubscription> {

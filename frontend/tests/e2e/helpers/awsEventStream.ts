@@ -89,18 +89,6 @@ export function encodeEventStreamEvent(eventType: string, payload: unknown): Buf
   }, Buffer.from(JSON.stringify(payload), 'utf8'))
 }
 
-/**
- * Encode one modeled EXCEPTION inside a stream: an error that arrives after the
- * response started. A client raises the error that `:exception-type` states.
- */
-export function encodeEventStreamException(exceptionType: string, payload: unknown): Buffer {
-  return encodeEventStreamMessage({
-    ':exception-type': exceptionType,
-    ':content-type': 'application/json',
-    ':message-type': 'exception',
-  }, Buffer.from(JSON.stringify(payload), 'utf8'))
-}
-
 function encodeStringHeader(name: string, value: string): Buffer {
   // `Buffer.from(name, 'ascii')` writes a character above U+007F as its low byte,
   // so a client would read a different name. Refuse it instead, and refuse a control

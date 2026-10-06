@@ -33,20 +33,6 @@ import { withAgentWorkspace } from './helpers/workspace'
 export const LETTA_E2E_SKIP_REASON: string | null = missingBinaryReason('letta', 'Letta Code E2E requires the letta CLI on PATH (https://docs.letta.com/letta-code)')
 
 /**
- * A rule that answers a turn keyed off its system prompt, for a turn Letta
- * starts by itself.
- *
- * Letta's local backend names a conversation through a housekeeping turn. A mock
- * that keyed the answer off call order would let that turn eat the step the test
- * scripted for the real one. Pass a rule of your own when a spec needs a
- * different answer; the shared `title-system` housekeeping rule covers the usual
- * title prompt.
- */
-export function lettaRule(name: string, body: string, respond: MockModelRule['respond']): MockModelRule {
-  return { name, when: { body }, respond }
-}
-
-/**
  * Letta's session-title housekeeping turn, keyed off the request body so it
  * cannot consume a scripted step whatever slot the prompt sits in.
  */

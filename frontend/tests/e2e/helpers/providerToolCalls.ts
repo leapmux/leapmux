@@ -1707,17 +1707,6 @@ export function droidScriptToolCall(id: string, script: string, waitForMs?: numb
   return { id: droidCallId(id), name: 'Script', arguments: { script, ...(waitForMs === undefined ? {} : { waitForMs }) } }
 }
 
-/** Observe or stop the exact native Droid script without combining incompatible controls. */
-export function droidWaitForScriptToolCall(id: string, options: { toolCallId: string, kill?: true, timeoutMs?: number }): MockModelToolCall {
-  if (!options.toolCallId.trim())
-    throw new Error('The native Droid script wait requires an exact tool call ID.')
-  if (options.kill && options.timeoutMs !== undefined)
-    throw new Error('The native Droid script cannot combine kill and timeout controls.')
-  if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0))
-    throw new RangeError('The native Droid script timeout requires finite nonnegative milliseconds.')
-  return { id: droidCallId(id), name: 'WaitForScript', arguments: { toolCallId: droidCallId(options.toolCallId), ...(options.kill ? { kill: true } : {}), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) } }
-}
-
 /** Invoke the disposable Pi extension that requests a native multiline editor. */
 export function piEditorProbeToolCall(id: string): MockModelToolCall {
   return { id, name: 'editor_probe', arguments: {} }
@@ -1761,23 +1750,6 @@ export function droidToolSearchToolCall(id: string, query: string, maxResults?: 
   if (maxResults !== undefined && (!Number.isSafeInteger(maxResults) || maxResults <= 0))
     throw new RangeError('The native Droid tool search requires a positive safe result maximum.')
   return { id: droidCallId(id), name: 'ToolSearch', arguments: { query, ...(maxResults === undefined ? {} : { max_results: maxResults }) } }
-}
-
-/** Discover Kiro tools through its native optional search fields. */
-export function kiroToolSearchToolCall(id: string, options: { toolId?: string, query?: string, maxResults?: number } = {}): MockModelToolCall {
-  if (options.toolId !== undefined && !/^[^:\s]+::[^:\s]+$/.test(options.toolId))
-    throw new Error('The native Kiro tool ID requires an exact server and tool identity.')
-  if (options.maxResults !== undefined && (!Number.isSafeInteger(options.maxResults) || options.maxResults <= 0))
-    throw new RangeError('The native Kiro tool search requires a positive safe result maximum.')
-  return {
-    id,
-    name: 'tool_search',
-    arguments: {
-      ...(options.toolId === undefined ? {} : { tool_id: options.toolId }),
-      ...(options.query === undefined ? {} : { query: options.query }),
-      ...(options.maxResults === undefined ? {} : { max_results: options.maxResults }),
-    },
-  }
 }
 
 /** Wait for CodeBuddy's project MCP server before its tool enters the model catalog. */
@@ -2173,11 +2145,6 @@ export function commandCodeTaskCreateToolCall(id: string, subject: string, descr
 /** Change one native Command Code task by its actual ID. */
 export function commandCodeTaskUpdateToolCall(id: string, taskId: string, status: TodoStep['status'] | 'deleted'): MockModelToolCall {
   return { id, name: COMMAND_CODE_TOOL.TaskUpdate, arguments: { taskId, status } }
-}
-
-/** Address an existing native Command Code child. */
-export function commandCodeAgentOutputToolCall(id: string, agentId: string, action: 'wait' | 'status' | 'kill'): MockModelToolCall {
-  return { id, name: COMMAND_CODE_TOOL.AgentOutput, arguments: { agent_id: agentId, action } }
 }
 
 /** Ask the native Command Code runtime to load its deferred tool schemas. */

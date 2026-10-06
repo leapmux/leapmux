@@ -1,6 +1,5 @@
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
-import type { ModelScript } from './modelScriptFixture'
 import type { NativeProcessOwnership } from './nativeProcessOwnership'
 import type { NativeResumeTexts } from './nativeResume'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
@@ -40,11 +39,6 @@ export type NativeResumeEvidence
 export interface NativeResumeResult extends NativeResumeTexts {
   /** The native model request that consumed the resumed prompt. */
   readonly request: MockModelRequestRecord
-}
-
-/** Release the native model boundary after its interrupt or close scenario. */
-export async function releaseNativeTurnGate(modelScript: Pick<ModelScript, 'releaseGateIfHeld'>, gate: string): Promise<void> {
-  await modelScript.releaseGateIfHeld(gate)
 }
 
 /** Resume a queue only when the native interruption left it paused. */
@@ -174,7 +168,7 @@ export async function exerciseInterruptTurn(
     if (options.kind === 'tool')
       writeFileSync(releaseFile, '')
     else
-      await releaseNativeTurnGate(context.modelScript, gate)
+      await context.modelScript.releaseGateIfHeld(gate)
   }
   const next = await sendNativeAnswer(context, options.continuation?.prompt ?? 'Continue after the native interruption.', options.continuation?.answer ?? `AFTERINTERRUPT${marker}`)
   expect(nativeScenarioModelContextText(context, next)).toContain(`INTERRUPTANSWER${marker}`)

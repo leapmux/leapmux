@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import {
   decodeEventStreamMessages,
   encodeEventStreamEvent,
-  encodeEventStreamException,
   encodeEventStreamMessage,
 } from './awsEventStream'
 
@@ -38,13 +37,6 @@ describe('encodeEventStreamEvent', () => {
     const frame = encodeEventStreamEvent('assistantResponseEvent', { content: 'héllo 😀' })
     expect(frame.readUInt32BE(0)).toBe(frame.byteLength)
     expect(JSON.parse(decodeEventStreamMessages(frame)[0]!.payload.toString('utf8'))).toEqual({ content: 'héllo 😀' })
-  })
-})
-
-describe('encodeEventStreamException', () => {
-  it('marks the message as an exception of its type', () => {
-    const [message] = decodeEventStreamMessages(encodeEventStreamException('ThrottlingException', { message: 'slow down' }))
-    expect(message?.headers).toEqual({ ':exception-type': 'ThrottlingException', ':content-type': 'application/json', ':message-type': 'exception' })
   })
 })
 

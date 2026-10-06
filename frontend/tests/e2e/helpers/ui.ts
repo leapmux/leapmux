@@ -2,11 +2,8 @@ import type { Locator, Page } from '@playwright/test'
 import type { ToolSpanRowPosition } from '../../../src/components/chat/model/row'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { FileSortOrder } from '../../../src/lib/fileSort'
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
-import process from 'node:process'
 import { fromJson } from '@bufbuild/protobuf'
-import { expect, test } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { permissionPresetsFor } from '../../../src/components/chat/providers/permissionPresets'
 import { permissionPresetAvailable } from '../../../src/components/chat/providerSettings'
 import { hasOptions } from '../../../src/components/chat/settingsGroups'
@@ -614,10 +611,9 @@ export const SECOND_ARITHMETIC_ANSWER_TEXT = '3333'
  * Require the `ARITHMETIC_PROMPT` answer in at least one visible assistant bubble. Check all assistant bubbles.
  * A trailing "Turn ended" divider is an agent-role bubble. `lastAssistantBubble()` can select that divider instead of the actual answer.
  */
-export async function expectAssistantAnswer(page: Page, opts?: { answer?: RegExp, timeout?: number }) {
+export async function expectAssistantAnswer(page: Page, opts?: { answer?: RegExp }) {
   const answer = opts?.answer ?? ARITHMETIC_ANSWER
-  const matches = assistantBubbles(page).filter({ hasText: answer })
-  await expect(matches).not.toHaveCount(0, opts?.timeout != null ? { timeout: opts.timeout } : undefined)
+  await expect(assistantBubbles(page).filter({ hasText: answer })).not.toHaveCount(0)
 }
 
 /**
@@ -818,17 +814,6 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
 }
 
 /**
- * Navigate to the registration page and approve the worker.
- */
-export async function approveWorkerViaUI(page: Page, token: string, name: string) {
-  await page.goto(`/register/${token}`)
-  await expect(page.getByRole('heading', { name: 'Approve Worker' })).toBeVisible()
-  await page.getByPlaceholder('e.g. my-workstation').fill(name)
-  await page.getByRole('button', { name: 'Approve' }).click()
-  await expect(page.getByText('Worker Registered Successfully')).toBeVisible()
-}
-
-/**
  * Open a new agent in the currently selected workspace.
  * Clicks the agent button in the tab bar which directly creates an agent.
  */
@@ -943,32 +928,6 @@ export async function logoutViaUI(page: Page) {
   await openAppMenu(page)
   await page.getByText('Log out').click()
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-}
-
-/**
- * Open the context menu for a workspace item in the sidebar.
- * Finds the workspace by title text, then clicks the "..." menu trigger.
- */
-export async function openWorkspaceContextMenu(page: Page, workspaceTitle: string) {
-  const item = page.locator('[data-testid^="workspace-item-"]').filter({ hasText: workspaceTitle })
-  // Hover to reveal the menu trigger (it may be hidden until hover)
-  await item.hover()
-  // Click the "..." button (DropdownMenu.Trigger inside the workspace item)
-  await item.locator('button').first().click()
-}
-
-/**
- * Take a screenshot if E2E_SCREENSHOTS=1 is set.
- * Store the screenshot under the current test's output directory.
- * Each shard and test receives its own screenshot directory.
- */
-export async function screenshotIfEnabled(page: Page, name: string) {
-  if (process.env.E2E_SCREENSHOTS !== '1')
-    return
-  const theme = process.env.E2E_THEME || 'system'
-  const path = test.info().outputPath('screenshots', theme, `${name}.png`)
-  mkdirSync(dirname(path), { recursive: true })
-  await page.screenshot({ path, fullPage: false })
 }
 
 /**
@@ -1694,23 +1653,19 @@ async function waitForSettingsGroupsOffered(page: Page, expectedGroupIds: () => 
  * Wait for a tab or the empty-tile actions or hint to prove that the workspace page is ready.
  * Use `.first()` for each locator because several tabs can be visible.
  * Without that restriction, strict mode throws. `isMaybeVisible` catches the error and returns false, which hides the actual ready state.
- * Forward `timeoutMs` to the readiness poll. Dev-mode Worker processes can need more startup time than the default assertion timeout.
  */
-export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
-  const pollOpts = timeoutMs != null ? { timeout: timeoutMs } : undefined
+export async function waitForWorkspaceReady(page: Page) {
   await expect.poll(async () => {
-    if (await page.locator('[data-testid="tab"]').first().isVisible().catch(() => false))
+    if (await isMaybeVisible(page.locator('[data-testid="tab"]').first()))
       return true
     // Mobile has no tab strip. A workspace with tabs also hides the empty-tile placeholder.
     // Its current-tab chip proves that the workspace shell rendered the tabs.
-    if (await page.locator('[data-testid="tab-chip"]').first().isVisible().catch(() => false))
+    if (await isMaybeVisible(page.locator('[data-testid="tab-chip"]').first()))
       return true
-    if (await page.locator('[data-testid="empty-tile-actions"]').first().isVisible().catch(() => false))
+    if (await isMaybeVisible(page.locator('[data-testid="empty-tile-actions"]').first()))
       return true
-    if (await page.locator('[data-testid="empty-tile-hint"]').first().isVisible().catch(() => false))
-      return true
-    return false
-  }, pollOpts).toBe(true)
+    return isMaybeVisible(page.locator('[data-testid="empty-tile-hint"]').first())
+  }).toBe(true)
 }
 
 /**
@@ -1935,12 +1890,6 @@ export async function resolvedColor(page: Page, value: string): Promise<string> 
 export async function pickTheme(scope: Locator, themeId: string): Promise<void> {
   await scope.getByTestId('theme-chooser-name').click()
   await scope.getByTestId(`theme-option-${themeId}`).click()
-}
-
-/** The theme chooser's variant menu, keyed by variant id. */
-export async function pickThemeVariant(scope: Locator, variantId: string): Promise<void> {
-  await scope.getByTestId('theme-chooser-variant').click()
-  await scope.getByTestId(`variant-option-${variantId}`).click()
 }
 
 /**

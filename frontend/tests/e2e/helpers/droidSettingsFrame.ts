@@ -8,11 +8,6 @@ export interface DroidNativeSettingsUpdate {
   autonomyLevel: string | undefined
 }
 
-/** Read one native settings event without treating missing fields as values. */
-export function parseDroidNativeSettingsUpdate(raw: string): DroidNativeSettingsUpdate | null {
-  return parseDroidNativeSettingsUpdates(raw).at(-1) ?? null
-}
-
 /** Read every native settings event in a stored row. */
 export function parseDroidNativeSettingsUpdates(raw: string): DroidNativeSettingsUpdate[] {
   let frame: unknown

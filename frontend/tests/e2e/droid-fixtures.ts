@@ -103,8 +103,3 @@ export const droidTest = base.extend<CliSkipFixture & {
 })
 
 export { expect }
-
-/** The model request that a recorded call carries. */
-export function modelOf(body: unknown): string | undefined {
-  return (body as { model?: string } | undefined)?.model
-}

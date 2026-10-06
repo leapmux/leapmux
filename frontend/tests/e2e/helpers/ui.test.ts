@@ -1,8 +1,6 @@
 import type { BrowserContext, Page, Locator as PlaywrightLocator } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionShortcutState } from './ui'
-import { Buffer } from 'node:buffer'
-import { dirname, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
@@ -36,7 +34,6 @@ import {
   isMaybeVisible,
   offeredSettingsOptions,
   rowOrderProblem,
-  screenshotIfEnabled,
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
@@ -52,14 +49,6 @@ import {
 } from './ui'
 
 const native = vi.hoisted(() => ({ agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>() }))
-const screenshots = vi.hoisted(() => ({
-  outputPath: vi.fn<(...parts: string[]) => string>(),
-  mkdir: vi.fn<typeof import('node:fs').mkdirSync>(),
-}))
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>()
-  return { ...actual, mkdirSync: screenshots.mkdir }
-})
 vi.mock('./nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativeScenario')>()
   return { ...actual, nativeAgentById: native.agent }
@@ -77,12 +66,7 @@ vi.mock('@playwright/test', async (importOriginal) => {
       })
     },
   })
-  const testWithCurrentOutput = new Proxy(actual.test, {
-    get: (target, property, receiver) => property === 'info'
-      ? () => ({ outputPath: screenshots.outputPath })
-      : Reflect.get(target, property, receiver),
-  })
-  return { ...actual, expect: firstAttempt, test: testWithCurrentOutput }
+  return { ...actual, expect: firstAttempt }
 })
 
 afterEach(() => {
@@ -90,98 +74,6 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
-  screenshots.mkdir.mockReset()
-  screenshots.outputPath.mockReset()
-})
-
-describe('screenshotIfEnabled', () => {
-  it('writes each screenshot through the current test output directory', async () => {
-    vi.stubEnv('E2E_SCREENSHOTS', '1')
-    vi.stubEnv('E2E_THEME', 'dark')
-    const outputFile = resolve('.tmp', 'ui-screenshots', 'shard-2', 'test-3', 'screenshots', 'dark', 'chat.png')
-    screenshots.outputPath.mockReset().mockReturnValue(outputFile)
-    const mkdir = screenshots.mkdir.mockReset().mockImplementation(() => undefined)
-    const screenshot = vi.fn<Page['screenshot']>().mockResolvedValue(Buffer.alloc(0))
-
-    await screenshotIfEnabled(opaqueHandle<Page>({ screenshot }), 'chat')
-
-    expect(screenshots.outputPath).toHaveBeenCalledWith('screenshots', 'dark', 'chat.png')
-    expect(mkdir).toHaveBeenCalledWith(dirname(outputFile), { recursive: true })
-    expect(screenshot).toHaveBeenCalledWith({ path: outputFile, fullPage: false })
-  })
-
-  it.each([undefined, ''])('uses the system theme when no theme is selected: %j', async (theme) => {
-    vi.stubEnv('E2E_SCREENSHOTS', '1')
-    vi.stubEnv('E2E_THEME', theme)
-    const outputFile = resolve('.tmp', 'ui-screenshots', 'shard-1', 'test-1', 'screenshots', 'system', 'chat.png')
-    screenshots.outputPath.mockReset().mockReturnValue(outputFile)
-    screenshots.mkdir.mockReset().mockImplementation(() => undefined)
-    const screenshot = vi.fn<Page['screenshot']>().mockResolvedValue(Buffer.alloc(0))
-
-    await screenshotIfEnabled(opaqueHandle<Page>({ screenshot }), 'chat')
-
-    expect(screenshots.outputPath).toHaveBeenCalledWith('screenshots', 'system', 'chat.png')
-    expect(screenshot).toHaveBeenCalledWith({ path: outputFile, fullPage: false })
-  })
-
-  it('does not access test output or the page when screenshots are disabled', async () => {
-    vi.stubEnv('E2E_SCREENSHOTS', undefined)
-    screenshots.outputPath.mockReset()
-    const mkdir = screenshots.mkdir.mockReset().mockImplementation(() => undefined)
-    const screenshot = vi.fn<Page['screenshot']>().mockResolvedValue(Buffer.alloc(0))
-
-    await screenshotIfEnabled(opaqueHandle<Page>({ screenshot }), 'chat')
-
-    expect(screenshots.outputPath).not.toHaveBeenCalled()
-    expect(mkdir).not.toHaveBeenCalled()
-    expect(screenshot).not.toHaveBeenCalled()
-  })
-
-  it('returns the screenshot error without losing its test output destination', async () => {
-    vi.stubEnv('E2E_SCREENSHOTS', '1')
-    vi.stubEnv('E2E_THEME', 'system')
-    const outputFile = resolve('.tmp', 'ui-screenshots', 'shard-1', 'test-1', 'screenshots', 'system', 'chat.png')
-    screenshots.outputPath.mockReset().mockReturnValue(outputFile)
-    screenshots.mkdir.mockReset().mockImplementation(() => undefined)
-    const failure = new Error('The page closed before the screenshot.')
-    const screenshot = vi.fn<Page['screenshot']>().mockRejectedValue(failure)
-
-    await expect(screenshotIfEnabled(opaqueHandle<Page>({ screenshot }), 'chat')).rejects.toBe(failure)
-
-    expect(screenshot).toHaveBeenCalledWith({ path: outputFile, fullPage: false })
-  })
-
-  it('rejects an escaped destination before creating a screenshot directory or taking a screenshot', async () => {
-    vi.stubEnv('E2E_SCREENSHOTS', '1')
-    vi.stubEnv('E2E_THEME', 'system')
-    const failure = new Error('The screenshot path escapes the current test output directory.')
-    screenshots.outputPath.mockImplementation(() => {
-      throw failure
-    })
-    const screenshot = vi.fn<Page['screenshot']>().mockResolvedValue(Buffer.alloc(0))
-
-    await expect(screenshotIfEnabled(opaqueHandle<Page>({ screenshot }), '../../../foreign')).rejects.toBe(failure)
-
-    expect(screenshots.mkdir).not.toHaveBeenCalled()
-    expect(screenshot).not.toHaveBeenCalled()
-  })
-
-  it('returns a directory error before it takes a screenshot', async () => {
-    vi.stubEnv('E2E_SCREENSHOTS', '1')
-    vi.stubEnv('E2E_THEME', 'system')
-    const outputFile = resolve('.tmp', 'ui-screenshots', 'shard-1', 'test-1', 'screenshots', 'system', 'chat.png')
-    screenshots.outputPath.mockReturnValue(outputFile)
-    const failure = new Error('The screenshot directory is not writable.')
-    screenshots.mkdir.mockImplementation(() => {
-      throw failure
-    })
-    const screenshot = vi.fn<Page['screenshot']>().mockResolvedValue(Buffer.alloc(0))
-
-    await expect(screenshotIfEnabled(opaqueHandle<Page>({ screenshot }), 'chat')).rejects.toBe(failure)
-
-    expect(screenshots.mkdir).toHaveBeenCalledWith(dirname(outputFile), { recursive: true })
-    expect(screenshot).not.toHaveBeenCalled()
-  })
 })
 
 describe('isMaybeVisible', () => {

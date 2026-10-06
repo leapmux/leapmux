@@ -15,9 +15,7 @@ import { dirname, join } from 'node:path'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { cliSkipFixture } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -93,25 +91,6 @@ export const qoderTest = base.extend<CliSkipFixture & { qoderWorkspace: QoderWor
   // every edit at once and would never raise one.
   askingQoderWorkspace: qoderWorkspace('qoder-e2e-ask'),
 })
-
-/**
- * Open a Qoder agent in a directory the test knows, with the pinned model and
- * the option values the test states over it.
- */
-export async function openQoderAgent(
-  server: QoderAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-  workingDir: string = createQoderWorkingDir(),
-): Promise<{ agentId: string, workingDir: string }> {
-  const settings = agentOpenOptions(agentSettings(AgentProvider.QODER))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.QODER,
-    ...settings,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}
 
 export { expect }
 

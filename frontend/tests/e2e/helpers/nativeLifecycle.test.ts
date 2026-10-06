@@ -13,9 +13,7 @@ import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { createMockModelServer } from './mockModelServer'
-import { startModelScript } from './modelScriptFixture'
-import { exerciseInterruptTurn, exerciseSessionResume, heldToolScript, releaseNativeTurnGate } from './nativeLifecycle'
+import { exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
 import { stopProcess } from './process'
 
 const resume = vi.hoisted(() => ({
@@ -554,34 +552,6 @@ describe('exerciseSessionResume', () => {
     expect(observations).toEqual(['stored', 'opened'])
     expect(resume.current).toHaveBeenCalledTimes(2)
     expect(resume.conversation).not.toHaveBeenCalled()
-  })
-})
-
-describe('releaseNativeTurnGate', () => {
-  it('does not turn a successfully cancelled native response into a cleanup failure', async () => {
-    const server = await createMockModelServer({ models: ['native-cleanup-unit'] })
-    const lifecycle = await startModelScript(server.url)
-    const script = lifecycle.script
-    const controller = new AbortController()
-    try {
-      await script.queue({ text: 'The interrupted answer must not complete.', gate: 'native-cancelled-response' })
-      const pending = fetch(`${server.url}/v1/messages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': 'leapmux-e2e-model-key' },
-        body: JSON.stringify({ model: 'native-cleanup-unit', max_tokens: 100, stream: true, messages: [{ role: 'user', content: script.prompt('Hold the native cleanup test response.') }] }),
-        signal: controller.signal,
-      }).then(() => null, error => error)
-      await script.waitForGate('native-cancelled-response')
-      controller.abort()
-      await pending
-      await expect.poll(async () => (await script.status()).pendingGates).toEqual([])
-      await expect(releaseNativeTurnGate(script, 'native-cancelled-response')).resolves.toBeUndefined()
-    }
-    finally {
-      controller.abort()
-      await lifecycle.finish(false)
-      await server.close()
-    }
   })
 })
 
