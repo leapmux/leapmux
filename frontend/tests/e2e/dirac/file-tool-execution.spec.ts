@@ -1,10 +1,9 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
-import { nativeTextStep } from '../helpers/nativeScenario'
-import { exerciseFileToolExecution, expectFileDiff } from '../helpers/nativeToolExecution'
+import { exerciseFileToolExecution, expectFileDiff, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, diracEditAnchorCapture, editToolCall, readToolCall } from '../helpers/providerToolCalls'
-import { expectNoControlBanner, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
+import { openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
@@ -17,20 +16,20 @@ diracTest.describe('Dirac tool execution', () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
     // Dirac completes a turn through its respond tool, which the provider's text step builds.
-    // The tools run with no permission request, so the turn waits for its steps with no click.
-    const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, 'dirac-shell', 'echo "dirac-$((40 + 2))"')] },
-      { toolCalls: [readToolCall(context.provider, 'dirac-read', note)] },
-      {
-        toolCalls: [editToolCall(context.provider, 'dirac-edit', { path: note, before: 'dirac-before', after: 'dirac-after' })],
-        captures: diracEditAnchorCapture('dirac-before'),
-      },
-      nativeTextStep(context, 'Both tools ran.'),
-    )
-    await sendMessage(page, modelScript.prompt('Run the scripted tools, then complete.'))
-    await modelScript.waitForSteps(start + 4)
-    await waitForAgentIdle(page)
-    await expectNoControlBanner(page)
+    // The tools run with no permission request, so the turn clicks nothing and requires that no banner shows.
+    await runNativeToolSteps(context, {
+      steps: [
+        { toolCalls: [bashToolCall(context.provider, 'dirac-shell', 'echo "dirac-$((40 + 2))"')] },
+        { toolCalls: [readToolCall(context.provider, 'dirac-read', note)] },
+        {
+          toolCalls: [editToolCall(context.provider, 'dirac-edit', { path: note, before: 'dirac-before', after: 'dirac-after' })],
+          captures: diracEditAnchorCapture('dirac-before'),
+        },
+      ],
+      prompt: 'Run the scripted tools, then complete.',
+      answer: 'Both tools ran.',
+      permissions: 'none',
+    })
 
     const tools = toolRows(page)
     await expect(tools.filter({ hasText: 'dirac-42' }).first()).toBeVisible()

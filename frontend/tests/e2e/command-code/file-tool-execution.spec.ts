@@ -3,12 +3,12 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { commandCodeTest, expect } from '../command-code-fixtures'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
+import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { nativeToolResultAt, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { nativeToolResultAt, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { messageContents, sendMessage, toolCallRow } from '../helpers/ui'
+import { messageContents, toolCallRow } from '../helpers/ui'
 
 commandCodeTest('reads and changes actual native files and preserves the native result snippet', async ({ native }) => {
   const { page, modelScript } = native
@@ -29,15 +29,16 @@ commandCodeTest('reads and changes actual native files and preserves the native 
     const editId = `edit-${scenario.id}`
     const afterId = `read-after-${scenario.id}`
     const writeId = `write-${scenario.id}`
-    const stepIndex = await modelScript.queue(
-      { toolCalls: [readToolCall(native.provider, beforeId, file)] },
-      { toolCalls: [editToolCall(native.provider, editId, { path: file, before: scenario.requestedBefore, after: scenario.requestedAfter })] },
-      { toolCalls: [readToolCall(native.provider, afterId, file)] },
-      { toolCalls: [writeToolCall(native.provider, writeId, { path: created, content: written })] },
-      nativeTextStep(native, `The native ${scenario.id} file operations ended.`),
-    )
-    await sendMessage(page, modelScript.prompt(`Read and edit the ${scenario.id} file, read its current bytes, then create the second file.`))
-    await waitForNativeToolSteps(native, stepIndex + 5)
+    const stepIndex = await runNativeToolSteps(native, {
+      steps: [
+        { toolCalls: [readToolCall(native.provider, beforeId, file)] },
+        { toolCalls: [editToolCall(native.provider, editId, { path: file, before: scenario.requestedBefore, after: scenario.requestedAfter })] },
+        { toolCalls: [readToolCall(native.provider, afterId, file)] },
+        { toolCalls: [writeToolCall(native.provider, writeId, { path: created, content: written })] },
+      ],
+      prompt: `Read and edit the ${scenario.id} file, read its current bytes, then create the second file.`,
+      answer: `The native ${scenario.id} file operations ended.`,
+    })
     const beforeResult = await nativeToolResultAt(modelScript, stepIndex + 1, beforeId)
     expect(beforeResult).toContain(scenario.nativeBefore)
     expect(beforeResult).not.toContain(scenario.nativeAfter)

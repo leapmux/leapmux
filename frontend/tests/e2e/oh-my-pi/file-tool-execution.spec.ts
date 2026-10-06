@@ -1,13 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
+import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { exerciseFileEditSequence, runNativeToolTurn } from '../helpers/nativeToolExecution'
+import { exerciseFileEditSequence, runNativeToolSteps, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { chatText, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
+import { chatText, messageContents } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -23,21 +22,22 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  */
 ohMyPiTest.describe('Oh My Pi tool execution', () => {
   ohMyPiTest('draws the lines a read returns', async ({ native }) => {
-    const { page, modelScript } = native
+    const { page } = native
     const agent = await currentNativeAgent(native)
     if (!agent.workingDir)
       throw new Error('The active native agent has no working directory.')
     const notes = join(createNativeToolDirectory(agent.workingDir), 'notes.txt')
     // `seq` writes the numbers, so no command text holds `omp-read-3`: only the
     // read's own result can put it on the page.
-    const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(native.provider, 'seed-notes', `seq 3 | sed "s/^/omp-read-/" > ${quotePosixShellArgument(notes)}`)] },
-      { toolCalls: [readToolCall(native.provider, 'read-notes', notes)] },
-      nativeTextStep(native, 'I read the notes.'),
-    )
-    await sendMessage(page, modelScript.prompt('Create the notes and read them back.'))
-    await modelScript.waitForSteps(start + 3)
-    await waitForAgentIdle(page)
+    await runNativeToolSteps(native, {
+      steps: [
+        { toolCalls: [bashToolCall(native.provider, 'seed-notes', `seq 3 | sed "s/^/omp-read-/" > ${quotePosixShellArgument(notes)}`)] },
+        { toolCalls: [readToolCall(native.provider, 'read-notes', notes)] },
+      ],
+      prompt: 'Create the notes and read them back.',
+      answer: 'I read the notes.',
+      permissions: 'none',
+    })
 
     await expect.poll(() => chatText(page)).toContain('omp-read-3')
     // The E2E profile's `replace` edit makes omp print the bare file text, with no

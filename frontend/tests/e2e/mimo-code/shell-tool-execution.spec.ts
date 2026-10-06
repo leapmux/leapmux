@@ -1,10 +1,10 @@
 import { expect } from '@playwright/test'
 import { nativeTextStep } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { createOutputGate, runWithGatedOutput } from '../helpers/outputGate'
 import { bashToolCall, mimoInteractiveBashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { applyPermissionPreset, expectNoControlBanner, messageContents, railedRows, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
+import { applyPermissionPreset, messageContents, railedRows, sendMessage, toolRows } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 import { exerciseMiMoShellToolExecution } from './shellToolExecution'
 
@@ -42,19 +42,17 @@ mimoTest.describe('MiMo Code interactive commands', () => {
   // request at once. The turn goes on: the model reads the refusal as the
   // command's output and answers.
   //
-  // The claim is that no approval request appears, so the turn waits for its
-  // steps with no click.
+  // The claim is that no approval request appears, so the turn clicks nothing and
+  // requires that no banner shows.
   mimoTest('refuses an interactive command without blocking the turn', async ({ native }) => {
-    const { page, modelScript } = native
-    const start = await modelScript.queue(
-      { toolCalls: [mimoInteractiveBashToolCall('interactive-call', 'read -p "Name? " name; echo "hi $name"')] },
-      nativeTextStep(native, 'INTERACTIVE_REFUSED'),
-    )
-    await sendMessage(page, modelScript.prompt('Ask for my name in the shell.'))
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
+    const { page } = native
+    await runNativeToolTurn(native, {
+      toolCalls: [mimoInteractiveBashToolCall('interactive-call', 'read -p "Name? " name; echo "hi $name"')],
+      prompt: 'Ask for my name in the shell.',
+      answer: 'INTERACTIVE_REFUSED',
+      permissions: 'none',
+    })
 
-    await expectNoControlBanner(page)
     await expect(messageContents(page).filter({ hasText: 'LeapMux cannot run an interactive command' }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'INTERACTIVE_REFUSED' }).first()).toBeVisible()
   })

@@ -2,11 +2,10 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { expectFileDiff, nativeFileReadResult } from '../helpers/nativeToolExecution'
+import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { nativeContext } from './scenarios'
@@ -22,22 +21,23 @@ kiroTest.describe('Kiro tool execution', () => {
     await expectSettingsOptionChosen(page, 'policyPreset-allow-all')
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
-    const start = await modelScript.queue(
-      { toolCalls: [readToolCall(context.provider, 'kiro-read', note)] },
-      { toolCalls: [editToolCall(context.provider, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' })] },
-      { toolCalls: [writeToolCall(context.provider, 'kiro-write', { path: created, content: 'kiro-created\n' })] },
-      { toolCalls: [bashToolCall(context.provider, 'kiro-shell', 'echo "kiro-$((40 + 2))"; exit 3')] },
-      {
-        toolCalls: [updateTodosToolCall(context.provider, 'kiro-todos', [
-          { step: 'Edit the note', status: 'pending' },
-          { step: 'Report the result', status: 'pending' },
-        ])],
-      },
-      nativeTextStep(context, 'All five tools ran.'),
-    )
-    await sendMessage(page, modelScript.prompt('Run the five scripted tools, then report.'))
-    await modelScript.waitForSteps(start + 6)
-    await waitForAgentIdle(page)
+    const start = await runNativeToolSteps(context, {
+      steps: [
+        { toolCalls: [readToolCall(context.provider, 'kiro-read', note)] },
+        { toolCalls: [editToolCall(context.provider, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' })] },
+        { toolCalls: [writeToolCall(context.provider, 'kiro-write', { path: created, content: 'kiro-created\n' })] },
+        { toolCalls: [bashToolCall(context.provider, 'kiro-shell', 'echo "kiro-$((40 + 2))"; exit 3')] },
+        {
+          toolCalls: [updateTodosToolCall(context.provider, 'kiro-todos', [
+            { step: 'Edit the note', status: 'pending' },
+            { step: 'Report the result', status: 'pending' },
+          ])],
+        },
+      ],
+      prompt: 'Run the five scripted tools, then report.',
+      answer: 'All five tools ran.',
+      permissions: 'none',
+    })
 
     const tools = toolRows(page)
     // The read reached the model as the read's result, and the row draws the file.

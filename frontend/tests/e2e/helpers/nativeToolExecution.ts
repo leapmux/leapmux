@@ -12,7 +12,7 @@ import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './providerToolCalls'
 import { isFileNameComponent } from './runDirectory'
 import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { assistantBubbles, controlButton, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, controlButton, expectNoControlBanner, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
 
 interface ToolPreparation {
   prepare?: () => Promise<void>
@@ -87,18 +87,38 @@ export async function waitForNativeToolSteps(context: NativeScenarioContext, tar
   await waitForAgentIdle(context.page)
 }
 
-/** One native turn: a model step that calls tools, then a model step that answers. */
-export interface NativeToolTurn {
+/** One tool step of a native turn: the tool calls of one model answer. */
+export interface NativeToolStep {
   toolCalls: readonly MockModelToolCall[]
-  /** Text that the tool step captures from its own request, for a `{{name}}` placeholder in a tool call. */
+  /** Text that the step captures from its own request, for a `{{name}}` placeholder in a tool call. */
   captures?: Readonly<Record<string, string>>
+}
+
+/**
+ * How a native tool turn treats a native permission request:
+ *
+ * - `allow`: the turn clicks Allow on each request, through {@link waitForNativeToolSteps}.
+ * - `none`: the mode of the agent runs each tool with no request, and the turn clicks nothing. A request holds the
+ *   turn, so the wait for its steps fails. After the turn, the page must hold no control request banner.
+ */
+export type NativeToolPermissions = 'allow' | 'none'
+
+/** One native turn: one or more model steps that call tools, then a model step that answers. */
+export interface NativeToolStepsTurn {
+  /** The tool steps, in the order that the model answers them. */
+  steps: readonly NativeToolStep[]
   /** The prompt that starts the turn. The turn marks it for this test's script. */
   prompt: string
   /** The final answer. It goes through `nativeTextStep`, so a provider that answers through a tool keeps its own form. */
   answer: string
   /** Send the marked prompt. `sendMessage` by default; a turn that attaches a file passes its own sender. */
   send?: (page: Page, text: string) => Promise<void>
+  /** How the turn treats a native permission request. The default is `allow`. */
+  permissions?: NativeToolPermissions
 }
+
+/** One native turn: a model step that calls tools, then a model step that answers. */
+export type NativeToolTurn = NativeToolStep & Omit<NativeToolStepsTurn, 'steps'>
 
 /** The requests of one {@link NativeToolTurn}. */
 export interface NativeToolTurnRequests {
@@ -110,18 +130,43 @@ export interface NativeToolTurnRequests {
   resultRequest: MockModelRequestRecord
 }
 
+/** The model step that answers one {@link NativeToolStep}. The copies keep the caller's arrays out of the script. */
+function nativeToolModelStep(step: NativeToolStep): MockModelStep {
+  return { toolCalls: [...step.toolCalls], ...(step.captures ? { captures: { ...step.captures } } : {}) }
+}
+
+/**
+ * Run one native turn of one or more tool steps, and return the step index of the first tool step.
+ * The request at `start + n` holds the results of the step at `start + n - 1`, and the answer step is
+ * `start + steps.length`. The turn treats a permission request as `permissions` states, and it ends after the agent
+ * is idle. A turn that answers a banner or a form between its steps cannot use this helper.
+ */
+export async function runNativeToolSteps(context: NativeScenarioContext, turn: NativeToolStepsTurn): Promise<number> {
+  if (turn.steps.length === 0)
+    throw new Error('A native tool turn needs at least one tool step.')
+  if (turn.steps.some(step => step.toolCalls.length === 0))
+    throw new Error('Each tool step of a native turn needs at least one tool call.')
+  const start = await context.modelScript.queue(...turn.steps.map(nativeToolModelStep), nativeTextStep(context, turn.answer))
+  await (turn.send ?? sendMessage)(context.page, context.modelScript.prompt(turn.prompt))
+  const target = start + turn.steps.length + 1
+  if ((turn.permissions ?? 'allow') === 'allow') {
+    await waitForNativeToolSteps(context, target)
+    return start
+  }
+  await context.modelScript.waitForSteps(target)
+  await waitForAgentIdle(context.page)
+  await expectNoControlBanner(context.page)
+  return start
+}
+
 /**
  * Run one native tool turn and return both of its model requests.
- * The turn allows each native approval through {@link waitForNativeToolSteps}, and it ends after the agent is idle.
+ * The turn treats a permission request as `permissions` states, and it ends after the agent is idle.
  * A turn that answers a banner or a form between its two steps cannot use this helper.
  */
 export async function runNativeToolTurn(context: NativeScenarioContext, turn: NativeToolTurn): Promise<NativeToolTurnRequests> {
-  if (turn.toolCalls.length === 0)
-    throw new Error('A native tool turn needs at least one tool call.')
-  const toolStep: MockModelStep = { toolCalls: [...turn.toolCalls], ...(turn.captures ? { captures: { ...turn.captures } } : {}) }
-  const start = await context.modelScript.queue(toolStep, nativeTextStep(context, turn.answer))
-  await (turn.send ?? sendMessage)(context.page, context.modelScript.prompt(turn.prompt))
-  await waitForNativeToolSteps(context, start + 2)
+  const { toolCalls, captures, ...rest } = turn
+  const start = await runNativeToolSteps(context, { ...rest, steps: [{ toolCalls, ...(captures ? { captures } : {}) }] })
   return {
     start,
     toolRequest: await context.modelScript.requestAt(start),
@@ -216,7 +261,7 @@ export async function exerciseShellToolExecution(
 
 interface FileToolOptions extends ToolPreparation {
   editCall?: (callId: string, path: string, before: string, after: string) => MockModelToolCall
-  editStep?: (callId: string, path: string, before: string, after: string) => MockModelStep
+  editStep?: (callId: string, path: string, before: string, after: string) => NativeToolStep
   readAfterCall?: (callId: string, path: string) => MockModelToolCall
 }
 
@@ -342,16 +387,17 @@ export async function exerciseFileToolExecution(
   const written = `CREATED${marker}\n`
   writeFileSync(file, `${before}\n`)
   expect(existsSync(created)).toBe(false)
-  const stepIndex = await context.modelScript.queue(
-    { toolCalls: [readToolCall(context.provider, 'native-read-before', file)] },
-    options.editStep?.('native-edit', file, before, after)
-    ?? { toolCalls: [options.editCall?.('native-edit', file, before, after) ?? editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
-    { toolCalls: [options.readAfterCall?.('native-read-after', file) ?? readToolCall(context.provider, 'native-read-after', file)] },
-    { toolCalls: [writeToolCall(context.provider, 'native-write', { path: created, content: written })] },
-    nativeTextStep(context, 'The native file operations ended.'),
-  )
-  await sendMessage(context.page, context.modelScript.prompt('Read the scratch file, edit it, read it again, and create the second file.'))
-  await waitForNativeToolSteps(context, stepIndex + 5)
+  const stepIndex = await runNativeToolSteps(context, {
+    steps: [
+      { toolCalls: [readToolCall(context.provider, 'native-read-before', file)] },
+      options.editStep?.('native-edit', file, before, after)
+      ?? { toolCalls: [options.editCall?.('native-edit', file, before, after) ?? editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
+      { toolCalls: [options.readAfterCall?.('native-read-after', file) ?? readToolCall(context.provider, 'native-read-after', file)] },
+      { toolCalls: [writeToolCall(context.provider, 'native-write', { path: created, content: written })] },
+    ],
+    prompt: 'Read the scratch file, edit it, read it again, and create the second file.',
+    answer: 'The native file operations ended.',
+  })
   await nativeFileReadResult(await context.modelScript.requestAt(stepIndex + 1), 'native-read-before', before, after, context.readToolResult)
   await nativeFileReadResult(await context.modelScript.requestAt(stepIndex + 3), 'native-read-after', after, before, context.readToolResult)
   expect(readFileSync(file, 'utf8')).toBe(`${after}\n`)

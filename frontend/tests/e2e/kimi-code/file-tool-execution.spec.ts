@@ -1,10 +1,9 @@
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { expectFileDiff, nativeFileReadResult, PARITY_AFTER, PARITY_BEFORE } from '../helpers/nativeToolExecution'
+import { expectFileDiff, nativeFileReadResult, PARITY_AFTER, PARITY_BEFORE, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, assistantBubbles, expectSettingsChip, sendMessage, toolRows, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { applyPermissionPreset, assistantBubbles, expectSettingsChip, toolRows, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('uses Kimi Code tools', () => {
@@ -18,15 +17,16 @@ kimiTest.describe('uses Kimi Code tools', () => {
   kimiTest('an edit renders its diff, and a read renders the file', async ({ authenticatedKimiWorkspace, native }) => {
     const { page, modelScript } = native
     const path = join(createNativeToolDirectory(authenticatedKimiWorkspace.workingDir), 'parity.ts')
-    const start = await modelScript.queue(
-      { toolCalls: [writeToolCall(native.provider, 'seed-file', { path, content: `${PARITY_BEFORE}\n` })] },
-      { toolCalls: [editToolCall(native.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })] },
-      { toolCalls: [readToolCall(native.provider, 'parity-read', path)] },
-      nativeTextStep(native, 'I changed parity.ts and read it back.'),
-    )
-    await sendMessage(page, modelScript.prompt('Create parity.ts, change it, and read it back.'))
-    await modelScript.waitForSteps(start + 4)
-    await waitForAgentIdle(page)
+    const start = await runNativeToolSteps(native, {
+      steps: [
+        { toolCalls: [writeToolCall(native.provider, 'seed-file', { path, content: `${PARITY_BEFORE}\n` })] },
+        { toolCalls: [editToolCall(native.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })] },
+        { toolCalls: [readToolCall(native.provider, 'parity-read', path)] },
+      ],
+      prompt: 'Create parity.ts, change it, and read it back.',
+      answer: 'I changed parity.ts and read it back.',
+      permissions: 'none',
+    })
 
     // The write's diff holds the old line too, so the EDIT's diff must hold both.
     await expectFileDiff(page, { before: PARITY_BEFORE, after: PARITY_AFTER })

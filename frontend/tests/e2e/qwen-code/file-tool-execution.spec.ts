@@ -3,11 +3,10 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { expectFileDiff, nativeFileReadResult } from '../helpers/nativeToolExecution'
+import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsChip, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 import { nativeContext } from './scenarios'
@@ -24,22 +23,23 @@ qwenTest.describe('Qwen Code tool execution', () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
     // The read comes first: Qwen refuses to edit a file this session has not read.
-    const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, 'qwen-shell', 'echo "qwen-$((40 + 2))"')] },
-      { toolCalls: [readToolCall(context.provider, 'qwen-read', note)] },
-      { toolCalls: [editToolCall(context.provider, 'qwen-edit', { path: note, before: 'qwen-before', after: 'qwen-after' })] },
-      {
-        toolCalls: [updateTodosToolCall(context.provider, 'qwen-todos', [
-          { step: 'Run the shell command', status: 'completed' },
-          { step: 'Edit the note', status: 'completed' },
-          { step: 'Report the result', status: 'in_progress' },
-        ])],
-      },
-      nativeTextStep(context, 'All four tools ran.'),
-    )
-    await sendMessage(page, modelScript.prompt('Run the four scripted tools, then report.'))
-    await modelScript.waitForSteps(start + 5)
-    await waitForAgentIdle(page)
+    const start = await runNativeToolSteps(context, {
+      steps: [
+        { toolCalls: [bashToolCall(context.provider, 'qwen-shell', 'echo "qwen-$((40 + 2))"')] },
+        { toolCalls: [readToolCall(context.provider, 'qwen-read', note)] },
+        { toolCalls: [editToolCall(context.provider, 'qwen-edit', { path: note, before: 'qwen-before', after: 'qwen-after' })] },
+        {
+          toolCalls: [updateTodosToolCall(context.provider, 'qwen-todos', [
+            { step: 'Run the shell command', status: 'completed' },
+            { step: 'Edit the note', status: 'completed' },
+            { step: 'Report the result', status: 'in_progress' },
+          ])],
+        },
+      ],
+      prompt: 'Run the four scripted tools, then report.',
+      answer: 'All four tools ran.',
+      permissions: 'none',
+    })
 
     const tools = toolRows(page)
     // The command text states no `qwen-42`, so only the command's own output can

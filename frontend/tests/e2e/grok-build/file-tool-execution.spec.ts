@@ -3,11 +3,10 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { expectFileDiff, nativeFileReadResult } from '../helpers/nativeToolExecution'
+import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
@@ -26,22 +25,23 @@ grokTest.describe('Grok Build tool execution', () => {
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
-    const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, 'grok-shell', 'echo "grok-$((40 + 2))"; exit 3')] },
-      { toolCalls: [editToolCall(context.provider, 'grok-edit', { path: note, before: 'grok-before', after: 'grok-after' })] },
-      { toolCalls: [readToolCall(context.provider, 'grok-read', note)] },
-      {
-        toolCalls: [updateTodosToolCall(context.provider, 'grok-todos', [
-          { step: 'Run the shell command', status: 'completed' },
-          { step: 'Edit the note', status: 'completed' },
-          { step: 'Report the result', status: 'in_progress' },
-        ])],
-      },
-      nativeTextStep(context, 'All four tools ran.'),
-    )
-    await sendMessage(page, modelScript.prompt('Run the four scripted tools, then report.'))
-    await modelScript.waitForSteps(start + 5)
-    await waitForAgentIdle(page)
+    const start = await runNativeToolSteps(context, {
+      steps: [
+        { toolCalls: [bashToolCall(context.provider, 'grok-shell', 'echo "grok-$((40 + 2))"; exit 3')] },
+        { toolCalls: [editToolCall(context.provider, 'grok-edit', { path: note, before: 'grok-before', after: 'grok-after' })] },
+        { toolCalls: [readToolCall(context.provider, 'grok-read', note)] },
+        {
+          toolCalls: [updateTodosToolCall(context.provider, 'grok-todos', [
+            { step: 'Run the shell command', status: 'completed' },
+            { step: 'Edit the note', status: 'completed' },
+            { step: 'Report the result', status: 'in_progress' },
+          ])],
+        },
+      ],
+      prompt: 'Run the four scripted tools, then report.',
+      answer: 'All four tools ran.',
+      permissions: 'none',
+    })
 
     const tools = toolRows(page)
     // The command text states no `grok-42`, so only the command's own output can

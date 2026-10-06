@@ -1,7 +1,8 @@
 import type { Locator, Page } from '@playwright/test'
-import type { MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
+import type { NativeToolStep } from './nativeToolExecution'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -14,14 +15,15 @@ import { stepRequest } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { createNativeToolDirectory } from './nativeToolDirectory'
-import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseShellToolExecution, expectFileDiff, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
+import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseShellToolExecution, expectFileDiff, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolSteps, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
-const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn() }))
+const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn(), noBanner: vi.fn() }))
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   waitForAgentIdle: calls.idle,
   sendMessage: calls.send,
+  expectNoControlBanner: calls.noBanner,
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
@@ -247,6 +249,143 @@ describe('runNativeToolTurn', () => {
     const context = { page: guardedBrowserHandle<Page>({}), provider: AgentProvider.CODEX, modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({ queue }) }
     await expect(runNativeToolTurn(context, { toolCalls: [], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('at least one tool call')
     expect(queue).not.toHaveBeenCalled()
+  })
+
+  it('clicks nothing and requires no banner after the turn when the turn expects no permission request', async () => {
+    const { context: allowContext, lifecycle, nativeTurn } = await turnContext()
+    // Each page access fails, so the turn can read no Allow button.
+    const context: NativeScenarioContext = { ...allowContext, page: guardedBrowserHandle<Page>({}) }
+    calls.send.mockImplementation(async (_page: Page, text: string) => {
+      await nativeTurn(text)
+    })
+    const turn = await runNativeToolTurn(context, {
+      toolCalls: [{ id: 'unit-call', name: 'Bash', arguments: { command: 'printf unit' } }],
+      prompt: 'Run the unit tool.',
+      answer: 'The unit tool ended.',
+      permissions: 'none',
+    })
+    expect(turn.resultRequest.stepIndex).toBe(1)
+    expect(calls.noBanner).toHaveBeenCalledExactlyOnceWith(context.page)
+    await lifecycle.finish(true)
+  })
+})
+
+describe('runNativeToolSteps', () => {
+  const servers: MockModelServer[] = []
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map(server => server.close()))
+  })
+
+  const threeSteps: NativeToolStep[] = [
+    { toolCalls: [{ id: 'unit-shell', name: 'Bash', arguments: { command: 'printf unit' } }] },
+    { toolCalls: [{ id: 'unit-read', name: 'Read', arguments: { file_path: '{{target}}' } }], captures: { target: 'on (\\S+) now' } },
+    { toolCalls: [{ id: 'unit-edit-a', name: 'Edit', arguments: { file_path: 'a' } }, { id: 'unit-edit-b', name: 'Edit', arguments: { file_path: 'b' } }] },
+  ]
+
+  it('queues each tool step in order after earlier steps, answers last, and returns the index of the first tool step', async () => {
+    const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
+    servers.push(server)
+    const lifecycle = await startModelScript(server.url)
+    const allow = guardedBrowserHandle<Locator>({ evaluateAll: (async () => false) as unknown as Locator['evaluateAll'] })
+    const context: NativeScenarioContext = { page: allowButtonPage(guardedBrowserHandle<Locator>({ first: () => allow })), provider: AgentProvider.CODEX, modelScript: lifecycle.script }
+    /** Send `count` requests, each with the marked prompt, as a native client does. */
+    const nativeRequests = async (text: string, count: number) => {
+      const replies: string[] = []
+      for (let index = 0; index < count; index++) {
+        const response = await fetch(`${server.url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ stream: false, messages: [{ role: 'user', content: text }] }),
+        })
+        expect(response.status).toBe(200)
+        replies.push(JSON.stringify(await response.json()))
+      }
+      return replies
+    }
+    await lifecycle.script.queue({ text: 'An earlier turn.' })
+    await nativeRequests(lifecycle.script.prompt('The earlier prompt.'), 1)
+    const replies: string[] = []
+    calls.send.mockImplementation(async (_page: Page, text: string) => {
+      replies.push(...await nativeRequests(text, 4))
+    })
+    const start = await runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run the unit steps on /unit/target.txt now.', answer: 'The unit steps ended.' })
+    expect(start).toBe(1)
+    expect(replies).toHaveLength(4)
+    expect(replies[0]).toContain('unit-shell')
+    expect(replies[1]).toContain('unit-read')
+    expect(replies[1]).toContain('/unit/target.txt')
+    expect(replies[2]).toMatch(/unit-edit-a.*unit-edit-b/)
+    expect(replies[3]).toContain('The unit steps ended.')
+    expect(calls.send).toHaveBeenCalledExactlyOnceWith(context.page, lifecycle.script.prompt('Run the unit steps on /unit/target.txt now.'))
+    expect(calls.idle).toHaveBeenCalledOnce()
+    expect(calls.noBanner).not.toHaveBeenCalled()
+    await lifecycle.finish(true)
+  })
+
+  /** A model script that records what the turn queues and waits for. Each page access fails, so no click can happen. */
+  function recordingContext(options: Pick<NativeScenarioContext, 'textStep'> = {}) {
+    const events: string[] = []
+    const queued: MockModelStep[][] = []
+    const modelScript = guardedBrowserHandle<NativeScenarioContext['modelScript']>({
+      prompt: text => `marked ${text}`,
+      queue: async (...steps) => {
+        queued.push(steps)
+        return 5
+      },
+      waitForSteps: async (count) => {
+        if (count === undefined)
+          throw new Error('The turn waits for a stated step count.')
+        events.push(`steps ${count}`)
+        return { complete: true, nextStep: count, stepCount: count, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+      },
+    })
+    calls.send.mockImplementation(async (_page: Page, text: string) => {
+      events.push(`send ${text}`)
+    })
+    calls.idle.mockImplementation(async () => {
+      events.push('idle')
+    })
+    calls.noBanner.mockImplementation(async () => {
+      events.push('no banner')
+    })
+    const context: NativeScenarioContext = { page: guardedBrowserHandle<Page>({}), provider: AgentProvider.CODEX, modelScript, ...options }
+    return { context, events, queued }
+  }
+
+  it('waits for every step with no click, then for the idle agent, then requires no banner', async () => {
+    const { context, events, queued } = recordingContext({ textStep: text => ({ toolCalls: [{ id: 'unit-answer', name: 'answer', arguments: { text } }] }) })
+    expect(await runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run.', answer: 'Done.', permissions: 'none' })).toBe(5)
+    expect(events).toEqual(['send marked Run.', 'steps 9', 'idle', 'no banner'])
+    expect(calls.noBanner).toHaveBeenCalledExactlyOnceWith(context.page)
+    expect(queued).toEqual([[...threeSteps, { toolCalls: [{ id: 'unit-answer', name: 'answer', arguments: { text: 'Done.' } }] }]])
+  })
+
+  it('queues copies, so a later change to the caller\'s steps cannot reach the script', async () => {
+    const { context, queued } = recordingContext()
+    await runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run.', answer: 'Done.', permissions: 'none' })
+    const [shell, read] = queued[0] ?? []
+    expect(shell?.toolCalls).not.toBe(threeSteps[0]?.toolCalls)
+    expect(read?.captures).not.toBe(threeSteps[1]?.captures)
+    expect(shell).not.toHaveProperty('captures')
+  })
+
+  it('fails with the banner check when a banner stays after the turn', async () => {
+    const { context } = recordingContext()
+    const cause = new Error('the page holds no control request banner')
+    calls.noBanner.mockRejectedValue(cause)
+    await expect(runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run.', answer: 'Done.', permissions: 'none' })).rejects.toBe(cause)
+  })
+
+  it('refuses a turn without a tool step before it queues a step', async () => {
+    const { context, queued } = recordingContext()
+    await expect(runNativeToolSteps(context, { steps: [], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('at least one tool step')
+    expect(queued).toEqual([])
+  })
+
+  it('refuses a later tool step without a tool call before it queues a step', async () => {
+    const { context, queued } = recordingContext()
+    await expect(runNativeToolSteps(context, { steps: [threeSteps[0]!, { toolCalls: [] }], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('Each tool step of a native turn needs at least one tool call.')
+    expect(queued).toEqual([])
   })
 })
 

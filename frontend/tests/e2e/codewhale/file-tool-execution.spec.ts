@@ -2,30 +2,32 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 
 import { codewhaleTest } from '../codewhale-fixtures'
-import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
+import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
+import { runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, fileChangeRow, sendMessage, transcriptRows, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, fileChangeRow, transcriptRows } from '../helpers/ui'
 import { runWithoutApprovals } from './toolScenarios'
 
 codewhaleTest.describe('Codewhale tool execution', () => {
   codewhaleTest('writes, edits and reads a file, and draws the edit as a diff', async ({ native }) => {
-    const { page, modelScript } = native
+    const { page } = native
     const agent = await currentNativeAgent(native)
     if (!agent.workingDir)
       throw new Error('The active native agent has no working directory.')
     const path = join(createNativeToolDirectory(agent.workingDir), 'notes.txt')
     await runWithoutApprovals(page)
     // The native calls use one literal private path and keep the original basename.
-    const start = await modelScript.queue(
-      { toolCalls: [writeToolCall(native.provider, 'write-call', { path, content: 'alpha\nold line\n' })] },
-      { toolCalls: [editToolCall(native.provider, 'edit-call', { path, before: 'old line', after: 'new line' })] },
-      { toolCalls: [readToolCall(native.provider, 'read-call', path)] },
-      nativeTextStep(native, 'notes.txt now holds the new line.'),
-    )
-    await sendMessage(page, modelScript.prompt('Create notes.txt, change its old line, and read it back.'))
-    await modelScript.waitForSteps(start + 4)
-    await waitForAgentIdle(page)
+    await runNativeToolSteps(native, {
+      steps: [
+        { toolCalls: [writeToolCall(native.provider, 'write-call', { path, content: 'alpha\nold line\n' })] },
+        { toolCalls: [editToolCall(native.provider, 'edit-call', { path, before: 'old line', after: 'new line' })] },
+        { toolCalls: [readToolCall(native.provider, 'read-call', path)] },
+      ],
+      prompt: 'Create notes.txt, change its old line, and read it back.',
+      answer: 'notes.txt now holds the new line.',
+      permissions: 'none',
+    })
 
     // The edit's header counts the runtime's own diff: one line out, one line in.
     const edit = fileChangeRow(page, 'notes.txt')
