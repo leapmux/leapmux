@@ -51,7 +51,13 @@ export function createOpenCodeEnvironment(options: OpenCodeEnvironmentOptions): 
   }
 }
 
-/** The inline configuration that the OpenCode family reads: the mock provider, its default model, and the echo server. */
+/**
+ * The inline configuration that the OpenCode family reads: the mock provider, its default model, and the echo server.
+ *
+ * `enabled_providers` keeps the mock provider and hides each built-in one, so the model menu holds the mock models
+ * alone. Without it, Kilo adds its gateway catalog of about 400 models, and it asks the Kilo API for the catalog and
+ * the defaults when each session starts and for the defaults on each turn. No test scripts those requests.
+ */
 export function openCodeFamilyConfig(provider: OpenCodeFamilyProviderOptions, mcpEchoServer: McpProbeServer): Record<string, unknown> {
   const defaultModel = provider.models[0]
   if (!defaultModel)
@@ -61,6 +67,7 @@ export function openCodeFamilyConfig(provider: OpenCodeFamilyProviderOptions, mc
     lsp: false,
     mcp: { [mcpEchoServer.name]: { type: 'local', command: [mcpEchoServer.command, ...mcpEchoServer.args] } },
     model: `${provider.providerID}/${defaultModel.id}`,
+    enabled_providers: [provider.providerID],
     provider: {
       [provider.providerID]: openCodeFamilyProvider(provider),
     },

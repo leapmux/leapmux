@@ -58,15 +58,15 @@ export function createMimoEnvironment(options: MimoEnvironmentOptions): Record<s
 }
 
 /**
- * MiMo Code's configuration: the OpenCode family's provider block, which MiMo reads
+ * MiMo Code's configuration: the OpenCode family's configuration, which MiMo reads
  * unchanged, and the switches for every model request that no test scripts.
  *
  * - A second model, so that a spec can switch models and read the switch off
  *   the next request.
  * - The shared mock model variants send `reasoning_effort`, so a spec can read
  *   the effort off the next request too.
- * - `enabled_providers` hides MiMo's own built-in providers, so the model menu
- *   holds the mock alone.
+ * - The family's `enabled_providers` hides MiMo's own built-in providers, so the
+ *   model menu holds the mock alone.
  * - `agent.title.disable` stops the title request that otherwise runs beside the
  *   first turn.
  * - `retry` makes a failed request fail once. A retry would consume the next
@@ -82,7 +82,6 @@ function mimoCodeConfig(provider: OpenCodeFamilyProviderOptions, mcpConfirmation
   const noRetry = { mode: 'bounded', maxRetries: 0 }
   return {
     ...openCodeFamilyConfig(provider, mcpEchoServer),
-    enabled_providers: [provider.providerID],
     mcp: {
       [mcpConfirmationServer.name]: { type: 'local', command: [mcpConfirmationServer.command, ...mcpConfirmationServer.args] },
       [mcpEchoServer.name]: { type: 'local', command: [mcpEchoServer.command, ...mcpEchoServer.args] },

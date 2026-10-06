@@ -25,6 +25,10 @@ describe('openCodeFamilyConfig', () => {
     expect(config.mcp).toEqual({ echo_probe: { type: 'local', command: [echoServer.command, '/srv/echo.mjs'] } })
   })
 
+  it('enables the mock provider alone, which hides every built-in provider', () => {
+    expect(openCodeFamilyConfig(provider, echoServer).enabled_providers).toEqual(['unit-provider'])
+  })
+
   it('refuses a provider with no model, which leaves no default', () => {
     expect(() => openCodeFamilyConfig({ ...provider, models: [] }, echoServer)).toThrow('The OpenCode family provider needs at least one model.')
   })

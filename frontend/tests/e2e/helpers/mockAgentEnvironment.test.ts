@@ -551,6 +551,7 @@ describe('createMockAgentEnvironment', () => {
     expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.pi]).toBeDefined()
     expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
     expect(openCode.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
+    expect(openCode.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
     expect(openCode.compaction).toEqual({ tail_turns: 2 })
     expect(openCode.mcp.echo_probe).toEqual({ type: 'local', command: [process.execPath, join(directory, 'mcp-echo.mjs')] })
   })
