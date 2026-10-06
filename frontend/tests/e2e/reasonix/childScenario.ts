@@ -1,3 +1,4 @@
+import type { MockModelRule } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
@@ -18,6 +19,23 @@ export const REASONIX_CHILD: NativeChildProfile = {
   resolveTaskId: (context, parentId, child) => readReasonixChildTaskId(context, parentId, child.spawn.id, child.prompt),
 }
 
+/** The task of the child that {@link exerciseReasonixSpawnTranscript} spawns. */
+export const REASONIX_SPAWN_TASK = 'Reply with the single word PONG.'
+
+/**
+ * The rule that answers the turns of the child that {@link exerciseReasonixSpawnTranscript} spawns.
+ * Reasonix opens a child turn with its own context pack, so the task never starts the turn. The matcher of
+ * {@link REASONIX_CHILD} anchors the start of that pack and the task section inside it, so a turn that only quotes the
+ * task does not match.
+ */
+export function reasonixSpawnChildRule(): MockModelRule {
+  return {
+    name: 'the child answers its one-word task',
+    when: REASONIX_CHILD.childTask(REASONIX_SPAWN_TASK),
+    respond: { text: 'PONG' },
+  }
+}
+
 /**
  * Spawn one read-only child that answers one word, then follow its row from running to final, and its prompt and
  * report into its own tab. The transcript tab cell and the background task cell both run this scenario.
@@ -27,21 +45,13 @@ export async function exerciseReasonixSpawnTranscript(context: ManagedNativeScen
   await expectNoRegistryRows(page, context.leapmuxServer)
 
   // The child's prompt carries the marker, so the turns it runs on its own
-  // reach this script. NOT anchored: Reasonix opens a child turn with a
-  // host-injected `<subagent-context event="SubagentStart">` block, so `^`
-  // never matches the prompt. It needs no anchor either, because Reasonix
-  // keeps a tool result out of the user turn, so no parent turn carries a
-  // copy of the child's prompt.
-  await modelScript.rule({
-    name: 'the child answers its one-word task',
-    when: { user: 'Reply with the single word PONG' },
-    respond: { text: 'PONG' },
-  })
+  // reach this script.
+  await modelScript.rule(reasonixSpawnChildRule())
   const start = await modelScript.queue(
     {
       toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-reasonix', {
         description: 'Ask the subagent for one word',
-        prompt: modelScript.prompt('Reply with the single word PONG.'),
+        prompt: modelScript.prompt(REASONIX_SPAWN_TASK),
       })],
     },
     { text: 'The subagent reported PONG.' },

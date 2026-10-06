@@ -1,3 +1,4 @@
+import type { MockModelRule } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
@@ -16,6 +17,23 @@ export const KILO_CHILD: NativeChildProfile = {
   rowTitleHoldsDescription: true,
 }
 
+/** The task of the child that {@link exerciseKiloSpawnTranscript} spawns. */
+export const KILO_SPAWN_TASK = 'Run `echo kilo-done` and report the result.'
+
+/**
+ * The rule that answers the turns of the child that {@link exerciseKiloSpawnTranscript} spawns.
+ * The matcher of {@link KILO_CHILD} anchors the task at the start of the turn. A parent turn that carries the spawn call
+ * quotes the whole task, so an unanchored pattern answers that parent turn, and the parent never consumes its queued
+ * step.
+ */
+export function kiloSpawnChildRule(): MockModelRule {
+  return {
+    name: 'the child reports the shell result',
+    when: KILO_CHILD.childTask(KILO_SPAWN_TASK),
+    respond: { text: 'The command printed kilo-done.' },
+  }
+}
+
 /**
  * Spawn one child that runs a shell probe, then follow its row from running to final, and its prompt and report into
  * its own tab. The transcript tab cell and the background task cell both run this scenario.
@@ -25,16 +43,12 @@ export async function exerciseKiloSpawnTranscript(context: ManagedNativeScenario
   await expectNoRegistryRows(page, context.leapmuxServer)
   // The child's prompt carries the marker, so the turns it runs on its own
   // reach this script rather than the ambient scenario.
-  await modelScript.rule({
-    name: 'the child reports the shell result',
-    when: { user: 'echo kilo-done' },
-    respond: { text: 'The command printed kilo-done.' },
-  })
+  await modelScript.rule(kiloSpawnChildRule())
   const start = await modelScript.queue(
     {
       toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-kilo', {
         description: 'Run the shell probe',
-        prompt: modelScript.prompt('Run `echo kilo-done` and report the result.'),
+        prompt: modelScript.prompt(KILO_SPAWN_TASK),
       })],
     },
     { text: 'The subagent reported kilo-done.' },
