@@ -748,9 +748,14 @@ export const AppShell: Component = () => {
     return tab ? tabKey(tab) : ''
   })
   const activeWorkingDir = createMemo(() => getCurrentTabContext().workingDir)
+  const activeTabFilePath = createMemo(() => {
+    const tab = activeTab()
+    return tab?.type === TabType.FILE ? tab.filePath ?? '' : ''
+  })
   followActiveTabSelection({
     activeTabKey: activeTabIdentity,
     workingDir: activeWorkingDir,
+    activeFilePath: activeTabFilePath,
     selection: fileTreePath,
     setSelection: setFileTreePath,
   })
