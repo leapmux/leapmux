@@ -277,9 +277,9 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Active')
     const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Background')
     const gate = 'claude-question-background-workspace'
-    await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, ws1)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, ws2)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, ws2)
     await withCleanup(async () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, ws2)

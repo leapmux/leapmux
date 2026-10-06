@@ -55,7 +55,7 @@ timingTest.describe('Claude Code agent open timing', () => {
     // Start one Claude agent before the measured opens to populate the Worker's filesystem cache.
     // Each measured open still starts a new native process and performs its handshake.
     await withTestWorkspace(srv, 'timing', async ({ workspaceId }) => {
-      await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
+      await openAgentViaAPI(srv, workspaceId)
       await loginViaToken(page, srv.adminToken)
       await openWorkspace(page, workspaceId)
       await expectAgentTabCount(page, 1)
@@ -265,7 +265,7 @@ startupErrorTest.describe('Claude Code agent startup error', () => {
     const srv = failingWorker.server
 
     await withTestWorkspace(srv, 'startup-err', async ({ workspaceId }) => {
-      await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
+      await openAgentViaAPI(srv, workspaceId)
       await loginViaToken(page, srv.adminToken)
       await openWorkspace(page, workspaceId)
 
