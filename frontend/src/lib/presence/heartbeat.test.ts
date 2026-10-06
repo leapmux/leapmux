@@ -1,5 +1,6 @@
+import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mountPresenceHeartbeat } from './heartbeat'
+import { claimPresenceWhenReady, mountPresenceHeartbeat } from './heartbeat'
 
 describe('mountPresenceHeartbeat', () => {
   beforeEach(() => {
@@ -109,5 +110,71 @@ describe('mountPresenceHeartbeat', () => {
     document.dispatchEvent(new KeyboardEvent('keydown'))
     vi.advanceTimersByTime(60_000)
     expect(sender).not.toHaveBeenCalled()
+  })
+})
+
+describe('claimPresenceWhenReady', () => {
+  /** Run the claim over two signals, and return the setters and the claims that it sent, by workspace. */
+  function claims(initial: { bootstrapped: boolean, workspaceId: string }) {
+    const sent: string[] = []
+    let setBootstrapped!: (value: boolean) => void
+    let setWorkspaceId!: (value: string) => void
+    const dispose = createRoot((disposeRoot) => {
+      const [bootstrapped, writeBootstrapped] = createSignal(initial.bootstrapped)
+      const [workspaceId, writeWorkspaceId] = createSignal(initial.workspaceId)
+      setBootstrapped = writeBootstrapped
+      setWorkspaceId = writeWorkspaceId
+      claimPresenceWhenReady({ bootstrapped, workspaceId, pingNow: () => sent.push(workspaceId()) })
+      return disposeRoot
+    })
+    return { sent, setBootstrapped: (value: boolean) => setBootstrapped(value), setWorkspaceId: (value: string) => setWorkspaceId(value), dispose }
+  }
+
+  it('sends nothing before the stream bootstraps', () => {
+    const claim = claims({ bootstrapped: false, workspaceId: 'w1' })
+    claim.setWorkspaceId('w2')
+    expect(claim.sent).toEqual([])
+    claim.dispose()
+  })
+
+  it('claims the workspace in view when the stream bootstraps', () => {
+    const claim = claims({ bootstrapped: false, workspaceId: 'w1' })
+    claim.setBootstrapped(true)
+    expect(claim.sent).toEqual(['w1'])
+    claim.dispose()
+  })
+
+  // A reload restores the workspace in view from browser storage, which can finish after the stream bootstraps.
+  it('claims the workspace that resolves after the stream bootstrapped', () => {
+    const claim = claims({ bootstrapped: true, workspaceId: '' })
+    expect(claim.sent).toEqual([])
+    claim.setWorkspaceId('w1')
+    expect(claim.sent).toEqual(['w1'])
+    claim.dispose()
+  })
+
+  // The pointer event of the click that switches the workspace sends its heartbeat for the workspace that it leaves.
+  it('claims the workspace that the user switches to while the stream is live', () => {
+    const claim = claims({ bootstrapped: true, workspaceId: 'w1' })
+    claim.setWorkspaceId('w2')
+    claim.setWorkspaceId('w1')
+    expect(claim.sent).toEqual(['w1', 'w2', 'w1'])
+    claim.dispose()
+  })
+
+  it('claims again on each new bootstrap of the stream', () => {
+    const claim = claims({ bootstrapped: true, workspaceId: 'w1' })
+    claim.setBootstrapped(false)
+    claim.setBootstrapped(true)
+    expect(claim.sent).toEqual(['w1', 'w1'])
+    claim.dispose()
+  })
+
+  it('claims nothing again while the workspace and the stream stay the same', () => {
+    const claim = claims({ bootstrapped: true, workspaceId: 'w1' })
+    claim.setWorkspaceId('w1')
+    claim.setBootstrapped(true)
+    expect(claim.sent).toEqual(['w1'])
+    claim.dispose()
   })
 })

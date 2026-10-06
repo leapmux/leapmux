@@ -52,7 +52,7 @@ import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
-import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
+import { claimPresenceWhenReady, mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { interceptUntrustedLinkClicks } from '~/lib/untrustedLinkClicks'
@@ -375,16 +375,14 @@ export const AppShell: Component = () => {
     workspaceId: () => workspace.activeWorkspaceId() ?? '',
   })
 
-  // Fire an immediate heartbeat on every stream (re)connect so the
-  // hub's `received_at` is fresh against a subscription that can
-  // actually receive the resulting broadcast. Tracks the
-  // `bootstrapped` flip false → true.
-  let lastBootstrapped = false
-  createEffect(() => {
-    const now = userEvents.bootstrapped()
-    if (now && !lastBootstrapped)
-      heartbeat.pingNow()
-    lastBootstrapped = now
+  // Claim presence once the stream can receive the resulting broadcast and a
+  // workspace is in view, and again for each new stream and each workspace
+  // switch. `claimPresenceWhenReady` states why the bootstrap alone is not
+  // enough.
+  claimPresenceWhenReady({
+    bootstrapped: userEvents.bootstrapped,
+    workspaceId: () => workspace.activeWorkspaceId() ?? '',
+    pingNow: heartbeat.pingNow,
   })
 
   // One WatchWorkerPrivateEvents subscription per worker hosting a tab
