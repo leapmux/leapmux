@@ -3,6 +3,7 @@ import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroChildTurn } from './childScenario'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.
@@ -16,7 +17,7 @@ kiroTest.describe('Kiro subagent registry', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.KIRO }, {
-      childWhen: { body: '"agentMode":"context-gatherer"', user: 'Reply with CHILD_LIVE_DONE' },
+      childWhen: kiroChildTurn('Reply with CHILD_LIVE_DONE'),
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
       toolProof: { read: { workingDir } },

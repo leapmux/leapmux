@@ -4,6 +4,7 @@ import type { HeldNativeChild, NativeChildScriptContext, RunningChildOptions } f
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
+import { DROID_CHILD_SYSTEM } from './childIdentity'
 import { droidChildNoticeRule } from './childNotice'
 import { readDroidToolResult } from './toolResult'
 
@@ -33,7 +34,7 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
 export function runningChildOptions(context: NativeChildScriptContext, options: { allowExistingRows?: boolean } = {}): RunningChildOptions {
   const child = heldChildIdentity(context, { spawn: { background: true } })
   return heldChildOptions(context, child, {
-    child: { matcher: { system: 'READ-ONLY exploration', body: child.task }, finalStep: context.textStep('NATIVECHILDCOMPLETE') },
+    child: { matcher: { system: DROID_CHILD_SYSTEM, body: child.task }, finalStep: context.textStep('NATIVECHILDCOMPLETE') },
     allowExistingRows: options.allowExistingRows ?? false,
     rules: [droidChildNoticeRule(child.description, { text: 'The native child completed.' })],
   })

@@ -6,6 +6,7 @@ import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
+import { grokChildTurn } from './childScenario'
 
 grokTest.describe('Grok Build workflow grouping', () => {
   grokTest('groups a native Rhai workflow with its child', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
@@ -22,17 +23,17 @@ grokTest.describe('Grok Build workflow grouping', () => {
     ].join('\n')
     await modelScript.rule({
       name: 'the workflow child answers',
-      when: { system: 'You are a Grok Build subagent\\b', user: 'Reply with GROK_WORKFLOW_CHILD' },
+      when: grokChildTurn('Reply with GROK_WORKFLOW_CHILD'),
       respond: { text: 'GROK_WORKFLOW_CHILD' },
       once: true,
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [grokWorkflowToolCall('run-workflow', script)] },
       { text: 'The workflow finished.' },
     )
     await modelScript.fallback({ text: 'The workflow notification arrived.' })
     await sendMessage(page, modelScript.prompt('Run the native workflow with one child.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
 

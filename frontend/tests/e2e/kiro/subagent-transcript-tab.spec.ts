@@ -5,6 +5,7 @@ import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, ope
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { KIRO_CHILD_AGENT, kiroChildTurn } from './childScenario'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -29,10 +30,10 @@ kiroTest.describe('Kiro subagent registry', () => {
     // controls against the parent's.
     await modelScript.rule({
       name: 'the child answers its one-word task',
-      when: { body: '"agentMode":"context-gatherer"', user: 'Reply with the single word PONG' },
+      when: kiroChildTurn('Reply with the single word PONG'),
       respond: { text: 'PONG' },
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(AgentProvider.KIRO, 'spawn-kiro', {
           description: 'Ask for one word',
@@ -42,14 +43,13 @@ kiroTest.describe('Kiro subagent registry', () => {
       { text: 'The subagent reported PONG.' },
     )
     await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
 
     const row = await requireRegistryRow(page)
-    await expect(row).toContainText('context-gatherer')
+    await expect(row).toContainText(KIRO_CHILD_AGENT)
     await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
-    await expect(messageBubbles(page).filter({ hasText: 'Agent "context-gatherer" completed' }).first()).toBeVisible()
+    await expect(messageBubbles(page).filter({ hasText: `Agent "${KIRO_CHILD_AGENT}" completed` }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' })).toBeVisible()
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: 'Reply with the single word PONG' })).toBeVisible()

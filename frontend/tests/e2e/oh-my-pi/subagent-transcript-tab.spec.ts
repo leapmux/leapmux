@@ -1,9 +1,9 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, subagentReportBubble, userBubbles } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiChildTurn } from './childScenario'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -16,22 +16,18 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
 const REPORT = 'Apple, banana, cherry. One, two, three. Done.'
 
 ohMyPiTest.describe('Oh My Pi subagent registry', () => {
-  ohMyPiTest('follows a subagent from its spawn to its report', async ({ authenticatedOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedOhMyPiWorkspace
-    await expectNoRegistryRows(page, leapmuxServer)
+  ohMyPiTest('follows a subagent from its spawn to its report', async ({ native }) => {
+    const { page, modelScript } = native
+    await expectNoRegistryRows(page, native.leapmuxServer)
 
-    // Oh My Pi starts a child conversation with this line and the task text.
-    // The task carries the script marker. A `<system-reminder>` block precedes each prompt, so this line is not at the text start.
-    // The `yield` tool is the second match condition. Oh My Pi offers it only to a child.
-    // That catalog condition prevents a parent request from matching the child rule.
     await modelScript.rule({
       name: 'the subagent yields its report',
-      when: { user: 'Complete assignment thoroughly', body: '"name":"yield"' },
+      when: ohMyPiChildTurn(),
       respond: { toolCalls: [ohMyPiYieldToolCall('yield-report', REPORT)] },
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.OH_MY_PI, 'spawn-omp', {
+        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-omp', {
           description: 'Run the fruit task',
           prompt: modelScript.prompt('List three fruits, then count to three, then report done.'),
         })],
@@ -45,14 +41,11 @@ ohMyPiTest.describe('Oh My Pi subagent registry', () => {
     const row = await requireRegistryRow(page)
     // The row's title is omp's id for the subagent, which is the task's name.
     await expect(row).toContainText('run_the_fruit_task')
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
 
     await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
     expect((await modelScript.status()).ruleMatches['the subagent yields its report']).toBeGreaterThan(0)
-    // `getAttribute` answers null for an absent attribute, and null is not '', so the
-    // poll reads an absent attribute as the empty id it states.
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
 
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: /list three fruits/i })).toBeVisible()

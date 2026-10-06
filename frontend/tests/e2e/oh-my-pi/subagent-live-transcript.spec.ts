@@ -1,6 +1,7 @@
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { ohMyPiYieldToolCall } from '../helpers/providerToolCalls'
 import { ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiChildTurn } from './childScenario'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.
@@ -12,7 +13,7 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
 ohMyPiTest.describe('Oh My Pi subagent registry', () => {
   ohMyPiTest('shows the child prompt while the child still runs', async ({ native }) => {
     await exerciseLiveChildTranscript(native, {
-      childWhen: { user: 'Complete assignment thoroughly', body: '"name":"yield"' },
+      childWhen: ohMyPiChildTurn(),
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
       childResponse: { toolCalls: [ohMyPiYieldToolCall('yield-live-report', 'CHILD_LIVE_DONE')] },
@@ -26,7 +27,7 @@ ohMyPiTest.describe('Oh My Pi subagent registry', () => {
     if (!workingDir)
       throw new Error('The live child file proof requires the working directory of the native agent.')
     await exerciseLiveChildTranscript(native, {
-      childWhen: { user: 'Complete assignment thoroughly', body: '"name":"yield"' },
+      childWhen: ohMyPiChildTurn(),
       childTask: 'Read the assigned file in the live child.',
       parentTask: 'Delegate the live child file read.',
       toolProof: { read: { workingDir } },
