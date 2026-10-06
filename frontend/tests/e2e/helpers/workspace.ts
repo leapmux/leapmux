@@ -32,10 +32,18 @@ export interface AgentServer {
   workerId: string
 }
 
-interface WorkspaceServer extends AgentServer {
+/**
+ * The hub where a test creates a workspace. A workspace needs no Worker, so a hub with several Workers also fits.
+ * The hub process, when the test owns one, tells the cleanup whether the hub can still answer.
+ */
+export interface WorkspaceHub {
+  hubUrl: string
+  adminToken: string
   hubProc?: ChildProcess
   serverProc?: ChildProcess
 }
+
+type WorkspaceServer = WorkspaceHub & AgentServer
 
 /**
  * How the agents of one provider open in the E2E suite.
@@ -59,7 +67,7 @@ function newWorkingDir(agent: ProviderAgent): string {
 
 /** Keep workspace creation and disposal identical across agent providers. */
 export async function withTestWorkspace(
-  server: WorkspaceServer,
+  server: WorkspaceHub,
   prefix: string,
   use: (workspace: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
