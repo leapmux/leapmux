@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import ts from 'typescript'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
@@ -137,14 +137,25 @@ function scanHubSpawns(text: string) {
 }
 
 describe('agent host launch environment', () => {
-  it('guards every hub and worker launch, and finds at least one real call', () => {
-    let count = 0
-    const violations: string[] = []
+  let count = 0
+  const violations: string[] = []
+
+  // The limit is explicit because the default limit does not fit the work.
+  //
+  // This hook parses every E2E file with the TypeScript compiler. The scan is
+  // CPU-bound, and on a loaded machine it took 6.4 seconds, more than vitest's
+  // 5-second default. The suite then failed on machine load, not on a launch that
+  // it guards. The hook runs the scan once, and sixty seconds lets only a real
+  // hang reach the limit.
+  beforeAll(() => {
     for (const file of collectE2EFiles()) {
       const result = scanHubSpawns(readFileSync(file, 'utf8'))
       count += result.count
       violations.push(...result.violations.map(line => `${posixRelative(frontendRoot, file)}:${line}`))
     }
+  }, 60_000)
+
+  it('guards every hub and worker launch, and finds at least one real call', () => {
     // Two faults, both silent. An inherited development URL makes a test pass
     // against another checkout's frontend, and an inherited provider credential
     // sends the agent to the live endpoint instead of the mock.
