@@ -99,20 +99,54 @@ export interface HubRequestOptions {
   redirect?: RequestRedirect
   /** Abort the request. A caller with an optional signal passes it through as it is. */
   signal?: AbortSignal | undefined
+  /** The helper and its arguments, which a transport failure states. The RPC alone does not tell which call failed. */
+  operation?: string
 }
 
 /**
  * Send one Connect JSON request to a hub RPC and return the response, whatever its status.
  * Use it where the test reads a refusal or a response header. Use `callHub` where the test needs a successful answer.
+ *
+ * A request that never gets a response throws with the operation, the RPC, and the chain of causes. Node's fetch
+ * states only "fetch failed", and the reason is in its causes. A request that its caller aborted throws its own abort
+ * error, so the caller can tell the abort apart.
  */
 export async function hubRequest(hubUrl: string, method: HubMethod, body: unknown, options: HubRequestOptions = {}): Promise<Response> {
-  return fetch(`${hubUrl}/leapmux.v1.${method}`, {
-    method: 'POST',
-    headers: options.cookie === undefined ? { 'Content-Type': 'application/json' } : authedHeaders(options.cookie),
-    body: JSON.stringify(body),
-    ...(options.redirect ? { redirect: options.redirect } : {}),
-    ...(options.signal ? { signal: options.signal } : {}),
-  })
+  try {
+    return await fetch(`${hubUrl}/leapmux.v1.${method}`, {
+      method: 'POST',
+      headers: options.cookie === undefined ? { 'Content-Type': 'application/json' } : authedHeaders(options.cookie),
+      body: JSON.stringify(body),
+      ...(options.redirect ? { redirect: options.redirect } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    })
+  }
+  catch (error) {
+    if (options.signal?.aborted)
+      throw error
+    throw new Error(`${options.operation ?? 'hubRequest'} could not reach the hub (${method}): ${describeTransportFailure(error)}`, { cause: error })
+  }
+}
+
+/**
+ * State each error of a transport failure and its causes: the name, the code, and the message. The HTTP parser of
+ * undici keeps the bytes that it refused in `data`, and the description states them, because those bytes tell what
+ * answered in place of the hub.
+ */
+function describeTransportFailure(error: unknown): string {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  for (let current: unknown = error; current !== undefined && !seen.has(current); current = isObject(current) ? current.cause : undefined) {
+    seen.add(current)
+    if (!(current instanceof Error)) {
+      parts.push(String(current))
+      continue
+    }
+    const code = isObject(current) && typeof current.code === 'string' ? ` ${current.code}` : ''
+    const data = isObject(current) && typeof current.data === 'string' ? `; the refused bytes: ${JSON.stringify(current.data.slice(0, 200))}` : ''
+    parts.push(`${current.name}${code}: ${current.message}${data}`)
+  }
+  return parts.join('; ')
 }
 
 /**

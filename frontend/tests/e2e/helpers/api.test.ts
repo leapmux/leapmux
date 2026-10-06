@@ -477,7 +477,10 @@ describe('waitForNewOnlineWorkerViaAPI', () => {
       throw unreachable
     })
     vi.stubGlobal('fetch', fetch)
-    await expect(waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set())).rejects.toBe(unreachable)
+    await expect(waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set())).rejects.toMatchObject({
+      message: 'listWorkersViaAPI could not reach the hub (WorkerManagementService/ListWorkers): TypeError: fetch failed',
+      cause: unreachable,
+    })
     expect(fetch).toHaveBeenCalledOnce()
   })
 
@@ -537,6 +540,37 @@ describe('callHub', () => {
     await expect(callHub(hubUrl, 'AdminSettingsService/ListSettings', {}, { cookie: 'c', operation: 'listSettings(unit)' }))
       .rejects
       .toThrow('listSettings(unit) failed: AdminSettingsService/ListSettings returned HTTP 403: {"code":"permission_denied","message":"admin only"}')
+  })
+
+  // Node's fetch reports a transport failure as a bare "fetch failed". Its cause holds the reason, and the HTTP parser
+  // of undici keeps the bytes that it refused in `data`.
+  it('states the operation and the bytes that the HTTP parser refused when the request fails in transport', async () => {
+    const parserError = Object.assign(new Error('Response does not match the HTTP/1.1 protocol (Expected HTTP/, RTSP/ or ICE/)'), {
+      name: 'HTTPParserError',
+      code: 'HPE_INVALID_CONSTANT',
+      data: '\u0000\u0000\u0012\u0004',
+    })
+    const failure = new TypeError('fetch failed', { cause: parserError })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw failure
+    }))
+    const call = callHub(hubUrl, 'UserService/ElevateSession', {}, { cookie: 'c', operation: 'elevateSessionViaAPI' })
+    await expect(call).rejects.toThrow('elevateSessionViaAPI could not reach the hub (UserService/ElevateSession): '
+      + 'TypeError: fetch failed; HTTPParserError HPE_INVALID_CONSTANT: Response does not match the HTTP/1.1 protocol '
+      + '(Expected HTTP/, RTSP/ or ICE/); the refused bytes: "\\u0000\\u0000\\u0012\\u0004"')
+    await expect(call).rejects.toMatchObject({ cause: failure })
+  })
+
+  it('keeps the error of a request that its caller aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const aborted = new DOMException('This operation was aborted', 'AbortError')
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw aborted
+    }))
+    await expect(callHub(hubUrl, 'WorkerManagementService/ListWorkers', {}, { cookie: 'c', signal: controller.signal, operation: 'unit' }))
+      .rejects
+      .toBe(aborted)
   })
 })
 
