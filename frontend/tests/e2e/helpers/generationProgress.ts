@@ -1,3 +1,4 @@
+import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelStep } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ToolOutputControl } from './toolOutputControl'
@@ -20,11 +21,25 @@ export interface OutputBoundary {
   count: number
 }
 
-export interface NativeGenerationProgressCase {
+/** The options that both generation progress scenarios take. */
+interface NativeProgressCase {
+  /** True when the provider shows a live counter that advances. False when no counter shows for the whole turn. */
   supported: boolean
-  counter?: 'tokens' | 'bytes'
-  step?: MockModelStep
   prepare?: () => Promise<void>
+}
+
+/** A streamed answer that holds after its first and its second chunk. */
+export interface NativeTokenProgressCase extends NativeProgressCase {
+  /** The step that the answer text and the stream join, such as a step that thinks before it answers. */
+  step?: MockModelStep
+}
+
+/** The tool call ID of the controlled output command of `exerciseOutputByteProgress`. */
+export const PROGRESS_OUTPUT_CALL_ID = 'native-progress-output'
+
+/** A controlled shell command that holds after its first and its second output segment. */
+export interface NativeOutputByteProgressCase extends NativeProgressCase {
+  /** Allow the visible permission request of the command. */
   approveTool?: boolean
   outputMarkers?: { first: string, second: string }
   /**
@@ -143,94 +158,127 @@ async function waitForIncreasingCounter(context: ManagedNativeScenarioContext, c
   return current
 }
 
-/** Prove live counter increases or inspect the complete native turn for an absent counter. */
-export async function exerciseGenerationProgress(context: ManagedNativeScenarioContext, options: NativeGenerationProgressCase): Promise<void> {
+/** A release of a held stream or output. The cleanup of a progress scenario runs it whether the scenario passes or not. */
+type ProgressRelease = () => Promise<void>
+
+/** What the turn of a progress scenario receives from the shared setup. */
+interface ProgressTurnSetup {
+  agent: AgentInfo
+  /** Register a release before the hold that it ends. */
+  onCleanup: (release: ProgressRelease) => void
+}
+
+/**
+ * Run one native progress turn between the shared setup and the shared tail.
+ *
+ * `turn` runs the native turn until its last step arrives and returns a text that the completed transcript holds.
+ * The tail waits for the native idle edge, requires that no counter showed for a provider without one, reloads, and
+ * requires the completed text again.
+ */
+async function exerciseProgressTurn(
+  context: ManagedNativeScenarioContext,
+  options: NativeProgressCase,
+  turn: (setup: ProgressTurnSetup) => Promise<string>,
+): Promise<void> {
   await options.prepare?.()
   const agent = await currentNativeAgent(context)
   const after = await observeSettledReceipts(context.page)
   await context.page.evaluate(installGenerationObservation)
-  const counter = options.counter ?? 'tokens'
-  let releaseOutput: (() => Promise<void>) | undefined
-  const configuredGates: string[] = []
+  const releases: ProgressRelease[] = []
   await withCleanup(async () => {
-    if (counter === 'bytes') {
-      const holdFirstOutput = options.waitForToolStart !== undefined
-      const output = createToolOutputControl(agent.workingDir, options.outputMarkers, { holdFirstOutput })
-      releaseOutput = async () => {
-        await output.releaseFirstOutput()
-        await output.releaseFinalOutput()
-      }
-      const call = bashToolCall(context.provider, 'native-progress-output', output.command)
-      const start = await context.modelScript.queue(
-        { toolCalls: [call] },
-        nativeTextStep(context, 'The native output scenario completed.'),
-      )
-      await sendMessage(context.page, context.modelScript.prompt('Run the controlled output command and then complete.'))
-      if (options.approveTool) {
-        await context.modelScript.waitForSteps(start + 1)
-        await waitForControlBanner(context.page)
-        await answerControl(context.page, 'allow')
-      }
-      if (options.waitForToolStart) {
-        await options.waitForToolStart()
-        await output.releaseStartOutput()
-      }
-      await output.waitForFirstOutput()
-      const first = options.supported ? await waitForIncreasingCounter(context, counter) : 0
-      await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'first', count: first })
-      await output.releaseFirstOutput()
-      await output.waitForSecondOutput()
-      const second = options.supported ? await waitForIncreasingCounter(context, counter, first) : 0
-      await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'second', count: second })
-      await output.releaseFinalOutput()
-      await context.modelScript.waitForSteps(start + 2)
-      await waitForAgentIdle(context.page)
-      await verifyCompletedGenerationOutput(call.id, { first: output.firstMarker, second: output.secondMarker }, {
-        ...(options.prepareCompletedResultView ? { prepareView: options.prepareCompletedResultView } : {}),
-        assertVisible: async marker => expect(messageContents(context.page).filter({ hasText: marker }).first()).toBeVisible(),
-      })
-    }
-    else {
-      const suffix = uniqueMarker()
-      const firstGate = `progress-first-${suffix}`
-      const secondGate = `progress-second-${suffix}`
-      configuredGates.push(firstGate, secondGate)
-      const marker = `NATIVEPROGRESSTEXT${suffix}`
-      const text = `${marker} records the actual streamed answer. `.repeat(8)
-      const step = options.step ?? nativeTextStep(context, text)
-      const start = await context.modelScript.queue({
-        ...step,
-        text,
-        stream: { chunkChars: 24, delayMs: 0, gates: [{ afterChunk: 1, name: firstGate }, { afterChunk: 2, name: secondGate }] },
-      })
-      await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer, then complete the task.'))
-      await context.modelScript.waitForGate(firstGate)
-      const first = options.supported ? await waitForIncreasingCounter(context, counter) : 0
-      await context.modelScript.releaseGate(firstGate)
-      await context.modelScript.waitForGate(secondGate)
-      if (options.supported)
-        await waitForIncreasingCounter(context, counter, first)
-      await context.modelScript.releaseGate(secondGate)
-      await context.modelScript.waitForSteps(start + 1)
-      await expect(assistantBubbles(context.page).filter({ hasText: marker }).first()).toBeVisible()
-    }
+    const completedText = await turn({ agent, onCleanup: release => releases.push(release) })
     await waitForIdleSoundReceipt(context.page, { agentId: agent.id, after })
     await waitForAgentIdle(context.page)
-    const readings = await generationReadings(context)
-    if (!options.supported)
+    if (!options.supported) {
+      const readings = await generationReadings(context)
       expect(readings.some(reading => reading.tokens !== undefined || reading.bytes !== undefined), 'the whole native turn exposes no live counter').toBe(false)
-    await context.page.reload()
-    await expect(messageContents(context.page).filter({ hasText: counter === 'bytes' ? 'The native output scenario completed.' : 'NATIVEPROGRESSTEXT' }).first()).toBeVisible()
-  }, async () => {
-    const releaseStreams = async () => {
-      for (const gate of configuredGates) {
-        await context.modelScript.releaseGateIfHeld(gate)
-      }
     }
+    await context.page.reload()
+    await expect(messageContents(context.page).filter({ hasText: completedText }).first()).toBeVisible()
+  }, async () => {
     await finishCleanup([
-      releaseStreams(),
-      releaseOutput?.() ?? Promise.resolve(),
+      ...releases.map(release => release()),
       context.page.evaluate(() => window.__nativeGenerationProbe?.stop()),
     ])
+  })
+}
+
+/**
+ * Prove that the live token counter advances while a streamed answer holds after each of its first two chunks.
+ * For a provider without a token counter (`supported: false`), prove that no counter shows for the whole turn.
+ */
+export async function exerciseTokenProgress(context: ManagedNativeScenarioContext, options: NativeTokenProgressCase): Promise<void> {
+  await exerciseProgressTurn(context, options, async ({ onCleanup }) => {
+    const suffix = uniqueMarker()
+    const firstGate = `progress-first-${suffix}`
+    const secondGate = `progress-second-${suffix}`
+    onCleanup(async () => {
+      for (const gate of [firstGate, secondGate])
+        await context.modelScript.releaseGateIfHeld(gate)
+    })
+    const marker = `NATIVEPROGRESSTEXT${suffix}`
+    const text = `${marker} records the actual streamed answer. `.repeat(8)
+    const step = options.step ?? nativeTextStep(context, text)
+    const start = await context.modelScript.queue({
+      ...step,
+      text,
+      stream: { chunkChars: 24, delayMs: 0, gates: [{ afterChunk: 1, name: firstGate }, { afterChunk: 2, name: secondGate }] },
+    })
+    await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer, then complete the task.'))
+    await context.modelScript.waitForGate(firstGate)
+    const first = options.supported ? await waitForIncreasingCounter(context, 'tokens') : 0
+    await context.modelScript.releaseGate(firstGate)
+    await context.modelScript.waitForGate(secondGate)
+    if (options.supported)
+      await waitForIncreasingCounter(context, 'tokens', first)
+    await context.modelScript.releaseGate(secondGate)
+    await context.modelScript.waitForSteps(start + 1)
+    await expect(assistantBubbles(context.page).filter({ hasText: marker }).first()).toBeVisible()
+    return marker
+  })
+}
+
+/** The answer that ends the turn of `exerciseOutputByteProgress`. */
+const OUTPUT_PROGRESS_ANSWER = 'The native output scenario completed.'
+
+/**
+ * Prove that the live byte counter advances while a real shell command holds after each of its first two output
+ * segments, and that the completed result holds both segments.
+ * For a provider without a byte counter (`supported: false`), prove that no counter shows for the whole turn.
+ */
+export async function exerciseOutputByteProgress(context: ManagedNativeScenarioContext, options: NativeOutputByteProgressCase): Promise<void> {
+  await exerciseProgressTurn(context, options, async ({ agent, onCleanup }) => {
+    const output = createToolOutputControl(agent.workingDir, options.outputMarkers, { holdFirstOutput: options.waitForToolStart !== undefined })
+    onCleanup(async () => {
+      await output.releaseFirstOutput()
+      await output.releaseFinalOutput()
+    })
+    const call = bashToolCall(context.provider, PROGRESS_OUTPUT_CALL_ID, output.command)
+    const start = await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, OUTPUT_PROGRESS_ANSWER))
+    await sendMessage(context.page, context.modelScript.prompt('Run the controlled output command and then complete.'))
+    if (options.approveTool) {
+      await context.modelScript.waitForSteps(start + 1)
+      await waitForControlBanner(context.page)
+      await answerControl(context.page, 'allow')
+    }
+    if (options.waitForToolStart) {
+      await options.waitForToolStart()
+      await output.releaseStartOutput()
+    }
+    await output.waitForFirstOutput()
+    const first = options.supported ? await waitForIncreasingCounter(context, 'bytes') : 0
+    await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'first', count: first })
+    await output.releaseFirstOutput()
+    await output.waitForSecondOutput()
+    const second = options.supported ? await waitForIncreasingCounter(context, 'bytes', first) : 0
+    await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'second', count: second })
+    await output.releaseFinalOutput()
+    await context.modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(context.page)
+    await verifyCompletedGenerationOutput(call.id, { first: output.firstMarker, second: output.secondMarker }, {
+      ...(options.prepareCompletedResultView ? { prepareView: options.prepareCompletedResultView } : {}),
+      assertVisible: async marker => expect(messageContents(context.page).filter({ hasText: marker }).first()).toBeVisible(),
+    })
+    return OUTPUT_PROGRESS_ANSWER
   })
 }

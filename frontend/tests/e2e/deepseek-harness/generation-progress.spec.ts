@@ -1,8 +1,6 @@
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
-import { exerciseGenerationProgress } from '../helpers/generationProgress'
-import { nativeContext } from './scenarios'
+import { exerciseTokenProgress } from '../helpers/generationProgress'
 
-deepseekHarnessTest('counts advancing native model chunks and retains their completed output', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  await exerciseGenerationProgress(context, { supported: true, counter: 'tokens', approveTool: false })
+deepseekHarnessTest('counts advancing native model chunks and retains their completed output', async ({ native }) => {
+  await exerciseTokenProgress(native, { supported: true })
 })
