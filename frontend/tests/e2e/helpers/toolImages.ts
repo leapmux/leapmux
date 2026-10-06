@@ -6,6 +6,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { FINISHED_TOOL_STATUSES } from '../../../src/components/chat/model/toolCallStatus'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeTextStep } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { answerControl, readAttached, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from './ui'
@@ -45,13 +46,38 @@ export function writeToolImage(workingDir: string, marker: string): string {
 export const PNG_BASE64_PREFIX = TOOL_IMAGE_PNG_BASE64.slice(0, 11)
 
 /**
- * Require the PNG bytes of a tool result, in base64, in the model request that follows the tool step.
- * `data-uri` also requires the `data:image/png;base64,` form of an image part.
+ * Require the PNG bytes of a tool result, in base64, anywhere in the model request that follows the tool step.
+ * For a provider that gives the image as an image part, `expectImageDataUriInRequest` states the part and its format.
  * The assertion receives a boolean, so the large request body stays out of the failure message.
  */
-export function expectPngInRequest(request: Pick<MockModelRequestRecord, 'body' | 'protocol'>, form: 'base64' | 'data-uri' = 'base64'): void {
-  const text = form === 'data-uri' ? `data:image/png;base64,${PNG_BASE64_PREFIX}` : PNG_BASE64_PREFIX
-  expect(JSON.stringify(request.body).includes(text), `the ${request.protocol} model request carries the tool image as ${text}`).toBe(true)
+export function expectPngInRequest(request: Pick<MockModelRequestRecord, 'body' | 'protocol'>): void {
+  expect(JSON.stringify(request.body).includes(PNG_BASE64_PREFIX), `the ${request.protocol} model request carries the tool image as ${PNG_BASE64_PREFIX}`).toBe(true)
+}
+
+/** The media type of an image part that `expectImageDataUriInRequest` can identify by the signature of its bytes. */
+export type ToolImageMediaType = 'image/png' | 'image/webp'
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+/** Whether `bytes` start with the signature of `mediaType`: the PNG signature, or a RIFF chunk of the WEBP form. */
+function hasImageSignature(bytes: Buffer, mediaType: ToolImageMediaType): boolean {
+  if (mediaType === 'image/png')
+    return bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+  return bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP'
+}
+
+/**
+ * Require an image part of `mediaType` in the model request that follows the tool step: a `data:<mediaType>;base64,`
+ * URI whose decoded bytes start with the signature of that format.
+ * A provider that encodes the tool image again before it gives the image to the model states the format that it
+ * writes, as Oh My Pi does with WebP.
+ * The assertion receives a boolean, so the large request body stays out of the failure message.
+ */
+export function expectImageDataUriInRequest(request: Pick<MockModelRequestRecord, 'body' | 'protocol'>, mediaType: ToolImageMediaType): void {
+  const dataUris = new RegExp(`data:${escapeRegExp(mediaType)};base64,([A-Za-z0-9+/]+=*)`, 'g')
+  const found = [...JSON.stringify(request.body).matchAll(dataUris)]
+    .some(match => hasImageSignature(Buffer.from(match[1] ?? '', 'base64'), mediaType))
+  expect(found, `the ${request.protocol} model request carries the tool image as an image part of type ${mediaType}`).toBe(true)
 }
 
 /** A PNG that `writeToolImage` wrote: its file name, and its path in the working directory. */

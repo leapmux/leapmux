@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync }
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectPngInRequest, PNG_BASE64_PREFIX, runToolImageTurn, writeToolImage } from './toolImages'
+import { expectImageDataUriInRequest, expectPngInRequest, PNG_BASE64_PREFIX, runToolImageTurn, writeToolImage } from './toolImages'
 
 /** The browser operations of the mocked UI helpers, in call order. */
 const browser = vi.hoisted(() => ({ events: [] as string[] }))
@@ -110,19 +110,47 @@ describe('expectPngInRequest', () => {
     expect(() => expectPngInRequest({ protocol: 'openai-chat-completions', body: { messages: [{ role: 'tool', content: pngBase64 }] } })).not.toThrow()
   })
 
-  it('accepts the data URI form when the request states it', () => {
-    const body = { messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${pngBase64}` } }] }] }
-    expect(() => expectPngInRequest({ protocol: 'openai-chat-completions', body }, 'data-uri')).not.toThrow()
-  })
-
   it('refuses a request without PNG bytes, and keeps the body out of the message', () => {
     const body = { messages: [{ role: 'tool', content: 'The image was read.' }] }
     expect(() => expectPngInRequest({ protocol: 'anthropic-messages', body })).toThrow('the anthropic-messages model request carries the tool image')
     expect(() => expectPngInRequest({ protocol: 'anthropic-messages', body })).not.toThrow('The image was read.')
   })
+})
 
-  it('refuses bare base64 when the data URI form is required', () => {
-    expect(() => expectPngInRequest({ protocol: 'openai-chat-completions', body: { content: pngBase64 } }, 'data-uri')).toThrow('data:image/png;base64,')
+describe('expectImageDataUriInRequest', () => {
+  /** The bytes of the PNG that `writeToolImage` writes. */
+  const pngBytes = () => readFileSync(join(workingDir, writeToolImage(workingDir, 'part')))
+  /** The start of a lossy WebP file: the RIFF chunk tag, its size, the WEBP form, and a VP8 chunk tag. */
+  const webpBytes = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x62, 0x01, 0, 0]), Buffer.from('WEBPVP8 '), Buffer.alloc(8, 0x10)])
+  /** A Chat Completions request whose user row holds one image part with this data URI. */
+  const imagePart = (url: string) => ({ protocol: 'openai-chat-completions' as const, body: { messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url } }] }] } })
+
+  it('accepts a PNG image part whose bytes start with the PNG signature', () => {
+    expect(() => expectImageDataUriInRequest(imagePart(`data:image/png;base64,${pngBytes().toString('base64')}`), 'image/png')).not.toThrow()
+  })
+
+  it('accepts a WebP image part whose bytes form a RIFF chunk of the WEBP form', () => {
+    expect(() => expectImageDataUriInRequest(imagePart(`data:image/webp;base64,${webpBytes.toString('base64')}`), 'image/webp')).not.toThrow()
+  })
+
+  it('refuses an image part whose bytes are not of the format that its media type states', () => {
+    expect(() => expectImageDataUriInRequest(imagePart(`data:image/webp;base64,${pngBytes().toString('base64')}`), 'image/webp'))
+      .toThrow('the openai-chat-completions model request carries the tool image as an image part of type image/webp')
+    expect(() => expectImageDataUriInRequest(imagePart(`data:image/png;base64,${webpBytes.toString('base64')}`), 'image/png'))
+      .toThrow('as an image part of type image/png')
+  })
+
+  it('refuses an image part of another media type, and image bytes outside a data URI', () => {
+    expect(() => expectImageDataUriInRequest(imagePart(`data:image/png;base64,${pngBytes().toString('base64')}`), 'image/webp')).toThrow('as an image part of type image/webp')
+    expect(() => expectImageDataUriInRequest({ protocol: 'openai-chat-completions', body: { content: webpBytes.toString('base64') } }, 'image/webp')).toThrow('as an image part of type image/webp')
+  })
+
+  it('accepts the matching part when the request also holds a part that does not match', () => {
+    const body = { messages: [{ role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:image/webp;base64,${Buffer.from('not an image').toString('base64')}` } },
+      { type: 'image_url', image_url: { url: `data:image/webp;base64,${webpBytes.toString('base64')}` } },
+    ] }] }
+    expect(() => expectImageDataUriInRequest({ protocol: 'openai-chat-completions', body }, 'image/webp')).not.toThrow()
   })
 })
 

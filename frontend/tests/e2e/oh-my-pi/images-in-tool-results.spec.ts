@@ -1,5 +1,5 @@
 import { readToolCall } from '../helpers/providerToolCalls'
-import { expectPngInRequest, expectToolRowImage, runToolImageTurn } from '../helpers/toolImages'
+import { expectImageDataUriInRequest, expectToolRowImage, runToolImageTurn } from '../helpers/toolImages'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -14,8 +14,9 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
       marker: 'omp-read',
       toolCall: image => readToolCall(native.provider, 'read-image', image.path),
     })
-    // The mock model takes image input, so the read tool gives the PNG to the next model request.
-    expectPngInRequest(resultRequest)
+    // omp encodes the image again as a WebP before the model reads it. The tool row states only "Read image file
+    // [image/webp]", and the user row after it holds the picture as a WebP image part.
+    expectImageDataUriInRequest(resultRequest, 'image/webp')
     await expectToolRowImage(native.page, fileName)
   })
 })

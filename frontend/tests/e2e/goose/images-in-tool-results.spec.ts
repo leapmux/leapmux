@@ -1,6 +1,6 @@
 import { gooseTest } from '../goose-fixtures'
 import { goosePermissionJudgmentToolCall, gooseReadImageToolCall } from '../helpers/providerToolCalls'
-import { expectDecodedImageInBubble, expectPngInRequest, runToolImageTurn } from '../helpers/toolImages'
+import { expectDecodedImageInBubble, expectImageDataUriInRequest, runToolImageTurn } from '../helpers/toolImages'
 import { messageBubbles } from '../helpers/ui'
 
 gooseTest('shows the picture returned by read_image', async ({ native, authenticatedGooseWorkspace }) => {
@@ -15,7 +15,7 @@ gooseTest('shows the picture returned by read_image', async ({ native, authentic
     approve: true,
     toolCall: image => gooseReadImageToolCall('goose-read-image', image.path),
   })
-  expectPngInRequest(resultRequest, 'data-uri')
+  expectImageDataUriInRequest(resultRequest, 'image/png')
   const nativeResult = messageBubbles(native.page)
     .filter({ hasText: 'Loaded image from' })
     .filter({ hasText: fileName })
