@@ -4,11 +4,12 @@ import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/pl
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
+import { CLAUDE_AGENT } from './scenarios'
 
 claudeTest.describe('Control Request Draft Persistence', () => {
   claudeTest('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit.
-    const banner = await enterAndExitPlanMode(page, modelScript)
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Type a rejection reason in the editor.
@@ -37,13 +38,13 @@ claudeTest.describe('Plan Mode', () => {
     await expectSettingsChip(page, 'Default')
 
     // ── Step 1: Enter plan mode ──
-    await enterPlanMode(page, modelScript, { testId: 'plan-mode' })
+    await enterPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider }, { testId: 'plan-mode' })
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expectSettingsChip(page, 'Plan Mode')
 
     // ── Step 2: Exit plan mode (produces control_request banner) ──
-    const exitBanner1 = await exitPlanMode(page, modelScript, { testId: 'plan-mode' })
+    const exitBanner1 = await exitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider }, { testId: 'plan-mode' })
     await expect(exitBanner1.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 3: Reject the plan with a comment ──
@@ -61,7 +62,7 @@ claudeTest.describe('Plan Mode', () => {
     await waitForAgentIdle(page)
 
     // ── Step 4: Exit plan mode again ──
-    const exitBanner2 = await exitPlanMode(page, modelScript, { testId: 'plan-mode-again' })
+    const exitBanner2 = await exitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider }, { testId: 'plan-mode-again' })
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 5: Verify clear context checkbox is visible and unchecked ──
@@ -82,7 +83,7 @@ claudeTest.describe('Plan Mode', () => {
 
   claudeTest('approve with clear context checkbox checked', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Enter plan mode, then exit — get the approval banner.
-    const banner = await enterAndExitPlanMode(page, modelScript, 'clear-ctx')
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider }, { testId: 'clear-ctx' })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Verify checkbox is visible and unchecked by default.
@@ -142,7 +143,7 @@ claudeTest.describe('Plan Mode', () => {
 claudeTest.describe('plan mode - bypass permissions', () => {
   claudeTest('approve and switches toggle with feedback on editor content', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit
-    const banner = await enterAndExitPlanMode(page, modelScript)
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // The visible copy of each control. A count of zero visible copies proves that no copy of the control is visible.
@@ -173,7 +174,7 @@ claudeTest.describe('plan mode - bypass permissions', () => {
   })
 
   claudeTest('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace, modelScript }) => {
-    const banner = await enterAndExitPlanMode(page, modelScript)
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     const group = page.getByRole('radiogroup', { name: 'Permissions' })
@@ -243,7 +244,7 @@ claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
     // The plan body includes "Never execute this plan." so that after
     // approval the plan execution restart finishes quickly instead of
     // the agent spending minutes exploring the codebase.
-    const exitBanner = await enterAndExitPlanMode(page, modelScript, 'first')
+    const exitBanner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider }, { testId: 'first' })
 
     // Tab should be renamed by now (plan_updated with update_agent_title:true fires on Write).
     await expect(agentTab).toContainText('Dummy plan first')

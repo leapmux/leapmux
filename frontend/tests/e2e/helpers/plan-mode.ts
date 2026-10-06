@@ -1,8 +1,7 @@
-import type { Locator, Page } from '@playwright/test'
+import type { Locator } from '@playwright/test'
 import type { ModelScript } from './modelScriptFixture'
+import type { NativeScenarioContext } from './nativeScenario'
 import { join } from 'node:path'
-// A RELATIVE import, not `~/...`. See the note in `../agentSettings.ts`.
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { enterPlanModeToolCall, exitPlanModeToolCall, writeToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
 import { sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
@@ -18,6 +17,15 @@ import { sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 // a step that does not land is a defect in the app, not in the model's mood.
 
 const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
+
+/** The page and the model script of a plan-mode step, and the provider whose tool vocabulary it scripts. */
+export type PlanModeContext = Pick<NativeScenarioContext, 'page' | 'modelScript' | 'provider'>
+
+/** What one plan-mode step states beyond its context. */
+export interface PlanModeOptions {
+  /** A unique ID in the plan title, so two plans of one transcript differ (`first` gives "Dummy plan first"). */
+  testId?: string
+}
 
 /** The prompt that accompanies the scripted `EnterPlanMode` call. */
 export const ENTER_PLAN_PROMPT = 'I am testing the coding agent plan mode UI. Please enter plan mode.'
@@ -36,7 +44,8 @@ export function planText(testId?: string): string {
  * `providers/claude/output.go` tracks a `Write` or `Edit` whose `file_path` sits under
  * `<HOME>/.claude/plans/`, and reads the plan title and body straight out of
  * that tool input. A plan written anywhere else records no plan file, so the
- * agent-info card shows no plan row and the tab keeps its default name.
+ * agent-info card shows no plan row and the tab keeps its default name. The
+ * Worker of another provider records no plan file from this path.
  */
 function planFilePath(testId?: string): string {
   const home = getGlobalState().agentEnv.HOME
@@ -53,12 +62,8 @@ function planFilePath(testId?: string): string {
  * plan mode permits. The mode chip is the app's own confirmation that the first
  * one landed.
  */
-export async function enterPlanMode(
-  page: Page,
-  script: ModelScript,
-  options: { testId?: string, provider?: AgentProvider } = {},
-): Promise<void> {
-  const provider = options.provider ?? AgentProvider.CLAUDE_CODE
+export async function enterPlanMode(context: PlanModeContext, options: PlanModeOptions = {}): Promise<void> {
+  const { page, modelScript: script, provider } = context
   await planFallback(script)
   await script.queue(
     { toolCalls: [enterPlanModeToolCall(provider, 'enter-plan')] },
@@ -89,12 +94,8 @@ function planFallback(script: ModelScript): Promise<void> {
  * The turn stops at the request: the provider waits for the answer, so no
  * further model request follows until the test approves or rejects.
  */
-export async function exitPlanMode(
-  page: Page,
-  script: ModelScript,
-  options: { testId?: string, provider?: AgentProvider } = {},
-): Promise<Locator> {
-  const provider = options.provider ?? AgentProvider.CLAUDE_CODE
+export async function exitPlanMode(context: PlanModeContext, options: PlanModeOptions = {}): Promise<Locator> {
+  const { page, modelScript: script, provider } = context
   await planFallback(script)
   // The plan carries the scenario marker. An APPROVED plan restarts the agent
   // on a fresh session seeded from the plan, so the original user message — and
@@ -106,16 +107,10 @@ export async function exitPlanMode(
   return waitForControlBanner(page)
 }
 
-/**
- * Enter plan mode and leave it again, returning the banner the exit raises.
- *
- * `testId` is an optional unique ID embedded in the plan title, so two runs in
- * one transcript name different plans (e.g. "first" → "Dummy plan first").
- */
-export async function enterAndExitPlanMode(page: Page, script: ModelScript, testId?: string): Promise<Locator> {
-  const options = testId === undefined ? {} : { testId }
-  await enterPlanMode(page, script, options)
-  return exitPlanMode(page, script, options)
+/** Enter plan mode and leave it again, returning the banner the exit raises. */
+export async function enterAndExitPlanMode(context: PlanModeContext, options: PlanModeOptions = {}): Promise<Locator> {
+  await enterPlanMode(context, options)
+  return exitPlanMode(context, options)
 }
 
 export { PLAN_BODY }

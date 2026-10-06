@@ -200,7 +200,8 @@ export interface TextGoalQueueCase {
  * The options object distinguishes the two optional mode values.
  * Positional strings could swap those values without a type error and fail later inside this helper.
  */
-export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase): Promise<void> {
+export async function exerciseTextGoalQueue(context: Pick<NativeScenarioContext, 'page'>, test: TextGoalQueueCase): Promise<void> {
+  const { page } = context
   const queue = inputQueue(page)
   const pauseButton = queuePauseButton(page)
   const modeTrigger = page.locator('[data-testid="composer-mode-trigger"]:visible')

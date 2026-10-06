@@ -5,6 +5,7 @@ import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { answerPlanReview, expectNoControlBanner, expectSettingsChip, settingsBar, waitForSettingsIdle } from '../helpers/ui'
+import { CLAUDE_AGENT } from './scenarios'
 
 claudeTest.describe('plan mode - bypass permissions', () => {
   claudeTest('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -13,13 +14,13 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     await expectSettingsChip(page, 'Default')
 
     // Step 1: Enter plan mode
-    await enterPlanMode(page, modelScript)
+    await enterPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
     await expectSettingsChip(page, 'Plan Mode')
 
     // Step 2: Exit plan mode (produces control_request banner)
-    const banner = await exitPlanMode(page, modelScript)
+    const banner = await exitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Verify the switch and the permission pills are visible, with Smart selected.

@@ -1,4 +1,5 @@
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { test } from './fixtures'
@@ -296,8 +297,8 @@ test.describe('Code Language Label', () => {
 
 test.describe('send feedback button labels', () => {
   test('ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace, modelScript }) => {
-    // Enter plan mode, write a dummy plan, and exit
-    const banner = await enterAndExitPlanMode(page, modelScript)
+    // Enter plan mode, write a dummy plan, and exit. The agent of `authenticatedWorkspace` is a Claude Code agent.
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: AgentProvider.CLAUDE_CODE })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
