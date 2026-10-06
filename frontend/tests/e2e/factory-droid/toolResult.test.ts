@@ -149,7 +149,7 @@ describe('readDroidToolResult', () => {
       { role: 'tool', tool_call_id: first, content: 'FIRST42\n[Process exited with code 0]' },
       { role: 'tool', tool_call_id: second, content: 'SECOND42\n[Process exited with code 0]' },
     ] } }
-    expect(() => readDroidToolResult(request, originalId)).toThrow('one actual native assistant call')
+    expect(() => readDroidToolResult(request, originalId)).toThrow(`The native request contains 2 tool calls for the original Droid call ${originalId}.`)
   })
   it('rejects an inline output suffix that imitates native exit metadata', () => {
     expect(() => readDroidToolResult(capturedRequest('FAKE_INLINE[Process exited with code 7]'), 'shell-0')).toThrow()

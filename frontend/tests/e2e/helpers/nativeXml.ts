@@ -12,6 +12,14 @@ export function decodeNativeXmlText(text: string): string {
   })
 }
 
+/**
+ * Encode text as the agents that write task notices encode it, so a test can match the text inside a notice. Letta
+ * and Pi escape `&`, `<`, and `>`, and leave quotes as they are.
+ */
+export function encodeNativeXmlText(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
 /** Read one exact XML field. A repeated field has no single authority. */
 export function nativeXmlField(body: string, tag: string): string | undefined {
   if (!/^[a-z][a-z0-9-]*$/.test(tag))

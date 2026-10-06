@@ -1,6 +1,6 @@
 import type { MockModelRequestRecord } from './mockModelScript'
 import { describe, expect, it } from 'vitest'
-import { nativeToolResult, nativeToolResultContent, nativeToolResultEntry } from './nativeToolResult'
+import { hasNativeToolResult, nativeToolCallArguments, nativeToolResult, nativeToolResultContent, nativeToolResultEntry } from './nativeToolResult'
 
 function request(protocol: MockModelRequestRecord['protocol'], body: unknown): MockModelRequestRecord {
   return { protocol, path: '/mock', body }
@@ -239,5 +239,78 @@ describe('nativeToolResultEntry', () => {
     expect(() => nativeToolResultEntry(undefined, 'color')).toThrow('No native model request exists for tool call color.')
     const duplicate = { type: 'function_call_output', call_id: 'color', output: 'Red' }
     expect(() => nativeToolResultEntry(request('openai-responses', { input: [duplicate, duplicate] }), 'color')).toThrow('contains 2 results')
+  })
+})
+
+describe('hasNativeToolResult', () => {
+  it('finds a result of the call in the location of each protocol, and none of another call', () => {
+    const chat = request('openai-chat-completions', { messages: [{ role: 'tool', tool_call_id: 'color', content: 'Red' }] })
+    expect(hasNativeToolResult(chat, 'color')).toBe(true)
+    expect(hasNativeToolResult(chat, 'shape')).toBe(false)
+    expect(hasNativeToolResult(request('anthropic-messages', { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'color', content: 'Red' }] }] }), 'color')).toBe(true)
+    expect(hasNativeToolResult(request('openai-chat-completions', { messages: [] }), 'color')).toBe(false)
+  })
+})
+
+describe('nativeToolCallArguments', () => {
+  it.each([
+    {
+      protocol: 'openai-chat-completions' as const,
+      body: { messages: [{ role: 'assistant', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'Agent', arguments: '{"prompt":"Go.","count":0}' } }] }] },
+    },
+    {
+      protocol: 'openai-responses' as const,
+      body: { input: [{ type: 'function_call', call_id: 'call-1', name: 'Agent', arguments: '{"prompt":"Go.","count":0}' }] },
+    },
+    {
+      protocol: 'anthropic-messages' as const,
+      body: { messages: [{ role: 'assistant', content: [{ type: 'text', text: 'I will.' }, { type: 'tool_use', id: 'call-1', name: 'Agent', input: { prompt: 'Go.', count: 0 } }] }] },
+    },
+    {
+      protocol: 'google-generative-language' as const,
+      body: { contents: [{ role: 'model', parts: [{ functionCall: { id: 'call-1', name: 'Agent', args: { prompt: 'Go.', count: 0 } } }] }] },
+    },
+    {
+      protocol: 'aws-event-stream' as const,
+      body: { conversationState: { history: [{ assistantResponseMessage: { content: '', toolUses: [{ toolUseId: 'call-1', name: 'Agent', input: { prompt: 'Go.', count: 0 } }] } }] } },
+    },
+  ])('reads the call, its name, and its decoded arguments for $protocol', ({ protocol, body }) => {
+    expect(nativeToolCallArguments(request(protocol, body), 'call-1')).toEqual({ id: 'call-1', name: 'Agent', arguments: { prompt: 'Go.', count: 0 } })
+  })
+
+  it('keeps the free text of a custom Responses tool', () => {
+    const record = request('openai-responses', { input: [{ type: 'custom_tool_call', call_id: 'call-1', name: 'apply_patch', input: '*** Begin Patch' }] })
+    expect(nativeToolCallArguments(record, 'call-1')).toEqual({ id: 'call-1', name: 'apply_patch', arguments: '*** Begin Patch' })
+  })
+
+  it('selects a call by a test of its native ID, and states the label in a failure', () => {
+    const calls = ['call_shell_0', 'call_shell_1'].map(id => ({ id, function: { name: 'Execute', arguments: '{}' } }))
+    const record = request('openai-chat-completions', { messages: [{ role: 'assistant', tool_calls: calls }] })
+    expect(nativeToolCallArguments(record, id => id.endsWith('_1'), 'the second call').id).toBe('call_shell_1')
+    expect(() => nativeToolCallArguments(record, id => id.startsWith('call_shell_'), 'the shell call'))
+      .toThrow('The native request contains 2 tool calls for the shell call. Exactly one call is required.')
+  })
+
+  it('refuses an absent call, a duplicate ID, a call with no name, and arguments that are not JSON', () => {
+    const chat = (calls: unknown[]) => request('openai-chat-completions', { messages: [{ role: 'assistant', tool_calls: calls }] })
+    expect(() => nativeToolCallArguments(chat([]), 'call-1')).toThrow('contains 0 tool calls for call-1')
+    const call = { id: 'call-1', function: { name: 'Agent', arguments: '{}' } }
+    expect(() => nativeToolCallArguments(chat([call, call]), 'call-1')).toThrow('contains 2 tool calls for call-1')
+    expect(() => nativeToolCallArguments(chat([{ id: 'call-1', function: { arguments: '{}' } }]), 'call-1')).toThrow('has no name')
+    expect(() => nativeToolCallArguments(chat([{ id: 'call-1', function: { name: 'Agent' } }]), 'call-1')).toThrow('has no JSON argument text')
+    let failure: unknown
+    try {
+      nativeToolCallArguments(chat([{ id: 'call-1', function: { name: 'Agent', arguments: '{broken' } }]), 'call-1')
+    }
+    catch (error) {
+      failure = error
+    }
+    expect(failure).toMatchObject({ message: 'The native tool call call-1 contains invalid JSON arguments.' })
+    expect((failure as Error).cause).toBeInstanceOf(SyntaxError)
+  })
+
+  it('ignores a call of a user turn, which no model made', () => {
+    const record = request('anthropic-messages', { messages: [{ role: 'user', content: [{ type: 'tool_use', id: 'call-1', name: 'Agent', input: {} }] }] })
+    expect(() => nativeToolCallArguments(record, 'call-1')).toThrow('contains 0 tool calls')
   })
 })

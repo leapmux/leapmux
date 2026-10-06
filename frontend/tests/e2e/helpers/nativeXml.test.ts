@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { decodeNativeXmlText, nativeXmlField } from './nativeXml'
+import { decodeNativeXmlText, encodeNativeXmlText, nativeXmlField } from './nativeXml'
+
+describe('encodeNativeXmlText', () => {
+  it('escapes the ampersand first, then the angle brackets, and leaves quotes unchanged', () => {
+    expect(encodeNativeXmlText('a & <b> "c" \'d\'')).toBe('a &amp; &lt;b&gt; "c" \'d\'')
+    expect(encodeNativeXmlText('&lt;')).toBe('&amp;lt;')
+    expect(encodeNativeXmlText('')).toBe('')
+  })
+
+  it('round-trips through the decoder', () => {
+    const text = 'Agent "<x>" & more'
+    expect(decodeNativeXmlText(encodeNativeXmlText(text))).toBe(text)
+  })
+})
 
 describe('decodeNativeXmlText', () => {
   it('decodes the five native entities once', () => {

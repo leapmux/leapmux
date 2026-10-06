@@ -5,6 +5,7 @@ import { CLAUDE_TOOL_NAMES } from '../../../src/components/chat/providers/claude
 import { isObject } from '../../../src/lib/jsonPick'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { claudeToolResultText } from '../helpers/claudeChildResponse'
+import { requireNonemptyText } from '../helpers/requiredText'
 
 export interface ClaudeChildReportOptions {
   spawnCallId: string
@@ -67,10 +68,8 @@ function validateOptions(options: ClaudeChildReportOptions): CompleteReportOptio
     completionStatus: options.completionStatus ?? CLAUDE_CHILD_COMPLETED_STATUS,
     completionReply: options.completionReply ?? CLAUDE_CHILD_COMPLETION_REPLY,
   }
-  for (const key of ['spawnCallId', 'report', 'reply', 'completionStatus', 'completionReply'] as const) {
-    if (typeof complete[key] !== 'string' || complete[key].trim() === '')
-      throw new Error(`The Claude parent report rule requires nonempty text for ${key}.`)
-  }
+  for (const key of ['spawnCallId', 'report', 'reply', 'completionStatus', 'completionReply'] as const)
+    requireNonemptyText(complete[key], 'The Claude parent report rule', key)
   return complete
 }
 

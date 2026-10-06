@@ -1,5 +1,6 @@
 import { ZCODE_EVENT } from '../../../src/generated/contracts/zcode-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
+import { decodeNativeXmlText } from '../helpers/nativeXml'
 
 export interface ZCodeWorkflowLaunch {
   runId: string
@@ -20,19 +21,13 @@ export function zcodeWorkflowLaunch(text: string): ZCodeWorkflowLaunch {
   return { runId }
 }
 
-/** Decode the native XML text once. Encoded tags must remain text. */
-function decodeXml(text: string): string {
-  const entities: Readonly<Record<string, string>> = { '&quot;': '"', '&apos;': '\'', '&lt;': '<', '&gt;': '>', '&amp;': '&' }
-  return text.replace(/&(?:quot|apos|lt|gt|amp);/gu, value => entities[value] ?? value)
-}
-
 function tag(text: string, name: 'run_id' | 'status' | 'owned_by_this_session' | 'result' | 'error'): string | undefined {
   const opening = name === 'error' ? `<${name} code="[^"]*">` : `<${name}>`
   const matches = Array.from(text.matchAll(new RegExp(`${opening}([\\s\\S]*?)<\\/${name}>`, 'gu')))
   if (matches.length > 1)
     throw new Error(`The native ZCode workflow repeats its ${name} field.`)
   const value = matches[0]?.[1]
-  return value === undefined ? undefined : name === 'result' ? value : decodeXml(value)
+  return value === undefined ? undefined : name === 'result' ? value : decodeNativeXmlText(value)
 }
 
 /** Require the exact owned run's final result, including an empty native value. */

@@ -6,7 +6,10 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { hasNativeToolResult, nativeToolCallArguments, nativeToolResult } from '../helpers/nativeToolResult'
+import { encodeNativeXmlText } from '../helpers/nativeXml'
+import { waitForNewestModelRequest } from '../helpers/newestModelRequest'
+import { requireNonemptyText } from '../helpers/requiredText'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 
 export interface LettaChildLaunch {
@@ -27,37 +30,20 @@ interface LettaNoticeOptions {
   once?: boolean
 }
 
-// Letta escapes these characters before it writes summary and result text.
-function xmlText(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-}
-
-function requireText(value: string, field: string): void {
-  if (typeof value !== 'string' || value.trim() === '')
-    throw new Error(`The Letta notification requires nonempty text for ${field}.`)
+/** Refuse a notice input that holds no text. */
+function requireNotice(value: string, field: string): void {
+  requireNonemptyText(value, 'The Letta notification', field)
 }
 
 /** Read one native task receipt from the actual result of its Agent call. */
 export function lettaChildLaunch(request: MockModelRequestRecord, spawnCallId: string): LettaChildLaunch | null {
-  requireText(spawnCallId, 'spawnCallId')
-  if (request.protocol !== 'openai-chat-completions' || !isObject(request.body) || !Array.isArray(request.body.messages))
+  requireNotice(spawnCallId, 'spawnCallId')
+  if (request.protocol !== 'openai-chat-completions' || !hasNativeToolResult(request, spawnCallId))
     return null
-  if (!request.body.messages.some((message: unknown) => isObject(message) && message.role === 'tool' && message.tool_call_id === spawnCallId))
-    return null
-  const calls = request.body.messages
-    .filter((message: unknown) => isObject(message) && message.role === 'assistant')
-    .flatMap(message => isObject(message) && Array.isArray(message.tool_calls) ? message.tool_calls : [])
-    .filter((call: unknown) => isObject(call) && call.id === spawnCallId)
-  const call: unknown = calls[0]
-  if (calls.length !== 1 || !isObject(call) || !isObject(call.function) || call.function.name !== 'Agent' || typeof call.function.arguments !== 'string')
+  const call = nativeToolCallArguments(request, spawnCallId)
+  if (call.name !== 'Agent')
     throw new Error('The Letta child receipt contains no unique actual Agent call.')
-  let input: unknown
-  try {
-    input = JSON.parse(call.function.arguments)
-  }
-  catch (error) {
-    throw new Error('The Letta Agent call contains invalid JSON arguments.', { cause: error })
-  }
+  const input = call.arguments
   if (!isObject(input) || typeof input.description !== 'string' || input.description.trim() === '' || typeof input.prompt !== 'string' || input.prompt.trim() === '' || input.subagent_type !== 'general-purpose')
     throw new Error('The Letta Agent call contains invalid child arguments.')
   const result = nativeToolResult(request, spawnCallId)
@@ -77,25 +63,25 @@ export function lettaChildLaunch(request: MockModelRequestRecord, spawnCallId: s
 /** Match one actual Letta task and its native subagent report. */
 export function lettaChildNoticeRule(launch: LettaChildLaunch, childId: string, options: LettaNoticeOptions): MockModelRule {
   for (const field of ['name', 'spawnCallId', 'description', 'report', 'reply'] as const)
-    requireText(options[field], field)
+    requireNotice(options[field], field)
   if (launch.spawnCallId !== options.spawnCallId || launch.description !== options.description)
     throw new Error('The Letta notification does not identify its actual Agent call.')
-  requireText(launch.outputFile, 'outputFile')
+  requireNotice(launch.outputFile, 'outputFile')
   if (!/^task_\d+$/.test(launch.taskId) || !/^subagent-\d+-\d+$/.test(childId))
     throw new Error('The Letta notification requires actual native task and subagent IDs.')
   for (const field of ['agentId', 'conversationId'] as const) {
     if (launch[field] !== undefined)
-      requireText(launch[field], field)
+      requireNotice(launch[field], field)
   }
   const header = `subagent_type=general-purpose subagent_id=${escapeRegExp(childId)} subagent_status=success${
-    launch.agentId === undefined ? '(?: agent_id=[^\\s<>]+)?' : ` agent_id=${escapeRegExp(xmlText(launch.agentId))}`
-  }${launch.conversationId === undefined ? '(?: conversation_id=[^\\s<>]+)?' : ` conversation_id=${escapeRegExp(xmlText(launch.conversationId))}`
+    launch.agentId === undefined ? '(?: agent_id=[^\\s<>]+)?' : ` agent_id=${escapeRegExp(encodeNativeXmlText(launch.agentId))}`
+  }${launch.conversationId === undefined ? '(?: conversation_id=[^\\s<>]+)?' : ` conversation_id=${escapeRegExp(encodeNativeXmlText(launch.conversationId))}`
   }(?: runtime_session_id=[^\\s<>]+)?`
   const usage = '(?:\\n<usage>(?:total_tokens: \\d+(?:\\ntool_uses: \\d+)?(?:\\nduration_ms: \\d+)?|tool_uses: \\d+(?:\\nduration_ms: \\d+)?|duration_ms: \\d+)</usage>)?'
   const envelope = '^<task-notification>\\n'
     + `<task-id>${escapeRegExp(launch.taskId)}</task-id>\\n<status>completed</status>\\n`
-    + `<summary>${escapeRegExp(xmlText(`Agent "${options.description}" completed`))}</summary>\\n`
-    + `<result>${header}\\n\\n(?=[^<]*${escapeRegExp(xmlText(options.report))})[^<]*</result>${usage}\\n</task-notification>\\n`
+    + `<summary>${escapeRegExp(encodeNativeXmlText(`Agent "${options.description}" completed`))}</summary>\\n`
+    + `<result>${header}\\n\\n(?=[^<]*${escapeRegExp(encodeNativeXmlText(options.report))})[^<]*</result>${usage}\\n</task-notification>\\n`
     + `Full transcript available at: ${escapeRegExp(launch.outputFile)}$`
   return {
     name: options.name,
@@ -108,17 +94,7 @@ export function lettaChildNoticeRule(launch: LettaChildLaunch, childId: string, 
 /** Read both native identities before the controlled child can deliver its report. */
 export async function registerLettaChildNoticeRule(context: ManagedNativeScenarioContext, options: LettaNoticeOptions): Promise<MockModelRule> {
   const parent = await currentNativeAgent(context)
-  let launch: LettaChildLaunch | null = null
-  await expect.poll(async () => {
-    for (const request of [...(await context.modelScript.status()).requests].reverse()) {
-      const candidate = lettaChildLaunch(request, options.spawnCallId)
-      if (candidate) {
-        launch = candidate
-        return true
-      }
-    }
-    return false
-  }).toBe(true)
+  const launch = await waitForNewestModelRequest(context.modelScript, request => lettaChildLaunch(request, options.spawnCallId))
   const rows = await retryUntilPass(async () => {
     const found = (await readNativeSidebarSnapshot(context, parent.id)).backgroundTasks.filter(task => task.kind === BackgroundTaskKind.SUBAGENT && task.title === options.description && task.childAgentId !== '')
     expect(found.length, 'the Worker holds the actual child row of the Letta notification').toBeGreaterThan(0)
@@ -128,8 +104,6 @@ export async function registerLettaChildNoticeRule(context: ManagedNativeScenari
   if (!row || others.length > 0)
     throw new Error('The Letta notification matches more than one actual child row.')
   const childId = row.id
-  if (!launch)
-    throw new Error('The Letta notification has no matching actual Agent receipt.')
   const rule = lettaChildNoticeRule(launch, childId, options)
   await context.modelScript.rule(rule)
   return rule
