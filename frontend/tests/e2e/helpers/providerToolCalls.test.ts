@@ -14,6 +14,7 @@ import {
   bashToolCall,
   blockGoalToolCall,
   claudeSubagentHandbackToolCall,
+  claudeWorkflowToolCall,
   clineRunTeammateTaskToolCall,
   clineSpawnTeammateToolCall,
   codebuddyFindToolsToolCall,
@@ -87,6 +88,8 @@ import {
   reasonixViewImageToolCall,
   spawnSubagentToolCall,
   updateTodosToolCall,
+  WORKFLOW_TOOL_NAMES,
+  workflowToolNames,
   writeToolCall,
   zcodeCreateWorkflowToolCall,
   zcodeGetWorkflowRunToolCall,
@@ -524,6 +527,62 @@ describe('codewhaleReadMediaToolCall', () => {
   })
 })
 
+describe('the Copilot edit and write builders', () => {
+  it('sends an edit as one Update File hunk through the freeform apply_patch tool', () => {
+    expect(editToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-edit', { path: '/work/a.txt', before: 'OLD', after: 'NEW' })).toEqual({
+      id: 'copilot-edit',
+      name: 'apply_patch',
+      input: '*** Begin Patch\n*** Update File: /work/a.txt\n@@\n-OLD\n+NEW\n*** End Patch',
+    })
+  })
+
+  it('sends a write as one Add File patch, and keeps no line for the final line break', () => {
+    expect(writeToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-write', { path: '/work/b.txt', content: 'first\nsecond\n' })).toEqual({
+      id: 'copilot-write',
+      name: 'apply_patch',
+      input: '*** Begin Patch\n*** Add File: /work/b.txt\n+first\n+second\n*** End Patch',
+    })
+  })
+
+  it('sends the same patch text as the Codex and Amp builders', () => {
+    const edit = { path: '/work/a.txt', before: 'OLD', after: 'NEW' }
+    const amp = editToolCall(AgentProvider.AMP, 'amp-edit', edit)
+    expect(editToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-edit', edit).input).toBe(amp.arguments?.patchText)
+  })
+})
+
+describe('WORKFLOW_TOOL_NAMES', () => {
+  it('holds each workflow tool name of the table once, in order', () => {
+    expect(WORKFLOW_TOOL_NAMES).toEqual(['AgentSwarm', 'CreateWorkflow', 'SubagentWorkflow', 'Workflow', 'team_run_task', 'workflow'])
+  })
+
+  it.each([
+    { provider: AgentProvider.CLAUDE_CODE, call: claudeWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.QODER, call: qoderWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.PI, call: piWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.ZCODE, call: zcodeCreateWorkflowToolCall('w', 'probe', 'return 1') },
+    { provider: AgentProvider.MIMO_CODE, call: mimoWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.KIMI_CODE, call: kimiAgentSwarmToolCall('w', 'Probe', 'Reply {{item}}.', ['A']) },
+    { provider: AgentProvider.QWEN_CODE, call: qwenWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.CODEWHALE, call: codewhaleWorkflowToolCall('w', 'Goal', 'Prompt') },
+    { provider: AgentProvider.GROK_BUILD, call: grokWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.CLINE, call: clineRunTeammateTaskToolCall('w', 'researcher', 'Find the bug.') },
+    { provider: AgentProvider.DEEPSEEK_HARNESS, call: codeExecutionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'w', 'return 1') },
+  ])('lists the tool of the workflow builder of $provider', ({ provider, call }) => {
+    expect(workflowToolNames(provider)).toContain(call.name)
+    expect(WORKFLOW_TOOL_NAMES).toContain(call.name)
+  })
+
+  it('lists the tool that the CodeBuddy wrapper runs', () => {
+    expect(workflowToolNames(AgentProvider.CODEBUDDY)).toContain(codebuddyWorkflowToolCall('w', 'return 1').arguments?.toolName)
+  })
+
+  it.each([AgentProvider.GITHUB_COPILOT, AgentProvider.GOOSE, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.REASONIX])('states no workflow tool for %s, whose grouping spec proves none', (provider) => {
+    expect(hasToolFor(provider, 'workflowTools')).toBe(false)
+    expect(workflowToolNames(provider)).toEqual([])
+  })
+})
+
 describe('copilotApplyPatchToolCall', () => {
   it('preserves the native multiline freeform patch input', () => {
     const patch = '*** Begin Patch\n*** Update File: /project/native.ts\n@@\n-before\n+after\n*** End Patch\n'
@@ -909,6 +968,7 @@ const OPERATIONS = [
   { operation: 'completeGoal', call: (p: AgentProvider) => completeGoalToolCall(p, 'call-1') },
   { operation: 'blockGoal', call: (p: AgentProvider) => blockGoalToolCall(p, 'call-1', 'Blocked here.') },
   { operation: 'mcpTool', call: (p: AgentProvider) => mcpToolCall(p, 'call-1', { server: 'form_probe', tool: 'echo', input: { text: 'hi' } }) },
+  { operation: 'codeExecution', call: (p: AgentProvider) => codeExecutionToolCall(p, 'call-1', 'return 40 + 2;') },
 ] as const
 
 describe('TOOL_VOCABULARY', () => {

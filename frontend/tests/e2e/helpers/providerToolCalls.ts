@@ -12,7 +12,12 @@ import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek-harness-protocol'
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
+import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
+import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
+import { MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
+import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
+import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { CURSOR_CREATE_PLAN_TOOL, CURSOR_GENERATE_IMAGE_TOOL, CURSOR_MCP_TOOL, CURSOR_QUESTION_TOOL, CURSOR_REQUEST_CONTEXT_TOOL, CURSOR_TASK_TOOL, CURSOR_WEB_FETCH_TOOL } from './cursorSurface'
@@ -190,6 +195,17 @@ interface ProviderToolVocabulary {
    * A null value means this table supplies no MCP builder.
    */
   mcpTool: ((id: string, request: McpToolRequest) => MockModelToolCall) | null
+  /**
+   * Run a script through the native code executor of the provider.
+   * A null value means the provider has no code executor that the suite audited.
+   */
+  codeExecution: ((id: string, source: string) => MockModelToolCall) | null
+  /**
+   * The names of the native tools that run a workflow of several subagents, as the model catalog of the provider
+   * lists them. For CodeBuddy, the name is the tool that its deferred wrapper takes. A null value means the suite
+   * knows no workflow tool of the provider. {@link WORKFLOW_TOOL_NAMES} is the union of these names.
+   */
+  workflowTools: readonly string[] | null
 }
 
 /**
@@ -322,7 +338,7 @@ function patchLines(mark: '+' | '-', text: string): string {
 /**
  * An apply_patch text that replaces `before` with `after` in one hunk.
  *
- * Codex and Amp read the same patch format. Each line of a side carries its
+ * Codex, Amp, and Copilot read the same patch format. Each line of a side carries its
  * mark, because an unmarked line is not part of the hunk.
  */
 function updateFilePatch({ path, before, after }: EditRequest): string {
@@ -396,6 +412,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: ['Workflow'],
   },
   [AgentProvider.CODEWHALE]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
@@ -457,6 +475,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', blocker: reason } }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: CODEWHALE_TOOL.ExecuteTools, arguments: { code: source } }),
+    workflowTools: [CODEWHALE_TOOL.Workflow],
   },
   [AgentProvider.CODEX]: {
     bash: (id, command) => codexCommandCall(id, { cmd: command }),
@@ -507,14 +527,14 @@ const TOOL_VOCABULARY = {
       namespace: `mcp__${server}`,
       arguments: input,
     }),
+    codeExecution: (id, source) => codexExecToolCall(id, source),
+    workflowTools: null,
   },
   [AgentProvider.GITHUB_COPILOT]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),
-    // Copilot changes files through its freeform apply_patch tool.
-    // Use copilotApplyPatchToolCall for that input.
-    // This table supplies no structured edit or write builder.
-    edit: null,
-    write: null,
+    // Copilot changes files through its freeform apply_patch tool, which reads the patch grammar of Codex and Amp.
+    edit: (id, request) => copilotApplyPatchToolCall(id, updateFilePatch(request)),
+    write: (id, request) => copilotApplyPatchToolCall(id, addFilePatch(request)),
     read: (id, path) => ({ id, name: 'view', arguments: { path } }),
     // Copilot drives plan mode through its session-mode option group.
     enterPlanMode: null,
@@ -571,6 +591,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}-${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
   [AgentProvider.CURSOR]: {
     // Cursor receives protobuf events through its Connect Run stream.
@@ -614,6 +636,8 @@ const TOOL_VOCABULARY = {
       name: CURSOR_MCP_TOOL,
       arguments: { server, tool, input },
     }),
+    codeExecution: null,
+    workflowTools: null,
   },
   [AgentProvider.GOOSE]: {
     bash: (id, command) => ({ id, name: 'shell', arguments: { command } }),
@@ -642,6 +666,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'execute_typescript', arguments: { code: source } }),
+    workflowTools: null,
   },
   [AgentProvider.KIMI_CODE]: {
     // Kimi Code supplies each tool's JSON Schema in its model request.
@@ -698,6 +724,8 @@ const TOOL_VOCABULARY = {
     completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: [KIMI_TOOL.AgentSwarm],
   },
   [AgentProvider.KILO]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),
@@ -724,6 +752,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'execute', arguments: { code: source } }),
+    workflowTools: null,
   },
   // MiMo Code 0.1.14 supplies snake_case input fields in its native schemas.
   // Two tool names differ from OpenCode:
@@ -776,6 +806,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'exec', arguments: { code: source } }),
+    workflowTools: [MIMO_TOOL.Workflow],
   },
   [AgentProvider.OPENCODE]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
@@ -802,6 +834,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'execute', arguments: { code: source } }),
+    workflowTools: null,
   },
   [AgentProvider.PI]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
@@ -825,6 +859,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: piNativeMcpToolName(server, tool), arguments: input }),
+    codeExecution: (id, source) => piCodemodeToolCall(id, source),
+    workflowTools: [PI_TOOL.SubagentWorkflow],
   },
   [AgentProvider.GROK_BUILD]: {
     // Read off the tool schemas in Grok Build 1.0.41's own model request:
@@ -858,6 +894,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_tool', arguments: { tool_name: `${server}__${tool}`, tool_input: input } }),
+    codeExecution: null,
+    workflowTools: ['workflow'],
   },
   [AgentProvider.QWEN_CODE]: {
     // Read off the tool schemas in Qwen Code 0.24.4's own model request.
@@ -886,6 +924,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'exec', arguments: { source } }),
+    workflowTools: [QWEN_TOOL.Workflow],
   },
   // Kiro's own tool names and argument shapes, read off the requests of its v3
   // engine (`v3_*` probes): the file tools take `path` and `text`, and the
@@ -946,6 +986,8 @@ const TOOL_VOCABULARY = {
     // Kiro offers each tool of a server to the model as `mcp_<server>_<tool>`, with
     // the tool's own arguments.
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
   // Oh My Pi supplies these tool schemas in tools/*.ts.
   // Native probes use omp 18.2.11.
@@ -994,6 +1036,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'eval', arguments: { language: 'js', code: source } }),
+    workflowTools: null,
   },
   [AgentProvider.REASONIX]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
@@ -1030,6 +1074,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_capability', arguments: { action: 'call', capability_id: `mcp-tool:${server}/${tool}`, arguments: input } }),
+    codeExecution: null,
+    workflowTools: null,
   },
   [AgentProvider.ZCODE]: {
     bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
@@ -1058,6 +1104,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
+    workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
   // Amp's tool code and native probes define these calls.
   // The mock Amp service leases each non-subagent tool to the CLI executor.
@@ -1093,6 +1141,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
   // Cline's own tool names and argument shapes, read off the tool schemas in the
   // model requests of Cline 3.0.64's hub. Each schema sets `additionalProperties:
@@ -1143,6 +1193,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: [CLINE_TOOL_NAME.TeamRunTask],
   },
   // These providers expose their own native tool vocabularies.
   // Each implemented entry follows its installed tool schema.
@@ -1182,6 +1234,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'DeferExecuteTool', arguments: { toolName: 'REPL', params: { code: source } } }),
+    workflowTools: ['Workflow'],
   },
   [AgentProvider.JUNIE]: {
     // Junie's tools are OpenAI function calls. `bash` takes the command; the
@@ -1236,6 +1290,8 @@ const TOOL_VOCABULARY = {
     blockGoal: null,
     // Junie offers each MCP tool with the `mcp_` prefix.
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
   [AgentProvider.LETTA]: {
     bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
@@ -1276,6 +1332,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: null,
+    codeExecution: null,
+    workflowTools: [LETTA_TOOL.Workflow],
   },
   [AgentProvider.DIRAC]: {
     // Dirac's native registry supplies these tool schemas.
@@ -1342,6 +1400,8 @@ const TOOL_VOCABULARY = {
     blockGoal: null,
     // No MCP client in the current core.
     mcpTool: null,
+    codeExecution: (id, source) => ({ id, name: 'execute_command', arguments: { script: source, language: 'node' } }),
+    workflowTools: null,
   },
   [AgentProvider.QODER]: {
     // Qoder's stream-json layer emits Anthropic-shaped messages. Its plan exit
@@ -1373,6 +1433,8 @@ const TOOL_VOCABULARY = {
     completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
     blockGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked' } }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: ['Workflow'],
   },
   [AgentProvider.DROID]: {
     bash: (id, command) => droidExecuteToolCall(id, { command, summary: 'Run the scripted command', riskLevel: 'medium' }),
@@ -1428,6 +1490,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id: droidCallId(id), name: `${server}___${tool}`, arguments: input }),
+    codeExecution: (id, source) => droidScriptToolCall(id, source),
+    workflowTools: null,
   },
   [AgentProvider.COMMAND_CODE]: {
     bash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted command.' } }),
@@ -1445,6 +1509,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
   [AgentProvider.DEEPSEEK_HARNESS]: {
     bash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted command.' } }),
@@ -1462,6 +1528,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Workflow, arguments: { script: source, meta: { name: 'native-code', description: 'Run the scripted native source.' } } }),
+    workflowTools: [DEEPSEEK_HARNESS_TOOL.Workflow],
   },
   [AgentProvider.GEMINI_CLI]: {
     bash: (id, command) => ({ id, name: GEMINI_TOOL.RunShellCommand, arguments: { command } }),
@@ -1479,6 +1547,8 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
   [AgentProvider.FAST_AGENT]: {
     // Fast Agent's -x shell runtime supplies these coding tools.
@@ -1531,6 +1601,8 @@ const TOOL_VOCABULARY = {
     // MCP tool names join the server and tool with two underscores. The ACP
     // title may add a display prefix, but the model sends this native name.
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, ProviderToolVocabulary>
 
@@ -1666,24 +1738,19 @@ export function piCodemodeToolCall(id: string, code: string): MockModelToolCall 
 
 /** Script the provider's native code executor without changing its source text. */
 export function codeExecutionToolCall(provider: AgentProvider, id: string, source: string): MockModelToolCall {
-  switch (provider) {
-    case AgentProvider.CODEX: return codexExecToolCall(id, source)
-    case AgentProvider.PI: return piCodemodeToolCall(id, source)
-    case AgentProvider.CODEWHALE: return { id, name: CODEWHALE_TOOL.ExecuteTools, arguments: { code: source } }
-    case AgentProvider.CODEBUDDY: return { id, name: 'DeferExecuteTool', arguments: { toolName: 'REPL', params: { code: source } } }
-    case AgentProvider.MIMO_CODE: return { id, name: 'exec', arguments: { code: source } }
-    case AgentProvider.OH_MY_PI: return { id, name: 'eval', arguments: { language: 'js', code: source } }
-    case AgentProvider.ZCODE: return { id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }
-    case AgentProvider.QWEN_CODE: return { id, name: 'exec', arguments: { source } }
-    case AgentProvider.GOOSE: return { id, name: 'execute_typescript', arguments: { code: source } }
-    case AgentProvider.DROID: return droidScriptToolCall(id, source)
-    case AgentProvider.DEEPSEEK_HARNESS: return { id, name: DEEPSEEK_HARNESS_TOOL.Workflow, arguments: { script: source, meta: { name: 'native-code', description: 'Run the scripted native source.' } } }
-    case AgentProvider.DIRAC: return { id, name: 'execute_command', arguments: { script: source, language: 'node' } }
-    case AgentProvider.OPENCODE:
-    case AgentProvider.KILO: return { id, name: 'execute', arguments: { code: source } }
-    default: throw new Error(`The provider ${provider} has no audited native code executor.`)
-  }
+  return requireBuilder(vocabulary(provider).codeExecution, provider, 'audited native code executor')(id, source)
 }
+
+/** The names of the native workflow tools of `provider`. A provider that the suite knows no workflow tool of has none. */
+export function workflowToolNames(provider: AgentProvider): readonly string[] {
+  return vocabulary(provider).workflowTools ?? []
+}
+
+/**
+ * The name of each native workflow tool that a provider of the table offers.
+ * A provider with no workflow support must offer none of them, so a check of its catalog reads the whole list.
+ */
+export const WORKFLOW_TOOL_NAMES: readonly string[] = [...new Set(Object.values(TOOL_VOCABULARY).flatMap(entry => entry.workflowTools ?? []))].sort()
 
 /** Invoke CodeBuddy's direct REPL in its native ptc agent configuration. */
 export function codebuddyReplToolCall(id: string, code: string): MockModelToolCall {
