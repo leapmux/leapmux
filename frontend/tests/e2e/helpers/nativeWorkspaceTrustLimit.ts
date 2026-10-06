@@ -14,7 +14,7 @@ import { waitForMcpToolListed } from './mcpServerReceipt'
 import { newNativeWorkingDir } from './nativeAgentOpen'
 import { expectNoNativeStartupControl } from './nativeControlObservation'
 import { sendNativeAnswer } from './nativeConversation'
-import { nativeAgentById, nativeModelInstructionText } from './nativeScenario'
+import { nativeAgentById, nativeModelInstructionText, nativeModelToolNames } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { nativeToolResult } from './nativeToolResult'
 import { retryUntilPass } from './retryUntilPass'
@@ -192,6 +192,24 @@ export const PROJECT_MCP_SERVER_NAME = 'trust_probe'
 /** The receipt file of the server that `mcpServerProjectConfiguration` registers, in the project directory. */
 const PROJECT_MCP_RECEIPT = 'workspace-mcp-receipt.json'
 
+/** The prompt of the one native turn that proves the project configuration of an MCP server. */
+const PROJECT_MCP_PROMPT = 'Return one native response from this scratch project.'
+
+/** The answer of the one native turn that proves the project configuration of an MCP server. */
+const PROJECT_MCP_ANSWER = 'The native project configuration probe completed.'
+
+/**
+ * Make the project the root of a git repository of its own, write the private MCP echo server in it, and let
+ * `writeConfiguration` register that server in the project configuration file of the provider.
+ */
+function prepareMcpServerProject(writeConfiguration: (directory: string, server: ProjectMcpServer) => void): NativeProjectConfigurationProof['prepare'] {
+  return ({ directory }) => {
+    ensureGitRepositoryRoot(directory)
+    const echo = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
+    writeConfiguration(directory, { name: PROJECT_MCP_SERVER_NAME, command: echo.command, args: [...echo.args] })
+  }
+}
+
 /**
  * A git project that registers a private MCP echo server, and the proof that the provider started that server from
  * the project configuration: one native turn completes, and the server answered `initialize` and listed `echo`.
@@ -200,14 +218,26 @@ const PROJECT_MCP_RECEIPT = 'workspace-mcp-receipt.json'
  */
 export function mcpServerProjectConfiguration(writeConfiguration: (directory: string, server: ProjectMcpServer) => void): NativeProjectConfigurationProof {
   return {
-    prepare: ({ directory }) => {
-      ensureGitRepositoryRoot(directory)
-      const echo = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
-      writeConfiguration(directory, { name: PROJECT_MCP_SERVER_NAME, command: echo.command, args: [...echo.args] })
-    },
+    prepare: prepareMcpServerProject(writeConfiguration),
     prove: async (context, { directory }) => {
-      await sendNativeAnswer(context, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')
+      await sendNativeAnswer(context, PROJECT_MCP_PROMPT, PROJECT_MCP_ANSWER)
       await waitForMcpToolListed(join(directory, PROJECT_MCP_RECEIPT), 'echo')
+    },
+  }
+}
+
+/**
+ * The project of {@link mcpServerProjectConfiguration}, and the proof that the provider ignores its configuration:
+ * one native turn completes, the model request offers no tool of the server, and the server wrote no receipt, so it
+ * never started.
+ */
+export function ignoredMcpServerProjectConfiguration(writeConfiguration: (directory: string, server: ProjectMcpServer) => void): NativeProjectConfigurationProof {
+  return {
+    prepare: prepareMcpServerProject(writeConfiguration),
+    prove: async (context, { directory }) => {
+      const request = await sendNativeAnswer(context, PROJECT_MCP_PROMPT, PROJECT_MCP_ANSWER)
+      expect(nativeModelToolNames(request).filter(name => name.includes(PROJECT_MCP_SERVER_NAME)), 'the model request offers no tool of the project server').toEqual([])
+      expect(existsSync(join(directory, PROJECT_MCP_RECEIPT)), 'the project server wrote no receipt').toBe(false)
     },
   }
 }

@@ -12,7 +12,7 @@ import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, PROJECT_MCP_SERVER_NAME, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, ignoredMcpServerProjectConfiguration, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, PROJECT_MCP_SERVER_NAME, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
 import { gitRepositoryWorkingDir } from './worktree'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
@@ -325,6 +325,58 @@ describe('mcpServerProjectConfiguration', () => {
       'turn Return one native response from this scratch project.',
       `listed echo in ${join(directory, 'workspace-mcp-receipt.json')}`,
     ])
+  })
+})
+
+describe('ignoredMcpServerProjectConfiguration', () => {
+  const directories: string[] = []
+  afterEach(() => {
+    for (const directory of directories.splice(0))
+      rmSync(directory, { recursive: true, force: true })
+  })
+
+  /** A model request whose tool catalog offers the tools of `names`. */
+  function toolRequest(...names: string[]): MockModelRequestRecord {
+    return {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: { messages: [{ role: 'user', content: 'Reply once.' }], tools: names.map(name => ({ type: 'function', function: { name, description: '', parameters: {} } })) },
+    }
+  }
+
+  it('prepares the project as the loaded configuration does', async () => {
+    const directory = scratchDirectory(directories, 'mcp-project-')
+    const servers: ProjectMcpServer[] = []
+    await ignoredMcpServerProjectConfiguration((dir, server) => {
+      expect(dir).toBe(directory)
+      servers.push(server)
+    }).prepare({ directory, marker: 'UNUSED' })
+    expect(calls.events).toEqual(['repository root before the file'])
+    expect(servers).toEqual([{ name: PROJECT_MCP_SERVER_NAME, command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] }])
+  })
+
+  it('proves through one native turn that the request offers no project tool and the server wrote no receipt', async () => {
+    const directory = scratchDirectory(directories, 'mcp-project-')
+    calls.request = toolRequest('read_file', 'echo_probe__echo')
+    await ignoredMcpServerProjectConfiguration(() => {}).prove(detachedContext(), { directory, marker: 'UNUSED', agentId: 'agent' })
+    expect(calls.events).toEqual(['turn Return one native response from this scratch project.'])
+  })
+
+  it('fails when the model request offers a tool of the project server', async () => {
+    const directory = scratchDirectory(directories, 'mcp-project-')
+    calls.request = toolRequest('read_file', `${PROJECT_MCP_SERVER_NAME}__echo`)
+    await expect(ignoredMcpServerProjectConfiguration(() => {}).prove(detachedContext(), { directory, marker: 'UNUSED', agentId: 'agent' }))
+      .rejects
+      .toThrow('the model request offers no tool of the project server')
+  })
+
+  it('fails when the project server wrote its receipt', async () => {
+    const directory = scratchDirectory(directories, 'mcp-project-')
+    writeFileSync(join(directory, 'workspace-mcp-receipt.json'), '{}\n')
+    calls.request = toolRequest('read_file')
+    await expect(ignoredMcpServerProjectConfiguration(() => {}).prove(detachedContext(), { directory, marker: 'UNUSED', agentId: 'agent' }))
+      .rejects
+      .toThrow('the project server wrote no receipt')
   })
 })
 
