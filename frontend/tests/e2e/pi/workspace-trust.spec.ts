@@ -6,7 +6,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText, nativeModelToolNames } from '../helpers/nativeScenario'
-import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
+import { exerciseNativeWorkspaceTrustLimit, PROJECT_MCP_SERVER_NAME } from '../helpers/nativeWorkspaceTrustLimit'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
@@ -16,21 +16,18 @@ import { nativeContext } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 /**
- * The key of the project MCP server. The run environment already registers the echo server for Pi under its own name
- * (`createPiEnvironment`), so the project file uses another key. A tool under this key can then only come from the
- * project file of this test.
+ * The name of the echo tool of the project MCP server in the catalog that Pi offers the model. The run environment
+ * already registers the echo server for Pi under its own name (`createPiEnvironment`), and the project file uses
+ * {@link PROJECT_MCP_SERVER_NAME}. A tool with this name can then only come from the project file of this test.
  */
-const PROJECT_MCP_SERVER = 'trust_probe'
-
-/** The name of the echo tool of {@link PROJECT_MCP_SERVER} in the catalog that Pi offers the model. */
-const PROJECT_MCP_TOOL = mcpToolCall(AgentProvider.PI, 'catalog', { server: PROJECT_MCP_SERVER, tool: 'echo', input: {} }).name
+const PROJECT_MCP_TOOL = mcpToolCall(AgentProvider.PI, 'catalog', { server: PROJECT_MCP_SERVER_NAME, tool: 'echo', input: {} }).name
 
 piTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare({ directory, marker }) {
-        writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [PROJECT_MCP_SERVER]: writeMcpEchoServer(directory) })
+        writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [PROJECT_MCP_SERVER_NAME]: writeMcpEchoServer(directory) })
         const extensions = join(directory, '.pi', 'extensions')
         mkdirSync(extensions, { recursive: true })
         const receipt = join(directory, 'native-project-extension-loaded.txt')
