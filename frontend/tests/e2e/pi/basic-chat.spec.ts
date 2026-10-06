@@ -1,23 +1,7 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
-
-piTest('renders an assistant answer and clears the thinking indicator', async ({ authenticatedPiWorkspace, page, modelScript }) => {
-  void authenticatedPiWorkspace
-  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-  await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await waitForAgentIdle(page)
-  await expectAssistantAnswer(page)
-  await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
-})
-
-piTest('Pi agent tab is visible after creation', async ({ authenticatedPiWorkspace, page }) => {
-  void authenticatedPiWorkspace // fixture trigger
-  const tabs = page.locator('[data-testid="tab"]')
-  await expect(tabs.first()).toBeVisible()
-})
 
 piTest('turn-end divider reports the duration, and agent_settled stays hidden', async ({ authenticatedPiWorkspace, page, modelScript }) => {
   void authenticatedPiWorkspace // fixture trigger
@@ -45,7 +29,6 @@ piTest('turn-end divider reports the duration, and agent_settled stays hidden', 
   expect(allText).not.toContain('agent_settled')
 })
 
-piTest('ends a native turn and keeps its answer after reload', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }
-  await exerciseBasicChat(context)
+piTest('ends a native turn and keeps its answer after reload', async ({ native }) => {
+  await exerciseBasicChat(native)
 })

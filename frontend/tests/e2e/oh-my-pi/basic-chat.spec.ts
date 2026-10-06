@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
@@ -11,15 +10,13 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
 ohMyPiTest.describe('Oh My Pi basic chat', () => {
-  ohMyPiTest('renders an assistant answer and ends the turn with a timed divider', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
-    void authenticatedOhMyPiWorkspace
+  ohMyPiTest('renders an assistant answer and ends the turn with a timed divider', async ({ native, page, modelScript }) => {
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
     await expectAssistantAnswer(page)
-    await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
     // omp's agent_end reports no duration.
     // The Worker measures the turn duration and includes it in the divider.
     await expect(page.locator('[data-testid="result-divider"]:visible').last()).toHaveText(/^Turn ended \(.+\)$/)
@@ -32,6 +29,6 @@ ohMyPiTest.describe('Oh My Pi basic chat', () => {
     const allText = (await contents.allTextContents()).join(' ')
     expect(allText).not.toContain('message_update')
     expect(allText).not.toContain('turn_end')
-    await exerciseBasicChat({ page, modelScript, provider: AgentProvider.OH_MY_PI })
+    await exerciseBasicChat(native)
   })
 })

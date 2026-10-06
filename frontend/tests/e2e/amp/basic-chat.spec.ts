@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampTest } from '../amp-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAnswer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -12,8 +11,7 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAns
  * The isolated mock supplies Amp's remote service.
  */
 ampTest.describe('Amp basic chat', () => {
-  ampTest('renders an assistant answer and ends the turn with a timed divider', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
-    void authenticatedAmpWorkspace
+  ampTest('renders an assistant answer and ends the turn with a timed divider', async ({ native, page, modelScript }) => {
     await modelScript.queue({ reasoning: 'Add the two numbers.', text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
@@ -21,7 +19,6 @@ ampTest.describe('Amp basic chat', () => {
 
     await expectAssistantAnswer(page)
     await expect(bandRows(page, 'thought').filter({ hasText: 'Add the two numbers.' }).first()).toBeVisible()
-    await expect(page.getByTestId('thinking-indicator')).not.toBeVisible()
     // Amp reports no turn duration.
     // The Worker measures the turn duration and includes it in the divider.
     await expect(page.locator('[data-testid="result-divider"]:visible').last()).toHaveText(/^Turn ended \(.+\)$/)
@@ -34,6 +31,6 @@ ampTest.describe('Amp basic chat', () => {
     const allText = (await contents.allTextContents()).join(' ')
     expect(allText).not.toContain('"subtype":"init"')
     expect(allText).not.toContain('stream-json')
-    await exerciseBasicChat({ page, modelScript, provider: AgentProvider.AMP })
+    await exerciseBasicChat(native)
   })
 })
