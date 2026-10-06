@@ -2,19 +2,20 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { AMP_AGENT, AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
-import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
+import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { withNativeWorker } from '../helpers/nativeWorker'
+import { expectMcpServerLoaded } from '../helpers/nativeWorkspaceTrustLimit'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
 import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
+import { nativeContext } from './scenarios'
 
 ampTest('loads private native configuration and calls only the suite mock', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }, testInfo) => {
   void authenticatedAmpWorkspace
@@ -32,18 +33,18 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
     }, async ({ server, dataDir }) => {
       await withAgentWorkspace(server, { ...AMP_AGENT, prefix: 'amp-private-credential', openOptions: AMP_ALLOW_ALL }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
-        const context = { page, modelScript, leapmuxServer: server, workspaceId, provider: AgentProvider.AMP }
+        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
         const environment = server.agentEnv
-        const endpoint = environment.AMP_URL
-        const credential = environment.AMP_API_KEY
         const home = environment.HOME
-        if (!endpoint || !credential || !home)
-          throw new Error('The private Amp profile requires its mock endpoint, credential, and HOME.')
+        if (!home)
+          throw new Error('The private Amp profile requires its HOME.')
+        // Amp reads its endpoint and its key from the environment. The expected key is the suite constant, so the
+        // proof compares the private environment with it.
         await exerciseCredentialIsolation(context, {
           configurationFiles: [configuration],
-          inlineConfiguration: [JSON.stringify({ endpoint, apiKey: credential })],
+          inlineConfiguration: [environment.AMP_URL!, environment.AMP_API_KEY!],
           privateDirectories: [home, configHome],
-          expectedCredential: credential,
+          expectedCredential: MODEL_KEY,
           configurationMarkers: ['credential_probe'],
         })
         const { tools, settings } = await readAmpExecutorCatalog(context, { workerDataDir: dataDir, onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo) })
@@ -53,9 +54,7 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
         if (!isObject(profile))
           throw new Error('The private Amp profile must contain a settings object.')
         expect(profile['amp.mcpServers']).toHaveProperty('credential_probe')
-        const receipt = readMcpServerReceipt(receiptLog)
-        expect(receipt.initializeCapabilities).not.toBeNull()
-        expect(receipt.toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'echo'))).toBe(true)
+        await expectMcpServerLoaded(receiptLog)
       })
     })
   }, async () => rmSync(configHome, { recursive: true, force: true }))

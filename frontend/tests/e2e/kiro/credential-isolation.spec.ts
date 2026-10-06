@@ -1,10 +1,11 @@
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { KIRO_E2E_API_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { kiroTest } from '../kiro-fixtures'
 
-kiroTest('loads private native configuration and calls only the suite mock', async ({ page, modelScript, leapmuxServer, authenticatedKiroWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiroWorkspace.workspaceId, provider: AgentProvider.KIRO }
+kiroTest('loads private native configuration and calls only the suite mock', async ({ native, leapmuxServer }) => {
   const environment = leapmuxServer.agentEnv
-  await exerciseCredentialIsolation(context, { configurationFiles: [join(environment.KIRO_HOME!, 'settings', 'cli.json')], inlineConfiguration: [JSON.stringify({ apiKey: environment.KIRO_API_KEY })], privateDirectories: [leapmuxServer.agentEnv.KIRO_HOME!], expectedCredential: environment.KIRO_API_KEY! })
+  // Kiro reads its key from the environment. The expected key is the suite constant, so the proof compares the
+  // private environment with it.
+  await exerciseCredentialIsolation(native, { configurationFiles: [join(environment.KIRO_HOME!, 'settings', 'cli.json')], inlineConfiguration: [environment.KIRO_API_KEY!], privateDirectories: [environment.KIRO_HOME!], expectedCredential: KIRO_E2E_API_KEY })
 })

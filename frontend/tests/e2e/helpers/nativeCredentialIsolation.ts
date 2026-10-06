@@ -70,6 +70,10 @@ export async function exerciseCredentialIsolation(
     configurationMarkers?: readonly string[]
   },
 ): Promise<void> {
+  // An environment variable that the suite does not set reaches here as undefined, and `join` would turn it into an
+  // empty string that no check reports.
+  if (options.inlineConfiguration?.some(value => typeof value !== 'string' || value === ''))
+    throw new Error('Each inline native configuration must be a nonempty string.')
   const environment = context.leapmuxServer.agentEnv
   const mockUrl = context.leapmuxServer.mockModelUrl
   if (!environment || !mockUrl)

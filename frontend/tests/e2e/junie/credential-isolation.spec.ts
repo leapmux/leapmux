@@ -9,7 +9,6 @@ import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace, sendMessage } from '../helpers/ui'
 import { expect, junieTest } from '../junie-fixtures'
-import { nativeContext } from './scenarios'
 
 junieTest.describe('native credential isolation', () => {
   junieTest.skip(process.platform !== 'darwin', 'the system keychain probe exists on macOS')
@@ -35,8 +34,7 @@ junieTest.describe('native credential isolation', () => {
   })
 })
 
-junieTest('runs the actual native turn with private configuration and mock credentials', async ({ authenticatedJunieWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId })
+junieTest('runs the actual native turn with private configuration and mock credentials', async ({ native, leapmuxServer }) => {
   const environment = leapmuxServer.agentEnv
   const home = environment.JUNIE_HOME
   if (!home)
@@ -44,7 +42,7 @@ junieTest('runs the actual native turn with private configuration and mock crede
   const configurationPath = environment.JUNIE_CONFIG_LOCATION
   if (!configurationPath)
     throw new Error('The private Junie model configuration is absent.')
-  await exerciseCredentialIsolation(context, {
+  await exerciseCredentialIsolation(native, {
     privateDirectories: [home],
     expectedCredential: MODEL_KEY,
     configurationFiles: [configurationPath],

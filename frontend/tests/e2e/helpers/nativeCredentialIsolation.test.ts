@@ -1,8 +1,11 @@
+import type { Page } from '@playwright/test'
+import type { ModelScript } from './modelScriptFixture'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { assertIsolatedConfiguration, assertPrivateNativePath } from './nativeCredentialIsolation'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { assertIsolatedConfiguration, assertPrivateNativePath, exerciseCredentialIsolation } from './nativeCredentialIsolation'
 
 const scratchRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.tmp')
 let scratch: string
@@ -79,5 +82,26 @@ describe('assertIsolatedConfiguration', () => {
     ['an empty text that must be absent', { absentFromConfiguration: [''] }, 'must be nonempty'],
   ])('refuses rules with %s', (_name, rules, message) => {
     expect(() => assertIsolatedConfiguration(`base_url = "${origin}"`, { mockOrigin: origin, ...rules })).toThrow(message)
+  })
+})
+
+describe('exerciseCredentialIsolation', () => {
+  // An unset environment variable reaches the inline configuration as undefined. The check refuses it before it reads
+  // the environment, the files, or the browser.
+  it.each([[['']], [[undefined]], [['http://127.0.0.1:4100', undefined]]])('refuses the inline configuration %j before any other step', async (inlineConfiguration) => {
+    const context = {
+      provider: AgentProvider.CODEX,
+      workspaceId: 'credential-boundary',
+      get leapmuxServer(): never {
+        throw new Error('The inline configuration check must run before the environment check.')
+      },
+      get page(): Page {
+        throw new Error('The inline configuration check must run before browser access.')
+      },
+      get modelScript(): ModelScript {
+        throw new Error('The inline configuration check must run before model access.')
+      },
+    }
+    await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [context, { inlineConfiguration, privateDirectories: [runDir], expectedCredential: 'mock-key-123' }])).rejects.toThrow('Each inline native configuration must be a nonempty string.')
   })
 })
