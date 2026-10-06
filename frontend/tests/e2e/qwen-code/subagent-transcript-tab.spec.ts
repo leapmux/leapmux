@@ -3,6 +3,7 @@ import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { stepRequest } from '../helpers/mockModelScript'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -32,7 +33,7 @@ async function expectChildTranscript(page: Page): Promise<void> {
   const row = await requireRegistryRow(page)
   await expectRowBecomesFinal(page, row)
   await expectSectionPersists(page)
-  await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+  // `openChildTabFromRow` waits until the row links a child agent.
   await openChildTabFromRow(page, row)
   await expect(userBubbles(page).filter({ hasText: CHILD_TASK })).toBeVisible()
   await expect(assistantBubbles(page).filter({ hasText: 'PONG' }).first()).toBeVisible()
@@ -49,7 +50,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await answerTheChild(modelScript)
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(AgentProvider.QWEN_CODE, 'spawn-qwen', {
           description: 'Ask for one word',
@@ -59,7 +60,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
       { text: 'The subagent reported PONG.' },
     )
     await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(messageBubbles(page).filter({ hasText: 'Agent "Ask for one word" completed' }).first()).toBeVisible()
     await expectChildTranscript(page)
@@ -75,7 +76,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await answerTheChild(modelScript)
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(AgentProvider.QWEN_CODE, 'spawn-qwen-background', {
           description: 'Ask for one word',
@@ -88,10 +89,9 @@ qwenTest.describe('Qwen Code subagent registry', () => {
       { text: 'The background subagent reported PONG.' },
     )
     await sendMessage(page, modelScript.prompt('Delegate one word to a background subagent.'))
-    await modelScript.waitForSteps()
+    const status = await modelScript.waitForSteps(start + 3)
     await waitForAgentIdle(page)
-    const status = await modelScript.status()
-    expect(JSON.stringify(status.requests.at(-1)?.body)).toContain('<task-notification>')
+    expect(JSON.stringify(stepRequest(status, start + 2).body)).toContain('<task-notification>')
     await expect(assistantBubbles(page).filter({ hasText: 'The background subagent reported PONG.' })).toBeVisible()
     await expectChildTranscript(page)
   })

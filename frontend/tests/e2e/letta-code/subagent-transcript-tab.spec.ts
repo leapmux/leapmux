@@ -1,4 +1,3 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -7,27 +6,25 @@ import { expect, lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 lettaTest.describe('Letta Code subagents', () => {
-  const PROVIDER = AgentProvider.LETTA
-
   const CHILD_TASK = 'Count the files and report the number.'
 
-  lettaTest('routes the prompt and report into a child tab opened from the registry row', async ({ authenticatedLettaWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId, provider: PROVIDER }
+  lettaTest('routes the prompt and report into a child tab opened from the registry row', async ({ native }) => {
+    const { page, modelScript } = native
     const gate = `letta-tab-final-${crypto.randomUUID()}`
     await withCleanup(async () => {
       const childPrompt = modelScript.prompt(CHILD_TASK)
-      // Matched on the child's own last user turn. The root's next request after the
-      // spawn carries the Agent call, and so the child prompt, in its history: a body
-      // matcher gave that root request the child's report and the child the root's.
+      // The rule matches the last user turn of the child. The next root request after the spawn holds the Agent call,
+      // and so the child prompt, in its history. A body matcher gave the child report to that root request, and the
+      // root report to the child.
       await modelScript.rule({
         name: 'the child reports its count',
         when: { user: CHILD_TASK, lastMessage: { role: 'user' } },
         respond: { gate, text: 'LETTA_CHILD_DONE' },
         once: true,
       })
-      await modelScript.queue(
+      const start = await modelScript.queue(
         {
-          toolCalls: [spawnSubagentToolCall(PROVIDER, 'spawn-letta', {
+          toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-letta', {
             description: 'Count the files',
             prompt: childPrompt,
           })],
@@ -36,9 +33,9 @@ lettaTest.describe('Letta Code subagents', () => {
       )
       await sendMessage(page, modelScript.prompt('Delegate the count to a subagent, then report.'))
       await modelScript.waitForGate(gate)
-      await registerLettaChildNoticeRule(context, { name: 'the Letta root handles the child completion notice', spawnCallId: 'spawn-letta', description: 'Count the files', report: 'LETTA_CHILD_DONE', reply: 'LETTA_ROOT_AFTER_CHILD_DONE', once: true })
+      await registerLettaChildNoticeRule(native, { name: 'the Letta root handles the child completion notice', spawnCallId: 'spawn-letta', description: 'Count the files', report: 'LETTA_CHILD_DONE', reply: 'LETTA_ROOT_AFTER_CHILD_DONE', once: true })
       await modelScript.releaseGate(gate)
-      await modelScript.waitForSteps()
+      await modelScript.waitForSteps(start + 2)
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the child completion notice'] ?? 0).toBe(1)
       await waitForAgentIdle(page)
 

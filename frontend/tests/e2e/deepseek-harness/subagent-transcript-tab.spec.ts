@@ -4,11 +4,11 @@ import { withCleanup } from '../helpers/cleanup'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { messageContents, tabById, toolCallRow, userBubbles } from '../helpers/ui'
-import { nativeContext, runningChild } from './scenarios'
+import { runningChild } from './scenarios'
 
-deepseekHarnessTest('opens a separate native child tab and keeps its own messages after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  const child = await runningChild(context)
+deepseekHarnessTest('opens a separate native child tab and keeps its own messages after reload', async ({ native }) => {
+  const { page } = native
+  const child = await runningChild(native)
   await withCleanup(async () => {
     expect(await openChildTabFromRow(page, child.row)).toBe(child.childId)
     await expect(userBubbles(page).filter({ hasText: 'DEEPSEEKCHILD' }).first()).toBeVisible()

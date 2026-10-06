@@ -8,11 +8,10 @@ import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
-import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('groups two actual one-shot children under their native workflow run and keeps that group after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  const parent = await currentNativeAgent(context)
+deepseekHarnessTest('groups two actual one-shot children under their native workflow run and keeps that group after reload', async ({ native }) => {
+  const { page, modelScript } = native
+  const parent = await currentNativeAgent(native)
   const firstGate = 'native-workflow-first'
   const secondGate = 'native-workflow-second'
   await withCleanup(async () => {
@@ -23,8 +22,8 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     const first = modelScript.prompt('DEEPSEEKWORKFLOWFIRST complete the first actual assignment.')
     const second = modelScript.prompt('DEEPSEEKWORKFLOWSECOND complete the second actual assignment.')
     const source = `return await parallel([() => agent(${JSON.stringify(first)}, {label:"First native work"}), () => agent(${JSON.stringify(second)}, {label:"Second native work"})]);`
-    await modelScript.queue(
-      { toolCalls: [codeExecutionToolCall(context.provider, 'native-workflow-run', source)] },
+    const start = await modelScript.queue(
+      { toolCalls: [codeExecutionToolCall(native.provider, 'native-workflow-run', source)] },
       { text: 'The actual native workflow completed.' },
     )
     await sendMessage(page, modelScript.prompt('Execute the actual native workflow with its two child assignments.'))
@@ -35,7 +34,7 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     await expect(children).toHaveCount(2)
     // No spec states the full heading text, so the pattern requires only `native-code` inside it.
     await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)
-    const running = await readNativeSidebarSnapshot(context, parent.id)
+    const running = await readNativeSidebarSnapshot(native, parent.id)
     const run = running.backgroundTasks.find(task => task.kind === BackgroundTaskKind.WORKFLOW)
     expect(run).toBeDefined()
     if (!run?.groupKey)
@@ -45,7 +44,7 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     expect(new Set(owned.map(task => task.childAgentId)).size).toBe(2)
     expect(owned.every(task => task.groupKey === run.groupKey && task.groupLabel === run.groupLabel)).toBe(true)
     await Promise.all([modelScript.releaseGate(firstGate), modelScript.releaseGate(secondGate)])
-    await modelScript.waitForSteps(2)
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     const status = await modelScript.status()
     expect(status.ruleMatches['the first native workflow child']).toBe(1)
@@ -57,7 +56,7 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     await expandBackgroundTasksSection(page)
     await expect(children).toHaveCount(2)
     await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)
-    const restored = await readNativeSidebarSnapshot(context, parent.id)
+    const restored = await readNativeSidebarSnapshot(native, parent.id)
     expect(restored.backgroundTasks.map(task => ({ id: task.id, groupKey: task.groupKey, groupLabel: task.groupLabel }))).toEqual(running.backgroundTasks.map(task => ({ id: task.id, groupKey: task.groupKey, groupLabel: task.groupLabel })))
   }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))
 })

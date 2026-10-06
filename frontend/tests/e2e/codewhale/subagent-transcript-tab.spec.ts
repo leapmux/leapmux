@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -13,13 +12,8 @@ import { assistantBubbles, sendMessage, subagentReportBubble, userBubbles } from
  * The agent tool returns a child ID at once. Codewhale omits child events from the parent stream. The Worker reads the child transcript and run record until the run ends.
  */
 codewhaleTest.describe('Codewhale subagent registry', () => {
-  codewhaleTest('a spawned child gets a registry row, a transcript tab and a report', async ({
-    authenticatedCodewhaleWorkspace,
-    page,
-    modelScript,
-    leapmuxServer,
-  }) => {
-    void authenticatedCodewhaleWorkspace
+  codewhaleTest('a spawned child gets a registry row, a transcript tab and a report', async ({ native }) => {
+    const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
 
     // The child's prompt carries the marker, so the child's own turns reach
@@ -29,8 +23,8 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
       when: { user: 'Reply with the single word PONG' },
       respond: { text: 'PONG' },
     })
-    await modelScript.queue({
-      toolCalls: [spawnSubagentToolCall(AgentProvider.CODEWHALE, 'spawn-codewhale', {
+    const start = await modelScript.queue({
+      toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-codewhale', {
         description: 'Ask for one word',
         prompt: modelScript.prompt('Reply with the single word PONG.'),
       })],
@@ -40,7 +34,7 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     // If the child finishes after that request, the runtime starts another parent turn to deliver the answer.
     await modelScript.fallback({ text: 'The subagent reported PONG.' })
     await sendMessage(page, modelScript.prompt('Delegate one word to a read-only subagent.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
 
     // The spawn is scripted, so a missing row is a failure rather than the
     // model's discretion.
@@ -55,8 +49,7 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' }).first()).toBeVisible()
 
     // The child transcript opens on the child's prompt, and then holds the
-    // child's own answer.
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+    // child's own answer. `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: 'Reply with the single word PONG.' })).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: /^PONG$/ })).toBeVisible()

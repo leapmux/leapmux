@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { withCleanup } from '../helpers/cleanup'
 import { junieAnswerToolCall, junieSubagentSubmitToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -39,7 +40,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
         once: true,
       },
     )
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(PROVIDER, 'junie-custom-spawn', {
           description: 'Read the marker file',
@@ -50,11 +51,11 @@ junieTest.describe('Junie subagents and background tasks', () => {
       { toolCalls: [junieAnswerToolCall('junie-custom-root', 'JUNIE_CUSTOM_ROOT_DONE')] },
     )
     await sendMessage(page, modelScript.prompt('Delegate the marker file to the custom child, then report.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     const row = await requireRegistryRow(page)
     await expect(row).toContainText('leapmux-e2e-child')
     await modelScript.waitForGate(CUSTOM_GATE)
-    try {
+    await withCleanup(async () => {
       await expect(row).toHaveAttribute('data-status', 'running')
       const childTabID = await openChildTabFromRow(page, row)
       await expect(userBubbles(page).filter({ hasText: CUSTOM_TASK })).toHaveCount(1)
@@ -62,12 +63,9 @@ junieTest.describe('Junie subagents and background tasks', () => {
       await tabById(page, agentId).click()
       await expect(messageContents(page).filter({ hasText: CUSTOM_READ_MARKER })).toHaveCount(0)
       await tabById(page, childTabID).click()
-    }
-    finally {
-      await modelScript.releaseGate(CUSTOM_GATE)
-    }
+    }, () => modelScript.releaseGate(CUSTOM_GATE))
 
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CUSTOM_CHILD_DONE' }).first()).toBeVisible()
     await expectRowsInOrder(messageContents(page), [CUSTOM_TASK, CUSTOM_READ_MARKER, 'JUNIE_CUSTOM_CHILD_DONE'])

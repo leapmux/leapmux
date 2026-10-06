@@ -1,14 +1,15 @@
 import { globSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { codebuddyFindWorkflowToolCall, codebuddyWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, userBubbles } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
 codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
-  codebuddyTest('groups a native Workflow run with its child agent', async ({ authenticatedCodebuddyWorkspace, leapmuxServer, page, modelScript }) => {
+  codebuddyTest('groups a native Workflow run with its child agent', async ({ native, authenticatedCodebuddyWorkspace }) => {
+    const { page, modelScript, leapmuxServer } = native
     const markerPath = join(authenticatedCodebuddyWorkspace.workingDir, 'workflow-child-marker.txt')
     writeFileSync(markerPath, 'WORKFLOW_CHILD_FILE_MARKER\n')
     const childPrompt = modelScript.prompt(`Read ${markerPath}, then reply with WORKFLOW_CHILD.`)
@@ -21,7 +22,7 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
     await modelScript.rule({
       name: 'workflow child reads its marker',
       when: { user: 'Read .*workflow-child-marker.txt' },
-      respond: { toolCalls: [readToolCall(AgentProvider.CODEBUDDY, 'child-workflow-read', markerPath)] },
+      respond: { toolCalls: [readToolCall(native.provider, 'child-workflow-read', markerPath)] },
       once: true,
     }, {
       name: 'workflow child answers after its tool result',
@@ -29,16 +30,15 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
       respond: { text: 'WORKFLOW_CHILD' },
       once: true,
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [codebuddyFindWorkflowToolCall('find-workflow')] },
       { toolCalls: [codebuddyWorkflowToolCall('run-workflow', script)] },
     )
     await modelScript.fallback({ text: 'Workflow dispatched.' })
 
-    const parentTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-    expect(parentTabId).not.toBe('')
+    const parentTabId = await selectedAgentTabId(page)
     await sendMessage(page, modelScript.prompt('Use a workflow to ask one child for a reply.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await expandBackgroundTasksSection(page)
     const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
     const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Probe child' }).first()
@@ -51,7 +51,7 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
     await expect.poll(async () => (await modelScript.status()).ruleMatches['workflow child reads its marker'] ?? 0).toBe(1)
     await expect.poll(async () => (await modelScript.status()).ruleMatches['workflow child answers after its tool result'] ?? 0).toBe(1)
     await expectRowBecomesFinal(page, workflow)
-    const configDir = leapmuxServer.agentEnv.CODEBUDDY_CONFIG_DIR
+    const configDir = leapmuxServer.agentEnv?.CODEBUDDY_CONFIG_DIR
     if (!configDir)
       throw new Error('the isolated CodeBuddy configuration path is absent')
     const archives = globSync('projects/*/*/subagents/agent-*.jsonl', { cwd: configDir })
@@ -72,7 +72,7 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
       { type: 'function_call', callID: undefined, nativeCallID: 'child-workflow-read', name: 'Read', status: undefined },
       { type: 'function_call_result', callID: undefined, nativeCallID: 'child-workflow-read', name: 'Read', status: 'completed' },
     ])
-    await expect.poll(async () => await child.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, child)
     await expect(userBubbles(page).filter({ hasText: 'Read' }).filter({ hasText: 'workflow-child-marker.txt' }).first()).toBeVisible()
     const childToolRequest = page.locator('[data-testid="message-bubble"]:visible[data-tool-row-role="request"][data-tool-call-id="child-workflow-read"]')

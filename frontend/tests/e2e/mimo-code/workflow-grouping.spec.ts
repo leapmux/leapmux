@@ -8,6 +8,7 @@ import type { Locator, Page } from '@playwright/test'
  */
 import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { mimoWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, messageContents, sendMessage, subagentReportBubble, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -61,8 +62,8 @@ function registryRow(page: Page, kind: 'subagent' | 'workflow', title: string): 
 }
 
 mimoTest.describe('MiMo Code workflow', () => {
-  mimoTest('a workflow run shows its subagents in the registry, each in a transcript of its own', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
+  mimoTest('a workflow run shows its subagents in the registry, each in a transcript of its own', async ({ native }) => {
+    const { page, modelScript } = native
     const helpers = HELPERS.map(helper => ({ ...helper, prompt: modelScript.prompt(helperTask(helper.word)) }))
 
     // The two children run in parallel, so their requests have no fixed order. Match each child through a model rule.
@@ -76,14 +77,13 @@ mimoTest.describe('MiMo Code workflow', () => {
     // The parent runs the workflow, which blocks until both subagents answer, and
     // then answers once itself. MiMo delivers each subagent's notification into
     // that same turn, so no second parent turn starts.
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [mimoWorkflowToolCall('workflow-run', workflowScript(helpers))] },
       { text: 'WORKFLOW_DONE: both helpers answered.' },
     )
-    const parentTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-    expect(parentTabId).not.toBe('')
+    const parentTabId = await selectedAgentTabId(page)
     await sendMessage(page, modelScript.prompt('Run the one-word workflow and report what it returned.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     // The end of the run: the parent answered after the workflow returned, and the

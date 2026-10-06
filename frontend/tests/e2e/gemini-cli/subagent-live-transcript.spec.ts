@@ -1,13 +1,11 @@
 import { geminiTest } from '../gemini-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { expectGeminiLiveChild, finishGeminiChildWithReload, openGeminiRunningChild } from './childScenarios'
-import { nativeContext } from './scenarios'
 
-geminiTest('shows original child content and tool output before the native child completes', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
-  const child = await openGeminiRunningChild(context)
+geminiTest('shows original child content and tool output before the native child completes', async ({ native }) => {
+  const child = await openGeminiRunningChild(native)
   await withCleanup(async () => {
-    await expectGeminiLiveChild(context, child)
-    await finishGeminiChildWithReload(context, child)
+    await expectGeminiLiveChild(native, child)
+    await finishGeminiChildWithReload(native, child)
   }, child.finish)
 })

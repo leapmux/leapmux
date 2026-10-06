@@ -3,11 +3,11 @@ import { commandCodeTest } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { messageContents, tabById, userBubbles } from '../helpers/ui'
-import { nativeContext, runningChild } from './scenarios'
+import { runningChild } from './scenarios'
 
-commandCodeTest('shows exact native child tool activity before the final report', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
-  const child = await runningChild(context)
+commandCodeTest('shows exact native child tool activity before the final report', async ({ native }) => {
+  const { page } = native
+  const child = await runningChild(native)
   await withCleanup(async () => {
     await openChildTabFromRow(page, child.row)
     await expect(userBubbles(page).filter({ hasText: 'COMMANDCODECHILD' }).first()).toBeVisible()

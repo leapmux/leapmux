@@ -11,25 +11,22 @@ import { decompressContentToString } from '../../../src/lib/decompress'
 import { agentOpenOptions } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
-import { nativeAgentById } from '../helpers/nativeScenario'
+import { stepRequest } from '../helpers/mockModelScript'
+import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexWaitAgentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { expectNoRegistryRows, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, openWorkspace, sendMessage } from '../helpers/ui'
+import { assistantBubbles, openWorkspace, sendMessage, tabById } from '../helpers/ui'
+import { expectReadOnlySubagentReason } from '../helpers/unsupportedSubagent'
 
 codexTest.describe('codex subagent lifecycle', () => {
-  codexTest('opens and isolates a V2 subagent transcript', async ({
-    authenticatedCodexWorkspace,
-    page,
-    leapmuxServer,
-    modelScript,
-  }) => {
-    void authenticatedCodexWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
+  codexTest('opens and isolates a V2 subagent transcript', async ({ native }) => {
+    const { page, leapmuxServer, modelScript } = native
 
     // 1. Precondition.
     await expectNoRegistryRows(page, leapmuxServer)
+    const parentTabId = await selectedAgentTabId(page)
 
     // 2. Spawn one V2 subagent with a fixed canonical task name. Spell the
     // output marker as parts so it is absent from the root's user bubble.
@@ -53,47 +50,45 @@ codexTest.describe('codex subagent lifecycle', () => {
       when: { body: ['NEW_TASK', taskName] },
       respond: { text: 'CHILD_DONE' },
     })
-    await modelScript.queue({
-      toolCalls: [spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-child', {
-        description: taskName.replaceAll('_', ' '),
-        prompt: modelScript.prompt('reply with the child marker'),
-      })],
-    })
-    await modelScript.queue({ text: 'ROOT_DONE' })
+    const start = await modelScript.queue(
+      {
+        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-child', {
+          description: taskName.replaceAll('_', ' '),
+          prompt: modelScript.prompt('reply with the child marker'),
+        })],
+      },
+      { text: 'ROOT_DONE' },
+    )
     await sendMessage(page, modelScript.prompt('Spawn one child and report when it finishes.'))
-    await modelScript.waitForSteps(2)
+    await modelScript.waitForSteps(start + 2)
 
     // 3. This request is explicit, so a missing row is a failure. The canonical
     // task path supplies the row and tab title before child output starts.
-    const parentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
-    const parentTabId = await parentTab.getAttribute('data-tab-id') ?? ''
-    expect(parentTabId).not.toBe('')
     const row = await requireRegistryRow(page)
     await expect(row).toContainText(taskName)
 
-    // 4. Wait for the row to link to a child transcript, then click -> child
-    //    tab opens adjacent to the parent.
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
+    // 4. Click the row. `openChildTabFromRow` waits until the row links a child
+    //    transcript, and the child tab opens adjacent to the parent.
     const childTabId = await openChildTabFromRow(page, row)
-    await expect(page.locator(`[data-testid="tab"][data-tab-id="${childTabId}"]`)).toContainText(taskName)
+    await expect(tabById(page, childTabId)).toContainText(taskName)
 
     // The child answer belongs only to the child transcript.
     const childAnswer = assistantBubbles(page).filter({ hasText: /^CHILD_DONE$/ })
     await expect(childAnswer).toBeVisible()
 
     // 5. Multi-Agent V2 rejects direct app-server input for spawned children.
-    await expect(page.locator('[data-placeholder="This subagent doesn\'t accept messages."]:visible')).toBeVisible()
+    await expectReadOnlySubagentReason(page)
 
     // 6. Worker-backed: the child exists with parent linkage and reports the
     //    read-only capability. Query the worker directly for the child tab ID
     //    (the child tab propagates to the hub's ListTabs async).
     await expect.poll(async () => {
-      const child = await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, childTabId)
+      const child = await nativeAgentById(native, childTabId)
       return child && !child.acceptsMessages ? 'read-only' : null
     }).toBe('read-only')
 
     // 7. Select the parent and prove the child answer did not leak into it.
-    await page.locator(`[data-testid="tab"][data-tab-id="${parentTabId}"]`).click()
+    await tabById(page, parentTabId).click()
     await expect(assistantBubbles(page).filter({ hasText: /^CHILD_DONE$/ })).toHaveCount(0)
 
     // 8. The completed child turn is an exact final signal. A generic final
@@ -109,14 +104,15 @@ codexTest.describe('provider tool rendering', () => {
     // The native wait emits a completed agent item with no receivers or states.
     // Its model result reports the timeout. The empty agent item must reveal later rows.
     const callId = 'empty-wait'
-    const stepIndex = (await modelScript.status()).stepCount
-    await modelScript.queue({ toolCalls: [codexWaitAgentToolCall(callId, 1)] })
-    await modelScript.queue({ text: 'VISIBLE_AFTER_EMPTY_WAIT' })
+    const stepIndex = await modelScript.queue(
+      { toolCalls: [codexWaitAgentToolCall(callId, 1)] },
+      { text: 'VISIBLE_AFTER_EMPTY_WAIT' },
+    )
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await sendMessage(page, modelScript.prompt('Wait for the agents that are not running.'))
     const status = await modelScript.waitForSteps(stepIndex + 2)
-    const nativeResult = nativeToolResult(status.requests.find(request => request.stepIndex === stepIndex + 1), callId)
+    const nativeResult = nativeToolResult(stepRequest(status, stepIndex + 1), callId)
     expect(JSON.parse(nativeResult)).toMatchObject({ timed_out: true, message: expect.stringContaining('Wait timed out.') })
     expect(nativeResult).not.toMatch(/unsupported call|failed to parse function arguments/)
 

@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { agentTabs, answerControl, assistantBubbles, controlButton, expectAgentTabCount, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
 
 const WORKFLOW_NAME = 'leapmux-e2e-probe'
@@ -19,8 +19,7 @@ function workflowScript(prompt: string): string {
 
 claudeTest('shows a native Claude Workflow run without a grouped child row', async ({ authenticatedWorkspace, page, modelScript }) => {
   void authenticatedWorkspace
-  const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-  const tabsBefore = await agentTabs.count()
+  const tabsBefore = await agentTabs(page).count()
   const childPrompt = modelScript.prompt(`Reply with ${CHILD_RESULT}.`)
   await modelScript.rule({
     name: 'the workflow child answers locally',
@@ -32,17 +31,19 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   // Claude can start more root turns when the background workflow reports its
   // result. Their count depends on when the workflow notification arrives.
   await modelScript.fallback({ text: 'Workflow notification noted.' })
-  await modelScript.queue(
+  const start = await modelScript.queue(
     { toolCalls: [claudeWorkflowToolCall('workflow-probe', workflowScript(childPrompt))] },
     { text: 'The workflow finished.' },
   )
   await sendMessage(page, modelScript.prompt('Run the one-child workflow and report its result.'))
-  await modelScript.waitForSteps(1)
-  const permission = page.getByTestId('control-banner').filter({ visible: true })
+  await modelScript.waitForSteps(start + 1)
+  const permission = await waitForControlBanner(page)
   await expect(permission).toContainText('Permission Required')
   await expect(permission).toContainText(WORKFLOW_NAME)
-  await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
-  await modelScript.waitForSteps(2)
+  // A label other than `Allow` states a remembered allow, so the exact label proves an answer for this request only.
+  await expect(controlButton(page, 'allow')).toHaveText('Allow')
+  await answerControl(page, 'allow')
+  await modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(page)
 
   await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
@@ -57,5 +58,5 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   await expect(workflowRows).toHaveCount(1)
   await expect(page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')).toHaveCount(0)
   await expect(row).toHaveAttribute('data-child-agent-id', '')
-  await expect(agentTabs).toHaveCount(tabsBefore)
+  await expectAgentTabCount(page, tabsBefore)
 })

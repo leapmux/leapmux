@@ -1,14 +1,15 @@
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { clineTest, offeredTools } from '../cline-fixtures'
+import { stepRequest } from '../helpers/mockModelScript'
 import { clineRunTeammateTaskToolCall, clineSpawnTeammateToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
 clineTest.describe('Cline workflow grouping', () => {
-  clineTest('groups two native teammate runs under their team', async ({ authenticatedClineWorkspace, page, modelScript }) => {
-    void authenticatedClineWorkspace
+  clineTest('groups two native teammate runs under their team', async ({ native }) => {
+    const { page, modelScript } = native
     const teammates = [
       { agentId: 'reviewer', marker: 'CLINE_TEAM_REVIEWER' },
       { agentId: 'writer', marker: 'CLINE_TEAM_WRITER' },
@@ -19,25 +20,28 @@ clineTest.describe('Cline workflow grouping', () => {
       respond: { text: marker },
       once: true,
     })))
-    await modelScript.queue(
+    // The queue holds two spawn steps, two run steps, and the final answer.
+    const start = await modelScript.queue(
       ...teammates.map(({ agentId }) => ({ toolCalls: [clineSpawnTeammateToolCall(`spawn-${agentId}`, agentId, 'Answer the delegated task.')] })),
       ...teammates.map(({ agentId, marker }) => ({ toolCalls: [clineRunTeammateTaskToolCall(`run-${agentId}`, agentId, modelScript.prompt(`Reply with ${marker}.`))] })),
       { text: 'Both teammate runs were queued.' },
     )
     await modelScript.fallback({ text: 'The teammate runs finished.' })
     await sendMessage(page, modelScript.prompt('Spawn two teammates and run one task on each.'))
-    await modelScript.waitForSteps()
+    const status = await modelScript.waitForSteps(start + 5)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Both teammate runs were queued.' }).first()).toBeVisible()
 
-    const status = await modelScript.status()
-    expect(offeredTools(status.requests.find(request => request.stepIndex === 0)?.body)).toContain('team_spawn_teammate')
-    expect(offeredTools(status.requests.find(request => request.stepIndex === 1)?.body)).toContain('team_spawn_teammate')
-    expect(offeredTools(status.requests.find(request => request.stepIndex === 2)?.body)).toContain('team_run_task')
-    expect(offeredTools(status.requests.find(request => request.stepIndex === 3)?.body)).toContain('team_run_task')
+    const bodyAt = (offset: number) => stepRequest(status, start + offset).body
+    expect(offeredTools(bodyAt(0))).toContain('team_spawn_teammate')
+    expect(offeredTools(bodyAt(1))).toContain('team_spawn_teammate')
+    expect(offeredTools(bodyAt(2))).toContain('team_run_task')
+    expect(offeredTools(bodyAt(3))).toContain('team_run_task')
+    // A request carries the result of the call that the step before it made, so the requests of the two steps after
+    // the run steps carry the two run IDs.
     const runIDs: string[] = []
-    for (const stepIndex of [3, 4]) {
-      const queuedBody = status.requests.find(request => request.stepIndex === stepIndex)?.body
+    for (const offset of [3, 4]) {
+      const queuedBody = bodyAt(offset)
       if (!isObject(queuedBody) || !Array.isArray(queuedBody.messages))
         throw new Error('the Cline model request has no message list after an async run')
       const resultMessage = queuedBody.messages

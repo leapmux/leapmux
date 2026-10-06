@@ -2,11 +2,11 @@ import { expect } from '@playwright/test'
 import { commandCodeTest } from '../command-code-fixtures'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { messageContents, userBubbles } from '../helpers/ui'
-import { nativeContext, runningChild } from './scenarios'
+import { runningChild } from './scenarios'
 
-commandCodeTest('preserves the actual native child prompt and final report in its own tab', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
-  const child = await runningChild(context)
+commandCodeTest('preserves the actual native child prompt and final report in its own tab', async ({ native }) => {
+  const { page } = native
+  const child = await runningChild(native)
   await child.finish()
   await openChildTabFromRow(page, child.row)
   await expect(userBubbles(page).filter({ hasText: 'COMMANDCODECHILD' }).first()).toBeVisible()

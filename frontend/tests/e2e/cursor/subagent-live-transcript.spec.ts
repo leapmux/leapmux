@@ -1,14 +1,13 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cursorTest } from '../cursor-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, tabById, userBubbles } from '../helpers/ui'
 import { openCursorRunningChild } from './childScenario'
 
-cursorTest('shows an actual child Read result in its own tab before the child completes', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
-  const child = await openCursorRunningChild(context)
+cursorTest('shows an actual child Read result in its own tab before the child completes', async ({ native }) => {
+  const { page } = native
+  const child = await openCursorRunningChild(native)
   await withCleanup(async () => {
     await openChildTabFromRow(page, child.row)
     await expect(userBubbles(page).filter({ hasText: child.prompt }).first()).toBeVisible()

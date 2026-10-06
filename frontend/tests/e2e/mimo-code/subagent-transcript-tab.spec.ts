@@ -6,15 +6,14 @@
  * MiMo tags each child message with its actor ID. The Worker routes those messages into that child's transcript.
  */
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
-  mimoTest('an actor run opens a registry row and a child transcript', async ({ authenticatedMiMoWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedMiMoWorkspace
+  mimoTest('an actor run opens a registry row and a child transcript', async ({ native }) => {
+    const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
 
     // The child's prompt carries the marker, so its turn reaches this script. The
@@ -26,9 +25,9 @@ mimoTest.describe('MiMo Code subagent registry', () => {
       when: { user: '^Reply with the single word' },
       respond: { text: '**Status**: success\n**Summary**: replied\n\nPONG' },
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.MIMO_CODE, 'spawn-mimo', {
+        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-mimo', {
           description: 'Ask the subagent for one word',
           prompt: modelScript.prompt('Reply with the single word PONG.'),
         })],
@@ -36,15 +35,13 @@ mimoTest.describe('MiMo Code subagent registry', () => {
       { text: 'The subagent reported PONG.' },
     )
     await sendMessage(page, modelScript.prompt('Run one subagent and report what it says.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     const row = await requireRegistryRow(page)
     await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
-    // `getAttribute` answers null for an absent attribute, and null is not '', so the
-    // poll reads an absent attribute as the empty id it states.
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: 'Reply with the single word PONG' })).toBeVisible()
     // The child's own answer. The task above holds the word too, so only an agent

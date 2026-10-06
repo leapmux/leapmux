@@ -1,9 +1,10 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { withCleanup } from '../helpers/cleanup'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { qoderWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly } from '../helpers/ui'
+import { answerControl, assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly, waitForControlBanner } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { expect, qoderTest } from '../qoder-fixtures'
 
@@ -16,7 +17,11 @@ qoderTest.describe('native workflow grouping', () => {
 
   const FILE_MARKER = 'QODER_WORKFLOW_FILE_MARKER'
 
-  qoderTest('groups a native Workflow run with two saved child transcripts', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+  /** The system prompt of a child that a Qoder workflow script spawns. */
+  const WORKFLOW_CHILD_SYSTEM = 'You are a subagent spawned by a workflow orchestration script'
+
+  qoderTest('groups a native Workflow run with two saved child transcripts', async ({ native, authenticatedQoderWorkspace }) => {
+    const { page, modelScript } = native
     const file = 'qoder-workflow-note.txt'
     writeFileSync(join(authenticatedQoderWorkspace.workingDir, file), FILE_MARKER)
     const firstPrompt = modelScript.prompt(`Read ${file} and report its marker.`)
@@ -30,57 +35,54 @@ qoderTest.describe('native workflow grouping', () => {
     const gate = 'qoder-workflow-first-answer'
     await modelScript.rule({
       name: 'the first workflow child reads its file',
-      when: { system: 'You are a subagent spawned by a workflow orchestration script', user: firstPrompt },
-      respond: { toolCalls: [readToolCall(AgentProvider.QODER, 'workflow-read', file)] },
+      when: { system: WORKFLOW_CHILD_SYSTEM, user: firstPrompt },
+      respond: { toolCalls: [readToolCall(native.provider, 'workflow-read', file)] },
       once: true,
     }, {
       name: 'the first workflow child answers after the read',
-      when: { system: 'You are a subagent spawned by a workflow orchestration script', body: FILE_MARKER },
+      when: { system: WORKFLOW_CHILD_SYSTEM, body: FILE_MARKER },
       respond: { text: FIRST_ANSWER, gate },
       once: true,
     }, {
       name: 'the second workflow child answers',
-      when: { system: 'You are a subagent spawned by a workflow orchestration script', user: secondPrompt },
+      when: { system: WORKFLOW_CHILD_SYSTEM, user: secondPrompt },
       respond: { text: SECOND_ANSWER },
       once: true,
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [qoderWorkflowToolCall('run-qoder-workflow', script)] },
       { text: 'The Qoder workflow started.' },
     )
     await modelScript.fallback({ text: 'The Qoder workflow result arrived.' })
 
-    const parentTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-    expect(parentTabId).not.toBe('')
+    const parentTabId = await selectedAgentTabId(page)
     await sendMessage(page, modelScript.prompt('Run the two-child workflow and report its result.'))
-    await modelScript.waitForSteps(1)
-    const permission = page.locator('[data-testid="control-banner"]:visible')
-    await expect(permission).toContainText('Workflow')
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await modelScript.waitForSteps(start + 1)
+    await expect(await waitForControlBanner(page)).toContainText('Workflow')
+    await answerControl(page, 'allow')
     await modelScript.waitForGate(gate)
 
     const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
     const firstChild = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: `Read ${file}` }).first()
-    let firstChildTabId = ''
-    try {
+    const firstChildTabId = await withCleanup(async () => {
       await expandBackgroundTasksSection(page)
       await expect(workflow).toBeVisible()
       await expect(workflow).toHaveAttribute('data-status', 'running')
       await expect(firstChild).toHaveAttribute('data-status', 'running')
-      firstChildTabId = await openChildTabFromRow(page, firstChild)
+      const childTabId = await openChildTabFromRow(page, firstChild)
       await expect(userBubbles(page).filter({ hasText: `Read ${file}` }).first()).toBeVisible()
       await expect(assistantBubbles(page).filter({ hasText: FIRST_ANSWER })).toHaveCount(0)
-    }
-    finally {
+      return childTabId
+    }, async () => {
       try {
         await modelScript.releaseGate(gate)
       }
       finally {
         await tabById(page, parentTabId).click()
       }
-    }
+    })
 
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await expect.poll(async () => (await modelScript.status()).ruleMatches['the second workflow child answers'] ?? 0).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The Qoder workflow result arrived.' }).first()).toBeVisible()
     await expectRowBecomesFinal(page, workflow)
@@ -89,8 +91,9 @@ qoderTest.describe('native workflow grouping', () => {
     await expect(firstChild).toHaveAttribute('data-status', 'completed')
     await expect(secondChild).toHaveAttribute('data-status', 'completed')
     await expectRowsInWorkflowGroup([workflow, firstChild, secondChild], WORKFLOW_NAME)
-    // The completed first child keeps the link to its transcript. `openChildTabFromRow` below proves the link of the second.
-    await expect.poll(async () => await firstChild.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    // The completed first child keeps the link to its exact transcript. `openChildTabFromRow` below proves the link
+    // of the second.
+    await expect(firstChild).toHaveAttribute('data-child-agent-id', firstChildTabId)
     await tabById(page, firstChildTabId).click()
     await expect(visibleOnly(page.getByText(FILE_MARKER, { exact: false })).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: FIRST_ANSWER }).first()).toBeVisible()

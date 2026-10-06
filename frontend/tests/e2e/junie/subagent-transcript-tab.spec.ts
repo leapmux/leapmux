@@ -1,4 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { withCleanup } from '../helpers/cleanup'
 import { junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -26,7 +27,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
       },
       once: true,
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(PROVIDER, 'spawn-junie', {
           description: 'Find Junie session history',
@@ -37,18 +38,15 @@ junieTest.describe('Junie subagents and background tasks', () => {
     )
     await sendMessage(page, modelScript.prompt('Delegate the Junie session history question, then report.'))
     await modelScript.waitForGate(CHILD_GATE)
-    try {
+    await withCleanup(async () => {
       const row = await requireRegistryRow(page)
       await expect(row).toHaveAttribute('data-status', 'running')
       await expect(row).toContainText('junie-cli-docs')
       await openChildTabFromRow(page, row)
       await expect(userBubbles(page).filter({ hasText: CHILD_TASK })).toHaveCount(1)
-    }
-    finally {
-      await modelScript.releaseGate(CHILD_GATE)
-    }
+    }, () => modelScript.releaseGate(CHILD_GATE))
 
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CHILD_DONE' }).first()).toBeVisible()
 

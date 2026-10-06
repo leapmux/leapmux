@@ -1,4 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { attachQoderWorkerFrames } from '../helpers/qoderWorkerFrames'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -9,11 +10,12 @@ import { expect, qoderTest } from '../qoder-fixtures'
 qoderTest.describe('Qoder CLI subagent registry', () => {
   const PROVIDER = AgentProvider.QODER
 
+  // The `native` fixture opens the agent in Accept Edits. This test keeps the Default mode of `askingQoderWorkspace`.
   qoderTest('follows one subagent from its spawn to its report, with its own transcript', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
+    const rootAgentId = await selectedAgentTabId(page)
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, askingQoderWorkspace.workspaceId)
-    expect(agents).toHaveLength(1)
-    const rootAgentId = agents[0]!.id
+    expect(agents.map(agent => agent.id)).toEqual([rootAgentId])
     await expectNoRegistryRows(page, leapmuxServer)
 
     await modelScript.rule({
@@ -21,7 +23,7 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
       when: { user: 'Reply with the single word PONG' },
       respond: { reasoning: 'The task asks for one word.', text: 'PONG' },
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(PROVIDER, 'spawn-qoder', {
           description: 'Ask for one word',
@@ -32,7 +34,7 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
     )
     await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
 
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await attachQoderWorkerFrames(testInfo, leapmuxServer, rootAgentId)
 
@@ -44,11 +46,9 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
     expect((await modelScript.status()).ruleMatches['the child answers its one-word task']).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' })).toBeVisible()
 
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
-    const childAgentId = await row.getAttribute('data-child-agent-id')
-    expect(childAgentId).toBeTruthy()
-    await attachQoderWorkerFrames(testInfo, leapmuxServer, childAgentId!, 'child')
-    await openChildTabFromRow(page, row)
+    // `openChildTabFromRow` waits until the row links a child agent, and returns that agent.
+    const childAgentId = await openChildTabFromRow(page, row)
+    await attachQoderWorkerFrames(testInfo, leapmuxServer, childAgentId, 'child')
     await expect(assistantBubbles(page).filter({ hasText: 'PONG' }).first()).toBeVisible()
   })
 })

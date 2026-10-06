@@ -25,12 +25,12 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
       respond: { text: 'QWEN_WORKFLOW_CHILD' },
       once: true,
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [qwenWorkflowToolCall('run-workflow', script)] },
       { text: 'The workflow finished.' },
     )
     await sendMessage(page, modelScript.prompt('Run one workflow child and report completion.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
     await expectOpaqueNativeWorkflowResult(
@@ -45,26 +45,27 @@ qwenTest('keeps two actual native workflow units inside one opaque workflow row'
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
   const children = [
-    { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.') },
-    { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.') },
-  ]
+    { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.'), answer: 'FIRSTNATIVEWORKUNIT' },
+    { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.'), answer: 'SECONDNATIVEWORKUNIT' },
+  ] as const
   for (const [index, child] of children.entries()) {
     await modelScript.rule({
       name: `native-work-unit-${index}`,
       when: { user: child.prompt },
-      respond: { text: index === 0 ? 'FIRSTNATIVEWORKUNIT' : 'SECONDNATIVEWORKUNIT' },
+      respond: { text: child.answer },
       once: true,
     })
   }
-  await modelScript.queue({ toolCalls: [qwenWorkflowToolCall('two-workflow-units', [
+  const [first, second] = children
+  const start = await modelScript.queue({ toolCalls: [qwenWorkflowToolCall('two-workflow-units', [
     'export const meta = { name: "qwen-two-work-units", description: "Run two independent assignments." }',
     'phase("Two native assignments")',
-    `const first = await agent(${JSON.stringify(children[0]!.prompt)}, { label: "First native unit" })`,
-    `const second = await agent(${JSON.stringify(children[1]!.prompt)}, { label: "Second native unit" })`,
+    `const first = await agent(${JSON.stringify(first.prompt)}, { label: ${JSON.stringify(first.label)} })`,
+    `const second = await agent(${JSON.stringify(second.prompt)}, { label: ${JSON.stringify(second.label)} })`,
     'return { first, second }',
   ].join('\n'))] })
   await modelScript.fallback({ text: 'Both native workflow units completed.' })
   await sendMessage(page, modelScript.prompt('Run the two scripted native workflow assignments.'))
-  await modelScript.waitForSteps()
+  await modelScript.waitForSteps(start + 1)
   await expectOpaqueNativeWorkflowResult(context, { ruleNames: ['native-work-unit-0', 'native-work-unit-1'], heading: 'Workflow' })
 })

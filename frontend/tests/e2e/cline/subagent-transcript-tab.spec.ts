@@ -1,7 +1,6 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
-import { nativeAgentsByIds } from '../helpers/nativeScenario'
+import { nativeAgentsByIds, selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRegistryRow, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -14,8 +13,8 @@ import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForA
  * Cline omits the child ID from streamed spawn_agent output. One active spawn lets the Worker route that output. Concurrent spawns require the completed native child session store.
  */
 clineTest.describe('Cline subagent registry', () => {
-  clineTest('follows one subagent from its spawn to its report, with its own transcript', async ({ authenticatedClineWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedClineWorkspace
+  clineTest('follows one subagent from its spawn to its report, with its own transcript', async ({ native }) => {
+    const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
 
     // The child's model call holds its task as the last user text, and the parent's
@@ -26,9 +25,9 @@ clineTest.describe('Cline subagent registry', () => {
       when: { user: 'Reply with the single word PONG' },
       respond: { reasoning: 'The task asks for one word.', text: 'PONG' },
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.CLINE, 'spawn-cline', {
+        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-cline', {
           description: 'Ask for one word',
           prompt: modelScript.prompt('Reply with the single word PONG.'),
         })],
@@ -40,7 +39,7 @@ clineTest.describe('Cline subagent registry', () => {
     // The test scripts the call, so a missing row is a failure and not the model's choice.
     const row = await requireRegistryRow(page)
     await expect(row).toContainText('Ask for one word')
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     await expectRowBecomesFinal(page, row)
@@ -54,17 +53,16 @@ clineTest.describe('Cline subagent registry', () => {
     // transcript. The child tab below holds that band, which proves that it renders.
     await expect(bandRows(page, 'thought')).toHaveCount(0)
 
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: 'Reply with the single word PONG' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'PONG' }).first()).toBeVisible()
     await expect(bandRows(page, 'thought').first()).toBeVisible()
   })
 
-  clineTest('fills the transcript of each parallel subagent from the session that Cline stores', async ({ authenticatedClineWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedClineWorkspace
-    const parentTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-    expect(parentTabId).not.toBe('')
+  clineTest('fills the transcript of each parallel subagent from the session that Cline stores', async ({ native }) => {
+    const { page, modelScript, leapmuxServer } = native
+    const parentTabId = await selectedAgentTabId(page)
     await expectNoRegistryRows(page, leapmuxServer)
 
     await modelScript.rule(
@@ -72,14 +70,14 @@ clineTest.describe('Cline subagent registry', () => {
       { name: 'the second child answers', when: { user: 'Reply with the single word BRAVO' }, respond: { text: 'BRAVO' } },
     )
     // Both spawns in one model answer run in parallel.
-    await modelScript.queue(
+    const start = await modelScript.queue(
       {
         toolCalls: [
-          spawnSubagentToolCall(AgentProvider.CLINE, 'spawn-alpha', {
+          spawnSubagentToolCall(native.provider, 'spawn-alpha', {
             description: 'Answer alpha',
             prompt: modelScript.prompt('Reply with the single word ALPHA.'),
           }),
-          spawnSubagentToolCall(AgentProvider.CLINE, 'spawn-bravo', {
+          spawnSubagentToolCall(native.provider, 'spawn-bravo', {
             description: 'Answer bravo',
             prompt: modelScript.prompt('Reply with the single word BRAVO.'),
           }),
@@ -88,7 +86,7 @@ clineTest.describe('Cline subagent registry', () => {
       { text: 'Both subagents reported.' },
     )
     await sendMessage(page, modelScript.prompt('Delegate two words to two subagents.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     const alpha = await expectRegistryRow(page, { titleContains: 'Answer alpha' })
@@ -106,7 +104,7 @@ clineTest.describe('Cline subagent registry', () => {
     const childTabIds: string[] = []
     for (const [row, own, other] of [[alpha, 'ALPHA', 'BRAVO'], [bravo, 'BRAVO', 'ALPHA']] as const) {
       await tabById(page, parentTabId).click()
-      await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+      // `openChildTabFromRow` waits until the row links a child agent.
       const childTabId = await openChildTabFromRow(page, row)
       childTabIds.push(childTabId)
       await expect(userBubbles(page).filter({ hasText: `Reply with the single word ${own}` }).first()).toBeVisible()
@@ -118,7 +116,7 @@ clineTest.describe('Cline subagent registry', () => {
 
     // Worker-backed: each child states the lead as its parent.
     await expect.poll(async () => {
-      const agents = await nativeAgentsByIds({ leapmuxServer }, childTabIds)
+      const agents = await nativeAgentsByIds(native, childTabIds)
       return childTabIds.map(id => agents.find(agent => agent.id === id)?.parentAgentId ?? null)
     }).toEqual([parentTabId, parentTabId])
   })

@@ -40,14 +40,15 @@ export async function openGeminiRunningChild(context: ManagedNativeScenarioConte
   const path = join(parent.workingDir, `gemini-child-${index}.txt`)
   writeFileSync(path, `${fileMarker}\n`)
   const gate = `gemini-child-${index}-${marker}`
+  const childTurn = { system: CHILD_SYSTEM, user: prompt }
   const child = await openRunningNativeChild(context, {
     spawn: spawnSubagentToolCall(context.provider, `gemini-child-spawn-${index}-${marker}`, { description: 'Read the native child file', prompt }),
     gate,
     child: {
-      matcher: { system: CHILD_SYSTEM, user: prompt },
+      matcher: childTurn,
       finalStep: { toolCalls: [geminiCompleteTaskToolCall(`gemini-child-complete-${marker}`, finalReply)] },
     },
-    rules: [{ name: 'the native child reads its actual file', when: { system: CHILD_SYSTEM, user: prompt }, respond: { reasoning: thought, text: progress, toolCalls: [readToolCall(context.provider, `gemini-child-read-${marker}`, path)] }, once: true }],
+    rules: [{ name: 'the native child reads its actual file', when: childTurn, respond: { reasoning: thought, text: progress, toolCalls: [readToolCall(context.provider, `gemini-child-read-${marker}`, path)] }, once: true }],
     allowExistingRows: index > 0,
   })
   expect(nativeToolResult(await child.heldRequest(), `gemini-child-read-${marker}`)).toContain(fileMarker)

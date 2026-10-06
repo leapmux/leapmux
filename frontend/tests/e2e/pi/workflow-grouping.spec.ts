@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
-import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
+import { stepRequest } from '../helpers/mockModelScript'
 import { nativeModelContextText, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -12,8 +13,8 @@ import { workflowGroupHeading } from '../helpers/workflowGrouping'
 import { piTest } from '../pi-fixtures'
 import { piWorkflowNoticeRule } from './childNoticeRule'
 
-piTest('runs a native two-stage workflow without workflow grouping or stage rows', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }
+piTest('runs a native two-stage workflow without workflow grouping or stage rows', async ({ native }) => {
+  const { page, modelScript } = native
   const suffix = uniqueMarker()
   const gate = `pi-wf-first-${suffix}`
   const firstAnswer = `ACTUAL_FIRST_WORKFLOW_ANSWER_${suffix}`
@@ -22,28 +23,24 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
   const secondPrompt = modelScript.prompt(`NATIVE_WF_SECOND_${suffix}: reply once.`)
   const script = `export const meta = { name: 'Native two-stage workflow', description: 'Run two actual native child stages.', phases: [{ title: 'First' }, { title: 'Second' }] };\nphase('First');\nconst first = await agent(${JSON.stringify(firstPrompt)}, { label: 'first' });\nphase('Second');\nconst second = await agent(${JSON.stringify(secondPrompt)}, { label: 'second' });\nreturn { first, second };`
   const callId = 'native-pi-workflow'
-  const start = (await modelScript.status()).stepCount
   await withCleanup(async () => {
     await modelScript.rule(
       { name: 'the first actual workflow child replies', when: { user: `^NATIVE_WF_FIRST_${suffix}` }, respond: { text: firstAnswer, gate }, once: true },
       { name: 'the second actual workflow child replies', when: { user: `^NATIVE_WF_SECOND_${suffix}` }, respond: { text: secondAnswer }, once: true },
     )
-    await modelScript.queue({ toolCalls: [piWorkflowToolCall(callId, script)] }, { text: 'The native workflow started.' })
+    const start = await modelScript.queue({ toolCalls: [piWorkflowToolCall(callId, script)] }, { text: 'The native workflow started.' })
     await sendMessage(page, modelScript.prompt('Run the supplied native workflow and report its completed result.'))
     await modelScript.waitForGate(gate)
     const launch = await modelScript.waitForSteps(start + 2)
-    const firstRequest = launch.requests.find(record => record.stepIndex === start)
-    if (!firstRequest)
-      throw new Error('The native workflow launch has no recorded model request.')
-    expect(nativeModelToolNames(firstRequest)).toContain('SubagentWorkflow')
-    const acknowledgement = nativeToolResult(launch.requests.find(record => record.stepIndex === start + 1), callId)
+    expect(nativeModelToolNames(stepRequest(launch, start))).toContain('SubagentWorkflow')
+    const acknowledgement = nativeToolResult(stepRequest(launch, start + 1), callId)
     const taskId = /^Task ID: (wf_[^\r\n]+)$/m.exec(acknowledgement)?.[1]
     expect(taskId).toBeTruthy()
     if (!taskId)
       throw new Error('The actual Pi workflow receipt contains no task ID.')
     const scriptPath = /^Script: ([^\r\n]+)$/m.exec(acknowledgement)?.[1]
     await modelScript.rule(piWorkflowNoticeRule({ name: 'the parent receives the actual workflow completion', taskId, callId, workflowName: 'Native two-stage workflow', ...(scriptPath === undefined ? {} : { scriptPath }), reports: [firstAnswer, secondAnswer], reply: 'The actual native workflow result arrived.' }))
-    const running = (await readNativeSidebarSnapshot(context)).backgroundTasks.find(task => task.id === taskId)
+    const running = (await readNativeSidebarSnapshot(native)).backgroundTasks.find(task => task.id === taskId)
     expect(running?.status).toBe(BackgroundTaskStatus.RUNNING)
     expect(running?.kind).toBe(BackgroundTaskKind.SUBAGENT)
     expect(running?.groupKey).toBe('')
@@ -53,7 +50,7 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     await expect(row).toHaveAttribute('data-status', 'running')
     expect(await workflowGroupHeading(row)).toBe('')
     await modelScript.releaseGate(gate)
-    await expect.poll(async () => (await readNativeSidebarSnapshot(context)).backgroundTasks.find(task => task.id === taskId)?.status).toBe(BackgroundTaskStatus.COMPLETED)
+    await expect.poll(async () => (await readNativeSidebarSnapshot(native)).backgroundTasks.find(task => task.id === taskId)?.status).toBe(BackgroundTaskStatus.COMPLETED)
     await expect.poll(async () => (await modelScript.status()).ruleMatches['the parent receives the actual workflow completion'] ?? 0).toBeGreaterThan(0)
     const completed = await modelScript.status()
     expect(completed.ruleMatches['the first actual workflow child replies']).toBe(1)
@@ -68,7 +65,7 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     await expect(messageContents(page).filter({ hasText: firstAnswer }).first()).toBeVisible()
     const inspect = async () => {
       await expandBackgroundTasksSection(page)
-      const snapshot = await readNativeSidebarSnapshot(context)
+      const snapshot = await readNativeSidebarSnapshot(native)
       expect(snapshot.backgroundTasks).toHaveLength(1)
       const task = snapshot.backgroundTasks[0]
       expect(task?.id).toBe(taskId)
@@ -88,15 +85,14 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
   })
 })
 
-piTest('rejects an invalid native workflow script without a phantom workflow row', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }
-  const start = (await modelScript.status()).stepCount
+piTest('rejects an invalid native workflow script without a phantom workflow row', async ({ native }) => {
+  const { page, modelScript } = native
   const callId = 'invalid-native-pi-workflow'
-  await modelScript.queue({ toolCalls: [piWorkflowToolCall(callId, 'return 0;')] }, { text: 'The native workflow script was refused.' })
+  const start = await modelScript.queue({ toolCalls: [piWorkflowToolCall(callId, 'return 0;')] }, { text: 'The native workflow script was refused.' })
   await sendMessage(page, modelScript.prompt('Try the supplied invalid native workflow script once.'))
   const status = await modelScript.waitForSteps(start + 2)
-  expect(nativeToolResult(status.requests.find(record => record.stepIndex === start + 1), callId)).toContain('A workflow script must begin with')
+  expect(nativeToolResult(stepRequest(status, start + 1), callId)).toContain('A workflow script must begin with')
   await waitForAgentIdle(page)
-  expect((await readNativeSidebarSnapshot(context)).backgroundTasks).toEqual([])
+  expect((await readNativeSidebarSnapshot(native)).backgroundTasks).toEqual([])
   await expect(messageContents(page).filter({ hasText: 'A workflow script must begin with' }).first()).toBeVisible()
 })

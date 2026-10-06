@@ -2,10 +2,10 @@ import { expect } from '@playwright/test'
 /** Test child tab identity and isolated transcripts. Preserve the completed span edge cases. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { nativeAgentById } from '../helpers/nativeScenario'
+import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { agentTabs, ASSISTANT_BUBBLE_SELECTOR, expectAgentTabCount, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
 claudeTest.describe('Claude subagent background tasks', () => {
   claudeTest('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
@@ -15,10 +15,10 @@ claudeTest.describe('Claude subagent background tasks', () => {
     modelScript,
   }) => {
     void authenticatedWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
 
     // 1. Precondition: no registry section yet.
     await expectNoRegistryRows(page, leapmuxServer)
+    const parentTabId = await selectedAgentTabId(page)
 
     // 2. Spawn a subagent.
     //
@@ -33,14 +33,14 @@ claudeTest.describe('Claude subagent background tasks', () => {
     // The CHILD's prompt carries the marker too, so the turns it runs on its own
     // reach this script rather than the ambient scenario.
     await modelScript.fallback({ text: `The subagent wrote about the ocean and ended with ${MARKER}.` })
-    await modelScript.queue({
+    const start = await modelScript.queue({
       toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-ocean', {
         description: 'Write about the ocean',
         prompt: modelScript.prompt(`Write two sentences about the ocean, then end your reply with the token ${MARKER}.`),
       })],
     })
     await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the ocean, then tell me what it wrote.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 1)
     await waitForAgentIdle(page)
 
     // 3. Sidebar: section + a subagent row. The spawn is scripted, so a
@@ -54,30 +54,26 @@ claudeTest.describe('Claude subagent background tasks', () => {
     // Only a real browser resolves the cascade, so no unit test can see this.
     await expect(row).toHaveCSS('font-weight', '400')
 
-    // 4. Wait for the row to link to a child transcript (EnsureChildAgent runs
-    //    at task_started; the child-agent-id propagates via the next broadcast).
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
-
-    // 5. Open the tab from the sidebar row. The helper asserts the agent-tab
-    //    count grew by exactly one and returns the new tab's id.
+    // 4. Open the tab from the sidebar row. `openChildTabFromRow` waits until
+    //    the row links a child transcript: EnsureChildAgent runs at
+    //    task_started, and the next broadcast carries the child agent ID. The
+    //    helper requires exactly one new agent tab and returns its ID.
     const childTabId = await openChildTabFromRow(page, row)
 
-    // 6. Worker-backed: the child agent exists with parent linkage + a
-    //    non-empty spawn span id. Query the worker directly for that tab id.
-    let child: { id: string, parentAgentId: string, spawnSpanId: string } | null = null
-    await expect.poll(async () => {
-      const found = await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, childTabId)
-      child = found ? { id: found.id, parentAgentId: found.parentAgentId, spawnSpanId: found.spawnSpanId } : null
-      return child
-    }).not.toBeNull()
-    expect(child!.parentAgentId).not.toBe('')
-    expect(child!.spawnSpanId).not.toBe('')
+    // 5. Worker-backed: the child agent exists, links its parent, and holds a
+    //    spawn span ID. Query the worker directly for that tab ID.
+    await expect.poll(async () => await nativeAgentById({ leapmuxServer }, childTabId) !== null).toBe(true)
+    const child = await nativeAgentById({ leapmuxServer }, childTabId)
+    if (!child)
+      throw new Error('The Worker lost the child agent after it reported the agent.')
+    expect(child.parentAgentId).toBe(parentTabId)
+    expect(child.spawnSpanId).not.toBe('')
 
-    // 8. Completion: the row reaches a final status; the section persists.
+    // 6. Completion: the row reaches a final status; the section persists.
     await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
 
-    // 9. The registry's kind tabs. A subagent row lives under Subagents and not
+    // 7. The registry's kind tabs. A subagent row lives under Subagents and not
     //    under Shell, and All shows it again. Only a real spawn puts a row in
     //    the section at all, which is why this rides on this test rather than
     //    standing alone.
@@ -90,30 +86,26 @@ claudeTest.describe('Claude subagent background tasks', () => {
     await kindTab('all').click()
     await expect(row).toBeVisible()
 
-    // 10. Closing the parent tab takes its subagent tab with it. The child is a
-    //     transcript the parent's process feeds, so left behind it is a tab
-    //     nothing can add to. The worktree prompt is the parent's own and may or
-    //     may not appear here (it depends on the working dir's git state), so
-    //     answer it when it does.
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    const parentTab = page.locator(
-      `[data-testid="tab"][data-tab-type="agent"]:not([data-tab-id="${childTabId}"])`,
-    ).first()
-    await parentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
+    // 8. Closing the parent tab takes its subagent tab with it. The child is a
+    //    transcript the parent's process feeds, so left behind it is a tab
+    //    nothing can add to. The worktree prompt is the parent's own and may or
+    //    may not appear here (it depends on the working dir's git state), so
+    //    answer it when it does.
+    await tabById(page, parentTabId).locator('[data-testid="tab-close"]').dispatchEvent('click')
 
     // Wait for whichever the inspect produces -- the prompt, or the close going
     // straight through -- rather than reading visibility before either lands.
     const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
     await expect.poll(async () =>
-      await closeDialog.count() > 0 || await agentTabs.count() === 0,
+      await closeDialog.count() > 0 || await agentTabs(page).count() === 0,
     ).toBe(true)
     if (await closeDialog.count() > 0) {
       await closeDialog.getByRole('button', { name: 'Close anyway' }).click()
       await closeDialog.getByRole('button', { name: 'Confirm?' }).click()
     }
 
-    await expect(page.locator(`[data-testid="tab"][data-tab-id="${childTabId}"]`)).toHaveCount(0)
-    await expect(agentTabs).toHaveCount(0)
+    await expect(tabById(page, childTabId)).toHaveCount(0)
+    await expectAgentTabCount(page, 0)
   })
 })
 
@@ -167,18 +159,20 @@ claudeTest.describe('subagent spawn has no span', () => {
       when: { user: 'one sentence about the tide' },
       respond: { text: `The tide turns twice a day. ${MARKER}` },
     })
-    await modelScript.queue({
-      toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-tide', {
-        description: 'Write about the tide',
-        prompt: modelScript.prompt(`Write one sentence about the tide, then end your reply with the token ${MARKER}.`),
-      })],
-    })
-    await modelScript.queue({ text: `The subagent wrote about the tide and ended with ${MARKER}.` })
+    const start = await modelScript.queue(
+      {
+        toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-tide', {
+          description: 'Write about the tide',
+          prompt: modelScript.prompt(`Write one sentence about the tide, then end your reply with the token ${MARKER}.`),
+        })],
+      },
+      { text: `The subagent wrote about the tide and ended with ${MARKER}.` },
+    )
     await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the tide, then tell me what it wrote.'))
-    await modelScript.waitForSteps(2)
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
-    // Skips when the model declined to spawn.
+    // The spawn is scripted, so a missing row fails the test.
     await requireRegistryRow(page)
 
     // Rows are scoped to :visible — ChatView renders every unmeasured row twice

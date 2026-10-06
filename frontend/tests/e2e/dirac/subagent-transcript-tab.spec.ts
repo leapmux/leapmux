@@ -34,19 +34,19 @@ diracTest.describe('Dirac subagent transcript', () => {
         once: true,
       },
     )
-    await modelScript.queue({ toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-spawn', { description: 'Count files', prompt: childPrompt })] })
+    const start = await modelScript.queue({ toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-spawn', { description: 'Count files', prompt: childPrompt })] })
     await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))
     await modelScript.waitForGate('dirac-child-reply')
 
     await expandBackgroundTasksSection(page)
     const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Count files' }).first()
     await expect(child).toBeVisible()
-    await expect.poll(async () => await child.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, child)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
 
     await modelScript.releaseGate('dirac-child-reply')
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 1)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_ARCHIVE_ONLY' }).first()).toBeVisible()
@@ -89,21 +89,20 @@ diracTest.describe('Dirac subagent transcript', () => {
           once: true,
         },
       )
-      await modelScript.queue({
+      const start = await modelScript.queue({
         toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-reused-child-call', { description: run.description, prompt: childPrompt })],
       })
       await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
-      await modelScript.waitForSteps()
+      await modelScript.waitForSteps(start + 1)
       await waitForAgentIdle(page)
 
       await expandBackgroundTasksSection(page)
       const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: run.description }).first()
       await expect(row).toHaveAttribute('data-status', 'completed')
-      const childID = await row.getAttribute('data-child-agent-id')
-      expect(childID).toBeTruthy()
+      // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
+      const childID = await openChildTabFromRow(page, row)
       if (previousChildID)
         expect(childID).not.toBe(previousChildID)
-      await openChildTabFromRow(page, row)
       await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
       await expect(assistantBubbles(page).filter({ hasText: run.archive }).first()).toBeVisible()
       await expect(assistantBubbles(page).filter({ hasText: run.report }).first()).toBeVisible()
@@ -115,7 +114,7 @@ diracTest.describe('Dirac subagent transcript', () => {
       const status = await modelScript.status()
       expect(status.ruleMatches[`dirac-${index}-child`]).toBe(1)
       expect(status.ruleMatches[`dirac-${index}-parent`]).toBe(1)
-      previousChildID = childID ?? ''
+      previousChildID = childID
       previousPrompt = childPrompt
       previousArchive = run.archive
       await tabById(page, agentId).click()

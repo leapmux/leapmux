@@ -6,7 +6,7 @@
  * MiMo tags each child message with its actor ID. The Worker routes those messages into that child's transcript.
  */
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { withCleanup } from '../helpers/cleanup'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { steerQueuedInput } from '../helpers/steer'
 import { openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -14,16 +14,16 @@ import { applyPermissionPreset, assistantBubbles, sendMessage, userBubbles, wait
 import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
-  mimoTest('sends a queued message into a running subagent', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
+  mimoTest('sends a queued message into a running subagent', async ({ native }) => {
+    const { page, modelScript } = native
     await applyPermissionPreset(page, 'bypass')
     const gate = 'mimo-child-send'
-    try {
+    const start = await withCleanup(async () => {
       await modelScript.rule(
         {
           name: 'the child runs its first tool',
           when: { user: '^Reply with CHILD_STEERED' },
-          respond: { gate, toolCalls: [bashToolCall(AgentProvider.MIMO_CODE, 'child-shell', 'printf mimo-child-ready')] },
+          respond: { gate, toolCalls: [bashToolCall(native.provider, 'child-shell', 'printf mimo-child-ready')] },
           once: true,
         },
         {
@@ -35,9 +35,9 @@ mimoTest.describe('MiMo Code subagent registry', () => {
           once: true,
         },
       )
-      await modelScript.queue(
+      const queued = await modelScript.queue(
         {
-          toolCalls: [spawnSubagentToolCall(AgentProvider.MIMO_CODE, 'spawn-mimo-send', {
+          toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-mimo-send', {
             description: 'Answer the queued message',
             prompt: modelScript.prompt('Reply with CHILD_STEERED after the shell command.'),
           })],
@@ -49,20 +49,18 @@ mimoTest.describe('MiMo Code subagent registry', () => {
 
       const row = await requireRegistryRow(page)
       await expect(row).toHaveAttribute('data-status', 'running')
-      await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+      // `openChildTabFromRow` waits until the row links a child agent.
       await openChildTabFromRow(page, row)
       await steerQueuedInput(page, { message: 'Also say CHILD_STEERED.', match: 'Also say' })
       await modelScript.releaseGate(gate)
-    }
-    finally {
+      return queued
+    }, async () => {
       await modelScript.releaseGateIfHeld(gate)
-    }
+    })
 
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await expect.poll(async () => (await modelScript.status()).ruleMatches['the child reads the queued message'] ?? 0).toBe(1)
     await waitForAgentIdle(page)
-    const status = await modelScript.status()
-    expect(status.ruleMatches['the child reads the queued message']).toBe(1)
     await expect(userBubbles(page).filter({ hasText: /Also say CHILD.*STEERED/ }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'CHILD_STEERED' }).first()).toBeVisible()
   })

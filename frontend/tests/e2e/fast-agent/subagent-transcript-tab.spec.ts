@@ -40,23 +40,22 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         respond: { text: run.archive },
         once: true,
       })
-      await modelScript.queue(
+      const start = await modelScript.queue(
         { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-reused-child-call', { description: run.description, prompt: childPrompt })] },
         { text: run.root },
       )
       await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
-      await modelScript.waitForSteps()
+      await modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: run.root }).first()).toBeVisible()
 
       await expandBackgroundTasksSection(page)
       const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: run.description }).first()
       await expect(row).toHaveAttribute('data-status', 'completed')
-      const childID = await row.getAttribute('data-child-agent-id')
-      expect(childID).toBeTruthy()
+      // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
+      const childID = await openChildTabFromRow(page, row)
       if (previousChildID)
         expect(childID).not.toBe(previousChildID)
-      await openChildTabFromRow(page, row)
       await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
       await expect(assistantBubbles(page).filter({ hasText: run.archive }).first()).toBeVisible()
       if (previousChildID) {
@@ -64,7 +63,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         await expect(assistantBubbles(page).filter({ hasText: previousArchive })).toHaveCount(0)
       }
       expect((await modelScript.status()).ruleMatches[`fastagent-${index}-child`]).toBe(1)
-      previousChildID = childID ?? ''
+      previousChildID = childID
       previousPrompt = childPrompt
       previousArchive = run.archive
       await tabById(page, agentId).click()
@@ -83,20 +82,18 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       respond: { text: 'FASTSAMECHILDONE' },
       once: true,
     })
-    await modelScript.queue(
+    const firstStart = await modelScript.queue(
       { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-same-first', { description: 'Count files', prompt: childPrompt })] },
       { text: 'FASTSAMEROOTONE' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the first count.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(firstStart + 2)
     await waitForAgentIdle(page)
     await expandBackgroundTasksSection(page)
     const firstRow = rows.first()
     await expect(firstRow).toHaveAttribute('data-status', 'completed')
-    const firstChildID = await firstRow.getAttribute('data-child-agent-id')
-    if (!firstChildID)
-      throw new Error('the first Fast Agent child row has no agent ID')
-    const firstChildTabID = await openChildTabFromRow(page, firstRow)
+    // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
+    const firstChildID = await openChildTabFromRow(page, firstRow)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FASTSAMECHILDONE' }).first()).toBeVisible()
     await tabById(page, agentId).click()
@@ -107,12 +104,12 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       respond: { text: 'FASTSAMECHILDTWO' },
       once: true,
     })
-    await modelScript.queue(
+    const secondStart = await modelScript.queue(
       { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-same-second', { description: 'Count files', prompt: childPrompt })] },
       { text: 'FASTSAMEROOTTWO' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the second count with the same task.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(secondStart + 2)
     await waitForAgentIdle(page)
 
     let secondIndex = -1
@@ -123,15 +120,12 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     }).toBeGreaterThanOrEqual(0)
     const secondRow = rows.nth(secondIndex)
     await expect(secondRow).toHaveAttribute('data-status', 'completed')
-    const secondChildID = await secondRow.getAttribute('data-child-agent-id')
-    expect(secondChildID).toBeTruthy()
-    expect(secondChildID).not.toBe(firstChildID)
-    await openChildTabFromRow(page, secondRow)
+    expect(await openChildTabFromRow(page, secondRow)).not.toBe(firstChildID)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FASTSAMECHILDTWO' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FASTSAMECHILDONE' })).toHaveCount(0)
 
-    await tabById(page, firstChildTabID).click()
+    await tabById(page, firstChildID).click()
     await expect(assistantBubbles(page).filter({ hasText: 'FASTSAMECHILDONE' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FASTSAMECHILDTWO' })).toHaveCount(0)
     const status = await modelScript.status()
@@ -164,22 +158,22 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         once: true,
       },
     )
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-spawn', { description: 'Count files', prompt: childPrompt })] },
       { text: 'FAST_AGENT_ROOT_DONE' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     await modelScript.waitForGate('fast-child-first')
 
     const row = await requireRegistryRow(page)
-    await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
 
     await modelScript.releaseGate('fast-child-first')
     await allowReadIfAsked(page, async () => (await modelScript.status()).ruleMatches['the Fast Agent child reports its count'] === 1)
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_AGENT_CHILD_DONE' }).first()).toBeVisible()
@@ -207,7 +201,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     const note = join(workingDir, 'child-note.txt')
     writeFileSync(note, 'FAST_CHILD_RESUME_TOOL_MARKER\n')
     await openWorkspace(page, workspaceId)
-    await page.locator('[data-testid="tab"][data-tab-type="agent"]').filter({ hasText: 'Subject' }).first().click()
+    await tabById(page, rootID).click()
     const childPrompt = modelScript.prompt(CHILD_TASK)
 
     await modelScript.rule(
@@ -228,29 +222,28 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         once: true,
       },
     )
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-resume-spawn', { description: 'Count files', prompt: childPrompt })] },
       { text: 'FAST_ROOT_RESUME_DONE' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     await modelScript.waitForGate('fast-resume-child-first')
     const originalRow = await requireRegistryRow(page)
-    const originalChildID = await originalRow.getAttribute('data-child-agent-id')
-    expect(originalChildID).toBeTruthy()
-    await openChildTabFromRow(page, originalRow)
+    // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
+    const originalChildID = await openChildTabFromRow(page, originalRow)
     await expect(userBubbles(page).filter({ hasText: childPrompt })).toHaveCount(1)
 
     await modelScript.releaseGate('fast-resume-child-first')
     await allowReadIfAsked(page, async () => (await modelScript.status()).ruleMatches['the resumed Fast Agent child reports its result'] === 1)
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(1)
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_RESUME_TOOL_MARKER' }).first()).toBeVisible()
 
     let sessionID = ''
     await expect.poll(async () => {
-      sessionID = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, rootID))?.agentSessionId ?? ''
+      sessionID = (await nativeAgentById({ leapmuxServer }, rootID))?.agentSessionId ?? ''
       return sessionID
     }).not.toBe('')
     await closeAgentViaAPI(hubUrl, adminToken, workerId, rootID)
@@ -270,10 +263,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await expect(userBubbles(page).filter({ hasText: 'Delegate the count, then report.' })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_ROOT_RESUME_DONE' })).toHaveCount(1)
     const restoredRow = await requireRegistryRow(page)
-    const restoredChildID = await restoredRow.getAttribute('data-child-agent-id')
-    expect(restoredChildID).toBeTruthy()
-    expect(restoredChildID).not.toBe(originalChildID)
-    await openChildTabFromRow(page, restoredRow)
+    expect(await openChildTabFromRow(page, restoredRow)).not.toBe(originalChildID)
     await expect(userBubbles(page).filter({ hasText: childPrompt })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_EARLY' })).toHaveCount(1)
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'read_text_file' })).toHaveCount(1)
