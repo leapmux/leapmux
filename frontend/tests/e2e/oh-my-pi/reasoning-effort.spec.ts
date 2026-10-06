@@ -3,8 +3,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectPermissionShortcuts, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -47,33 +49,23 @@ ohMyPiTest('applies Oh My Pi settings, keeps them over a restart and a reload, a
     toolCall: bashToolCall(AgentProvider.OH_MY_PI, 'ask-mode-call', 'echo "omp-mode-$((40 + 2))"'),
     decision: 'allow',
     beforeDecision: banner => expect(banner).toContainText('omp-mode-'),
-    nativeProof: (asked) => {
-      const askedMessages = (asked.body as { messages?: { role?: string, content?: unknown }[] } | undefined)?.messages ?? []
-      expect(JSON.stringify(askedMessages.findLast(message => message.role === 'tool')?.content)).toContain('omp-mode-42')
-    },
+    nativeProof: asked => expect(nativeToolResult(asked, 'ask-mode-call')).toContain('omp-mode-42'),
   })
 
   // omp has no smart mode. Bypass selects Yolo.
-  const menu = await openPlusMenu(page)
-  await expect(menu.getByTestId('composer-smart-permissions')).toHaveCount(0)
-  await expect(menu.getByTestId('composer-bypass-permissions')).toBeVisible()
-  await page.keyboard.press('Escape')
+  await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
   await applyPermissionPreset(page, 'bypass')
   await expectSettingsChip(page, 'Yolo')
   await expectSettingsChip(page, 'Low')
 
-  const bypassStep = await modelScript.queue(
-    { toolCalls: [bashToolCall(AgentProvider.OH_MY_PI, 'bypass-mode-call', 'echo "omp-bypass-$((50 + 5))"')] },
-    { text: 'The Yolo turn ended.' },
-  )
-  await sendMessage(page, modelScript.prompt('Run the scripted command after Bypass.'))
-  await modelScript.waitForSteps(bypassStep + 1)
-  await expectNoControlBanner(page)
-  await modelScript.waitForSteps(bypassStep + 2)
-  await waitForAgentIdle(page)
-  const bypassMessages = ((await modelScript.requestAt(bypassStep + 1)).body as { messages?: { role?: string, content?: unknown }[] } | undefined)?.messages ?? []
-  const bypassResult = bypassMessages.findLast(message => message.role === 'tool')?.content
-  expect(JSON.stringify(bypassResult)).toContain('omp-bypass-55')
+  // Yolo runs the command with no permission request, so the turn clicks nothing.
+  const { resultRequest } = await runNativeToolTurn(native, {
+    toolCalls: [bashToolCall(AgentProvider.OH_MY_PI, 'bypass-mode-call', 'echo "omp-bypass-$((50 + 5))"')],
+    prompt: 'Run the scripted command after Bypass.',
+    answer: 'The Yolo turn ended.',
+    permissions: 'none',
+  })
+  expect(nativeToolResult(resultRequest, 'bypass-mode-call')).toContain('omp-bypass-55')
 })
 
 ohMyPiTest('sends low native effort before and after reload', async ({ native }) => {
