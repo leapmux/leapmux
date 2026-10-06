@@ -1,10 +1,35 @@
+import type { Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { attachFile, attachmentPills, attachmentStrip, writeAttachmentFixture } from './helpers/attachments'
 import { sendNativeAnswer } from './helpers/nativeConversation'
-import { currentNativeAgent, selectedAgentTab } from './helpers/nativeScenario'
+import { selectedAgentTab, selectedAgentTabId } from './helpers/nativeScenario'
 import { composerEditor, expectClipsToOneLine, focusComposer, openAgentViaUI, tabById, userBubbles, waitForSettingsHydrated } from './helpers/ui'
+
+/**
+ * How the clipboard of a paste lists its file:
+ *
+ * - `listed`: in `files` and in `items`, as Chromium lists it.
+ * - `empty`: in `items` only, as WebKitGTK lists a pasted image. The paste replaces Chromium's `files` getter to
+ *   reproduce that shape.
+ */
+type PastedFiles = 'listed' | 'empty'
+
+/**
+ * Paste a PNG file into the visible composer through a synthetic `paste` event, as `pasteText` in
+ * `helpers/composer.ts` pastes text. The event reaches the paste listener of the composer as a real paste does.
+ */
+async function pastePng(page: Page, options: { name: string, files: PastedFiles }): Promise<void> {
+  await composerEditor(page).evaluate((editor, { name, files }) => {
+    const png = new File([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], name, { type: 'image/png' })
+    const clipboardData = new DataTransfer()
+    clipboardData.items.add(png)
+    if (files === 'empty')
+      Object.defineProperty(clipboardData, 'files', { value: new DataTransfer().files })
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  }, options)
+}
 
 test.describe('Attachment Support', () => {
   test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
@@ -49,28 +74,29 @@ test.describe('Attachment Support', () => {
     await expect(attachmentStrip(page)).not.toBeVisible()
   })
 
-  test('attachments survive tab switch', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('attachments survive tab switch', async ({ page, authenticatedWorkspace }) => {
     await expect(composerEditor(page)).toBeVisible()
 
     // Upload a file.
     await attachFile(page, writeAttachmentFixture('image', 'persist.png'))
     await expect(attachmentPills(page)).toHaveCount(1)
-    const context = { page, leapmuxServer }
-    const original = await currentNativeAgent(context)
+    const originalId = await selectedAgentTabId(page)
+    expect(originalId).toBe(authenticatedWorkspace.agentId)
 
-    // Open a new agent tab.
+    // Open a new agent tab. The attachments belong to the composer of a tab. The selected
+    // tab proves the switch, and the settings wait proves that the composer of the new
+    // agent is on screen.
     await openAgentViaUI(page)
     const active = selectedAgentTab(page)
-    await expect(active).not.toHaveAttribute('data-tab-id', original.id)
-    expect((await currentNativeAgent(context)).id).not.toBe(original.id)
+    await expect(active).not.toHaveAttribute('data-tab-id', originalId)
     await waitForSettingsHydrated(page)
 
     // Require no attachment on the new tab.
     await expect(attachmentPills(page)).toHaveCount(0)
 
     // Select the first tab.
-    await tabById(page, original.id).click()
-    expect((await currentNativeAgent(context)).id).toBe(original.id)
+    await tabById(page, originalId).click()
+    await expect(active).toHaveAttribute('data-tab-id', originalId)
     await waitForSettingsHydrated(page)
 
     // Require the retained attachment.
@@ -96,15 +122,7 @@ test.describe('Attachment Support', () => {
   test('paste image adds attachment', async ({ page, authenticatedWorkspace }) => {
     await focusComposer(page)
 
-    // Paste an image through a clipboard event on the visible composer.
-    await page.locator('[data-testid="composer-editor"]:visible').evaluate((composer) => {
-      const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' })
-      const file = new File([blob], 'pasted.png', { type: 'image/png' })
-      const dt = new DataTransfer()
-      dt.items.add(file)
-      const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
-      composer.dispatchEvent(event)
-    })
+    await pastePng(page, { name: 'pasted.png', files: 'listed' })
 
     // Require the attachment pill.
     await expect(attachmentPills(page)).toHaveCount(1)
@@ -114,16 +132,7 @@ test.describe('Attachment Support', () => {
     await focusComposer(page)
 
     // WebKitGTK exposes pasted images through items but leaves files empty.
-    // Override Chromium's files getter to reproduce that clipboard shape.
-    await page.locator('[data-testid="composer-editor"]:visible').evaluate((composer) => {
-      const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' })
-      const file = new File([blob], '', { type: 'image/png' })
-      const clipboardData = new DataTransfer()
-      clipboardData.items.add(file)
-      Object.defineProperty(clipboardData, 'files', { value: new DataTransfer().files })
-      const event = new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true })
-      composer.dispatchEvent(event)
-    })
+    await pastePng(page, { name: '', files: 'empty' })
 
     // Require the attachment pill.
     await expect(attachmentPills(page)).toHaveCount(1)
