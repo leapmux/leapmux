@@ -39,15 +39,22 @@ export function rowContent(protocol: GenericModelProtocol, row: Record<string, u
   return protocol === 'google-generative-language' ? row.parts : row.content
 }
 
-/** The roles of a conversation row that carries system instructions. Anthropic and Google keep them outside the rows. */
+/**
+ * The roles of a conversation row that carries system instructions:
+ *
+ * - OpenAI: a `system` or `developer` row.
+ * - Anthropic: a `system` row, beside the top-level `system` field. Claude Code states its Plan mode instructions and
+ *   its environment in a `system` row after the prompt.
+ * - Google: none, because it keeps its system instructions outside the rows.
+ */
 const SYSTEM_ROW_ROLES: Readonly<Record<GenericModelProtocol, ReadonlySet<unknown>>> = {
   'openai-chat-completions': new Set(['system', 'developer']),
   'openai-responses': new Set(['system', 'developer']),
-  'anthropic-messages': new Set(),
+  'anthropic-messages': new Set(['system']),
   'google-generative-language': new Set(),
 }
 
-/** Whether one conversation row carries system instructions: a `system` or `developer` row of an OpenAI protocol. */
+/** Whether one conversation row carries system instructions, by the roles that {@link SYSTEM_ROW_ROLES} states. */
 export function isSystemRow(protocol: GenericModelProtocol, row: Record<string, unknown>): boolean {
   return SYSTEM_ROW_ROLES[protocol].has(row.role)
 }

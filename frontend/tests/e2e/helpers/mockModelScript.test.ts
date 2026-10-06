@@ -203,6 +203,14 @@ describe('systemText', () => {
       .toBe('Block one.\nBlock two.')
   })
 
+  // Claude Code states its Plan instructions in a system row after the prompt.
+  it('reads an Anthropic system row after the top-level system field', () => {
+    expect(systemText('anthropic-messages', {
+      system: [{ type: 'text', text: 'Base.' }],
+      messages: [{ role: 'user', content: 'Hi' }, { role: 'system', content: [{ type: 'text', text: 'Plan mode is active.' }] }],
+    })).toBe('Base.\nPlan mode is active.')
+  })
+
   it('reads only the text parts of the Google system instruction', () => {
     expect(systemText('google-generative-language', { systemInstruction: { parts: [{ text: 'Part one.' }, { inlineData: { data: 'BYTES' } }, { text: 'Part two.' }] } }))
       .toBe('Part one.\nPart two.')
@@ -220,7 +228,7 @@ describe('systemText', () => {
   it.each([
     { protocol: 'openai-chat-completions', expected: 'MESSAGES_SYSTEM\nMESSAGES_DEVELOPER' },
     { protocol: 'openai-responses', expected: 'INSTRUCTIONS\nINPUT_SYSTEM' },
-    { protocol: 'anthropic-messages', expected: 'ANTHROPIC_SYSTEM' },
+    { protocol: 'anthropic-messages', expected: 'ANTHROPIC_SYSTEM\nMESSAGES_SYSTEM' },
     { protocol: 'google-generative-language', expected: 'GOOGLE_SYSTEM' },
     { protocol: 'aws-event-stream', expected: '' },
   ] as const)('reads only the system places of $protocol', ({ protocol, expected }) => {

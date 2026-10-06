@@ -405,6 +405,19 @@ describe('nativeModelInstructionText', () => {
     expect(nativeModelInstructionText(request)).toBe('SYSTEM_INSTRUCTION\nUSER_PROMPT')
   })
 
+  // The shape of an actual Claude Code request in Plan mode: the CLI states the Plan instructions in a system row
+  // after the prompt, not in the top-level `system` field.
+  it('includes an Anthropic system row after the user text, in conversation order', () => {
+    const request: MockModelRequestRecord = { protocol: 'anthropic-messages', path: '/v1/messages', body: {
+      system: [{ type: 'text', text: 'BASE_SYSTEM_PROMPT' }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'USER_PROMPT' }] },
+        { role: 'system', content: [{ type: 'text', text: 'Plan mode is active.', cache_control: { type: 'ephemeral' } }], output_config: {} },
+      ],
+    } }
+    expect(nativeModelInstructionText(request)).toBe('BASE_SYSTEM_PROMPT\nUSER_PROMPT\nPlan mode is active.')
+  })
+
   it('includes Chat Completions system and developer rows and user text in conversation order', () => {
     const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/chat/completions', body: {
       tools: [{ type: 'function', function: { name: 'tool', description: 'SCHEMA_PLAN_MODE' } }],
@@ -425,14 +438,14 @@ describe('nativeModelInstructionText', () => {
     system: 'ANTHROPIC_SYSTEM',
     instructions: 'RESPONSES_INSTRUCTIONS',
     systemInstruction: { parts: [{ text: 'GOOGLE_SYSTEM' }] },
-    messages: [{ role: 'developer', content: 'MESSAGES_DEVELOPER' }, { role: 'user', content: 'MESSAGES_USER' }],
+    messages: [{ role: 'system', content: 'MESSAGES_SYSTEM' }, { role: 'developer', content: 'MESSAGES_DEVELOPER' }, { role: 'user', content: 'MESSAGES_USER' }],
     input: [{ role: 'user', content: 'INPUT_USER' }],
     contents: [{ role: 'user', parts: [{ text: 'CONTENTS_USER' }] }],
   }
 
   it.each([
-    { protocol: 'openai-chat-completions', expected: 'MESSAGES_DEVELOPER\nMESSAGES_USER' },
-    { protocol: 'anthropic-messages', expected: 'ANTHROPIC_SYSTEM\nMESSAGES_USER' },
+    { protocol: 'openai-chat-completions', expected: 'MESSAGES_SYSTEM\nMESSAGES_DEVELOPER\nMESSAGES_USER' },
+    { protocol: 'anthropic-messages', expected: 'ANTHROPIC_SYSTEM\nMESSAGES_SYSTEM\nMESSAGES_USER' },
     { protocol: 'openai-responses', expected: 'RESPONSES_INSTRUCTIONS\nINPUT_USER' },
     { protocol: 'google-generative-language', expected: 'GOOGLE_SYSTEM\nCONTENTS_USER' },
   ] as const)('reads only the instruction places of $protocol', ({ protocol, expected }) => {

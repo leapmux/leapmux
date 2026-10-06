@@ -50,9 +50,18 @@ describe('isSystemRow', () => {
     expect(isSystemRow(protocol, {})).toBe(false)
   })
 
-  it.each(['anthropic-messages', 'google-generative-language'] as const)('takes no row of %s, which keeps its system instructions outside the rows', (protocol) => {
-    expect(isSystemRow(protocol, { role: 'system' })).toBe(false)
-    expect(isSystemRow(protocol, { role: 'developer' })).toBe(false)
+  // Claude Code states its Plan instructions in a system row of `messages`, beside the top-level `system` field.
+  it('takes a system row of anthropic-messages, and no developer row', () => {
+    expect(isSystemRow('anthropic-messages', { role: 'system' })).toBe(true)
+    expect(isSystemRow('anthropic-messages', { role: 'developer' })).toBe(false)
+    expect(isSystemRow('anthropic-messages', { role: 'user' })).toBe(false)
+    expect(isSystemRow('anthropic-messages', { role: 'assistant' })).toBe(false)
+    expect(isSystemRow('anthropic-messages', {})).toBe(false)
+  })
+
+  it('takes no row of google-generative-language, which keeps its system instructions outside the rows', () => {
+    expect(isSystemRow('google-generative-language', { role: 'system' })).toBe(false)
+    expect(isSystemRow('google-generative-language', { role: 'developer' })).toBe(false)
   })
 })
 
