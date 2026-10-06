@@ -2,9 +2,13 @@ import type * as TypeScript from 'typescript'
 import {
   createSourceFile,
   forEachChild,
+  isArrowFunction,
   isBindingElement,
+  isCallExpression,
   isElementAccessExpression,
+  isFunctionExpression,
   isIdentifier,
+  isNewExpression,
   isObjectBindingPattern,
   isPropertyAccessExpression,
   isStringLiteralLike,
@@ -27,8 +31,12 @@ import { enclosingFunctionName, lineOf } from '~/test-support/syntaxSite'
 // - `page.waitForTimeout.bind(page)`.
 // - `const { waitForTimeout } = page`.
 //
+// A sleep is the same fixed wait in another spelling, and a hand-written poll loop sleeps between its reads. The
+// second analysis finds a sleep: a call of `sleep`, and a promise that `setTimeout` resolves. `retryUntilPass` in
+// `tests/e2e/helpers/retryUntilPass.ts` is the poll loop that a spec uses instead.
+//
 // Separate from the guard, as `throwingPollReads.ts` is: a guard over the real tree asserts an EMPTY list, and an
-// analysis that finds nothing passes it forever. This function takes sources and returns findings, so a case states
+// analysis that finds nothing passes it forever. These functions take sources and return findings, so a case states
 // what it must find.
 //
 // NOT a `.test.ts`, so vitest does not collect this module as a suite of its own. Its cases live in
@@ -44,12 +52,12 @@ export interface WaitSourceFile {
   source: string
 }
 
-/** One reference to the fixed-wait method. */
+/** One fixed wait: a reference to the fixed-wait method, or a sleep. */
 export interface FixedWait {
   path: string
-  /** The 1-based line of the method name. */
+  /** The 1-based line of the name that spells the wait: the method, `sleep`, or `setTimeout`. */
   line: number
-  /** The name of the function that holds the reference, or '' when no named function holds it. */
+  /** The name of the function that holds the wait, or '' when no named function holds it. */
   enclosingFunction: string
 }
 
@@ -70,11 +78,75 @@ function fixedWaitName(node: TypeScript.Node): TypeScript.Node | undefined {
 
 /** Find each reference to the fixed-wait method in `inputs`. */
 export function fixedWaits(inputs: readonly WaitSourceFile[]): FixedWait[] {
+  return findInSources(inputs, fixedWaitName)
+}
+
+/** The function that a test imports from `src/lib/sleep.ts` to wait for a fixed time. */
+export const SLEEP_FUNCTION = 'sleep'
+
+/** Return whether `node` is the resolver of the `new Promise` whose executor holds it: the first parameter. */
+function isPromiseResolver(node: TypeScript.Node): boolean {
+  if (!isIdentifier(node))
+    return false
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (!isArrowFunction(parent) && !isFunctionExpression(parent))
+      continue
+    const executor = parent
+    const resolver = executor.parameters[0]?.name
+    if (!resolver || !isIdentifier(resolver) || resolver.text !== node.text)
+      continue
+    const owner = executor.parent
+    return isNewExpression(owner) && isIdentifier(owner.expression) && owner.expression.text === 'Promise' && owner.arguments?.[0] === executor
+  }
+  return false
+}
+
+/** Return whether `node` calls the timer function `setTimeout`, on the global scope or on a named object such as `window`. */
+function isSetTimeoutCall(node: TypeScript.CallExpression): boolean {
+  const callee = node.expression
+  if (isIdentifier(callee))
+    return callee.text === 'setTimeout'
+  return isPropertyAccessExpression(callee) && callee.name.text === 'setTimeout'
+}
+
+/** Return whether `callback` of a timer resolves a promise: the resolver itself, or an arrow that only calls it. */
+function resolvesPromise(callback: TypeScript.Node): boolean {
+  if (isPromiseResolver(callback))
+    return true
+  return isArrowFunction(callback) && isCallExpression(callback.body) && isPromiseResolver(callback.body.expression)
+}
+
+/**
+ * Return the node that spells a sleep when `node` is one, or undefined.
+ *
+ * - A call of `sleep(ms)`.
+ * - `new Promise(resolve => setTimeout(resolve, ms))`, also with an arrow that only calls the resolver.
+ */
+function fixedSleepName(node: TypeScript.Node): TypeScript.Node | undefined {
+  if (!isCallExpression(node))
+    return undefined
+  if (isIdentifier(node.expression) && node.expression.text === SLEEP_FUNCTION)
+    return node.expression
+  const callback = node.arguments[0]
+  return isSetTimeoutCall(node) && callback !== undefined && resolvesPromise(callback) ? node.expression : undefined
+}
+
+/**
+ * Find each sleep in `inputs`: a call of `sleep`, or a promise that a timer resolves.
+ * A sleep in a spec is a fixed wait in another spelling, so the guard refuses it in a spec. A helper keeps the sleeps
+ * that implement a wait, such as the pause between two attempts of `retryUntilPass`.
+ */
+export function fixedSleeps(inputs: readonly WaitSourceFile[]): FixedWait[] {
+  return findInSources(inputs, fixedSleepName)
+}
+
+/** Parse each source, and report each node for which `spelling` returns the node that spells the finding. */
+function findInSources(inputs: readonly WaitSourceFile[], spelling: (node: TypeScript.Node) => TypeScript.Node | undefined): FixedWait[] {
   const findings: FixedWait[] = []
   for (const input of inputs) {
     const file = createSourceFile(input.path, input.source, ScriptTarget.Latest, /* setParentNodes */ true)
     const visit = (node: TypeScript.Node): void => {
-      const name = fixedWaitName(node)
+      const name = spelling(node)
       if (name)
         findings.push({ path: input.path, line: lineOf(file, name), enclosingFunction: enclosingFunctionName(node) })
       forEachChild(node, visit)

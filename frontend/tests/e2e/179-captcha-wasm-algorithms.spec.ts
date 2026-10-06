@@ -4,6 +4,7 @@ import { devServerTest } from './dev-server-fixtures'
 import { fetchAltchaChallenge } from './helpers/altcha'
 import { runCLI, setHubSetting } from './helpers/cli'
 import { withAdminConfiguredDevServer } from './helpers/devServer'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { loginViaUI } from './helpers/ui'
 
 /**
@@ -19,22 +20,16 @@ import { loginViaUI } from './helpers/ui'
  * switch only once the challenge endpoint actually issues the target
  * algorithm — everything after that certainly exercises the WASM worker
  * path rather than a stale default challenge.
+ *
+ * A read can fail while the hub applies the change, so a failed read starts
+ * the next attempt. The wait ends before the test's own deadline, and its
+ * failure states the last read.
  */
-async function waitForChallengeAlgorithm(hubUrl: string, algorithm: string, timeoutMs = 90_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const challenge = await fetchAltchaChallenge(hubUrl)
-      if (challenge?.parameters.algorithm === algorithm) {
-        return
-      }
-    }
-    catch {
-      // Transient startup failures retry on the next poll.
-    }
-    await new Promise(r => setTimeout(r, 1000))
-  }
-  throw new Error(`hub did not issue ${algorithm} challenges within ${timeoutMs}ms`)
+async function waitForChallengeAlgorithm(hubUrl: string, algorithm: string): Promise<void> {
+  await retryUntilPass(async () => {
+    const challenge = await fetchAltchaChallenge(hubUrl)
+    expect(challenge?.parameters.algorithm, `the hub issues ${algorithm} challenges`).toBe(algorithm)
+  })
 }
 
 async function setupServerWithAlgorithm(

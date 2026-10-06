@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
-import { fixedWaits } from '~/test-support/fixedWaits'
+import { fixedSleeps, fixedWaits } from '~/test-support/fixedWaits'
 import { posixRelative } from '~/test-support/sourceTree'
 
-// E2E guard: no spec or helper may size a window with `waitForTimeout`. A fixed wait ends on schedule however late the
-// state change that it covers comes, so it fails under load and wastes its full length when nothing happens. Wait for
-// the injected end of the transient state, or for a proof that cannot pass early. `fixedWaits.ts` holds the analysis.
+// E2E guard: no spec or helper may size a window with `waitForTimeout`, and no spec may sleep. A fixed wait ends on
+// schedule however late the state change that it covers comes, so it fails under load and wastes its full length when
+// nothing happens. Wait for the injected end of the transient state, or for a proof that cannot pass early.
+// `fixedWaits.ts` holds the analysis.
 
 /**
  * The fixed waits that the guard accepts, by file and enclosing function, each with its reason. An entry that matches
@@ -20,9 +21,14 @@ const ACCEPTED: ReadonlyMap<string, string> = new Map([
   ],
 ])
 
+/** Key sources by a path below a fixed root. */
+function sources(files: Record<string, string>) {
+  return Object.entries(files).map(([path, source]) => ({ path: `/e2e/${path}`, source }))
+}
+
 /** Analyze sources keyed by a path below a fixed root. */
 function analyze(files: Record<string, string>) {
-  return fixedWaits(Object.entries(files).map(([path, source]) => ({ path: `/e2e/${path}`, source })))
+  return fixedWaits(sources(files))
 }
 
 describe('fixedWaits', () => {
@@ -84,6 +90,34 @@ await page.waitForTimeoutLater?.(1)`,
   })
 })
 
+describe('fixedSleeps', () => {
+  it('finds a sleep call and each promise that a timer resolves, with its line and its enclosing function', () => {
+    const findings = fixedSleeps(sources({
+      'spec.ts': `async function poll() {
+  await sleep(500)
+  await new Promise(r => setTimeout(r, 1000))
+  await new Promise<void>(resolve => window.setTimeout(resolve, 10))
+  await new Promise(function (done) { setTimeout(done, 10) })
+  await new Promise(resolve => setTimeout(() => resolve(), 10))
+}`,
+    }))
+    expect(findings).toEqual([2, 3, 4, 5, 6].map(line => ({ path: '/e2e/spec.ts', line, enclosingFunction: 'poll' })))
+  })
+
+  it('ignores a timer that rejects a promise, a timer that runs other work, and a timer outside a promise', () => {
+    const findings = fixedSleeps(sources({
+      'spec.ts': `await new Promise((resolve, reject) => setTimeout(() => reject(new Error('late')), 10))
+await new Promise(resolve => setTimeout(() => { swap(); resolve() }, 10))
+setTimeout(swap, 0)
+const timer = setTimeout(resolve, 10)
+await new Promise(resolve => requestAnimationFrame(resolve))
+await page.sleep?.(1)
+// await sleep(500) waits for a fixed time.`,
+    }))
+    expect(findings).toEqual([])
+  })
+})
+
 describe('e2e fixed waits', () => {
   const files = collectE2EFiles().map(path => ({ path, source: readFileSync(path, 'utf-8') }))
   const findings = fixedWaits(files)
@@ -108,5 +142,17 @@ describe('e2e fixed waits', () => {
   it('keeps no accepted wait that the e2e tree no longer holds', () => {
     const found = new Set(findings.map(key))
     expect([...ACCEPTED.keys()].filter(entry => !found.has(entry))).toEqual([])
+  })
+
+  it('never sleeps in a spec', () => {
+    const specs = files.filter(file => file.path.endsWith('.spec.ts'))
+    expect(specs.length).toBeGreaterThan(100)
+    const offenders = fixedSleeps(specs)
+      .map(finding => `${posixRelative(e2eRoot, finding.path)}:${finding.line}  in ${finding.enclosingFunction || 'a callback'}`)
+    const hint = [
+      'A sleep is a fixed wait, and a poll loop that sleeps between its reads is a copy of retryUntilPass.',
+      'Put the read and its assertion in retryUntilPass (helpers/retryUntilPass.ts), or wait for the end of the state:',
+    ].join(' ')
+    expect(offenders, `${hint}\n  ${offenders.join('\n  ')}`).toEqual([])
   })
 })
