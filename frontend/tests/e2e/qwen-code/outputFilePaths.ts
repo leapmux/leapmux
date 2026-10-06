@@ -1,4 +1,5 @@
 import { QWEN_OUTPUT_FILES, QWEN_SHELL_RESULT } from '../../../src/components/chat/providers/qwen/protocol'
+import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
@@ -38,7 +39,7 @@ function nativeTextBlocks(value: unknown): string[] {
 
 /** Read paths and the original inline preview from one exact native result. */
 export function qwenOutputPathReceipt(value: unknown): QwenOutputPathReceipt {
-  if (!isObject(value) || value.sessionUpdate !== 'tool_call_update' || typeof value.toolCallId !== 'string' || value.toolCallId === ''
+  if (!isObject(value) || value.sessionUpdate !== ACP_UPDATE.ToolCallUpdate || typeof value.toolCallId !== 'string' || value.toolCallId === ''
     || (value.status !== 'completed' && value.status !== 'failed')) {
     throw new Error('The native Qwen receipt requires a completed or failed tool call.')
   }

@@ -5,6 +5,7 @@ import { DIRAC_OUTPUT_REFERENCE } from '../../../src/components/chat/providers/d
 import { DIRAC_TOOL } from '../../../src/generated/contracts/dirac-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { nativeMessageBody, nativeMessageSupplement } from '../helpers/nativeMessages'
 import { diracScriptReceipt } from './codeExecution'
 
@@ -43,8 +44,7 @@ export function diracNativeOutputPaths(frames: readonly DiracScriptFrame[], scri
   const parts = path ? relative(temporaryDir, path).split(sep) : []
   if (!path || parts.length !== 2 || parts[0] !== DIRAC_OUTPUT_REFERENCE.DirectoryName || parts.includes('..'))
     throw new Error('The native Dirac log belongs to another runtime temp directory.')
-  const closing = frames.filter(({ original }) => isObject(original) && original.toolCallId === receipt.callId
-    && original.sessionUpdate === 'tool_call_update' && (original.status === 'completed' || original.status === 'failed'))
+  const closing = frames.filter(({ original }) => isObject(original) && acpClosedToolCall(original, receipt.callId))
   if (closing.length !== 1 || !isObject(closing[0]?.original) || closing[0].original.name !== DIRAC_TOOL.ExecuteCommand)
     throw new Error('The native Dirac output requires one completed generated command card.')
   return { ...receipt, paths: [path], previewText: receipt.output }

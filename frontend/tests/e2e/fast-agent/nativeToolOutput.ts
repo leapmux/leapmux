@@ -1,4 +1,5 @@
 import { basename, dirname, isAbsolute, normalize } from 'node:path'
+import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 
 /** Read the installed shell runtime's complete retained-output notice. */
@@ -19,7 +20,7 @@ export function fastAgentNativeOutput(text: string): string {
 export function fastAgentTerminalOutputFileLimit(frames: readonly unknown[], command: string, modelText: string): { callId: string, text: string, byteLimit: number } {
   if (!command || !modelText)
     throw new Error('The native Fast Agent terminal proof requires its command and returned text.')
-  const results = frames.filter(isObject).filter(frame => frame.sessionUpdate === 'tool_call_update'
+  const results = frames.filter(isObject).filter(frame => frame.sessionUpdate === ACP_UPDATE.ToolCallUpdate
     && frame.status === 'completed' && isObject(frame.rawInput) && frame.rawInput.command === command
     && typeof frame.rawOutput === 'string')
   const result = results.length === 1 ? results[0] : undefined

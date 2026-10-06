@@ -1,8 +1,9 @@
 import { Buffer } from 'node:buffer'
-import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_IDENTITY } from '../../../src/generated/contracts/acp-protocol'
+import { ACP_SUPPLEMENT } from '../../../src/generated/contracts/acp-protocol'
 import { REASONIX_TOOL_RECORD } from '../../../src/generated/contracts/reasonix-protocol'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { isObject } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall, requireAcpToolSupplement } from '../helpers/acpToolFrame'
 
 export interface ReasonixNativeOutput {
   callId: string
@@ -23,17 +24,12 @@ function nativeExcerptMatches(excerpt: string, text: string): boolean {
 
 /** Validate the exact native excerpt and stored native record before a Copy assertion. */
 export function reasonixNativeOutput(original: unknown, supplemental: unknown, callId: string): ReasonixNativeOutput {
-  if (!callId.trim() || !isObject(original) || original.toolCallId !== callId
-    || original.sessionUpdate !== 'tool_call_update' || original.status !== 'completed') {
+  if (!callId.trim() || !isObject(original) || !acpClosedToolCall(original, callId, ['completed']))
     throw new Error('The native Reasonix output has no exact completed call.')
-  }
-  const provider = isObject(supplemental) ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined
-  if (!isObject(provider))
+  const retained = isObject(supplemental) ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined
+  if (!isObject(retained))
     throw new Error('The native Reasonix output has no stored provider record.')
-  for (const key of Object.values(ACP_SUPPLEMENT_IDENTITY)) {
-    if (Object.hasOwn(original, key) !== Object.hasOwn(provider, key) || original[key] !== provider[key])
-      throw new Error('The native Reasonix output belongs to another result.')
-  }
+  const provider = requireAcpToolSupplement(original, retained, 'Reasonix output')
   const raw = provider[ACP_SUPPLEMENT.RawOutput]
   const record = isObject(raw) ? raw[REASONIX_TOOL_RECORD.Envelope] : undefined
   if (!isObject(record) || record[REASONIX_TOOL_RECORD.RoleField] !== REASONIX_TOOL_RECORD.ToolRole

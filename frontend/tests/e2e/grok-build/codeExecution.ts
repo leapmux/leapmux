@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { withCleanupSync } from '../helpers/cleanup'
 
 export interface GrokWorkflowLaunch {
@@ -37,8 +38,7 @@ export function grokWorkflowReportLabel(name: string, objective: string): string
 export function grokWorkflowLaunch(frames: readonly unknown[], callId: string): GrokWorkflowLaunch {
   if (!callId.trim())
     throw new Error('The native Grok workflow requires an exact launch call ID.')
-  const results = frames.filter(isObject).filter(frame => frame.sessionUpdate === 'tool_call_update'
-    && frame.toolCallId === callId && frame.status === 'completed')
+  const results = frames.filter(isObject).filter(frame => acpClosedToolCall(frame, callId, ['completed']))
   if (results.length !== 1)
     throw new Error('The native Grok workflow requires one exact launch result.')
   const value = results[0]?.rawOutput

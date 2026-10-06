@@ -1,10 +1,12 @@
 import type { NativeMessageSnapshot, NativeToolOutputRecord } from '../helpers/nativeMessages'
-import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_IDENTITY, ACP_TERMINAL_RESULT } from '../../../src/generated/contracts/acp-protocol'
+import { acpToolSupplement } from '../../../src/components/chat/providers/acp/toolSupplement'
+import { ACP_SUPPLEMENT, ACP_TERMINAL_RESULT } from '../../../src/generated/contracts/acp-protocol'
 import { JUNIE_OUTPUT_FILE_PATH, JUNIE_OUTPUT_REFERENCE, JUNIE_SUPPLEMENT, JUNIE_TERMINAL_META } from '../../../src/generated/contracts/junie-protocol'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
+import { acpClosedToolCall, requireAcpToolSupplement } from '../helpers/acpToolFrame'
 import { nativeMessageBody, nativeMessageSupplement, readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 export interface JunieNativeOutputPaths extends NativeToolOutputRecord {
@@ -37,11 +39,11 @@ export function junieHostTerminalPreview(snapshot: NativeMessageSnapshot, callId
     }
     const frame = nativeMessageBody(message)
     const extra = nativeMessageSupplement(message)
-    const provider = isObject(extra) ? pickObject(extra, MESSAGE_SUPPLEMENT_FIELD.Provider) : undefined
-    if (!isObject(frame) || frame.toolCallId !== callId || !provider
-      || !Object.values(ACP_SUPPLEMENT_IDENTITY).every(key => Object.hasOwn(frame, key) === Object.hasOwn(provider, key) && frame[key] === provider[key])) {
+    const provider = isObject(frame) && frame.toolCallId === callId && isObject(extra)
+      ? acpToolSupplement(frame, pickObject(extra, MESSAGE_SUPPLEMENT_FIELD.Provider))
+      : undefined
+    if (!isObject(frame) || !provider)
       continue
-    }
     const terminals = pickObject(provider, ACP_SUPPLEMENT.Terminals)
     const ids = Array.isArray(frame.content) ? frame.content.filter(isObject).filter(block => block.type === 'terminal').map(block => block.terminalId) : []
     if (ids.length !== 1 || ids[0] !== callId)
@@ -64,11 +66,12 @@ export function readJunieNativeOutputPaths(snapshot: NativeMessageSnapshot, call
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,
-    accepts: frame => frame.sessionUpdate === 'tool_call_update' && frame.toolCallId === callId && frame.kind === 'execute' && frame.status === 'completed',
+    accepts: frame => acpClosedToolCall(frame, callId, ['completed']) && frame.kind === 'execute',
   })
-  const provider = isObject(record.supplement) ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider) : undefined
-  if (!provider || !Object.values(ACP_SUPPLEMENT_IDENTITY).every(key => Object.hasOwn(record.frame, key) === Object.hasOwn(provider, key) && record.frame[key] === provider[key]))
-    throw new Error('The Junie pointer receipt has another native completion owner.')
+  const supplemental = isObject(record.supplement) ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider) : undefined
+  if (!supplemental)
+    throw new Error('The Junie pointer receipt has no retained provider record.')
+  const provider = requireAcpToolSupplement(record.frame, supplemental, 'Junie pointer receipt')
   const receipt = pickObject(provider, JUNIE_SUPPLEMENT.OutputFilePath)
   const command = pickObject(record.frame, 'rawInput')
   const output = pickObject(record.frame, 'rawOutput')

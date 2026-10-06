@@ -1,5 +1,6 @@
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { isObject } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 
 export interface DiracScriptFrame {
   original: unknown
@@ -40,7 +41,7 @@ export function diracScriptReceipt(frames: readonly DiracScriptFrame[], script: 
       && input.displayName === 'Node script' && diracNativeScriptCommand(input.command, script)) {
       starts.set(original.toolCallId, input)
     }
-    if (original.sessionUpdate === 'tool_call_update' && (original.status === 'completed' || original.status === 'failed')) {
+    if (acpClosedToolCall(original, original.toolCallId)) {
       const entries = completions.get(original.toolCallId) ?? []
       entries.push(original)
       completions.set(original.toolCallId, entries)

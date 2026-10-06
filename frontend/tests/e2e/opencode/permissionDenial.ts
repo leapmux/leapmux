@@ -2,6 +2,7 @@ import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
+import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { exerciseNativePermissionRefusal, expectDeclinedToolRow } from '../helpers/nativePermission'
@@ -33,7 +34,7 @@ export function openCodeToolEnding(snapshot: NativeMessageSnapshot, callId: stri
     const frame = nativeMessageBody(message)
     if (!isObject(frame))
       throw new Error('The paired native tool frame must contain an object.')
-    if (frame.sessionUpdate !== 'tool_call_update')
+    if (frame.sessionUpdate !== ACP_UPDATE.ToolCallUpdate)
       continue
     if (frame.toolCallId !== callId)
       throw new Error('The paired native tool frame identifies another call.')

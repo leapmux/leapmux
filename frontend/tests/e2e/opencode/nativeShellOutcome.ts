@@ -2,6 +2,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext, NativeToolOutcome } from '../helpers/nativeScenario'
 import { acpSupplementProtocol, acpSupplementRawOutput, acpToolSupplement } from '../../../src/components/chat/providers/acp/toolSupplement'
+import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -18,7 +19,7 @@ export function openCodeShellOutcome(snapshot: NativeMessageSnapshot, callId: st
     const original = nativeMessageBody(message)
     if (!isObject(original))
       throw new Error('The paired native shell result must contain an object.')
-    if (original.sessionUpdate !== 'tool_call_update')
+    if (original.sessionUpdate !== ACP_UPDATE.ToolCallUpdate)
       continue
     if (original.toolCallId !== callId)
       throw new Error('The paired native shell result identifies another call.')

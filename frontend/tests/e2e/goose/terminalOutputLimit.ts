@@ -1,18 +1,16 @@
-import { ACP_SUPPLEMENT, ACP_SUPPLEMENT_IDENTITY, ACP_TERMINAL_RESULT } from '../../../src/generated/contracts/acp-protocol'
+import { ACP_SUPPLEMENT, ACP_TERMINAL_RESULT } from '../../../src/generated/contracts/acp-protocol'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { isObject } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall, requireAcpToolSupplement } from '../helpers/acpToolFrame'
 
 /** Read the exact native client-terminal reference and its retained output. */
 export function gooseTerminalOutputFileLimit(original: unknown, supplemental: unknown, callId: string): { callId: string, terminalId: string, text: string } {
-  if (!callId || !isObject(original) || original.toolCallId !== callId || original.sessionUpdate !== 'tool_call_update' || original.status !== 'completed')
+  if (!isObject(original) || !acpClosedToolCall(original, callId, ['completed']))
     throw new Error('The native Goose terminal proof requires its exact completed call.')
-  const provider = isObject(supplemental) ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined
-  if (!isObject(provider))
+  const retained = isObject(supplemental) ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined
+  if (!isObject(retained))
     throw new Error('The native Goose terminal proof requires its retained protocol record.')
-  for (const key of Object.values(ACP_SUPPLEMENT_IDENTITY)) {
-    if (Object.hasOwn(original, key) !== Object.hasOwn(provider, key) || original[key] !== provider[key])
-      throw new Error('The native Goose terminal record belongs to another result.')
-  }
+  const provider = requireAcpToolSupplement(original, retained, 'Goose terminal')
   const protocol = provider[ACP_SUPPLEMENT.Protocol]
   const terminals = provider[ACP_SUPPLEMENT.Terminals]
   const meta = isObject(protocol) && isObject(protocol._meta) ? protocol._meta : undefined

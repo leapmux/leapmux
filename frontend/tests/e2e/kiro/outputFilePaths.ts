@@ -2,6 +2,7 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** Decode the original native ACP result, without a complete-text supplement. */
@@ -9,7 +10,7 @@ export function readKiroNativeOutput(snapshot: NativeMessageSnapshot, callId: st
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,
-    accepts: frame => frame.sessionUpdate === 'tool_call_update' && frame.toolCallId === callId && (frame.status === 'completed' || frame.status === 'failed'),
+    accepts: frame => acpClosedToolCall(frame, callId),
   })
   const output = pickObject(record.frame, 'rawOutput')
   const transformation = pickObject(pickObject(pickObject(record.frame, '_meta'), 'kiro'), 'outputTransformation')

@@ -1,12 +1,12 @@
 import { basename, dirname, isAbsolute, normalize } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 
 /** Read the stdout slot from the exact native shell result and its separate notice blocks. */
 export function gooseNativeOutput(frames: readonly unknown[], callId: string): { path: string, excerpt: string } {
   if (!callId)
     throw new Error('The native Goose native output requires an exact shell call ID.')
-  const results = frames.filter(isObject).filter(frame => frame.sessionUpdate === 'tool_call_update'
-    && frame.toolCallId === callId && frame.status === 'completed')
+  const results = frames.filter(isObject).filter(frame => acpClosedToolCall(frame, callId, ['completed']))
   const frame = results.length === 1 ? results[0] : undefined
   const raw = isObject(frame?.rawOutput) ? frame.rawOutput : undefined
   const meta = isObject(frame?._meta) ? frame._meta : undefined
