@@ -1,9 +1,8 @@
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { isObject } from '../../../src/lib/jsonPick'
 import { CODEWHALE_AGENT, codewhaleTest, expect } from '../codewhale-fixtures'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
+import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
@@ -28,28 +27,21 @@ codewhaleTest('keeps the native MCP output path and exact preview after reload',
   const home = leapmuxServer.agentEnv.CODEWHALE_HOME
   if (!home)
     throw new Error('The native Codewhale MCP case requires its private home.')
-  await withNativeConfigurationFile({ path: join(home, 'mcp.json'), content: JSON.stringify({ servers: { result_probe: { command: process.execPath, args: [server] } } }), runDir: getGlobalState().tmpDir }, async () => {
+  await withNativeConfigurationFile({ path: join(home, 'mcp.json'), content: JSON.stringify({ servers: { [server.name]: { command: server.command, args: server.args } } }), runDir: getGlobalState().tmpDir }, async () => {
     await openProviderAgent(leapmuxServer, context.workspaceId, CODEWHALE_AGENT, { workingDir: directory })
     await openWorkspace(page, context.workspaceId)
     await captureNativeToolOutput(context, testInfo, {
       output: generated.capture,
       callId: 'native-output-path',
-      call: (_output, callId) => mcpToolCall(context.provider, callId, { server: 'result_probe', tool: 'inspect', input: { count: -1, enabled: false, text: '' } }),
+      call: (_output, callId) => mcpToolCall(context.provider, callId, { server: server.name, tool: 'inspect', input: { count: -1, enabled: false, text: '' } }),
       proof: capture => proveNativeOutputReceipt(capture, testInfo, readCodewhaleNativeOutput, {
         // The MCP result keeps both ends of the computed output in its preview.
         previewMarkers: [capture.output.firstMarker, capture.output.lastMarker],
         extraProof: () => {
-          const receipts: unknown = JSON.parse(readFileSync(receiptLog, 'utf8'))
-          if (!Array.isArray(receipts))
-            throw new Error('The native Codewhale MCP case returned no receipt array.')
-          const calls = receipts.filter(isObject).map(receipt => receipt.request).filter(isObject).filter(request => request.method === 'tools/call')
-          expect(calls).toHaveLength(1)
-          expect(calls[0]?.params).toMatchObject({ name: 'inspect', arguments: { count: -1, enabled: false, text: '' } })
-          const params = isObject(calls[0]?.params) ? calls[0].params : undefined
-          expect(params?.arguments).toEqual({ count: -1, enabled: false, text: '' })
-          const replies = receipts.filter(isObject).map(receipt => receipt.reply).filter(isObject).filter(reply => reply.id === calls[0]?.id)
-          expect(replies).toHaveLength(1)
-          expect(replies[0]?.result).toEqual(generated.nativeResult)
+          // The reader requires exactly one tool call and exactly one reply to it.
+          const exchange = readMcpCallExchange(receiptLog)
+          expect({ name: exchange.name, arguments: exchange.arguments }).toEqual({ name: 'inspect', arguments: { count: -1, enabled: false, text: '' } })
+          expect(exchange.result).toEqual(generated.nativeResult)
         },
       }),
     })

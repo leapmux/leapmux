@@ -1,41 +1,35 @@
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { writeJunieMcpConfig } from '../helpers/junieMcp'
+import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
-import { nativeToolResult } from '../helpers/nativeToolResult'
-import { junieAnswerToolCall, mcpToolCall } from '../helpers/providerToolCalls'
-import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { createTestDirectory } from '../helpers/runDirectory'
+import { openWorkspace } from '../helpers/ui'
+import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { openProviderAgent } from '../helpers/workspace'
 import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
+import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie MCP input form', () => {
   junieTest('declines a local MCP form request without opening a browser form', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
-    let receiptLog = ''
+    const directory = createTestDirectory('junie-mcp-form-')
+    const receiptLog = join(directory, 'form-receipt.json')
+    const server = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
-      receiptLog = join(workingDir, 'form-receipt.json')
-      const script = writeMcpFormServer(workingDir, 'form-server.mjs', { receiptLog })
-      writeJunieMcpConfig(workingDir, 'form_probe', process.execPath, [script])
+      writeJunieMcpConfig(workingDir, server.name, server.command, [...server.args])
     } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    // Junie asks its capability filter which listed tool the request needs. The ask tool is the first one.
     await modelScript.rule(
       { name: 'junie-mcp-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },
     )
-    await modelScript.queue(
-      { toolCalls: [mcpToolCall(AgentProvider.JUNIE, 'junie-mcp-form', { server: 'form_probe', tool: 'ask', input: {} })] },
-      { toolCalls: [junieAnswerToolCall('junie-mcp-answer', 'The form completed.')] },
-    )
-    await sendMessage(page, modelScript.prompt('Call the form_probe ask tool once.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await junieExpect.poll(() => existsSync(receiptLog)).toBe(true)
+    const callId = 'junie-mcp-form'
+    await expectUnsupportedMcpInput(context, { receiptLog, callId, additionalTestIds: ['control-banner'], invoke: () => invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} }) })
     const receipt = readMcpServerReceipt(receiptLog)
-    const refusal = nativeMcpRefusal(receipt)
     await testInfo.attach('junie-mcp-form-native-reply', { body: JSON.stringify(receipt), contentType: 'application/json' })
+    const refusal = nativeMcpRefusal(receipt)
     junieExpect(refusal.reply.error).toMatchObject({ code: -32601, message: 'Server does not support elicitation/create' })
     junieExpect(refusal.toolResult.id).toBe(refusal.request.toolRequestId)
-    junieExpect(nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'junie-mcp-form')).toContain(refusal.toolResult.text)
-    await junieExpect(page.getByTestId('elicitation-form').filter({ visible: true })).toHaveCount(0)
   })
 })

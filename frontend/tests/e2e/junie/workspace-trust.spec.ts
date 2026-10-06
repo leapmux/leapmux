@@ -14,7 +14,7 @@ junieTest('starts with a real project configuration and no native workspace trus
     projectConfiguration: {
       prepare: ({ directory }) => {
         createGitRepo(directory, '.')
-        const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
+        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
         writeJunieMcpConfig(directory, 'trust_probe', process.execPath, [script])
       },
       prove: async (privateContext, { directory }) => {

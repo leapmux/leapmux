@@ -1,9 +1,15 @@
 import type { Locator, Page } from '@playwright/test'
+import type { MockModelRequestRecord } from './mockModelScript'
+import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { elicitationFieldKey } from '../../../src/components/chat/controls/elicitationForm'
 import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
+import { MCP_FORM_SERVER_NAME } from './mcpFormServer'
+import { nativeTextStep, nativeToolOutcome } from './nativeScenario'
+import { mcpToolCall } from './providerToolCalls'
 import { readEntry, storageKeys } from './storage'
+import { controlActions, messageBubbles, sendMessage, waitForAgentIdle } from './ui'
 
 /** Fill the disposable MCP server's form with values that expose false and zero. */
 export async function fillMcpProbeForm(page: Page): Promise<Locator> {
@@ -52,4 +58,62 @@ export async function waitForMcpProbeFormDraft(page: Page, userId: string): Prom
     }
     return false
   }, 'the probe form answers must be persisted before the reload').toBe(true)
+}
+
+/** Require the answers of `fillMcpProbeForm` in the form that the page restored after a reload. */
+export async function expectMcpProbeFormRestored(form: Locator): Promise<void> {
+  await expect(form.getByLabel('Count *')).toHaveValue('0')
+  await expect(form.getByRole('button', { name: 'Enabled *', exact: true })).toHaveText('No')
+  await expect(form.getByRole('button', { name: 'Color *', exact: true })).toHaveText('Blue')
+}
+
+/** What one round trip of the probe form runs. */
+export interface McpProbeFormRoundTrip {
+  /** The ID of the native call of the `ask` tool. */
+  callId: string
+  /** Answer the permission request of the MCP tool, for a provider that asks before the tool runs. */
+  approveTool?: () => Promise<void>
+  /** Reload the page after the fill, and require the restored answers before the submit. */
+  reloadBeforeSubmit: boolean
+}
+
+/**
+ * Round-trip the form of the probe server through the browser, and return the model request that holds the result:
+ *
+ * - Call the `ask` tool of the probe form server.
+ * - Answer its form with values that expose false and zero.
+ * - Require the accepted answers in the tool result that the model reads.
+ *
+ * The probe server returns `FORM_ROUND_TRIP_OK` only for the exact answers of `fillMcpProbeForm`.
+ */
+export async function exerciseMcpProbeFormRoundTrip(
+  context: Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'provider' | 'textStep' | 'readToolResult' | 'leapmuxServer'>,
+  options: McpProbeFormRoundTrip,
+): Promise<MockModelRequestRecord> {
+  const { page, modelScript } = context
+  const userId = context.leapmuxServer.adminUserId
+  if (options.reloadBeforeSubmit && !userId)
+    throw new Error('A reload of the probe form needs the account that saves its answers.')
+  const start = await modelScript.queue(
+    { toolCalls: [mcpToolCall(context.provider, options.callId, { server: MCP_FORM_SERVER_NAME, tool: 'ask', input: {} })] },
+    nativeTextStep(context, 'The MCP probe form completed.'),
+  )
+  await sendMessage(page, modelScript.prompt(`Call the ${MCP_FORM_SERVER_NAME} ask tool exactly once.`))
+  await modelScript.waitForSteps(start + 1)
+  await options.approveTool?.()
+  const form = await fillMcpProbeForm(page)
+  if (options.reloadBeforeSubmit && userId) {
+    // The page saves the last answer through a write queue. A reload that overtakes the write drops that answer.
+    await waitForMcpProbeFormDraft(page, userId)
+    await page.reload()
+    await expectMcpProbeFormRestored(form)
+  }
+  await controlActions(page).getByRole('button', { name: 'Approve', exact: true }).click()
+  await modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(page)
+  const request = await modelScript.requestAt(start + 1)
+  expect((await nativeToolOutcome(context, request, options.callId)).text, 'the model reads the accepted answers of the form').toContain('FORM_ROUND_TRIP_OK')
+  await expect(messageBubbles(page).filter({ hasText: 'FORM_ROUND_TRIP_OK' }).first()).toBeVisible()
+  await expect(form).toHaveCount(0)
+  return request
 }

@@ -3,14 +3,13 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
+import { mcpServersConfig } from '../helpers/mcpProbeServer'
+import { mcpReceiptListsTool, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
@@ -24,7 +23,7 @@ export function cursorAutomaticMcpDecline(receipt: McpServerReceipt) {
   const capabilities = receipt.initializeCapabilities
   if (!capabilities || !isObject(capabilities.elicitation) || !isObject(capabilities.elicitation.form))
     throw new Error('The Cursor MCP decline requires its actual native form capability.')
-  if (!receipt.toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'ask')))
+  if (!mcpReceiptListsTool(receipt, 'ask'))
     throw new Error('The Cursor MCP decline requires its actual native ask catalog.')
   const request = receipt.elicitationRequests.at(-1)
   if (!request || request.params.mode !== 'form' || !isObject(request.params.requestedSchema))
@@ -45,25 +44,23 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
   const workingDir = createGitRepo(parent, 'repo')
   const receiptLog = join(parent, 'native-mcp-receipt.json')
   const echoArguments = { query: 'cursor', limit: 0, tail: 'END_MCP_ARGUMENTS' }
-  const script = writeMcpFormServer(parent, 'form-server.mjs', { expectedEchoArguments: echoArguments, receiptLog })
+  const server = writeMcpFormServer(parent, 'form-server.mjs', { expectedEchoArguments: echoArguments, receiptLog })
   const configDir = join(workingDir, '.cursor')
   mkdirSync(configDir)
-  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ mcpServers: {
-    form_probe: { command: process.execPath, args: [script] },
-  } }))
-  const approved = execFileSync('agent', ['mcp', 'enable', 'form_probe'], {
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify(mcpServersConfig(server)))
+  const approved = execFileSync('agent', ['mcp', 'enable', server.name], {
     cwd: workingDir,
     env: hubSpawnEnv(leapmuxServer.agentEnv),
     encoding: 'utf8',
   })
   expect(approved).toContain('Enabled and approved MCP server')
-  const tools = execFileSync('agent', ['mcp', 'list-tools', 'form_probe'], {
+  const tools = execFileSync('agent', ['mcp', 'list-tools', server.name], {
     cwd: workingDir,
     env: hubSpawnEnv(leapmuxServer.agentEnv),
     encoding: 'utf8',
   })
   expect(tools).toContain('ask')
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, workingDir, agentOpenOptions(AgentProvider.CURSOR))
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, workingDir, agentOpenOptions(context.provider))
   await loginViaToken(page, leapmuxServer.adminToken)
   await openWorkspace(page, context.workspaceId)
 
@@ -71,9 +68,10 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
     testId: 'elicitation-form',
     additionalTestIds: ['control-question-group'],
     relatedProof: async () => {
-      await modelScript.queue({ toolCalls: [mcpToolCall(AgentProvider.CURSOR, 'cursor-form', { server: 'form_probe', tool: 'ask', input: {} })] })
-      await sendMessage(page, modelScript.prompt('Call the form_probe ask tool exactly once.'))
-      await modelScript.waitForSteps()
+      // Cursor answers its own Run with the tool result, so the turn uses one model step.
+      const form = await modelScript.queue({ toolCalls: [mcpToolCall(context.provider, 'cursor-form', { server: server.name, tool: 'ask', input: {} })] })
+      await sendMessage(page, modelScript.prompt(`Call the ${server.name} ask tool exactly once.`))
+      await modelScript.waitForSteps(form + 1)
       await waitForAgentIdle(page)
       const decline = cursorAutomaticMcpDecline(readMcpServerReceipt(receiptLog))
       await expect(assistantBubbles(page).filter({ hasText: decline.toolResult.text }).first()).toBeVisible()
@@ -83,12 +81,9 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
   await page.reload()
   await expect(assistantBubbles(page).filter({ hasText: 'FORM_ROUND_TRIP_DECLINED' }).first()).toBeVisible()
 
-  await modelScript.queue(
-    { toolCalls: [mcpToolCall(AgentProvider.CURSOR, 'cursor-echo', { server: 'form_probe', tool: 'echo', input: echoArguments })] },
-    { text: 'The later turn ended.' },
-  )
-  await sendMessage(page, modelScript.prompt('Call the form_probe echo tool with the supplied values.'))
-  await modelScript.waitForSteps(2)
+  const echo = await modelScript.queue({ toolCalls: [mcpToolCall(context.provider, 'cursor-echo', { server: server.name, tool: 'echo', input: echoArguments })] })
+  await sendMessage(page, modelScript.prompt(`Call the ${server.name} echo tool with the supplied values.`))
+  await modelScript.waitForSteps(echo + 1)
   await waitForAgentIdle(page)
   const echoResult = readMcpServerReceipt(receiptLog).toolResults.findLast(value => value.tool === 'echo')
   if (!echoResult)
@@ -96,12 +91,13 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
   expect(echoResult.isError).toBe(false)
   expect(echoResult.text).toBe('PERMISSION_ACCEPTED')
   await expect(assistantBubbles(page).filter({ hasText: 'PERMISSION_ACCEPTED' }).first()).toBeVisible()
-  await sendMessage(page, modelScript.prompt('Use the result from the form_probe echo tool.'))
-  const status = await modelScript.waitForSteps(3)
+  const followUp = await modelScript.queue({ text: 'The later turn ended.' })
+  await sendMessage(page, modelScript.prompt(`Use the result from the ${server.name} echo tool.`))
+  await modelScript.waitForSteps(followUp + 1)
   await waitForAgentIdle(page)
-  const echoRequest = status.requests.find(request => request.stepIndex === 1)
-  const followUpRequest = status.requests.find(request => request.stepIndex === 2)
-  if (!echoRequest || !followUpRequest || !isObject(echoRequest.body) || typeof echoRequest.body.conversationId !== 'string')
+  const echoRequest = await modelScript.requestAt(echo)
+  const followUpRequest = await modelScript.requestAt(followUp)
+  if (!isObject(echoRequest.body) || typeof echoRequest.body.conversationId !== 'string')
     throw new Error('The real Cursor MCP calls have no native conversation requests.')
   const conversationId = echoRequest.body.conversationId
   expect(conversationId).not.toBe('')

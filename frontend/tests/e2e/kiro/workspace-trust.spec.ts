@@ -24,7 +24,7 @@ kiroTest('loads project MCP configuration without a workspace trust decision', a
     optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll },
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
+        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
         const config = join(directory, '.kiro', 'settings', 'mcp.json')
         mkdirSync(dirname(config), { recursive: true })
         writeFileSync(config, JSON.stringify({ mcpServers: { [marker]: { command: process.execPath, args: [script] } } }))

@@ -1,11 +1,10 @@
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { configuredMcpScript, exerciseCloseAgent } from '../helpers/nativeLifecycle'
 
-codewhaleTest('closes the UI tab and waits for owned process exit and Worker close', async ({ native, page, modelScript, leapmuxServer }) => {
+codewhaleTest('closes the UI tab and waits for owned process exit and Worker close', async ({ native, leapmuxServer }) => {
   const home = leapmuxServer.agentEnv.CODEWHALE_HOME
   if (!home)
     throw new Error('The Codewhale close test requires its isolated native home.')
@@ -14,7 +13,7 @@ codewhaleTest('closes the UI tab and waits for owned process exit and Worker clo
     // Codewhale starts a configured MCP server only for the first call of one of its tools,
     // and the server then runs as a child of the runtime until the runtime ends. A runtime
     // that no MCP call reached has no MCP process to own, so one echo call comes first.
-    prepare: () => exerciseMcpEcho(page, modelScript, AgentProvider.CODEWHALE, 'codewhale-close'),
+    prepare: () => exerciseMcpEcho(native, 'codewhale-close'),
     nativeOwnership: ({ rows, ownership }) => {
       const owned = rows.filter(row => ownership.ownedPids.includes(row.pid))
       const runtime = owned.find((row) => {

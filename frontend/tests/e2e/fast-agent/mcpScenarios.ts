@@ -1,35 +1,38 @@
+import type { NativeMcpToolCall } from '../helpers/mcpExecution'
+import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import { existsSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { nativeTextStep } from '../helpers/nativeScenario'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-/** Connect the actual native MCP client to one disposable local server. */
-export async function connectNativeMcp(context: ManagedNativeScenarioContext, name: string, command: string, script: string): Promise<void> {
-  await sendMessage(context.page, `/mcp connect --name ${name} ${JSON.stringify(command)} ${JSON.stringify(script)}`)
+/**
+ * Connect the actual native MCP client to one disposable local server, and wait for `startedFile`.
+ * The server writes that file once the client runs it, such as a receipt that the server writes when it starts, so the
+ * file shows that the client ran the command.
+ */
+export async function connectNativeMcp(context: ManagedNativeScenarioContext, server: McpProbeServer, startedFile: string): Promise<void> {
+  const command = [server.command, ...server.args].map(argument => JSON.stringify(argument)).join(' ')
+  await sendMessage(context.page, `/mcp connect --name ${server.name} ${command}`)
   await waitForAgentIdle(context.page)
+  await expect.poll(() => existsSync(startedFile)).toBe(true)
 }
 
-/** Approve the real MCP tool and return the request that contains its native result. */
-export async function invokeNativeMcp(
-  context: ManagedNativeScenarioContext,
-  options: { server: string, tool: string, input: Record<string, unknown>, callId: string },
-): Promise<MockModelRequestRecord> {
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(
-    { toolCalls: [mcpToolCall(context.provider, options.callId, options)] },
-    nativeTextStep(context, 'The native MCP call completed.'),
-  )
-  await sendMessage(context.page, context.modelScript.prompt(`Call the configured ${options.server} ${options.tool} tool once.`))
-  await context.modelScript.waitForSteps(start + 1)
-  const banner = await waitForControlBanner(context.page)
-  await expect(banner).toContainText(options.tool)
-  await context.page.locator('[data-testid="control-allow-btn"]:visible').click()
-  const status = await context.modelScript.waitForSteps(start + 2)
-  await waitForAgentIdle(context.page)
-  const request = status.requests.find(record => record.stepIndex === start + 1)
-  if (!request)
-    throw new Error('The native MCP result reached no next model request.')
-  return request
+/**
+ * Allow the native permission request of one MCP call, and return the model request that holds its native result.
+ * Fast Agent asks before each MCP tool runs, and its banner states the tool.
+ */
+export async function invokeNativeMcp(context: ManagedNativeScenarioContext, call: NativeMcpToolCall): Promise<MockModelRequestRecord> {
+  return exerciseNativePermissionDecision(context, {
+    toolCall: mcpToolCall(context.provider, call.callId, { server: call.server, tool: call.tool, input: call.input }),
+    decision: 'allow',
+    beforeDecision: banner => expect(banner).toContainText(call.tool),
+    // The reader fails unless the request holds exactly one result for the call.
+    nativeProof: (request) => {
+      nativeToolResult(request, call.callId)
+    },
+  })
 }

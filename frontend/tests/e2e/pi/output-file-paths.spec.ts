@@ -4,8 +4,8 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { openAgentViaAPI } from '../helpers/api'
-import { readMcpCallExchange } from '../helpers/mcpRequestReceipt'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
+import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -48,7 +48,7 @@ piTest('keeps the native codemode output path and exact preview after reload', a
 piTest('keeps the native real MCP output path and exact preview after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = createTestDirectory('pi-output-path-feature-mcp-')
   const receiptLog = join(directory, 'native-output-path-mcp-receipt.json')
-  const server = writeMcpResultServer(directory, { receiptLog })
+  const server = writeMcpResultServer(directory, { receiptLog }).script
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { result_probe: { command: process.execPath, args: [server] } })
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   const output = computedNativeToolOutput()

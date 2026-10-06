@@ -266,6 +266,8 @@ describe('expectMcpServerLoaded', () => {
       elicitationRequests: [],
       elicitationReplies: [],
       toolResults: [],
+      // The receipt runtime records the exchange of every server, so a real receipt always holds the field.
+      exchange: [],
     }))
     return receiptLog
   }

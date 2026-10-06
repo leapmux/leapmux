@@ -21,7 +21,7 @@ ampTest('keeps untrusted project MCP servers blocked without an interactive trus
     optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll },
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
+        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
         expectedConfiguration = { command: process.execPath, args: [script] }
         const config = join(directory, '.amp', 'settings.json')
         mkdirSync(dirname(config), { recursive: true })

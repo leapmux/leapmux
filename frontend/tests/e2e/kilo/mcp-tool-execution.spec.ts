@@ -1,8 +1,6 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { kiloTest } from '../kilo-fixtures'
 
-kiloTest('executes a disposable MCP echo tool', async ({ authenticatedKiloWorkspace, page, modelScript }) => {
-  void authenticatedKiloWorkspace
-  await exerciseMcpEcho(page, modelScript, AgentProvider.KILO, 'kilo')
+kiloTest('executes a disposable MCP echo tool', async ({ native }) => {
+  await exerciseMcpEcho(native, 'kilo')
 })

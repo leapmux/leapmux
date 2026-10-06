@@ -1,39 +1,29 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { kiroToolResult } from '../helpers/kiroToolResult'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
-import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
-import { mcpToolCall } from '../helpers/providerToolCalls'
-import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { exerciseMcpEcho } from '../helpers/mcpExecution'
+import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
+import { expectNoNativeControl } from '../helpers/nativeControlObservation'
+import { createTestDirectory } from '../helpers/runDirectory'
+import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { writeKiroProjectMcpServers } from './mcpConfiguration'
+import { nativeContext } from './scenarios'
 
 kiroTest('runs the actual project MCP tool and receives its native service result', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  let receiptLog = ''
-  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' }, prepare: (workingDir) => {
-    receiptLog = join(workingDir, 'native-mcp-receipt.json')
-    const script = writeMcpEchoServer(workingDir, { receiptLog })
-    const settings = join(workingDir, '.kiro', 'settings')
-    mkdirSync(settings, { recursive: true })
-    writeFileSync(join(settings, 'mcp.json'), JSON.stringify({ mcpServers: { echo_probe: { command: process.execPath, args: [script] } } }))
-  } })
+  const directory = createTestDirectory('kiro-mcp-echo-')
+  const receiptLog = join(directory, 'native-mcp-receipt.json')
+  const server = writeMcpEchoServer(directory, { receiptLog })
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+    optionValues: { policyPreset: 'allow-all' },
+    prepare: (workingDir) => {
+      writeKiroProjectMcpServers(workingDir, server)
+    },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'echo'))).toBe(true)
-  const callId = 'native-kiro-echo'
-  const value = 'KIRO_NATIVE_ECHO_VALUE'
-  await modelScript.queue(
-    { toolCalls: [mcpToolCall(AgentProvider.KIRO, callId, { server: 'echo_probe', tool: 'echo', input: { value } })] },
-    { text: 'The native Kiro MCP tool completed.' },
-  )
-  await sendMessage(page, modelScript.prompt('Call the registered native echo tool once.'))
-  const status = await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page)
-  const request = status.requests.find(record => record.stepIndex === 1)
-  if (!request)
-    throw new Error('The Kiro MCP result reached no native model request.')
-  expect(kiroToolResult(request, callId).text).toContain(`MCP_ECHO:${value}`)
-  expect(readMcpServerReceipt(receiptLog).toolResults).toContainEqual(expect.objectContaining({ tool: 'echo', text: `MCP_ECHO:${value}`, isError: false }))
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  // Kiro loads the server in the background. Its tool exists once Kiro lists it.
+  await waitForMcpToolListed(receiptLog, 'echo')
+  // The permissive preset runs the tool without a request, so the call must raise no banner.
+  await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: () => exerciseMcpEcho(context, 'KIRO_NATIVE_ECHO_VALUE', { receiptLog }) })
 })

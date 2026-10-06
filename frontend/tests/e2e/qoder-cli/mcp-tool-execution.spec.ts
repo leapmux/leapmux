@@ -1,11 +1,6 @@
-import { expect } from '@playwright/test'
-import { nativeToolResult } from '../helpers/nativeToolResult'
 import { qoderTest } from '../qoder-fixtures'
-import { exerciseNativeMcpForm } from './mcpScenarios'
-import { nativeContext } from './scenarios'
+import { exerciseQoderMcpForm } from './mcpScenarios'
 
-qoderTest('returns the actual local MCP tool result to the native model', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
-  const request = await exerciseNativeMcpForm(context)
-  expect(nativeToolResult(request, 'qoder-mcp-form')).toContain('FORM_ROUND_TRIP_OK')
+qoderTest('returns the actual local MCP tool result to the native model', async ({ native }) => {
+  await exerciseQoderMcpForm(native)
 })

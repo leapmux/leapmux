@@ -90,8 +90,8 @@ export const mcpDiracTest = diracTest.extend<{ configuredMcpDiracWorkspace: Conf
       const executable = requireBinary('dirac', 'The private Dirac MCP fixture requires its actual CLI', environment.env)
       const nodeExecutable = requireBinary('node', 'The private Dirac MCP fixture requires the Node executable', environment.env)
       const formReceipt = join(runDirectory, 'configured-form-receipt.json')
-      const script = writeMcpFormServer(runDirectory, 'configured-form.mjs', { receiptLog: formReceipt })
-      const configuredServers = [{ name: 'form_probe', command: nodeExecutable, args: [script], env: [] }]
+      const formServer = writeMcpFormServer(runDirectory, 'configured-form.mjs', { receiptLog: formReceipt })
+      const configuredServers = [{ name: formServer.name, command: nodeExecutable, args: [...formServer.args], env: [] }]
       const wrapper = writeDiracMcpWrapper({ directory: join(runDirectory, 'wrapper'), executable, nodeExecutable, servers: configuredServers })
       workerAttempted = true
       await withNativeWorker({ ...leapmuxServer, agentEnv: environment.env }, {

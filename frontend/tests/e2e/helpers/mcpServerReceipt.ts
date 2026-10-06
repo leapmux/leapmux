@@ -1,4 +1,10 @@
-import { readFileSync } from 'node:fs'
+/**
+ * The one parser of the receipt that a private MCP server writes through `./mcpReceiptRuntime.ts`.
+ * A receipt holds the protocol events that a proof reads, and the raw exchange of the messages that the script of the
+ * server received or sent.
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 
 export type McpRequestId = string | number
@@ -20,12 +26,20 @@ export interface McpFormToolResultReceipt {
   isError: boolean
 }
 
+/** One message of the raw exchange, in the direction that the server saw it. */
+export type McpExchangeEntry = { received: Record<string, unknown> } | { sent: Record<string, unknown> }
+
 export interface McpServerReceipt {
   initializeCapabilities: Record<string, unknown> | null
   toolCatalogs: Array<{ id: McpRequestId, tools: Array<{ name: string, inputSchema: Record<string, unknown> }> }>
   elicitationRequests: McpElicitationRequestReceipt[]
   elicitationReplies: McpElicitationReplyReceipt[]
   toolResults: McpFormToolResultReceipt[]
+  /**
+   * Each message that the stdio runtime passed to the script, and each message that the script sent, in order. The
+   * runtime drops a notification and answers an invalid envelope itself, so neither appears.
+   */
+  exchange: McpExchangeEntry[]
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -102,12 +116,105 @@ export function parseMcpServerReceipt(value: unknown): McpServerReceipt {
       throw new Error(`The MCP receipt ${label} must contain the tool, text, and error flag.`)
     return { id: mcpReceiptRequestId(result.id, `${label}.id`), tool: result.tool, text: result.text, isError: result.isError }
   })
-  return { initializeCapabilities, toolCatalogs, elicitationRequests, elicitationReplies, toolResults }
+  const exchange = receiptArray(receipt.exchange, 'exchange', (item, label): McpExchangeEntry => {
+    const entry = record(item, label)
+    const keys = Object.keys(entry)
+    if (keys.length !== 1 || (keys[0] !== 'received' && keys[0] !== 'sent'))
+      throw new Error(`The MCP receipt ${label} must hold one received or one sent message.`)
+    return 'received' in entry
+      ? { received: record(entry.received, `${label}.received`) }
+      : { sent: record(entry.sent, `${label}.sent`) }
+  })
+  return { initializeCapabilities, toolCatalogs, elicitationRequests, elicitationReplies, toolResults, exchange }
 }
 
 export function readMcpServerReceipt(path: string): McpServerReceipt {
   const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
   return parseMcpServerReceipt(value)
+}
+
+/** Whether a tool catalog of the receipt lists `toolName`. */
+export function mcpReceiptListsTool(receipt: Pick<McpServerReceipt, 'toolCatalogs'>, toolName: string): boolean {
+  if (toolName.trim() === '')
+    throw new Error('The MCP catalog check needs a tool name.')
+  return receipt.toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === toolName))
+}
+
+/**
+ * Wait until the server of `receiptLog` lists `toolName` to an agent.
+ * The server writes its receipt when it starts, and an agent starts its servers at a time that the test does not
+ * control, so the wait accepts an absent file until the poll ends.
+ */
+export async function waitForMcpToolListed(receiptLog: string, toolName: string): Promise<void> {
+  await expect.poll(
+    () => existsSync(receiptLog) && mcpReceiptListsTool(readMcpServerReceipt(receiptLog), toolName),
+    { message: `the MCP server of ${receiptLog} lists the tool ${toolName}` },
+  ).toBe(true)
+}
+
+/** The messages that the server received, in order. */
+function receivedMessages(receipt: Pick<McpServerReceipt, 'exchange'>): Record<string, unknown>[] {
+  return receipt.exchange.flatMap(entry => 'received' in entry ? [entry.received] : [])
+}
+
+/** The replies that the server sent: each sent message that is not a request of its own, in order. */
+function sentReplies(receipt: Pick<McpServerReceipt, 'exchange'>): Record<string, unknown>[] {
+  return receipt.exchange.flatMap(entry => 'sent' in entry && !Object.hasOwn(entry.sent, 'method') ? [entry.sent] : [])
+}
+
+/** One tool call that the server received: the tool name and its exact arguments. */
+export interface McpCallArguments {
+  name: string
+  arguments: Record<string, unknown>
+}
+
+/** Read the exact arguments of each tool call that the server received, in call order. */
+export function mcpCallArguments(receipt: Pick<McpServerReceipt, 'exchange'>): McpCallArguments[] {
+  return receivedMessages(receipt).filter(message => message.method === 'tools/call').map((message) => {
+    if (!isObject(message.params) || typeof message.params.name !== 'string' || !isObject(message.params.arguments))
+      throw new Error('The native MCP call receipt lacks exact tool arguments.')
+    return { name: message.params.name, arguments: message.params.arguments }
+  })
+}
+
+/** Read the exact arguments of each tool call that the server of `path` received. */
+export function readMcpCallArguments(path: string): McpCallArguments[] {
+  return mcpCallArguments(readMcpServerReceipt(path))
+}
+
+export interface McpCallExchange {
+  id: McpRequestId
+  name: string
+  arguments: Record<string, unknown>
+  result: unknown
+  request: Record<string, unknown>
+  reply: Record<string, unknown>
+}
+
+/** Pair the one tool call that the server received with its one exact reply. */
+export function mcpCallExchange(receipt: Pick<McpServerReceipt, 'exchange'>): McpCallExchange {
+  const calls = receivedMessages(receipt).filter(message => message.method === 'tools/call')
+  const request = calls[0]
+  if (calls.length !== 1 || !request)
+    throw new Error('The native MCP receipt must contain exactly one tool call.')
+  const id = mcpReceiptRequestId(request.id, 'tool request ID')
+  const params = request.params
+  if (!isObject(params) || typeof params.name !== 'string' || params.name.trim().length === 0 || !isObject(params.arguments))
+    throw new Error('The native MCP call receipt lacks exact tool arguments.')
+  const matchingReplies = sentReplies(receipt).filter(reply => mcpReceiptRequestId(reply.id, 'reply ID') === id)
+  const reply = matchingReplies[0]
+  if (matchingReplies.length !== 1 || !reply)
+    throw new Error('The native MCP tool call must have exactly one matching reply.')
+  if (Object.hasOwn(reply, 'error'))
+    throw new Error('The native MCP tool call returned a protocol error.')
+  if (!Object.hasOwn(reply, 'result') || reply.result === undefined)
+    throw new Error('The native MCP tool reply contains no result.')
+  return { id, name: params.name, arguments: params.arguments, result: reply.result, request, reply }
+}
+
+/** Pair the one tool call that the server of `path` received with its one exact reply. */
+export function readMcpCallExchange(path: string): McpCallExchange {
+  return mcpCallExchange(readMcpServerReceipt(path))
 }
 
 export interface NativeMcpRefusal {

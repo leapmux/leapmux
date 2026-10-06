@@ -1,3 +1,4 @@
+import type { McpProbeServer } from './mcpProbeServer'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -133,7 +134,7 @@ const LOOPBACK_NO_PROXY = '127.0.0.1,localhost,::1'
 const PI_PROVIDER_ID = 'zai'
 
 /** Goose disables Todo by default. The isolated fixture also supplies a form server. */
-function gooseConfig(formServer: string): string {
+function gooseConfig(formServer: McpProbeServer): string {
   return `extensions:
   todo:
     enabled: true
@@ -142,14 +143,14 @@ function gooseConfig(formServer: string): string {
     description: Enable a todo list for goose so it can keep track of what it is doing
     display_name: Todo
     available_tools: []
-  form_probe:
+  ${formServer.name}:
     enabled: true
     type: stdio
-    name: form_probe
+    name: ${formServer.name}
     description: Request the disposable probe form
-    cmd: ${JSON.stringify(process.execPath)}
+    cmd: ${JSON.stringify(formServer.command)}
     args:
-      - ${JSON.stringify(formServer)}
+${formServer.args.map(argument => `      - ${JSON.stringify(argument)}`).join('\n')}
     envs: {}
     env_keys: []
     timeout: 120
@@ -481,10 +482,13 @@ export async function createMockAgentEnvironment(
   for (const file of ['.zshrc', '.zlogin'])
     writeFileSync(join(homeDir, file), privatePath, { mode: 0o600 })
 
+  // Each configuration below registers a server under the name that the server states, so a tool call reaches it
+  // under that name.
   const codexMcpFormServer = writeMcpFormServer(codexHome, 'form-server.mjs')
   const mimoMcpConfirmationServer = writeMcpConfirmationServer(mimoHome)
   const mcpEchoServer = writeMcpEchoServer(runDir)
-  const mcpServers = [{ name: 'echo_probe', command: process.execPath, args: [mcpEchoServer] }]
+  const echoLaunch = { command: mcpEchoServer.command, args: [...mcpEchoServer.args] }
+  const mcpServers = [{ name: mcpEchoServer.name, ...echoLaunch }]
   writeFileSync(join(codexHome, 'config.toml'), codexConfig(openAIBaseURL, codexMcpFormServer), { mode: 0o600 })
   writeJSON(join(piAgentDir, 'models.json'), piModels(openAIBaseURL))
   writeJSON(join(piAgentDir, 'settings.json'), {
@@ -494,20 +498,20 @@ export async function createMockAgentEnvironment(
     packages: piPackagePaths(options.realHomeDir),
   })
   writeJSON(join(piAgentDir, 'mcp.json'), {
-    mcpServers: { echo_probe: { command: process.execPath, args: [mcpEchoServer], exposure: 'direct' } },
+    mcpServers: { [mcpEchoServer.name]: { ...echoLaunch, exposure: 'direct' } },
   })
   // YAML is omp's format, and JSON is valid YAML, so the one writer serves.
   writeJSON(join(ohMyPiAgentDir, 'models.yml'), ohMyPiModels(openAIBaseURL))
   writeJSON(join(ohMyPiAgentDir, 'config.yml'), ohMyPiConfig())
   writeJSON(join(ohMyPiAgentDir, 'mcp.json'), {
-    mcpServers: { echo_probe: { type: 'stdio', command: process.execPath, args: [mcpEchoServer] } },
+    mcpServers: { [mcpEchoServer.name]: { type: 'stdio', ...echoLaunch } },
   })
   writeFileSync(join(reasonixHome, 'config.toml'), reasonixConfig(openAIBaseURL), { mode: 0o600 })
   writeFileSync(join(reasonixHome, '.env'), reasonixCredentials(), { mode: 0o600 })
   const gooseMcpFormServer = writeMcpFormServer(gooseRoot, 'form-server.mjs')
   writeFileSync(join(gooseRoot, 'config', 'config.yaml'), gooseConfig(gooseMcpFormServer), { mode: 0o600 })
   writeFileSync(join(codewhaleHome, 'config.toml'), codewhaleConfig(openAIBaseURL), { mode: 0o600 })
-  writeJSON(join(codewhaleHome, 'mcp.json'), { servers: { echo_probe: { command: process.execPath, args: [mcpEchoServer] } } })
+  writeJSON(join(codewhaleHome, 'mcp.json'), { servers: { [mcpEchoServer.name]: echoLaunch } })
   mkdirSync(join(codewhaleHome, 'catalog'), { recursive: true })
   writeJSON(join(codewhaleHome, 'catalog', 'provider-catalogs.json'), codewhaleCatalog(openAIBaseURL))
   writeFileSync(join(grokHome, 'config.toml'), grokConfig(openAIBaseURL), { mode: 0o600 })
@@ -524,13 +528,13 @@ export async function createMockAgentEnvironment(
   writeJSON(zcodePersonalConfigPath, zcodePersonalConfig(openAIBaseURL))
   writeFileSync(join(kimiHome, 'config.toml'), kimiConfig(openAIBaseURL), { mode: 0o600 })
   writeJSON(join(kimiHome, 'mcp.json'), {
-    mcpServers: { echo_probe: { command: process.execPath, args: [mcpEchoServer] } },
+    mcpServers: { [mcpEchoServer.name]: echoLaunch },
   })
   const clineWrittenAt = Date.now()
   writeJSON(join(clineSettingsDir, 'providers.json'), clineProviders(openAIBaseURL, clineWrittenAt))
   writeJSON(join(clineSettingsDir, 'global-settings.json'), { telemetryOptOut: true, autoUpdateEnabled: false })
   writeJSON(join(clineSettingsDir, 'cline_mcp_settings.json'), {
-    mcpServers: { echo_probe: { transport: { type: 'stdio', command: process.execPath, args: [mcpEchoServer] } } },
+    mcpServers: { [mcpEchoServer.name]: { transport: { type: 'stdio', ...echoLaunch } } },
   })
   writeJSON(join(clineCacheDir, 'feature-flags.json'), clineFeatureFlags(clineWrittenAt))
   writeJSON(join(factoryHome, 'settings.json'), droidSettings(openAIBaseURL))
@@ -972,10 +976,10 @@ function codebuddyEnv(configDir: string): Record<string, string> {
  * Qoder then rejects the provider with "model key ... conflicts with an existing catalog model".
  * The next model call would reach the real Qoder API, so this fixture uses providers alone.
  */
-function qoderSettings(baseURL: string, formServer: string): Record<string, unknown> {
+function qoderSettings(baseURL: string, formServer: McpProbeServer): Record<string, unknown> {
   return {
     mcpServers: {
-      form_probe: { command: process.execPath, args: [formServer] },
+      [formServer.name]: { command: formServer.command, args: [...formServer.args] },
     },
     providers: {
       mockprov: {
@@ -1297,7 +1301,7 @@ function mockServerOrigin(value: string): string {
 // `check_for_update_on_startup` turns off the update notice of Codex's TUI. The
 // `codex app-server` that the worker starts never reads it, and never updates: only
 // the TUI and the `codex update` and `codex app-server daemon` commands do.
-function codexConfig(baseURL: string, mcpFormServer: string): string {
+function codexConfig(baseURL: string, mcpFormServer: McpProbeServer): string {
   return `model_provider = "leapmux-e2e"
 check_for_update_on_startup = false
 
@@ -1314,9 +1318,9 @@ dedicated_tools = false
 [tools.update_plan]
 enabled = true
 
-[mcp_servers.form_probe]
-command = ${JSON.stringify(process.execPath)}
-args = [${JSON.stringify(mcpFormServer)}]
+[mcp_servers.${mcpFormServer.name}]
+command = ${JSON.stringify(mcpFormServer.command)}
+args = [${mcpFormServer.args.map(argument => JSON.stringify(argument)).join(', ')}]
 
 [model_providers.leapmux-e2e]
 name = "LeapMux E2E"
@@ -1330,11 +1334,11 @@ stream_max_retries = 0
 `
 }
 
-function openCodeFamilyConfig(baseURL: string, mcpEchoServer: string): Record<string, unknown> {
+function openCodeFamilyConfig(baseURL: string, mcpEchoServer: McpProbeServer): Record<string, unknown> {
   return {
     formatter: false,
     lsp: false,
-    mcp: { echo_probe: { type: 'local', command: [process.execPath, mcpEchoServer] } },
+    mcp: { [mcpEchoServer.name]: { type: 'local', command: [mcpEchoServer.command, ...mcpEchoServer.args] } },
     model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`,
     provider: {
       [MOCK_PROVIDER_IDS.openCode]: openCodeFamilyProvider(baseURL, [
@@ -1407,7 +1411,7 @@ function openCodeFamilyModel(id: string, name: string): Record<string, unknown> 
  * global config files, never from this inline value, so MIMOCODE_DISABLE_AUTOUPDATE
  * in the environment carries the switch.
  */
-function mimoCodeConfig(baseURL: string, mcpConfirmationServer: string, mcpEchoServer: string): Record<string, unknown> {
+function mimoCodeConfig(baseURL: string, mcpConfirmationServer: McpProbeServer, mcpEchoServer: McpProbeServer): Record<string, unknown> {
   const noRetry = { mode: 'bounded', maxRetries: 0 }
   return {
     ...openCodeFamilyConfig(baseURL, mcpEchoServer),
@@ -1419,8 +1423,8 @@ function mimoCodeConfig(baseURL: string, mcpConfirmationServer: string, mcpEchoS
     },
     enabled_providers: [MOCK_PROVIDER_IDS.openCode],
     mcp: {
-      form_probe: { type: 'local', command: [process.execPath, mcpConfirmationServer] },
-      echo_probe: { type: 'local', command: [process.execPath, mcpEchoServer] },
+      [mcpConfirmationServer.name]: { type: 'local', command: [mcpConfirmationServer.command, ...mcpConfirmationServer.args] },
+      [mcpEchoServer.name]: { type: 'local', command: [mcpEchoServer.command, ...mcpEchoServer.args] },
     },
     agent: { title: { disable: true } },
     share: 'disabled',
@@ -1873,7 +1877,7 @@ function kiroSettings(origin: string): Record<string, unknown> {
  * and the follow-up suggestions each send a model request after a turn. The
  * to-do tool and workflows are opt-in, and a spec uses both.
  */
-function qwenSettings(baseURL: string, mcpEchoServer: string): Record<string, unknown> {
+function qwenSettings(baseURL: string, mcpEchoServer: McpProbeServer): Record<string, unknown> {
   const primary = {
     id: MOCK_MODELS.qwen,
     name: 'Qwen E2E',
@@ -1886,7 +1890,7 @@ function qwenSettings(baseURL: string, mcpEchoServer: string): Record<string, un
     $version: 4,
     security: { auth: { selectedType: QWEN_AUTH_TYPE } },
     model: { name: MOCK_MODELS.qwen },
-    mcpServers: { echo_probe: { command: process.execPath, args: [mcpEchoServer] } },
+    mcpServers: { [mcpEchoServer.name]: { command: mcpEchoServer.command, args: [...mcpEchoServer.args] } },
     modelProviders: {
       [QWEN_AUTH_TYPE]: [primary, { ...primary, id: QWEN_ALT_MODEL_WIRE_ID, name: 'Qwen E2E Alternate' }],
     },

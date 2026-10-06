@@ -1,19 +1,9 @@
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
 import { codewhaleTest } from '../codewhale-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
-import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
-import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
-import { mcpToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
-import { getGlobalState } from '../helpers/server'
-import { applyPermissionPreset, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { invokeNativeMcpTool, withNativeMcpFormAgent } from '../helpers/mcpExecution'
+import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { expectUnansweredMcpInput } from '../helpers/unsupportedMcpInput'
+import { nativeContext } from './scenarios'
 
 /**
  * The time limit of a call to the probe server, in seconds: Codewhale's own
@@ -31,35 +21,22 @@ import { expectUnansweredMcpInput } from '../helpers/unsupportedMcpInput'
 const MCP_EXECUTE_TIMEOUT_SECONDS = 10
 
 codewhaleTest('times out an MCP input request that the native client never answers, without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const environment = leapmuxServer.agentEnv
-  const workingDir = createTestDirectory('codewhale-native-mcp-unanswered-')
-  const receiptLog = join(workingDir, 'native-mcp-receipt.json')
-  const script = writeMcpFormServer(workingDir, 'native-form-server.mjs', { receiptLog })
-  const config = join(environment.CODEWHALE_HOME!, 'mcp.json')
-  const servers = { form_probe: { command: process.execPath, args: [script], execute_timeout: MCP_EXECUTE_TIMEOUT_SECONDS } }
-  await withNativeConfigurationFile({ path: config, content: JSON.stringify({ servers }), runDir: getGlobalState().tmpDir }, async () => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.CODEWHALE))
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await applyPermissionPreset(page, 'bypass')
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await withNativeMcpFormAgent(context, {
+    directoryPrefix: 'codewhale-native-mcp-unanswered-',
+    configurationPath: join(leapmuxServer.agentEnv.CODEWHALE_HOME!, 'mcp.json'),
+    configuration: server => ({ servers: { [server.name]: { command: server.command, args: server.args, execute_timeout: MCP_EXECUTE_TIMEOUT_SECONDS } } }),
+  }, async ({ server, receiptLog }) => {
     const callId = 'native-codewhale-form-unanswered'
     await expectUnansweredMcpInput(context, {
       receiptLog,
       callId,
-      nativeFailureText: `MCP tool failed: MCP method 'tools/call' on server 'form_probe' timed out after ${MCP_EXECUTE_TIMEOUT_SECONDS}s`,
+      additionalTestIds: ['control-banner'],
+      nativeFailureText: `MCP tool failed: MCP method 'tools/call' on server '${server.name}' timed out after ${MCP_EXECUTE_TIMEOUT_SECONDS}s`,
       invoke: async () => {
-        await modelScript.queue(
-          { toolCalls: [mcpToolCall(AgentProvider.CODEWHALE, callId, { server: 'form_probe', tool: 'ask', input: {} })] },
-          { text: 'The native MCP timeout reached the model.' },
-        )
-        await sendMessage(page, modelScript.prompt('Call the registered native probe form once.'))
-        // The direct MCP call initializes Codewhale's lazy server pool.
-        await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'ask'))).toBe(true)
-        const status = await modelScript.waitForSteps(2)
-        await waitForAgentIdle(page)
-        const request = status.requests.find(record => record.stepIndex === 1)
-        if (!request)
-          throw new Error('The native MCP timeout reached no following model request.')
+        const request = await invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} })
+        // The direct MCP call initializes Codewhale's lazy server pool, so the server lists its tools during the call.
+        await waitForMcpToolListed(receiptLog, 'ask')
         return request
       },
     })

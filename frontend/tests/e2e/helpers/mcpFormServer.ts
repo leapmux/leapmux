@@ -1,8 +1,13 @@
+import type { McpProbeServer } from './mcpProbeServer'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { mcpProbeServer } from './mcpProbeServer'
 import { writeMcpReceiptRuntime } from './mcpReceiptRuntime'
 import { writeMcpStdioRuntime } from './mcpStdioRuntime'
+
+/** The name that the form server reports, and the name that each configuration gives it. */
+export const MCP_FORM_SERVER_NAME = 'form_probe'
 
 interface McpFormServerOptions {
   receiptLog?: string
@@ -12,11 +17,15 @@ interface McpFormServerOptions {
 
 function serverScript(options: McpFormServerOptions, runtimePath: string, stdioPath: string): string {
   return `
-import { readMcpMessages, sendMcpMessage as send } from ${JSON.stringify(pathToFileURL(stdioPath).href)};
+import { readMcpMessages, sendMcpMessage } from ${JSON.stringify(pathToFileURL(stdioPath).href)};
 import { createMcpServerReceipt } from ${JSON.stringify(pathToFileURL(runtimePath).href)};
 const receiptLog = ${JSON.stringify(options.receiptLog ?? null)};
 const expectedEchoArguments = ${JSON.stringify(options.expectedEchoArguments ?? null)};
 const receipt = createMcpServerReceipt(receiptLog);
+const send = message => {
+  receipt.sent(message);
+  sendMcpMessage(message);
+};
 const confirmationOnly = ${JSON.stringify(options.confirmationOnly ?? false)};
 const pending = new Map();
 let sequence = 0;
@@ -26,6 +35,7 @@ const toolResult = (id, tool, text, isError = false) => {
   send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) } });
 };
 for await (const request of readMcpMessages()) {
+  receipt.received(request);
   if (request.method === undefined) {
     const tool = pending.get(request.id);
     if (!tool) continue;
@@ -58,7 +68,7 @@ for await (const request of readMcpMessages()) {
       receipt.initialized(object(params.capabilities) ? params.capabilities : {});
       send({ jsonrpc: '2.0', id: request.id, result: {
         protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26',
-        capabilities: { tools: {} }, serverInfo: { name: 'form_probe', version: '1' },
+        capabilities: { tools: {} }, serverInfo: { name: ${JSON.stringify(MCP_FORM_SERVER_NAME)}, version: '1' },
       } });
       break;
     }
@@ -106,8 +116,8 @@ for await (const request of readMcpMessages()) {
 }
 
 /** Write a disposable MCP server that asks for the probe form. */
-export function writeMcpFormServer(directory: string, filename: string, options: McpFormServerOptions = {}): string {
-  const path = join(directory, filename)
-  writeFileSync(path, serverScript(options, writeMcpReceiptRuntime(directory), writeMcpStdioRuntime(directory)))
-  return path
+export function writeMcpFormServer(directory: string, filename: string, options: McpFormServerOptions = {}): McpProbeServer {
+  const script = join(directory, filename)
+  writeFileSync(script, serverScript(options, writeMcpReceiptRuntime(directory), writeMcpStdioRuntime(directory)))
+  return mcpProbeServer(MCP_FORM_SERVER_NAME, script)
 }

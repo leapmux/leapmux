@@ -33,7 +33,7 @@ piTest('shows one decoded native MCP image and resource image after reload', asy
   const directory = createTestDirectory('pi-native-mcp-images-')
   const imageName = writeToolImage(directory, 'native-pi-mcp')
   const image = writeMcpImageServer(directory, imageName)
-  const resource = writeMcpResultServer(directory, { receiptLog: join(directory, 'resource-receipt.json'), imagePath: join(directory, imageName) })
+  const resource = writeMcpResultServer(directory, { receiptLog: join(directory, 'resource-receipt.json'), imagePath: join(directory, imageName) }).script
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { image_probe: { command: image.command, args: image.args }, result_probe: { command: process.execPath, args: [resource] } })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

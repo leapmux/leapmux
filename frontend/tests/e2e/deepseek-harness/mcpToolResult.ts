@@ -8,8 +8,7 @@ import { expect } from '@playwright/test'
 import { LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE } from '../../../src/components/chat/safeTextDisplay'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
-import { shallowEqual } from '../../../src/lib/shallowEqual'
-import { readMcpCallArguments } from '../helpers/mcpRequestReceipt'
+import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -19,26 +18,6 @@ import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { openWorkspace, readAttachedWithArgument, toolCallRow } from '../helpers/ui'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
-
-/** Read the server reply only when its request carries the exact native inspect arguments. */
-export function deepseekHarnessInspectReply(receipts: unknown, input: Record<string, unknown>): Record<string, unknown> {
-  if (!Array.isArray(receipts))
-    throw new Error('The native MCP result receipt must contain an entry array.')
-  const entries = receipts.filter(isObject)
-  if (entries.length !== receipts.length)
-    throw new Error('The native MCP result receipt contains an invalid entry.')
-  const requests = entries.map(entry => pickObject(entry, 'request')).filter((request) => {
-    const params = pickObject(request, 'params')
-    return request?.method === 'tools/call' && params?.name === 'inspect' && isObject(params.arguments) && shallowEqual(params.arguments, input)
-  })
-  if (requests.length !== 1 || !requests[0] || (typeof requests[0].id !== 'string' && !Number.isSafeInteger(requests[0].id)))
-    throw new Error('The native MCP inspect receipt requires one exact request identity.')
-  const replies = entries.map(entry => pickObject(entry, 'reply')).filter(reply => reply?.id === requests[0]?.id)
-  const result = replies.length === 1 ? pickObject(replies[0], 'result') : undefined
-  if (!result)
-    throw new Error('The native MCP inspect request has no exact successful server reply.')
-  return result
-}
 
 /** Read a compact actual MCP value projection from native run_code inline text. */
 export function deepseekHarnessCanonicalMcpProjection(frame: unknown, callId: string): Record<string, unknown> {
@@ -139,9 +118,9 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
   const expectedOrder = JSON.stringify(nativeDisplay.display)
   const expectedContent = options.expected.map(block => block.type === 'text' ? block : { type: 'image', mimeType: 'image/png', data: readFileSync(block.path).toString('base64') })
   const expectedStructured = { nextCount: options.input.count + 1, enabled: options.input.enabled, text: options.input.text }
-  expect(readMcpCallArguments(options.receiptLog)).toEqual([{ name: 'inspect', arguments: options.input }])
-  const receipts: unknown = JSON.parse(readFileSync(options.receiptLog, 'utf8'))
-  expect(deepseekHarnessInspectReply(receipts, options.input)).toEqual({ content: expectedContent, structuredContent: expectedStructured, _meta: { privateFixture: true } })
+  const call = readMcpCallExchange(options.receiptLog)
+  expect({ name: call.name, arguments: call.arguments }).toEqual({ name: 'inspect', arguments: options.input })
+  expect(call.result).toEqual({ content: expectedContent, structuredContent: expectedStructured, _meta: { privateFixture: true } })
   expect(receipt.blocks.filter(block => block.type === 'image')).toHaveLength(options.retainedImages)
   expect(nativeDisplay.display.filter(block => block.type === 'image')).toHaveLength(options.expected.filter(block => block.type === 'image').length)
   expect(receipt.frame).not.toHaveProperty('_meta')

@@ -1,16 +1,16 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
+import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
+import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
-import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
@@ -27,9 +27,9 @@ export function zcodeMcpConnectFrame(requestId: string, workingDir: string): str
 export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioContext): Promise<void> {
   const directory = createTestDirectory('zcode-native-mcp-')
   const receiptLog = join(directory, 'mcp-receipt.json')
-  const script = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
+  const formServer = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
   mkdirSync(join(directory, '.zcode'))
-  writeFileSync(join(directory, '.zcode', 'config.json'), JSON.stringify({ mcp: { servers: { form_probe: { type: 'stdio', command: process.execPath, args: [script], env: {} } } } }))
+  writeFileSync(join(directory, '.zcode', 'config.json'), JSON.stringify({ mcp: { servers: { [formServer.name]: { type: 'stdio', command: formServer.command, args: formServer.args, env: {} } } } }))
   const server = context.leapmuxServer
   await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
   await openWorkspace(context.page, context.workspaceId)
@@ -37,19 +37,12 @@ export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioC
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   await channel.callWorker(server.workerId, 'SendAgentRawMessage', SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema, {
     agentId: agent.id,
-    content: zcodeMcpConnectFrame(`native-mcp-${crypto.randomUUID()}`, directory),
+    content: zcodeMcpConnectFrame(`native-mcp-${randomUUID()}`, directory),
   })
-  await expect.poll(() => existsSync(receiptLog) ? readMcpServerReceipt(receiptLog).toolCatalogs.flatMap(catalog => catalog.tools.map(tool => tool.name)) : []).toContain('ask')
-  const catalog = await sendNativeAnswer(context, 'Reply once after the native MCP server connects.', 'The actual native MCP catalog reached the model.')
-  expect(nativeModelToolNames(catalog)).toContain('mcp__form_probe__ask')
+  await waitForMcpToolListed(receiptLog, 'ask')
   const callId = 'zcode-native-form'
-  await expectUnsupportedMcpInput(context, {
-    receiptLog,
-    callId,
-    invoke: async () => (await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, callId, { server: 'form_probe', tool: 'ask', input: {} })],
-      prompt: 'Call the configured native form_probe ask tool once.',
-      answer: 'The actual ZCode MCP refusal reached the next model request.',
-    })).resultRequest,
-  })
+  const call = { server: formServer.name, tool: 'ask', callId, input: {} }
+  const catalog = await sendNativeAnswer(context, 'Reply once after the native MCP server connects.', 'The actual native MCP catalog reached the model.')
+  expect(nativeModelToolNames(catalog)).toContain(mcpToolCall(context.provider, callId, call).name)
+  await expectUnsupportedMcpInput(context, { receiptLog, callId, invoke: () => invokeNativeMcpTool(context, call) })
 }

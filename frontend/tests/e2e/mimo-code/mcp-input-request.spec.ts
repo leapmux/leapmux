@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { invokeNativeMcpTool, nativeMcpAnswer } from '../helpers/mcpExecution'
+import { MCP_FORM_SERVER_NAME } from '../helpers/mcpFormServer'
+import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { mcpToolCall } from '../helpers/providerToolCalls'
-import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { messageBubbles } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code MCP confirmation', () => {
@@ -11,21 +12,18 @@ mimoTest.describe('MiMo Code MCP confirmation', () => {
   // no elicitation handler. Its MCP SDK therefore answers the server's
   // `elicitation/create` with JSON-RPC error -32601 "Method not found". It never
   // sends a decline, so the probe server reports a refusal, not
-  // MCP_CONFIRM_DECLINED.
-  mimoTest('shows no form when the native client refuses MCP confirmation', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
-    await modelScript.queue(
-      { toolCalls: [mcpToolCall(AgentProvider.MIMO_CODE, 'mimo-confirm', { server: 'form_probe', tool: 'ask', input: {} })] },
-      { text: 'The confirmation was refused.' },
-    )
-    await sendMessage(page, modelScript.prompt('Call form_probe ask once.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const second = (await modelScript.status()).requests.find(request => request.stepIndex === 1)
-    expect(second?.protocol).toBeTruthy()
-    expect(nativeToolResult(second, 'mimo-confirm')).toContain('FORM_ROUND_TRIP_REFUSED: -32601 Method not found')
-    await expect(page.getByTestId('elicitation-form').filter({ visible: true })).toHaveCount(0)
-    await expect(page.getByTestId('control-banner').filter({ visible: true })).toHaveCount(0)
-    await expect(messageBubbles(page).filter({ hasText: 'The confirmation was refused.' }).first()).toBeVisible()
+  // MCP_CONFIRM_DECLINED. The agent environment registers the confirmation
+  // server under the name of the form server.
+  mimoTest('shows no form when the native client refuses MCP confirmation', async ({ native }) => {
+    const callId = 'mimo-confirm'
+    await expectNoNativeControl(native, {
+      testId: 'elicitation-form',
+      additionalTestIds: ['control-banner'],
+      relatedProof: async () => {
+        const request = await invokeNativeMcpTool(native, { server: MCP_FORM_SERVER_NAME, tool: 'ask', callId, input: {} })
+        expect(nativeToolResult(request, callId)).toContain('FORM_ROUND_TRIP_REFUSED: -32601 Method not found')
+      },
+    })
+    await expect(messageBubbles(native.page).filter({ hasText: nativeMcpAnswer(callId) }).first()).toBeVisible()
   })
 })

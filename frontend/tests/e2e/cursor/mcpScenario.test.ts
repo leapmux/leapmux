@@ -9,6 +9,7 @@ function nativeReceipt(): McpServerReceipt {
     elicitationRequests: [{ id: 0, toolRequestId: 0, params: { mode: 'form', message: 'Choose the native form.', requestedSchema: { type: 'object', properties: { enabled: { type: 'boolean' } } } } }],
     elicitationReplies: [{ id: 0, kind: 'result', result: { action: 'decline' } }],
     toolResults: [{ id: 0, tool: 'ask', text: 'FORM_ROUND_TRIP_DECLINED', isError: false }],
+    exchange: [],
   }
 }
 

@@ -1,19 +1,35 @@
+import type { Locator, Page } from '@playwright/test'
+import type { ModelScript } from './modelScriptFixture'
+import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ControlRequest } from '~/stores/control.store'
 import { readFileSync } from 'node:fs'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createComponent } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useControlResponseHandling } from '~/components/chat/controlResponseHandling'
 import { createControlAnswerState } from '~/components/chat/controls/types'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { flushStorageWrites, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccountForTests } from '~/lib/browserStorage'
+import { accountStorageKey, flushStorageWrites, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { requestInstanceId } from '~/stores/control.store'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { mcpProbeFormDraftSaved } from './mcpProbeForm'
+import { exerciseMcpProbeFormRoundTrip, mcpProbeFormDraftSaved } from './mcpProbeForm'
+import { nativeToolResult } from './nativeToolResult'
+
+/** The browser and model steps of a round trip, in order. */
+const trip = vi.hoisted(() => ({ events: [] as string[], body: 'FORM_ROUND_TRIP_OK', resultCallId: 'probe-call' }))
+vi.mock('./ui', async importOriginal => ({
+  ...await importOriginal<typeof import('./ui')>(),
+  sendMessage: async (_page: unknown, text: string) => { trip.events.push(`send ${text}`) },
+  waitForAgentIdle: async () => { trip.events.push('idle') },
+  messageBubbles: () => ({ filter: () => ({ first: () => assertingLocator('result bubble') }) }),
+}))
+vi.mock('./providerToolCalls', () => ({
+  mcpToolCall: (_provider: unknown, id: string, request: { server: string, tool: string }) => ({ id, name: `${request.server}.${request.tool}`, arguments: {} }),
+}))
 
 // The saved control answer is on the asynchronous storage tier, which keeps no
 // in-memory mirror, so the round trips below need a database.
@@ -24,11 +40,15 @@ useTestStorage()
  * `waitForMcpProbeFormDraft` between the two.
  *
  * The scan splits the file at each test declaration, so a fill in one test and a
- * reload in the next never pair up.
+ * reload in the next never pair up. It reads the code alone: a comment that
+ * mentions a reload, as the guide of `waitForMcpProbeFormDraft` does, is no reload.
+ * It removes each block comment and each line that holds only a line comment. A
+ * line comment after code stays, because `//` also occurs inside a string.
  */
 function testsThatReloadBeforeTheDraftLands(source: string): number {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   let count = 0
-  for (const body of source.split(/^\s*\w*[Tt]est(?:\.\w+)?\(/m)) {
+  for (const body of code.split(/^\s*\w*[Tt]est(?:\.\w+)?\(/m)) {
     for (const fill of body.matchAll(/\bfillMcpProbeForm\(/g)) {
       const afterFill = body.slice(fill.index)
       const reload = afterFill.search(/\bpage\.reload\(/)
@@ -39,16 +59,17 @@ function testsThatReloadBeforeTheDraftLands(source: string): number {
   return count
 }
 
-describe('every spec that reloads after fillMcpProbeForm', () => {
-  const specs = collectE2EFiles().filter(file => file.endsWith('.spec.ts'))
+describe('every E2E file that reloads after fillMcpProbeForm', () => {
+  // The specs and the shared scenarios both fill the form, so the scan reads every E2E source that is not a unit test.
+  const sources = collectE2EFiles().filter(file => file.endsWith('.ts') && !file.endsWith('.test.ts'))
 
-  it('finds the specs that fill the probe form', () => {
-    const fillers = specs.filter(file => readFileSync(file, 'utf8').includes('fillMcpProbeForm('))
-    expect(fillers.length).toBeGreaterThan(0)
+  it('finds the files that fill the probe form, including the round trip scenario', () => {
+    const fillers = sources.filter(file => readFileSync(file, 'utf8').includes('fillMcpProbeForm('))
+    expect(fillers.map(file => posixRelative(frontendRoot, file))).toContain('tests/e2e/helpers/mcpProbeForm.ts')
   })
 
   it('waits for the form draft to reach durable storage first', () => {
-    const offenders = specs
+    const offenders = sources
       .filter(file => testsThatReloadBeforeTheDraftLands(readFileSync(file, 'utf8')) > 0)
       .map(file => posixRelative(frontendRoot, file))
     expect(offenders).toEqual([])
@@ -75,6 +96,11 @@ describe('testsThatReloadBeforeTheDraftLands', () => {
   it('does not pair a fill with the reload of the next test', () => {
     const source = `gooseTest('a', async () => {\n${fill}})\ngooseTest('b', async () => {\n${reload}})\n`
     expect(testsThatReloadBeforeTheDraftLands(source)).toBe(0)
+  })
+
+  it('ignores a reload that only a comment mentions', () => {
+    const comments = '  /** Call it before a `page.reload()`. */\n  // await page.reload()\n'
+    expect(testsThatReloadBeforeTheDraftLands(`test('a', async () => {\n${fill}${comments}${wait}${reload}})\n`)).toBe(0)
   })
 
   it('counts each test that reloads early', () => {
@@ -219,5 +245,111 @@ describe('the saved answers of the probe form', () => {
     expect(screen.getByRole('button', { name: 'Enabled *' })).toHaveTextContent('No')
     expect(screen.getByRole('button', { name: 'Color *' })).toHaveTextContent('Select an option')
     expect(mcpProbeFormDraftSaved(await localStorageLoad(answerKey))).toBe(false)
+  })
+})
+
+/** A fake locator that records each Playwright check and each click, and passes each check. */
+function assertingLocator(name: string, children: Record<string, Locator> = {}): Locator {
+  class FakeLocator {
+    readonly _apiName = 'Locator'
+    async _expect(expression: string) {
+      trip.events.push(`${name} ${expression}`)
+      return { matches: true, received: true, log: [], timedOut: false }
+    }
+  }
+  return Object.assign(new FakeLocator(), {
+    getByLabel: (label: string) => children[label] ?? assertingLocator(`${name} > ${label}`),
+    getByRole: (_role: string, options: { name: string }) => children[options.name] ?? assertingLocator(`${name} > ${options.name}`),
+    filter: () => assertingLocator(name, children),
+    fill: async (value: string) => { trip.events.push(`${name} fill ${value}`) },
+    click: async () => { trip.events.push(`${name} click`) },
+  }) as unknown as Locator
+}
+
+/** The saved answers of `fillMcpProbeForm`: the count 0, the boolean false, and the color constant "b" (Blue). */
+const SAVED_FORM_CHOICES = { 'elicitation:"count"': '0', 'elicitation:"enabled"': 'false', 'elicitation:"color"': '"b"' }
+
+describe('exerciseMcpProbeFormRoundTrip', () => {
+  beforeEach(() => {
+    trip.events = []
+    trip.body = 'FORM_ROUND_TRIP_OK'
+    trip.resultCallId = 'probe-call'
+  })
+
+  function roundTripContext(adminUserId: string | undefined = TEST_USER_ID): ManagedNativeScenarioContext {
+    const form = assertingLocator('form')
+    const page = Object.assign({} as Page, {
+      getByTestId: (testId: string) => testId === 'elicitation-form' ? form : assertingLocator(testId),
+      getByRole: (_role: string, options: { name: string }) => assertingLocator(`menu ${options.name}`),
+      reload: async () => {
+        trip.events.push('reload')
+        return null
+      },
+      // The fake storage holds the saved answers of the fill. A key read gets two arguments, and an entry read three.
+      evaluate: async (_read: unknown, args: readonly unknown[]) => args.length === 3
+        ? { v: { choices: SAVED_FORM_CHOICES } }
+        : [`${accountStorageKey(TEST_USER_ID, PREFIX_CONTROL_STATE)}agent-1`],
+    })
+    const modelScript = {
+      prompt: (text: string) => text,
+      queue: async () => {
+        trip.events.push('queue')
+        return 3
+      },
+      waitForSteps: async (count: number) => { trip.events.push(`steps ${count}`) },
+      requestAt: async (index: number) => ({
+        protocol: 'openai-chat-completions',
+        path: '/v1/chat/completions',
+        stepIndex: index,
+        body: { messages: [{ role: 'tool', tool_call_id: trip.resultCallId, content: trip.body }] },
+      }),
+    } as unknown as ModelScript
+    return { page, modelScript, provider: AgentProvider.GOOSE, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '', ...(adminUserId === undefined ? {} : { adminUserId }) } }
+  }
+
+  it('approves the tool, fills the form, and submits it, and returns the request after the call', async () => {
+    const approveTool = async () => {
+      trip.events.push('approve tool')
+    }
+    const request = await exerciseMcpProbeFormRoundTrip(roundTripContext(), { callId: 'probe-call', reloadBeforeSubmit: false, approveTool })
+    expect(request.stepIndex).toBe(4)
+    expect(trip.events.slice(0, 5)).toEqual(['queue', 'send Call the form_probe ask tool exactly once.', 'steps 4', 'approve tool', 'form to.be.visible'])
+    expect(trip.events).toContain('control-actions > Approve click')
+    expect(trip.events).not.toContain('reload')
+    expect(trip.events.slice(-4)).toEqual(['steps 5', 'idle', 'result bubble to.be.visible', 'form to.have.count'])
+  })
+
+  it('reloads after the answers land, and requires the restored answers before the submit', async () => {
+    await exerciseMcpProbeFormRoundTrip(roundTripContext(), { callId: 'probe-call', reloadBeforeSubmit: true })
+    const reload = trip.events.indexOf('reload')
+    const approve = trip.events.indexOf('control-actions > Approve click')
+    expect(reload).toBeGreaterThan(trip.events.indexOf('menu Blue click'))
+    expect(trip.events.slice(reload + 1, approve)).toEqual([
+      'form > Count * to.have.value',
+      'form > Enabled * to.have.text',
+      'form > Color * to.have.text',
+    ])
+  })
+
+  it('refuses a reload without the account that saves the answers, before it queues a step', async () => {
+    await expect(exerciseMcpProbeFormRoundTrip(roundTripContext(''), { callId: 'probe-call', reloadBeforeSubmit: true })).rejects.toThrow('needs the account')
+    expect(trip.events).toEqual([])
+  })
+
+  it('fails when the model does not read the accepted answers', async () => {
+    trip.body = 'FORM_ROUND_TRIP_FAILED'
+    await expect(exerciseMcpProbeFormRoundTrip(roundTripContext(), { callId: 'probe-call', reloadBeforeSubmit: false })).rejects.toThrow('accepted answers')
+  })
+
+  it('fails when the accepted answers are the result of another call', async () => {
+    trip.resultCallId = 'another-call'
+    await expect(exerciseMcpProbeFormRoundTrip(roundTripContext(), { callId: 'probe-call', reloadBeforeSubmit: false })).rejects.toThrow('0 results for probe-call')
+  })
+
+  it('reads the result through the reader of the provider', async () => {
+    trip.resultCallId = 'native-probe-call'
+    const context = { ...roundTripContext(), readToolResult: (request: Parameters<typeof nativeToolResult>[0]) => ({ text: nativeToolResult(request, 'native-probe-call') }) }
+    const request = await exerciseMcpProbeFormRoundTrip(context, { callId: 'probe-call', reloadBeforeSubmit: false })
+    expect(request.stepIndex).toBe(4)
   })
 })

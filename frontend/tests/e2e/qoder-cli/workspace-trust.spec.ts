@@ -14,7 +14,7 @@ qoderTest('starts with a real project configuration and no native workspace trus
     projectConfiguration: {
       prepare: ({ directory }) => {
         createGitRepo(directory, '.')
-        const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
+        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
         const configuration = join(directory, '.qoder', 'settings.json')
         mkdirSync(dirname(configuration), { recursive: true })
         writeFileSync(configuration, JSON.stringify({ mcpServers: { trust_probe: { command: process.execPath, args: [script] } } }))

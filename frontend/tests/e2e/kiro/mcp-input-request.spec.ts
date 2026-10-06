@@ -1,100 +1,51 @@
-import type { AgentServer } from '../helpers/workspace'
-
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import process from 'node:process'
+import { existsSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { writeMcpNameFormServer } from '../helpers/mcpNameFormServer'
+import { nativeTextStep, nativeToolOutcome } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-
-import { assistantBubbles, controlBanner, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { createTestDirectory } from '../helpers/runDirectory'
+import { answerControl, assistantBubbles, expectNoControlBanner, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-
-const PROVIDER = AgentProvider.KIRO
-
-/**
- * A private MCP server exposes one tool that requests a form.
- * It writes `ready` when Kiro lists the tool, so the test can prove discovery.
- * The tool result states whether the native form reply contains the exact value that the reader entered.
- */
-const FORM_SERVER = `
-import { createInterface } from 'node:readline';
-import { writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const ready = join(dirname(fileURLToPath(import.meta.url)), 'ready');
-let toolRequest;
-const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
-for await (const line of createInterface({ input: process.stdin })) {
-  const request = JSON.parse(line);
-  if (request.id === undefined) continue;
-  if (request.id === 'probe-form' && !request.method) {
-    const reply = request.result;
-    const valid = reply?.action === 'accept' && reply.content?.name === 'kiro-e2e';
-    send({jsonrpc:'2.0',id:toolRequest,result:{content:[{type:'text',text:valid ? 'FORM_ROUND_TRIP_OK' : 'FORM_ROUND_TRIP_FAILED'}]}});
-    continue;
-  }
-  let result;
-  switch (request.method) {
-    case 'initialize':
-      result = {protocolVersion:request.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'probe',version:'1'}};
-      break;
-    case 'tools/list':
-      writeFileSync(ready, '');
-      result = {tools:[{name:'ask',description:'Request the disposable probe form. Call once with no arguments.',inputSchema:{type:'object',properties:{}}}]};
-      break;
-    case 'tools/call':
-      toolRequest = request.id;
-      send({jsonrpc:'2.0',id:'probe-form',method:'elicitation/create',params:{mode:'form',message:'Name the probe.',requestedSchema:{type:'object',required:['name'],properties:{name:{type:'string',title:'Name'}}}}});
-      continue;
-    default:
-      send({jsonrpc:'2.0',id:request.id,error:{code:-32601,message:'Method not supported'}});
-      continue;
-  }
-  send({jsonrpc:'2.0',id:request.id,result});
-}
-`
+import { writeKiroProjectMcpServers } from './mcpConfiguration'
+import { nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro control requests', () => {
   // A workspace MCP server's form round-trips through Kiro's own elicitation request.
   kiroTest('answers the form that an MCP server asks for', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openKiroAgentWithServer(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const name = 'kiro-e2e'
+    const server = writeMcpNameFormServer(createTestDirectory('kiro-mcp-form-'), { serverName: 'probe', expectedName: name })
+    // The Allow all policy runs the MCP tool without a permission request, so the form is the only request that the
+    // call raises.
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+      prepare: (workingDir) => {
+        writeKiroProjectMcpServers(workingDir, server)
+      },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     // Kiro loads the server in the background. Its tool exists once Kiro lists it.
-    await expect.poll(() => existsSync(join(workingDir, 'ready'))).toBe(true)
+    await expect.poll(() => existsSync(server.ready)).toBe(true)
 
-    await modelScript.queue(
-      { toolCalls: [mcpToolCall(PROVIDER, 'kiro-mcp', { server: 'probe', tool: 'ask', input: {} })] },
-      { text: 'The form came back.' },
+    const callId = 'kiro-mcp'
+    const answer = 'The form came back.'
+    const start = await modelScript.queue(
+      { toolCalls: [mcpToolCall(context.provider, callId, { server: server.name, tool: 'ask', input: {} })] },
+      nativeTextStep(context, answer),
     )
     await sendMessage(page, modelScript.prompt('Call the probe form tool.'))
-    await modelScript.waitForSteps(1)
-    const banner = controlBanner(page)
+    await modelScript.waitForSteps(start + 1)
+    const banner = await waitForControlBanner(page)
     const form = page.getByTestId('elicitation-form').filter({ visible: true })
     await expect(form).toBeVisible()
     await expect(banner).toContainText('Name the probe.')
-    await form.getByLabel('Name *').fill('kiro-e2e')
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-    await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    await form.getByLabel('Name *').fill(name)
+    await answerControl(page, 'allow')
+    await expectNoControlBanner(page)
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
-    expect(JSON.stringify((await modelScript.status()).requests.at(-1)?.body)).toContain('FORM_ROUND_TRIP_OK')
-    await expect(assistantBubbles(page).filter({ hasText: 'The form came back.' })).toBeVisible()
+    expect((await nativeToolOutcome(context, await modelScript.requestAt(start + 1), callId)).text).toContain('FORM_ROUND_TRIP_OK')
+    await expect(assistantBubbles(page).filter({ hasText: answer })).toBeVisible()
   })
 })
-
-/**
- * Open a Kiro agent whose workspace configures the form server. The Allow all
- * policy runs the MCP tool without a permission request, so the form is the only
- * request the call raises.
- */
-async function openKiroAgentWithServer(server: AgentServer, workspaceId: string): Promise<{ workingDir: string }> {
-  return openProviderAgent(server, workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' }, prepare: (workingDir) => {
-    const script = join(workingDir, 'form-server.mjs')
-    writeFileSync(script, FORM_SERVER)
-    const settings = join(workingDir, '.kiro', 'settings')
-    mkdirSync(settings, { recursive: true })
-    writeFileSync(join(settings, 'mcp.json'), JSON.stringify({ mcpServers: { probe: { command: process.execPath, args: [script] } } }))
-  } })
-}

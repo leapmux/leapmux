@@ -1,46 +1,33 @@
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import process from 'node:process'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, createCodebuddyWorkingDir, expect } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
+import { nativeTextStep } from '../helpers/nativeScenario'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
+import { withCodebuddyUserMcpServer } from './mcpConfiguration'
+import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
-  function installUserMcpServer(configDir: string, script: string): () => void {
-    const configPath = join(configDir, '.mcp.json')
-    if (existsSync(configPath))
-      throw new Error('the isolated CodeBuddy user MCP config already exists')
-    writeFileSync(configPath, JSON.stringify({ mcpServers: { form_probe: { command: process.execPath, args: [script] } } }))
-    return () => unlinkSync(configPath)
-  }
-
   codebuddyTest('executes a disposable MCP tool through the native server', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
     const workingDir = createCodebuddyWorkingDir()
     const echoArguments = { query: 'codebuddy', limit: 0, tail: 'END_MCP_ARGUMENTS' }
-    const script = writeMcpFormServer(workingDir, 'form-server.mjs', { expectedEchoArguments: echoArguments })
-    const configDir = leapmuxServer.agentEnv.CODEBUDDY_CONFIG_DIR
-    if (!configDir)
-      throw new Error('the CodeBuddy E2E environment needs an isolated config directory')
-    const removeUserMcpServer = installUserMcpServer(configDir, script)
-    try {
+    const server = writeMcpFormServer(workingDir, 'form-server.mjs', { expectedEchoArguments: echoArguments })
+    await withCodebuddyUserMcpServer(leapmuxServer.agentEnv, server, async () => {
       await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEBUDDY_AGENT, { ...CODEBUDDY_BYPASS, workingDir })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-      await modelScript.queue(
-        { toolCalls: [codebuddyWaitForMcpServersToolCall('wait-for-echo', ['form_probe'])] },
-        { toolCalls: [mcpToolCall(AgentProvider.CODEBUDDY, 'codebuddy-mcp-echo', { server: 'form_probe', tool: 'echo', input: echoArguments })] },
-        { text: 'The MCP echo completed.' },
+      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const call = mcpToolCall(context.provider, 'codebuddy-mcp-echo', { server: server.name, tool: 'echo', input: echoArguments })
+      const start = await modelScript.queue(
+        { toolCalls: [codebuddyWaitForMcpServersToolCall('wait-for-echo', [server.name])] },
+        { toolCalls: [call] },
+        nativeTextStep(context, 'The MCP echo completed.'),
       )
-      await sendMessage(page, modelScript.prompt('Wait for form_probe, then call its echo tool.'))
-      const status = await modelScript.waitForSteps()
+      await sendMessage(page, modelScript.prompt(`Wait for ${server.name}, then call its echo tool.`))
+      await modelScript.waitForSteps(start + 3)
       await waitForAgentIdle(page)
-      expect(JSON.stringify(status.requests.find(request => request.stepIndex === 2)?.body)).toContain('PERMISSION_ACCEPTED')
+      expect(nativeToolResult(await modelScript.requestAt(start + 2), call.id)).toContain('PERMISSION_ACCEPTED')
       await expect(messageBubbles(page).filter({ hasText: 'The MCP echo completed.' }).first()).toBeVisible()
-    }
-    finally {
-      removeUserMcpServer()
-    }
+    })
   })
 })

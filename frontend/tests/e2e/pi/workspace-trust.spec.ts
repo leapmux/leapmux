@@ -20,7 +20,7 @@ piTest('starts and reads a private project without a workspace trust request', a
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare({ directory, marker }) {
-        const mcp = writeMcpEchoServer(directory)
+        const mcp = writeMcpEchoServer(directory).script
         writePiMcpConfiguration(directory, getGlobalState().tmpDir, { trust_probe: { command: process.execPath, args: [mcp] } })
         const extensions = join(directory, '.pi', 'extensions')
         mkdirSync(extensions, { recursive: true })

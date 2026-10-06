@@ -3,14 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { writeMcpConfirmationServer } from './mcpConfirmationServer'
+import { MCP_FORM_SERVER_NAME } from './mcpFormServer'
 
 function execute(requests: unknown[]) {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
   mkdirSync(scratch, { recursive: true })
   const directory = mkdtempSync(join(scratch, 'mcp-confirmation-unit-'))
   try {
-    const script = writeMcpConfirmationServer(directory)
-    const output = execFileSync(process.execPath, [script], { input: `${requests.map(request => JSON.stringify(request)).join('\n')}\n`, encoding: 'utf8', timeout: 30000 })
+    const server = writeMcpConfirmationServer(directory)
+    const output = execFileSync(server.command, [...server.args], { input: `${requests.map(request => JSON.stringify(request)).join('\n')}\n`, encoding: 'utf8', timeout: 30000 })
     return output.trim().split('\n').map(line => JSON.parse(line))
   }
   finally {
@@ -19,6 +20,11 @@ function execute(requests: unknown[]) {
 }
 
 describe('writeMcpConfirmationServer', () => {
+  it('reports the name of the form server that it runs', () => {
+    const [reply] = execute([{ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {} } }])
+    expect(reply.result.serverInfo.name).toBe(MCP_FORM_SERVER_NAME)
+  })
+
   it.each([{}, { action: 'typo' }, { action: 0 }])('refuses a malformed confirmation action: %j', (result) => {
     const replies = execute([
       { jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: 'ask', arguments: {} } },

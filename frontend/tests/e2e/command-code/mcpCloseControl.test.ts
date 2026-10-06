@@ -27,7 +27,7 @@ describe('createMcpCloseControl', () => {
   it('closes the unchanged server after its real input request without inventing a reply', async () => {
     const path = directory()
     const receipt = join(path, 'receipt.json')
-    const server = writeMcpFormServer(path, 'server.mjs', { receiptLog: receipt })
+    const { script: server } = writeMcpFormServer(path, 'server.mjs', { receiptLog: receipt })
     const control = createMcpCloseControl(path, server)
     const child = spawn(process.execPath, [control.script], { stdio: ['pipe', 'pipe', 'pipe'], signal: AbortSignal.timeout(30000) })
     const ended = once(child, 'close')
@@ -75,7 +75,7 @@ describe('createMcpCloseControl', () => {
 
   it('refuses relative directories and absent server programs', () => {
     const path = directory()
-    const server = writeMcpFormServer(path, 'server.mjs')
+    const { script: server } = writeMcpFormServer(path, 'server.mjs')
     expect(() => createMcpCloseControl('relative', server)).toThrow('absolute')
     expect(() => createMcpCloseControl(path, 'relative')).toThrow('absolute')
     expect(() => createMcpCloseControl(path, join(path, 'absent.mjs'))).toThrow('existing')

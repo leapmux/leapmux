@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { writeMcpFormServer } from './mcpFormServer'
-import { readMcpServerReceipt } from './mcpServerReceipt'
+import { MCP_FORM_SERVER_NAME, writeMcpFormServer } from './mcpFormServer'
+import { mcpCallArguments, readMcpServerReceipt } from './mcpServerReceipt'
 
 const expectedEchoArguments = { query: 'probe', limit: 0, tail: 'END_MCP_ARGUMENTS' }
 
@@ -13,7 +13,7 @@ function echoResult(args: unknown, configureExpected = true): string | undefined
   const directory = mkdtempSync(join(scratch, 'mcp-form-server-'))
   try {
     const options = configureExpected ? { expectedEchoArguments } : {}
-    const script = writeMcpFormServer(directory, 'server.mjs', options)
+    const { script } = writeMcpFormServer(directory, 'server.mjs', options)
     const request = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo', arguments: args } }
     const output = execFileSync(process.execPath, [script], {
       input: `${JSON.stringify(request)}\n`,
@@ -34,7 +34,7 @@ function formRoundTrip(reply: Record<string, unknown>, options: { concurrent?: b
   const directory = mkdtempSync(join(scratch, 'mcp-form-receipt-'))
   try {
     const receiptLog = join(directory, 'receipt.json')
-    const script = writeMcpFormServer(directory, 'server.mjs', { receiptLog })
+    const { script } = writeMcpFormServer(directory, 'server.mjs', { receiptLog })
     const requests = [
       ...(options.initialize === false ? [] : [{ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: { roots: { listChanged: false } } } }]),
       { jsonrpc: '2.0', id: 'catalog', method: 'tools/list', params: {} },
@@ -64,7 +64,7 @@ describe('writeMcpFormServer', () => {
     mkdirSync(scratch, { recursive: true })
     const directory = mkdtempSync(join(scratch, 'mcp-form-refusal-'))
     try {
-      const script = writeMcpFormServer(directory, 'server.mjs')
+      const { script } = writeMcpFormServer(directory, 'server.mjs')
       const requests = [
         { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {} } },
         { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'ask', arguments: {} } },
@@ -78,6 +78,32 @@ describe('writeMcpFormServer', () => {
     finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  it('reports the name that it returns in its launch shape', () => {
+    const { replies } = formRoundTrip({ result: { action: 'decline' } })
+    const initialized = replies.find(reply => reply.id === 0) as { result?: { serverInfo?: { name?: string } } } | undefined
+    expect(initialized?.result?.serverInfo?.name).toBe(MCP_FORM_SERVER_NAME)
+  })
+
+  it('returns a launch through the Node.js runtime of the test process', () => {
+    const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
+    mkdirSync(scratch, { recursive: true })
+    const directory = mkdtempSync(join(scratch, 'mcp-form-launch-'))
+    try {
+      const server = writeMcpFormServer(directory, 'server.mjs')
+      expect(server).toEqual({ name: MCP_FORM_SERVER_NAME, script: join(directory, 'server.mjs'), command: process.execPath, args: [join(directory, 'server.mjs')] })
+    }
+    finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('records the raw exchange of each received and sent message in order', () => {
+    const { receipt } = formRoundTrip({ result: { action: 'decline' } })
+    const directions = receipt.exchange.map(entry => 'received' in entry ? `received ${String(entry.received.id)}` : `sent ${String(entry.sent.id)}`)
+    expect(directions).toEqual(['received 0', 'sent 0', 'received catalog', 'sent catalog', 'received 2', 'sent probe-form', 'received probe-form', 'sent 2'])
+    expect(mcpCallArguments(receipt)).toEqual([{ name: 'ask', arguments: {} }])
   })
 
   it('records actual initialization, catalog, and accepted zero and false form values', () => {

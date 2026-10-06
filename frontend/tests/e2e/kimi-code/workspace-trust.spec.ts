@@ -17,7 +17,7 @@ kimiTest('keeps untrusted project MCP configuration unloaded without a browser t
   await exerciseNativeWorkspaceTrustLimit(native, {
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
+        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
         const config = join(directory, '.mcp.json')
         mkdirSync(dirname(config), { recursive: true })
         writeFileSync(config, JSON.stringify({ mcpServers: { [marker]: { transport: 'stdio', command: process.execPath, args: [script] } } }))

@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { writeMcpEchoServer } from './mcpEchoServer'
-import { readMcpServerReceipt } from './mcpServerReceipt'
+import { MCP_ECHO_SERVER_NAME, writeMcpEchoServer } from './mcpEchoServer'
+import { mcpCallExchange, readMcpServerReceipt } from './mcpServerReceipt'
 
 function executeEcho(argumentsValue: unknown) {
   const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
@@ -11,14 +11,14 @@ function executeEcho(argumentsValue: unknown) {
   const directory = mkdtempSync(join(scratch, 'mcp-echo-receipt-'))
   try {
     const receiptLog = join(directory, 'receipt.json')
-    const script = writeMcpEchoServer(directory, { receiptLog })
+    const server = writeMcpEchoServer(directory, { receiptLog })
     const requests = [
       { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: { roots: { listChanged: false } } } },
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
       { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: argumentsValue } },
     ]
-    const output = execFileSync(process.execPath, [script], { input: `${requests.map(request => JSON.stringify(request)).join('\n')}\n`, encoding: 'utf8', timeout: 30000 })
-    return { receipt: readMcpServerReceipt(receiptLog), replies: output.trim().split('\n').map(line => JSON.parse(line) as { id: number, result?: { content: Array<{ text: string }> }, error?: { code: number } }) }
+    const output = execFileSync(server.command, [...server.args], { input: `${requests.map(request => JSON.stringify(request)).join('\n')}\n`, encoding: 'utf8', timeout: 30000 })
+    return { server, receipt: readMcpServerReceipt(receiptLog), replies: output.trim().split('\n').map(line => JSON.parse(line) as { id: number, result?: { content: Array<{ text: string }>, serverInfo?: { name: string } }, error?: { code: number } }) }
   }
   finally {
     rmSync(directory, { recursive: true, force: true })
@@ -26,6 +26,13 @@ function executeEcho(argumentsValue: unknown) {
 }
 
 describe('writeMcpEchoServer', () => {
+  it('reports the name that it returns, and records the exchange of its call', () => {
+    const { server, receipt, replies } = executeEcho({ value: 'ACTUAL_NATIVE_ECHO' })
+    expect(server.name).toBe(MCP_ECHO_SERVER_NAME)
+    expect(replies.find(reply => reply.id === 0)?.result?.serverInfo?.name).toBe(server.name)
+    expect(mcpCallExchange(receipt)).toMatchObject({ id: 2, name: 'echo', arguments: { value: 'ACTUAL_NATIVE_ECHO' }, result: { content: [{ type: 'text', text: 'MCP_ECHO:ACTUAL_NATIVE_ECHO' }] } })
+  })
+
   it.each(['ACTUAL_NATIVE_ECHO', '', 'Native UTF-8 零 🔒'])('records the actual catalog and computed native result for %s', (value) => {
     const { receipt, replies } = executeEcho({ value })
     expect(receipt.initializeCapabilities).toEqual({ roots: { listChanged: false } })

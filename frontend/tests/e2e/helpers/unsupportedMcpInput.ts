@@ -9,6 +9,11 @@ interface McpInputProbe {
   receiptLog: string
   callId: string
   invoke: () => Promise<MockModelRequestRecord>
+  /**
+   * More controls that must not appear during the call, such as `control-banner` under a preset that runs every tool
+   * without a request. The form of the probe is always watched.
+   */
+  additionalTestIds?: readonly string[]
 }
 
 /** Read the native tool result of the probe call in the model request that follows it. */
@@ -20,6 +25,7 @@ async function probeToolResult(context: ManagedNativeScenarioContext, request: M
 export async function expectUnsupportedMcpInput(context: ManagedNativeScenarioContext, options: McpInputProbe): Promise<void> {
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
+    additionalTestIds: options.additionalTestIds ?? [],
     relatedProof: async () => {
       const request = await options.invoke()
       const refusal = nativeMcpRefusal(readMcpServerReceipt(options.receiptLog))
@@ -32,6 +38,7 @@ export async function expectUnsupportedMcpInput(context: ManagedNativeScenarioCo
 export async function expectCancelledMcpInput(context: ManagedNativeScenarioContext, options: McpInputProbe): Promise<void> {
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
+    additionalTestIds: options.additionalTestIds ?? [],
     relatedProof: async () => {
       const request = await options.invoke()
       const cancellation = nativeMcpCancellation(readMcpServerReceipt(options.receiptLog))
@@ -52,6 +59,7 @@ export async function expectUnansweredMcpInput(context: ManagedNativeScenarioCon
     throw new Error('The unanswered MCP input proof requires the exact native failure text.')
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
+    additionalTestIds: options.additionalTestIds ?? [],
     relatedProof: async () => {
       const request = await options.invoke()
       nativeMcpUnansweredInput(readMcpServerReceipt(options.receiptLog))

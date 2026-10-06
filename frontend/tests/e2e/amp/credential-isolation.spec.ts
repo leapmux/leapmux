@@ -22,7 +22,7 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
   const configHome = createTestDirectory('amp-credential-profile-')
   await withCleanup(async () => {
     const receiptLog = join(configHome, 'native-credential-mcp-receipt.json')
-    const script = writeMcpEchoServer(configHome, { receiptLog })
+    const { script } = writeMcpEchoServer(configHome, { receiptLog })
     const configuration = join(configHome, 'amp', 'settings.json')
     mkdirSync(dirname(configuration), { recursive: true })
     writeFileSync(configuration, JSON.stringify({ 'amp.mcpServers': { credential_probe: { command: process.execPath, args: [script] } } }))

@@ -3,6 +3,7 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
+import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -12,7 +13,7 @@ import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { writeToolImage } from '../helpers/toolImages'
-import { invokeDeepseekHarnessMcp, withDeepseekHarnessMcp } from './mcpScenarios'
+import { withDeepseekHarnessMcp } from './mcpScenarios'
 import { proveDeepseekHarnessMixedMcpOutput } from './mcpToolResult'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 import { nativeContext } from './scenarios'
@@ -62,12 +63,12 @@ for (const layout of ['omitted-middle-image', 'retained-end-images'] as const) {
       ? [{ type: 'text', text: output.text }, image, { type: 'text', text: output.text }]
       : [{ type: 'text', text: output.firstMarker }, image, { type: 'text', text: output.text }, image, { type: 'text', text: output.lastMarker }]
     const receiptLog = join(directory, 'receipts.json')
-    const script = writeMcpResultServer(directory, { receiptLog, inspectContent: content })
+    const server = writeMcpResultServer(directory, { receiptLog, inspectContent: content })
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await withDeepseekHarnessMcp(context, { name: 'results', script, workingDir: directory }, async (privateContext) => {
+    await withDeepseekHarnessMcp(context, { server, workingDir: directory }, async (privateContext) => {
       const callId = `native-mcp-paths-${layout}`
       const input = { count: 0, enabled: false, text: 'The exact native mixed result.' }
-      const request = await invokeDeepseekHarnessMcp(privateContext, { server: 'results', tool: 'inspect', callId, input })
+      const request = await invokeNativeMcpTool(privateContext, { server: server.name, tool: 'inspect', callId, input })
       await proveDeepseekHarnessMixedMcpOutput(privateContext, { callId, request, input, receiptLog, expected: content, firstMarker: output.firstMarker, omittedMarker: output.omittedMarker, retainedImages: layout === 'retained-end-images' ? 2 : 0, testInfo })
     })
   })

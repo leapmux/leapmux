@@ -1,4 +1,5 @@
 import type { ServerInfo } from '../fixtures'
+import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { WorkspaceFixture } from '../helpers/workspace'
 import type { LettaMcpServer } from './mcpConfiguration'
@@ -12,7 +13,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
-import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeAgentById, nativeOptionValue } from '../helpers/nativeScenario'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { isAlive } from '../helpers/processTree'
 import { createTestDirectory } from '../helpers/runDirectory'
@@ -75,7 +76,7 @@ export const mcpLettaTest = lettaTest.extend<{ privateMcpLettaWorkspace: Private
           expect(applied.id).toBe(agentId)
           expect(applied.agentProvider).toBe(AgentProvider.LETTA)
           expect(applied.agentSessionId).not.toBe('')
-          expect(applied.optionGroups.find(group => group.id === OPTION_ID_PERMISSION_MODE)?.currentValue).toBe(LETTA_MODE.Unrestricted)
+          expect(nativeOptionValue(applied, OPTION_ID_PERMISSION_MODE)).toBe(LETTA_MODE.Unrestricted)
           await use({ ...workspace, server, runDirectory, home: environment.homeDir, backendDirectory, nodeExecutable, workingDir })
         })
       })
@@ -98,13 +99,17 @@ export async function cleanupRegisteredLettaMcp(options: {
   }, async () => options.restore())
 }
 
-/** Reopen the same native conversation after its MCP settings change. */
+/**
+ * Reopen the same native conversation after its MCP settings register `probes`.
+ * Each server starts through the Node executable of the private workspace, under the name that the server states.
+ */
 export async function withRegisteredLettaMcp(
   context: ManagedNativeScenarioContext,
   workspace: PrivateMcpLettaWorkspace,
-  servers: readonly LettaMcpServer[],
+  probes: readonly McpProbeServer[],
   use: (identity: { agentId: string, conversationId: string }) => Promise<void>,
 ): Promise<void> {
+  const servers = probes.map((probe): LettaMcpServer => ({ name: probe.name, transport: 'stdio', command: workspace.nodeExecutable, args: [...probe.args] }))
   const before = await currentNativeAgent(context)
   expect(before.agentProvider).toBe(AgentProvider.LETTA)
   expect(before.agentSessionId).not.toBe('')
@@ -124,7 +129,7 @@ export async function withRegisteredLettaMcp(
     await waitForSettingsHydrated(context.page)
     const applied = await currentNativeAgent(context)
     expect(applied.agentSessionId).toBe(before.agentSessionId)
-    expect(applied.optionGroups.find(group => group.id === OPTION_ID_PERMISSION_MODE)?.currentValue).toBe(LETTA_MODE.Unrestricted)
+    expect(nativeOptionValue(applied, OPTION_ID_PERMISSION_MODE)).toBe(LETTA_MODE.Unrestricted)
     await use(configuration.identity)
   }, () => cleanupRegisteredLettaMcp({ agentId: reopened, close, restore: configuration.restore }))
 }

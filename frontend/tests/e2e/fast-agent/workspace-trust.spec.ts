@@ -16,7 +16,7 @@ fastAgentTest('starts with a real project configuration and no native workspace 
     projectConfiguration: {
       prepare: ({ directory }) => {
         createGitRepo(directory, '.')
-        const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
+        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
         writeFileSync(join(directory, 'fast-agent.yaml'), `mcp:\n  servers:\n    trust_probe:\n      command: ${JSON.stringify(process.execPath)}\n      args: [${JSON.stringify(script)}]\n`)
       },
       prove: async (privateContext, { directory }) => {
