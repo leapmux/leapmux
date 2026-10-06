@@ -194,7 +194,7 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
     const [directory] = prepared
     if (directory === undefined)
       throw new Error('The scenario prepared no project directory.')
-    expect(calls.open).toHaveBeenCalledExactlyOnceWith('http://unused.invalid', 'unused', 'unused', 'detached', directory, agentOpenOptions(context.provider, {}))
+    expect(calls.open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' }), 'detached', directory, agentOpenOptions(context.provider, {}))
     return directory
   }
 

@@ -52,15 +52,15 @@ describe('openMcpLettaAgent', () => {
   it('opens the actual initial MCP agent in native Unrestricted mode', async () => {
     const server = { hubUrl: 'http://private-hub.test', adminToken: 'private-token', workerId: 'private-worker' }
     await openMcpLettaAgent(server, 'private-workspace', directory)
-    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[5]?.optionValues?.permissionMode).toBe(LETTA_MODE.Unrestricted)
-    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[5]).not.toHaveProperty('agentSessionId')
+    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[3]?.optionValues?.permissionMode).toBe(LETTA_MODE.Unrestricted)
+    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[3]).not.toHaveProperty('agentSessionId')
   })
 
   it('reopens the same actual MCP conversation in native Unrestricted mode', async () => {
     const server = { hubUrl: 'http://private-hub.test', adminToken: 'private-token', workerId: 'private-worker' }
     await openMcpLettaAgent(server, 'private-workspace', directory, 'actual-native-conversation')
-    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[5]?.agentSessionId).toBe('actual-native-conversation')
-    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[5]?.optionValues?.permissionMode).toBe(LETTA_MODE.Unrestricted)
+    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[3]?.agentSessionId).toBe('actual-native-conversation')
+    expect(vi.mocked(openAgentViaAPI).mock.calls[0]?.[3]?.optionValues?.permissionMode).toBe(LETTA_MODE.Unrestricted)
   })
 })
 

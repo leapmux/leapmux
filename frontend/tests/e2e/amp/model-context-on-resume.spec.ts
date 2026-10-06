@@ -47,7 +47,7 @@ ampTest('offers the workspace\'s Amp threads and resumes the one picked', async 
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Amp Picker ${crypto.randomUUID()}`)
-  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
+  const keeperId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, otherDir, {
     ...agentOpenOptions(AgentProvider.AMP),
     title: 'Keeper',
   })

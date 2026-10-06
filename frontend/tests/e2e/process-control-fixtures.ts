@@ -263,9 +263,8 @@ export const processTest = base.extend<
   // The separate hub has no per-test reset, so `withTestWorkspace` deletes the workspace after the test.
   workspace: async ({ separateHubWorker, agentWorkingDir }, use) => {
     await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
     await withTestWorkspace(separateHubWorker, 'e2e', async (workspace) => {
-      const agentId = await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspace.workspaceId, agentWorkingDir)
+      const agentId = await openPinnedModeAgentViaAPI(separateHubWorker, workspace.workspaceId, agentWorkingDir)
       await use(agentWorkspaceFixture(workspace, agentId, agentWorkingDir))
     })
   },

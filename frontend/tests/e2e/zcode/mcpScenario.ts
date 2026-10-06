@@ -31,7 +31,7 @@ export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioC
   mkdirSync(join(directory, '.zcode'))
   writeFileSync(join(directory, '.zcode', 'config.json'), JSON.stringify({ mcp: { servers: { [formServer.name]: { type: 'stdio', command: formServer.command, args: formServer.args, env: {} } } } }))
   const server = context.leapmuxServer
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
+  await openAgentViaAPI(server, context.workspaceId, directory, agentOpenOptions(context.provider))
   await openWorkspace(context.page, context.workspaceId)
   const agent = await currentNativeAgent(context)
   const channel = await getTestChannel(server.hubUrl, server.adminToken)

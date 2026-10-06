@@ -109,7 +109,7 @@ test.describe('Active-client ding gate', () => {
   test('dispatches `leapmux:turn-end-played` only when this client is the active client', async ({ browser, emptyWorkspace, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId, adminUserId } = leapmuxServer
     const wsId = emptyWorkspace.workspaceId
-    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, wsId)
+    await openPinnedModeAgentViaAPI({ hubUrl, adminToken, workerId }, wsId)
     const sessions = [await freshAdminSessionViaAPI(hubUrl), await freshAdminSessionViaAPI(hubUrl)] as const
 
     await withCleanup(() => withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {

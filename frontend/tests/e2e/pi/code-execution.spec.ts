@@ -21,7 +21,7 @@ piTest('keeps the native codemode output path and preview without an MCP call af
   const output = `${Array.from({ length: 3000 }, (_, index) => `codemode-line-${index}`).join('\n')}\nNATIVE_CODEMODE_COMPLETE`
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
+    await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const code = `// @options: {"max_output_tokens": 100}\ntext(${JSON.stringify(output)})`
     const start = await modelScript.queue({ toolCalls: [piCodemodeToolCall('native-codemode-only', code)] }, { text: 'The native codemode-only output completed.' })
@@ -53,7 +53,7 @@ piTest('keeps empty native codemode output and a real nested file read after rel
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const workspaceId = authenticatedEmptyWorkspace.workspaceId
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
+    await openAgentViaAPI(leapmuxServer, workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, workspaceId)
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId })
     const cases = [
@@ -104,7 +104,7 @@ piTest('keeps the native codemode script failure and exact failed status after r
   const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-codemode-failure-')
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
+    await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const callId = 'native-codemode-failure'
     const start = await modelScript.queue({ toolCalls: [piCodemodeToolCall(callId, 'throw new Error("NATIVE_CODEMODE_FAILURE");')] }, { text: 'The native script failure reached the model.' })

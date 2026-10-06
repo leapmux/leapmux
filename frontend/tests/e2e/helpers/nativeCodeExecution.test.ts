@@ -33,7 +33,7 @@ vi.mock('./nativeConversation', () => ({
 beforeEach(() => {
   opened.events = []
   opened.open.mockReset()
-  opened.open.mockImplementation(async (_hub: string, _cookie: string, _worker: string, _workspace: string, directory: string) => {
+  opened.open.mockImplementation(async (_server: unknown, _workspace: string, directory: string) => {
     opened.events.push(`open ${directory}`)
     return 'agent-1'
   })
@@ -139,20 +139,20 @@ describe('openNativeCatalogTurn', () => {
   it('opens the agent with the pinned settings in a fresh directory, shows the workspace, and returns the catalog turn', async () => {
     const request = await openNativeCatalogTurn(context)
     expect(request.body).toEqual({ catalog: true })
-    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
     expect(opened.events).toEqual(['directory native-code-limit-', 'open /run/native-code-limit-directory', 'workspace workspace-1', 'answer Reply once while the native tool catalog remains available.'])
   })
 
   it('takes the directory prefix and the open settings of the caller', async () => {
     await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
-    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
   })
 
   it('creates the directory by the working directory rule of the provider', async () => {
     const workingDir = vi.fn((prefix: string) => `/run/${prefix}repository/repo`)
     await openNativeCatalogTurn(contextOf({ ...cursor, workingDir }))
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-limit-')
-    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-code-limit-repository/repo', agentOpenOptions(AgentProvider.CURSOR))
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-repository/repo', agentOpenOptions(AgentProvider.CURSOR))
   })
 
   it('runs no turn when the agent does not open', async () => {

@@ -30,7 +30,7 @@ piTest('keeps the native real MCP output path and preview after reload', async (
   const code = `// @options: {"max_output_tokens": 100}\nconst result = await tools.${inspectTool}({count: 0, enabled: false, text: ${JSON.stringify(outputFile)}}); text(result.structuredContent.text);`
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: native.provider, ...settings })
+    await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: native.provider, ...settings })
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const start = await modelScript.queue(
@@ -69,7 +69,7 @@ piTest('uses complete native MCP structured results, failed results, and resourc
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: context.provider, ...settings })
+    await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: context.provider, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const inspect = mcpToolCall(context.provider, 'native-inspect', { server: server.name, tool: 'inspect', input: { count: 0, enabled: false, text: '' } })
     const calls = [

@@ -50,7 +50,7 @@ clineTest('offers a Cline session of the working directory and resumes the one p
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Cline Picker ${crypto.randomUUID()}`)
-  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
+  const keeperId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, otherDir, {
     ...agentOpenOptions(AgentProvider.CLINE),
     title: 'Keeper',
   })

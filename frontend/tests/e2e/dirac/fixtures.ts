@@ -59,7 +59,7 @@ export const anthropicDiracTest = diracTest.extend<{
       workerName: 'Dirac Anthropic test',
       providerAgent: DIRAC_AGENT,
       prepare: runDirectory => prepareAnthropicDirac(runDirectory, leapmuxServer.mockModelUrl, anthropicModel),
-      openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
+      openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, {
         agentProvider: AgentProvider.DIRAC,
         model: anthropicModel,
         optionValues: { permissionMode: 'act', reasoning_effort: 'medium' },
@@ -113,7 +113,7 @@ export const mcpDiracTest = diracTest.extend<{ configuredMcpDiracWorkspace: Conf
       workerName: 'Dirac MCP test',
       providerAgent: DIRAC_AGENT,
       prepare: runDirectory => prepareMcpDirac(runDirectory, leapmuxServer.mockModelUrl),
-      openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC)),
+      openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC)),
     }, async ({ workspaceId, server, agentId, workingDir, agent, setup }) => {
       const observed = readDiracMcpSessionObservation(setup.sessionReceipt)
       expect(observed.request.id).toBe(observed.reply.id)

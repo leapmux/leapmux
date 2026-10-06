@@ -314,7 +314,7 @@ export async function exerciseSessionResume(
   const originalAnswerRows = await countOriginalAnswerRows(context, before.id, texts)
   const originalAnswerBubbles = await assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }).count()
   const server = context.leapmuxServer
-  const keeper = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, newNativeWorkingDir(context, 'native-resume-keeper-'), {
+  const keeper = await openAgentViaAPI(server, context.workspaceId, newNativeWorkingDir(context, 'native-resume-keeper-'), {
     ...agentOpenOptions(context.provider),
     title: 'Native resume keeper',
   })
@@ -366,7 +366,7 @@ export async function exerciseAgentStartup(
   await withNativeStartupWorker(context, options.launch, { failRuntime: options.failed ?? false, ...(options.workerEnvironment ? { workerEnvironment: options.workerEnvironment } : {}) }, async (workerId, wrapper) => {
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
     const server = privateContext.leapmuxServer
-    const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, workerId, context.workspaceId, newNativeWorkingDir(context, 'native-startup-workspace-'), {
+    const agentId = await openAgentViaAPI(server, context.workspaceId, newNativeWorkingDir(context, 'native-startup-workspace-'), {
       ...agentOpenOptions(context.provider),
       title: 'Controlled native startup',
     })

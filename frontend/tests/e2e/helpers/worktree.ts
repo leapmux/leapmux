@@ -233,7 +233,7 @@ export async function createWorkspaceWithWorktreeViaAPI(
   worktreeBranch: string,
 ): Promise<{ workspaceId: string, worktreeDir: string }> {
   const workspaceId = await createWorkspaceViaAPI(hubUrl, token, title)
-  await openAgentViaAPI(hubUrl, token, workerId, workspaceId, workingDir, {
+  await openAgentViaAPI({ hubUrl, adminToken: token, workerId }, workspaceId, workingDir, {
     createWorktree: true,
     worktreeBranch,
   })

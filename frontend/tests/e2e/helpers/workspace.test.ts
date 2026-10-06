@@ -28,7 +28,7 @@ beforeEach(() => {
 /** The open request of the one agent that the test opened. */
 function openRequest() {
   expect(openAgentViaAPI).toHaveBeenCalledOnce()
-  return vi.mocked(openAgentViaAPI).mock.calls[0]![5]
+  return vi.mocked(openAgentViaAPI).mock.calls[0]![3]
 }
 
 describe('workspace fixture lifetime', () => {
@@ -86,7 +86,7 @@ describe('workspace fixture lifetime', () => {
     await withAgentWorkspace(server, { provider: AgentProvider.CODEX, prefix: 'codex' }, use)
     expect(order).toEqual(['open', 'use', 'delete'])
     expect(createTestDirectory).toHaveBeenCalledExactlyOnceWith('codex-wd-')
-    expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/private-directory', expect.objectContaining({ agentProvider: AgentProvider.CODEX }))
+    expect(openAgentViaAPI).toHaveBeenCalledWith(server, 'workspace', '/private-directory', expect.objectContaining({ agentProvider: AgentProvider.CODEX }))
     expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace', workingDir: '/private-directory' })
   })
 
@@ -96,7 +96,7 @@ describe('workspace fixture lifetime', () => {
     await withAgentWorkspace(server, { provider: AgentProvider.KIRO, prefix: 'kiro', workingDir }, use)
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('kiro-wd-')
     expect(createTestDirectory).not.toHaveBeenCalled()
-    expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/repository/checkout', expect.objectContaining({ agentProvider: AgentProvider.KIRO }))
+    expect(openAgentViaAPI).toHaveBeenCalledWith(server, 'workspace', '/repository/checkout', expect.objectContaining({ agentProvider: AgentProvider.KIRO }))
     expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace', workingDir: '/repository/checkout' })
   })
 
@@ -184,7 +184,7 @@ describe('openProviderAgent', () => {
   it('opens the agent in a new directory of the provider and returns the agent and its directory', async () => {
     expect(await openProviderAgent(server, 'workspace', pi)).toEqual({ agentId: 'agent', workingDir: '/private-directory' })
     expect(createTestDirectory).toHaveBeenCalledExactlyOnceWith('pi-e2e-wd-')
-    expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/private-directory', expect.objectContaining({ agentProvider: AgentProvider.PI }))
+    expect(openAgentViaAPI).toHaveBeenCalledWith(server, 'workspace', '/private-directory', expect.objectContaining({ agentProvider: AgentProvider.PI }))
   })
 
   it('makes the directory through the maker of the provider, with the default prefix of the provider', async () => {
@@ -269,7 +269,7 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
     await expect(createWorkspaceWithAgentsViaAPI(server, 'Docs')).resolves.toEqual({ workspaceId: 'workspace', agentIds: ['agent-1'] })
     expect(order).toEqual(['create Docs', 'open'])
     // No open options: the agent takes the provider default, as a hand-built workspace did.
-    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', undefined, undefined)
+    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(server, 'workspace', undefined, undefined)
   })
 
   it('opens one agent with each title, in title order, in the working directory of the caller', async () => {
@@ -277,7 +277,7 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
     vi.mocked(openAgentViaAPI).mockImplementation(async () => `agent-${++next}`)
     const created = await createWorkspaceWithAgentsViaAPI(server, 'Docs', { agentTitles: ['Source Agent', 'Source Agent', 'Other Agent'], workingDir: '/repo' })
     expect(created).toEqual({ workspaceId: 'workspace', agentIds: ['agent-1', 'agent-2', 'agent-3'] })
-    expect(vi.mocked(openAgentViaAPI).mock.calls.map(call => [call[4], call[5]])).toEqual([
+    expect(vi.mocked(openAgentViaAPI).mock.calls.map(call => [call[2], call[3]])).toEqual([
       ['/repo', { title: 'Source Agent' }],
       ['/repo', { title: 'Source Agent' }],
       ['/repo', { title: 'Other Agent' }],
@@ -301,7 +301,7 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
     const created = await createWorkspaceWithAgentsViaAPI(server, 'Docs', { agentCount: 3, workingDir: '/repo' })
     expect(created.agentIds).toEqual(['agent-1', 'agent-2', 'agent-3'])
     for (const call of vi.mocked(openAgentViaAPI).mock.calls)
-      expect(call[4]).toBe('/repo')
+      expect(call[2]).toBe('/repo')
   })
 
   it('creates an empty workspace for an agent count of zero', async () => {
@@ -324,7 +324,7 @@ describe('showWorkspaceWithAgents', () => {
   it('creates the workspace with its agent, then signs the page in and shows that workspace', async () => {
     const order: string[] = []
     const page = {} as Page
-    vi.mocked(openAgentViaAPI).mockImplementation(async (_hub, _token, _worker, _workspace, workingDir) => {
+    vi.mocked(openAgentViaAPI).mockImplementation(async (_server, _workspace, workingDir) => {
       order.push(`open in ${workingDir}`)
       return 'agent'
     })

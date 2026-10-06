@@ -319,7 +319,7 @@ describe('exerciseSessionResume', () => {
     const { context } = scenario()
     await exerciseSessionResume(context, options())
     expect(resume.directory).toHaveBeenCalledExactlyOnceWith('native-resume-keeper-')
-    expect(resume.open).toHaveBeenCalledExactlyOnceWith('http://unused.invalid', 'controlled-token', 'resume-unit-worker', 'resume-unit-workspace', '/controlled/native-resume-keeper-', {
+    expect(resume.open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'resume-unit-worker' }), 'resume-unit-workspace', '/controlled/native-resume-keeper-', {
       ...agentOpenOptions(AgentProvider.CODEX),
       title: 'Native resume keeper',
     })
@@ -330,7 +330,7 @@ describe('exerciseSessionResume', () => {
     const { context } = scenario({ ...CODEX, workingDir: gitRepositoryWorkingDir })
     resume.directory.mockImplementation(prefix => mkdtempSync(join(run, prefix)))
     await exerciseSessionResume(context, options())
-    const keeperDir = resume.open.mock.calls[0]?.[4]
+    const keeperDir = resume.open.mock.calls[0]?.[2]
     if (keeperDir === undefined)
       throw new Error('The keeper opened in no stated directory.')
     expect(basename(dirname(keeperDir))).toMatch(/^native-resume-keeper-/)
@@ -666,8 +666,8 @@ describe('exerciseAgentStartup', () => {
     const qoder: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: gitRepositoryWorkingDir }
     await expect(exerciseAgentStartup(startupContext(qoder), { launch, failed: true })).rejects.toBe(opened)
     expect(resume.open).toHaveBeenCalledOnce()
-    const [hubUrl, adminToken, workerId, workspaceId, workingDir, request] = resume.open.mock.calls[0] ?? []
-    expect([hubUrl, adminToken, workerId, workspaceId]).toEqual(['http://unused.invalid', 'controlled-token', 'private-startup-worker', 'startup-unit-workspace'])
+    const [server, workspaceId, workingDir, request] = resume.open.mock.calls[0] ?? []
+    expect([server?.hubUrl, server?.adminToken, server?.workerId, workspaceId]).toEqual(['http://unused.invalid', 'controlled-token', 'private-startup-worker', 'startup-unit-workspace'])
     expect(request).toEqual({ ...agentOpenOptions(AgentProvider.QODER), title: 'Controlled native startup' })
     if (workingDir === undefined)
       throw new Error('The startup agent opened in no stated directory.')
@@ -680,7 +680,7 @@ describe('exerciseAgentStartup', () => {
     resume.directory.mockImplementation(prefix => `/controlled/${prefix}`)
     await expect(exerciseAgentStartup(startupContext(CODEX), { launch, failed: true })).rejects.toBe(opened)
     expect(resume.directory).toHaveBeenCalledExactlyOnceWith('native-startup-workspace-')
-    expect(resume.open.mock.calls[0]?.[4]).toBe('/controlled/native-startup-workspace-')
+    expect(resume.open.mock.calls[0]?.[2]).toBe('/controlled/native-startup-workspace-')
   })
 })
 

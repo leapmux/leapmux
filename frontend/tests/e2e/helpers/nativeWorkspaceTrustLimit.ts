@@ -111,7 +111,7 @@ export async function exerciseNativeWorkspaceTrustLimit(
       start: async () => {
         const server = privateContext.leapmuxServer
         const overrides = options.optionValues ? { optionValues: options.optionValues } : {}
-        agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, privateContext.workspaceId, project.directory, agentOpenOptions(privateContext.provider, overrides))
+        agentId = await openAgentViaAPI(server, privateContext.workspaceId, project.directory, agentOpenOptions(privateContext.provider, overrides))
         if (wrapper) {
           await wrapper.entry
           await wrapper.release()

@@ -24,7 +24,7 @@ piTest('preserves complete native MCP arguments without an adapter permission di
   const server = writeMcpFormServer(directory, 'permission-server.mjs', { expectedEchoArguments: input, receiptLog })
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
+    await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     // The tool turn allows any banner that appears, so the observation proves that the MCP call raises none.

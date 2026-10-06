@@ -180,7 +180,7 @@ test.describe('Worktree Git Modes', () => {
 
     // Create workspace with checkout_branch.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch API WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       checkoutBranch: 'api-switch-target',
     })
 
@@ -221,7 +221,7 @@ test.describe('Worktree Git Modes', () => {
 
     // Create workspace using the use_worktree_path field.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Use WT API WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       useWorktreePath: worktreeDir,
     })
 
@@ -247,7 +247,7 @@ test.describe('Worktree Git Modes', () => {
     )
 
     // Now open a second agent using "use existing worktree" pointing to the same managed worktree.
-    const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+    const secondAgentId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       useWorktreePath: worktreeDir,
     })
 
@@ -280,7 +280,7 @@ test.describe('Worktree Git Modes', () => {
 
     // Create workspace using "use existing worktree" pointing to the unmanaged worktree.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unmanaged WT WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       useWorktreePath: worktreeDir,
     })
 
@@ -342,7 +342,7 @@ test.describe('Worktree Git Modes', () => {
     // Open a second agent using "use current state" (no git mode fields) pointing directly
     // at the managed worktree path. The backend should detect it's a managed worktree and
     // register this tab.
-    const secondAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, worktreeDir)
+    const secondAgentId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, worktreeDir)
 
     // Both agents must have FINISHED starting before the first is closed: the
     // second agent's worktree_tabs link is registered on its async startup
@@ -403,7 +403,7 @@ test.describe('Worktree Git Modes', () => {
 
     // Create workspace with worktree based on feature-base branch.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Base Branch WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir, {
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
       createWorktree: true,
       worktreeBranch: 'derived-from-feature',
       worktreeBaseBranch: 'feature-base',

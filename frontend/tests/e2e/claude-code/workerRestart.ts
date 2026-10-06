@@ -25,12 +25,11 @@ export async function withRestartWorkspace(
   operation: (workspace: RestartWorkspace) => Promise<void>,
 ): Promise<void> {
   await ensureWorkerOnline(server)
-  const { hubUrl, adminToken, workerId } = server
   await withTestWorkspace(server, options.prefix, async ({ workspaceId }) => {
     const agentId = options.pinnedMode
-      ? await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      : await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    await loginViaToken(page, adminToken)
+      ? await openPinnedModeAgentViaAPI(server, workspaceId)
+      : await openAgentViaAPI(server, workspaceId)
+    await loginViaToken(page, server.adminToken)
     await openWorkspace(page, workspaceId)
     await operation({ workspaceId, agentId })
   })

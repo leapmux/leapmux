@@ -19,7 +19,7 @@ export async function exerciseReasonixMcpForm(fixtures: NativeContextFixtures): 
   const directory = newNativeWorkingDir(context, 'reasonix-mcp-form-')
   writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(writeMcpFormServer(directory, 'form-server.mjs'))))
   const { leapmuxServer } = context
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, directory, agentOpenOptions(context.provider, {
+  await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, agentOpenOptions(context.provider, {
     optionValues: { tool_approval: 'yolo' },
   }))
   await openWorkspace(context.page, context.workspaceId)

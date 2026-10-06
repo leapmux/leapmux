@@ -72,15 +72,14 @@ export async function openResumeSubject(
   fixtures: ResumePickerFixtures,
   options: { label: string, subjectOptions?: (workspaceId: string) => AgentOpenOptions | Promise<AgentOpenOptions> },
 ): Promise<ResumeSubject> {
-  const { page } = fixtures
-  const { hubUrl, adminToken, workerId, dataDir } = fixtures.leapmuxServer
-  const keeperDir = createGitRepo(dataDir, `resume-keeper-${crypto.randomUUID()}`)
-  const subjectDir = createGitRepo(dataDir, `resume-subject-${crypto.randomUUID()}`)
-  const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `${options.label} resume ${crypto.randomUUID()}`)
+  const { page, leapmuxServer: server } = fixtures
+  const keeperDir = createGitRepo(server.dataDir, `resume-keeper-${crypto.randomUUID()}`)
+  const subjectDir = createGitRepo(server.dataDir, `resume-subject-${crypto.randomUUID()}`)
+  const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, `${options.label} resume ${crypto.randomUUID()}`)
   const subjectOptions = await options.subjectOptions?.(workspaceId)
-  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
-  const subjectId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, { ...subjectOptions, title: 'Subject' })
-  await loginViaToken(page, adminToken)
+  const keeperId = await openAgentViaAPI(server, workspaceId, keeperDir, { title: 'Keeper' })
+  const subjectId = await openAgentViaAPI(server, workspaceId, subjectDir, { ...subjectOptions, title: 'Subject' })
+  await loginViaToken(page, server.adminToken)
   await openWorkspace(page, workspaceId)
   await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
   return { workspaceId, keeperId, subjectId, subjectDir }

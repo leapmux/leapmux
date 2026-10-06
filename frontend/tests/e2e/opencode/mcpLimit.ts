@@ -51,7 +51,7 @@ export async function exerciseOpencodeMcpInputLimit(
   }, async (workerId, wrapper) => {
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
     const privateServer = privateContext.leapmuxServer
-    await openAgentViaAPI(privateServer.hubUrl, privateServer.adminToken, workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
+    await openAgentViaAPI({ hubUrl: privateServer.hubUrl, adminToken: privateServer.adminToken, workerId }, context.workspaceId, directory, agentOpenOptions(context.provider))
     await wrapper.entry
     await wrapper.release()
     await openWorkspace(context.page, context.workspaceId)

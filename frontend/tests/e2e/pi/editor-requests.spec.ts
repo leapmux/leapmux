@@ -41,7 +41,7 @@ export default function (pi) {
   });
 }
 `)
-      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
+      const agentId = await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, {
         agentProvider: AgentProvider.PI,
         ...settings,
       })

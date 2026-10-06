@@ -52,8 +52,8 @@ test.describe('Offline close and cross-workspace move', () => {
         // Titles are opt-in on the API path (it defaults to ""). Non-empty ones
         // let the pre-offline check prove the Worker had really hydrated both tabs
         // before we killed it.
-        const closedAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: closeTitle })
-        const movedAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: moveTitle })
+        const closedAgentId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, wsA, undefined, { title: closeTitle })
+        const movedAgentId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, wsA, undefined, { title: moveTitle })
 
         // `separateHubWorker` is worker-SCOPED: later specs in the same worker
         // reuse it. This spec deliberately kills it mid-test, so the cleanup

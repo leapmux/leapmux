@@ -1,5 +1,5 @@
+import type { AgentServer } from './api'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import type { AgentServer } from './workspace'
 import { expect } from '@playwright/test'
 import {
   AgentStatus,

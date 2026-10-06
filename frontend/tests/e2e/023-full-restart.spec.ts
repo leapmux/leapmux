@@ -1,4 +1,4 @@
-import type { AgentServer } from './helpers/workspace'
+import type { AgentServer } from './helpers/api'
 import { expect } from '@playwright/test'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'

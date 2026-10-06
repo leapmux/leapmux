@@ -43,7 +43,7 @@ vi.mock('./ui', () => ({
   applyPermissionPreset: async (_page: unknown, preset: string) => { run.events.push(`preset ${preset}`) },
 }))
 vi.mock('./api', () => ({
-  openAgentViaAPI: async (_hubUrl: string, _token: string, _workerId: string, workspaceId: string, _workingDir: string, options: { agentProvider: AgentProvider }) => {
+  openAgentViaAPI: async (_server: unknown, workspaceId: string, _workingDir: string, options: { agentProvider: AgentProvider }) => {
     run.events.push(`open agent ${AgentProvider[options.agentProvider]} in ${workspaceId}`)
     run.configurationAtOpen = readFileSync(run.configurationPath, 'utf8')
     return 'agent'

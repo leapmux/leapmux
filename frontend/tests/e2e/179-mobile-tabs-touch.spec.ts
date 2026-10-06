@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
-import type { AgentServer } from './helpers/workspace'
+import type { AgentServer } from './helpers/api'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -26,8 +26,8 @@ import { chatScrollContainer, composerEditor, stableBox, workspaceRow } from './
 
 /** Open two titled agent tabs through the API. */
 async function openTwoAgentTabs(server: AgentServer, workspaceId: string) {
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, undefined, { title: 'Alpha' })
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, undefined, { title: 'Beta' })
+  await openAgentViaAPI(server, workspaceId, undefined, { title: 'Alpha' })
+  await openAgentViaAPI(server, workspaceId, undefined, { title: 'Beta' })
 }
 
 /** Position of the row/tab whose text contains `needle`, throwing if absent. */

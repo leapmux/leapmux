@@ -45,7 +45,7 @@ vi.mock('./api', () => ({
     picker.events.push(`workspace:${title.split(' ')[0]}`)
     return 'unit-workspace'
   },
-  openAgentViaAPI: async (_hubUrl: string, _token: string, _workerId: string, _workspaceId: string, workingDir: string, options: { title?: string }) => {
+  openAgentViaAPI: async (_server: unknown, _workspaceId: string, workingDir: string, options: { title?: string }) => {
     picker.openOptions.push({ workingDir, ...options })
     picker.events.push(`open:${options.title}`)
     return options.title === 'Keeper' ? KEEPER_ID : SUBJECT_ID

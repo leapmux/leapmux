@@ -518,7 +518,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     const emptyDir = createGitRepo(dataDir, 'session-picker-empty')
 
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Empty Picker WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, emptyDir)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, emptyDir)
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)

@@ -14,7 +14,7 @@ import { answerPlanReview, chatScrollContainer, openWorkspace, sendMessage, wait
  */
 export async function exercisePiFreshPlanSession(context: ManagedNativeScenarioContext): Promise<void> {
   const { page, modelScript, leapmuxServer } = context
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, newNativeWorkingDir(context, 'renderer-pi-fresh-plan-'), agentOpenOptions(context.provider))
+  const agentId = await openAgentViaAPI(leapmuxServer, context.workspaceId, newNativeWorkingDir(context, 'renderer-pi-fresh-plan-'), agentOpenOptions(context.provider))
   const readSession = async () => (await nativeAgentById(context, agentId))?.agentSessionId ?? ''
   const originalSession = await retryUntilPass(async () => {
     const session = await readSession()

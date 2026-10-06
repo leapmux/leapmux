@@ -36,7 +36,7 @@ piTest('shows one decoded native MCP image and resource image after reload', asy
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [image.name]: image, [resource.name]: resource })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
+    await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, context.workspaceId)
     const calls = [
       mcpToolCall(AgentProvider.PI, 'native-pi-mcp-image', { server: image.name, tool: 'show', input: {} }),

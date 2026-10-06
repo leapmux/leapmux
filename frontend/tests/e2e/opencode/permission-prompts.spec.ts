@@ -19,7 +19,7 @@ opencodeTest('asks before a shell command touches a file outside the working dir
   const workingDir = createGitRepo(parent, 'repo')
   const file = join(parent, 'opencode-permission-probe.txt')
   writeFileSync(file, 'remove this test file')
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OPENCODE))
+  await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OPENCODE))
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   // The path leaves the working directory, so OpenCode asks its external_directory permission.
@@ -43,7 +43,7 @@ opencodeTest('keeps exact outside-directory bytes after a native Deny decision',
   const file = join(parent, 'opencode-denied-permission-probe.txt')
   const original = `KEEP_THE_OUTSIDE_FILE_${randomUUID()}\n`
   writeFileSync(file, original)
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OPENCODE))
+  await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OPENCODE))
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   // The path leaves the working directory, so OpenCode asks its external_directory permission.

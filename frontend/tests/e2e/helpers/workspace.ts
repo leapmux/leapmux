@@ -2,6 +2,7 @@ import type { Page, TestInfo } from '@playwright/test'
 import type { ChildProcess } from 'node:child_process'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { AgentOpenOverrides } from '../agentSettings'
+import type { AgentServer } from './api'
 import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { withCleanup } from './cleanup'
@@ -40,13 +41,6 @@ export function agentWorkspaceFixture(workspace: WorkspaceFixture, agentId: stri
 export interface AgentWorkspace {
   workspaceId: string
   workingDir: string
-}
-
-/** The hub and the Worker where a test opens an agent. */
-export interface AgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
 }
 
 /**
@@ -119,7 +113,7 @@ export async function withAgentWorkspace(
   const request = agentOpenOptions(options.provider, options.openOptions)
   await withTestWorkspace(server, options.prefix, async (workspace) => {
     const workingDir = newProviderWorkingDir(options)
-    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, request)
+    await openAgentViaAPI(server, workspace.workspaceId, workingDir, request)
     await use({ workspaceId: workspace.workspaceId, workingDir })
   })
 }
@@ -173,7 +167,7 @@ export async function createWorkspaceWithAgentsViaAPI(
   const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, title)
   const agentIds: string[] = []
   for (const agentTitle of agentTitles)
-    agentIds.push(await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, options.workingDir, agentTitle === undefined ? undefined : { title: agentTitle }))
+    agentIds.push(await openAgentViaAPI(server, workspaceId, options.workingDir, agentTitle === undefined ? undefined : { title: agentTitle }))
   return { workspaceId, agentIds }
 }
 
@@ -223,7 +217,7 @@ export async function openProviderAgent(
   const request = agentOpenOptions(agent.provider, options)
   const workingDir = options.workingDir ?? newProviderWorkingDir(agent, options.directoryPrefix)
   options.prepare?.(workingDir)
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, request)
+  const agentId = await openAgentViaAPI(server, workspaceId, workingDir, request)
   return { agentId, workingDir }
 }
 

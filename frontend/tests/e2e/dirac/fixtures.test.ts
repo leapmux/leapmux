@@ -117,7 +117,7 @@ describe('anthropicDiracWorkspace', () => {
     await fixture('anthropicDiracWorkspace')({ page: {}, leapmuxServer, anthropicModel: 'claude-opus-5' }, use)
     expect(run.options()).toMatchObject({ prefix: 'dirac-anthropic', workerName: 'Dirac Anthropic test', providerAgent: DIRAC_AGENT })
     await run.options().openAgent(privateServer, 'private-workspace', directory)
-    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith('http://private-hub.test', 'private-token', 'private-worker', 'private-workspace', directory, {
+    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(privateServer, 'private-workspace', directory, {
       agentProvider: AgentProvider.DIRAC,
       model: 'claude-opus-5',
       optionValues: { permissionMode: 'act', reasoning_effort: 'medium' },
@@ -179,7 +179,7 @@ describe('configuredMcpDiracWorkspace', () => {
     expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'private-workspace', server: privateServer, workingDir: directory, agentId: 'dirac-agent', ...setup })
     expect(run.options()).toMatchObject({ prefix: 'dirac-mcp', workerName: 'Dirac MCP test', providerAgent: DIRAC_AGENT })
     await run.options().openAgent(privateServer, 'private-workspace', directory)
-    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith('http://private-hub.test', 'private-token', 'private-worker', 'private-workspace', directory, agentOpenOptions(AgentProvider.DIRAC))
+    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(privateServer, 'private-workspace', directory, agentOpenOptions(AgentProvider.DIRAC))
   })
 
   it.each([

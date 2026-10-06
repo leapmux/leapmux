@@ -198,8 +198,8 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     const workspaceId = authenticatedEmptyWorkspace.workspaceId
     const keeperDir = createGitRepo(dataDir, `fast-child-keeper-${crypto.randomUUID()}`)
     const workingDir = createGitRepo(dataDir, `fast-child-resume-${crypto.randomUUID()}`)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
-    const rootID = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, workingDir, {
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, keeperDir, { title: 'Keeper' })
+    const rootID = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, workingDir, {
       ...agentOpenOptions(PROVIDER),
       title: 'Subject',
     })

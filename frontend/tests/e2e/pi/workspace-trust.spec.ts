@@ -52,7 +52,7 @@ export default function (pi) {
         expect(existsSync(receipt)).toBe(false)
         await withMockPiModel(directory, leapmuxServer, async (settings) => {
           const server = privateContext.leapmuxServer
-          const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, privateContext.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
+          const agentId = await openAgentViaAPI(server, privateContext.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
           await tabById(page, agentId).click()
           const trusted = await sendNativeAnswer(privateContext, 'Reply once after the isolated native trust decision.', 'The trusted native project configuration turn completed.')
           expect(nativeModelToolNames(trusted)).toContain('native_project_trust_probe')

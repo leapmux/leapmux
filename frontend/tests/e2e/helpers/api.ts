@@ -7,6 +7,8 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { fromJson } from '@bufbuild/protobuf'
+import { OPTION_ID_MODEL } from '../../../src/components/chat/settingsGroups'
+import { AgentProvider, OpenAgentRequestSchema, OpenAgentResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { sleep } from '../../../src/lib/sleep'
@@ -672,43 +674,73 @@ export async function listOnlineWorkerIDsViaAPI(
 
 // ---- Encrypted Worker helpers (Agent) ----
 
+/** The hub and the Worker where a test opens an agent, and the session that opens it. */
+export interface AgentServer {
+  hubUrl: string
+  /** The session cookie of the user who opens the agent. */
+  adminToken: string
+  workerId: string
+}
+
+/**
+ * What a test states for one agent that {@link openAgentViaAPI} opens. Each field is optional: an absent field takes
+ * the Worker default. `AgentOpenOptions` of `../agentSettings.ts` fits here, and supplies the pinned settings of a
+ * provider.
+ */
+export interface OpenAgentOptions {
+  /** The model ID. The open request carries it in the options map, the one place that a model comes from. */
+  model?: string
+  /** Reopen this exact native session rather than create a new session. */
+  agentSessionId?: string
+  /** Initial values for any provider option group. A model here fails: give it as `model`. */
+  optionValues?: Record<string, string>
+  createWorktree?: boolean
+  worktreeBranch?: string
+  worktreeBaseBranch?: string
+  checkoutBranch?: string
+  useWorktreePath?: string
+  /** The provider. Omit it for the Worker default, because an explicit `UNSPECIFIED` fails. */
+  agentProvider?: AgentProvider
+  /**
+   * Optional initial tab title. Browser opens use pickAgentTitle. This API helper defaults to an empty title.
+   * Supply a title when the test requires visible text. A workspace move test can then detect title loss.
+   */
+  title?: string
+}
+
+/**
+ * Refuse open options that would open another agent than the test states. Each check runs before the first request.
+ * A top-level model and a model option once both reached the request, and the later spread won with no message.
+ */
+function assertOpenAgentOptions(options: OpenAgentOptions): void {
+  if (options.agentSessionId !== undefined && options.agentSessionId.trim() === '')
+    throw new Error('The native session ID must be nonempty when a resume is requested.')
+  if (options.model !== undefined && options.model.trim() === '')
+    throw new Error('openAgentViaAPI: a model needs a model ID. Omit `model` for the Worker default.')
+  if (options.optionValues && Object.hasOwn(options.optionValues, OPTION_ID_MODEL))
+    throw new Error('openAgentViaAPI: give the model as `model`, not as an option value.')
+  if (options.agentProvider === AgentProvider.UNSPECIFIED)
+    throw new Error('openAgentViaAPI: an explicit provider must not be UNSPECIFIED. Omit `agentProvider` for the Worker default.')
+}
+
 /**
  * Open an agent through an encrypted channel to the Worker. Register its tab on the Hub and return the agent ID.
+ * Omit `workingDir` for the Worker's default directory.
  */
 export async function openAgentViaAPI(
-  hubUrl: string,
-  cookie: string,
-  workerId: string,
+  server: AgentServer,
   workspaceId: string,
   workingDir?: string,
-  options?: {
-    model?: string
-    /** Reopen this exact native session rather than create a new session. */
-    agentSessionId?: string
-    /** Initial values for any provider option group. */
-    optionValues?: Record<string, string>
-    createWorktree?: boolean
-    worktreeBranch?: string
-    worktreeBaseBranch?: string
-    checkoutBranch?: string
-    useWorktreePath?: string
-    agentProvider?: number
-    /**
-     * Optional initial tab title. Browser opens use pickAgentTitle. This API helper defaults to an empty title.
-     * Supply a title when the test requires visible text. A workspace move test can then detect title loss.
-     */
-    title?: string
-  },
+  options: OpenAgentOptions = {},
 ): Promise<string> {
-  if (options?.agentSessionId !== undefined && options.agentSessionId.trim() === '')
-    throw new Error('The native session ID must be nonempty when a resume is requested.')
-  const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/agent_pb')
+  assertOpenAgentOptions(options)
+  const { hubUrl, adminToken: cookie, workerId } = server
   const channel = await getTestChannel(hubUrl, cookie)
   // The options map holds the model and every option-group value.
   // A top-level model property would disappear during protobuf creation, and the agent would use the provider default.
   const initialOptions = {
-    ...options?.optionValues,
-    ...(options?.model ? { model: options.model } : {}),
+    ...options.optionValues,
+    ...(options.model === undefined ? {} : { [OPTION_ID_MODEL]: options.model }),
   }
 
   // Channels hold no workspace set. A workspace created after the handshake needs no announcement before a worker serves its tabs.
@@ -720,14 +752,14 @@ export async function openAgentViaAPI(
     {
       workerId,
       workingDir: workingDir ?? '',
-      ...(options?.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
-      ...(options?.title ? { title: options.title } : {}),
+      ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
+      ...(options.title ? { title: options.title } : {}),
       ...(Object.keys(initialOptions).length > 0 ? { options: initialOptions } : {}),
-      ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
-      ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
-      ...(options?.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
-      ...(options?.checkoutBranch ? { checkoutBranch: options.checkoutBranch } : {}),
-      ...(options?.useWorktreePath ? { useWorktreePath: options.useWorktreePath } : {}),
+      ...(options.agentProvider === undefined ? {} : { agentProvider: options.agentProvider }),
+      ...(options.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
+      ...(options.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
+      ...(options.checkoutBranch ? { checkoutBranch: options.checkoutBranch } : {}),
+      ...(options.useWorktreePath ? { useWorktreePath: options.useWorktreePath } : {}),
     },
   )
   if (!resp.agent) {
@@ -762,13 +794,11 @@ export async function openAgentViaAPI(
  * Omit `workingDir` for the Worker's default directory.
  */
 export async function openPinnedModeAgentViaAPI(
-  hubUrl: string,
-  cookie: string,
-  workerId: string,
+  server: AgentServer,
   workspaceId: string,
   workingDir?: string,
 ): Promise<string> {
-  return openAgentViaAPI(hubUrl, cookie, workerId, workspaceId, workingDir, {
+  return openAgentViaAPI(server, workspaceId, workingDir, {
     optionValues: { permissionMode: 'default' },
   })
 }

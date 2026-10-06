@@ -1,5 +1,6 @@
 import type { ChannelTransport } from '../../../src/lib/channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelManager } from '../../../src/lib/channel'
 import {
@@ -81,8 +82,17 @@ function deletionResponses(workerTabs: unknown[], onlineWorkers = ['worker-a', '
 }
 
 describe('openAgentViaAPI', () => {
+  const server = () => ({ hubUrl, adminToken: 'session', workerId: 'worker-a' })
+
+  /** Stop the Worker request, so the test reads the request that the helper sent. */
+  function stopWorkerRequest(): Error {
+    const stopped = new Error('The controlled Worker request stopped before tab registration.')
+    callWorker.mockRejectedValue(stopped)
+    return stopped
+  }
+
   it.each(['', '   ', '\n\t'])('rejects an empty requested native session before it opens a channel: %j', async (agentSessionId) => {
-    await expect(openAgentViaAPI(hubUrl, 'session', 'worker-a', 'workspace', '/project', { agentSessionId }))
+    await expect(openAgentViaAPI(server(), 'workspace', '/project', { agentSessionId }))
       .rejects
       .toThrow('The native session ID must be nonempty')
     expect(createTestChannelManager).not.toHaveBeenCalled()
@@ -90,18 +100,52 @@ describe('openAgentViaAPI', () => {
   })
 
   it('sends the requested native session ID through the actual Worker request', async () => {
-    const stopped = new Error('The controlled Worker request stopped before tab registration.')
-    callWorker.mockRejectedValue(stopped)
-    await expect(openAgentViaAPI(hubUrl, 'session', 'worker-a', 'workspace', '/project', { agentSessionId: 'native-conversation-42' })).rejects.toBe(stopped)
+    const stopped = stopWorkerRequest()
+    await expect(openAgentViaAPI(server(), 'workspace', '/project', { agentSessionId: 'native-conversation-42' })).rejects.toBe(stopped)
     expect(callWorker).toHaveBeenCalledTimes(1)
+    expect(callWorker.mock.calls[0]?.[0]).toBe('worker-a')
     expect(callWorker.mock.calls[0]?.[4]).toMatchObject({ workerId: 'worker-a', workingDir: '/project', agentSessionId: 'native-conversation-42' })
   })
 
   it('keeps session creation when no native session ID is supplied', async () => {
-    const stopped = new Error('The controlled Worker request stopped before tab registration.')
-    callWorker.mockRejectedValue(stopped)
-    await expect(openAgentViaAPI(hubUrl, 'session', 'worker-a', 'workspace', '/project')).rejects.toBe(stopped)
+    const stopped = stopWorkerRequest()
+    await expect(openAgentViaAPI(server(), 'workspace', '/project')).rejects.toBe(stopped)
     expect(callWorker.mock.calls[0]?.[4]).not.toHaveProperty('agentSessionId')
+  })
+
+  it('sends the model in the options map beside the option values, and the provider', async () => {
+    const stopped = stopWorkerRequest()
+    await expect(openAgentViaAPI(server(), 'workspace', undefined, {
+      agentProvider: AgentProvider.CODEX,
+      model: 'gpt-mock',
+      optionValues: { effort: 'high' },
+    })).rejects.toBe(stopped)
+    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({
+      workingDir: '',
+      agentProvider: AgentProvider.CODEX,
+      options: { effort: 'high', model: 'gpt-mock' },
+    })
+  })
+
+  it('sends no options map, no provider, and no title for the Worker default', async () => {
+    const stopped = stopWorkerRequest()
+    await expect(openAgentViaAPI(server(), 'workspace')).rejects.toBe(stopped)
+    const request = callWorker.mock.calls[0]?.[4]
+    expect(request).not.toHaveProperty('options')
+    expect(request).not.toHaveProperty('agentProvider')
+    expect(request).not.toHaveProperty('title')
+  })
+
+  it.each([
+    { label: 'a model given as an option value', options: { optionValues: { model: 'another-model' } }, message: 'give the model as `model`' },
+    { label: 'a model given twice', options: { model: 'gpt-mock', optionValues: { model: 'another-model' } }, message: 'give the model as `model`' },
+    { label: 'an empty model', options: { model: '' }, message: 'a model needs a model ID' },
+    { label: 'a blank model', options: { model: '  ' }, message: 'a model needs a model ID' },
+    { label: 'an explicit unspecified provider', options: { agentProvider: AgentProvider.UNSPECIFIED }, message: 'must not be UNSPECIFIED' },
+  ])('refuses $label before it opens a channel', async ({ options, message }) => {
+    await expect(openAgentViaAPI(server(), 'workspace', '/project', options)).rejects.toThrow(message)
+    expect(createTestChannelManager).not.toHaveBeenCalled()
+    expect(callWorker).not.toHaveBeenCalled()
   })
 })
 

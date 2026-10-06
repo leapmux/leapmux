@@ -72,7 +72,7 @@ test.describe('control CLI cross-worker', () => {
       // Seed one agent on Worker A so the workspace renders
       // something initially. The interesting tab — the one we'll
       // open via the CLI — lives on Worker B.
-      const agentA = await openAgentViaAPI(harness.hubUrl, harness.adminToken, workerA.id, workspaceId)
+      const agentA = await openAgentViaAPI({ hubUrl: harness.hubUrl, adminToken: harness.adminToken, workerId: workerA.id }, workspaceId)
 
       await withExtraClients(browser, harness, 2, async ([pageA, pageB]) => {
         await loginViaToken(pageA, harness.adminToken)

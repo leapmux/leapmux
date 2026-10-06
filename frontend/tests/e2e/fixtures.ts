@@ -333,8 +333,7 @@ export const test = base.extend<
   agentWorkingDir: [undefined, { option: true }],
 
   workspace: async ({ leapmuxServer, emptyWorkspace, agentWorkingDir }, use) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const agentId = await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, emptyWorkspace.workspaceId, agentWorkingDir)
+    const agentId = await openPinnedModeAgentViaAPI(leapmuxServer, emptyWorkspace.workspaceId, agentWorkingDir)
     await use(agentWorkspaceFixture(emptyWorkspace, agentId, agentWorkingDir))
   },
 

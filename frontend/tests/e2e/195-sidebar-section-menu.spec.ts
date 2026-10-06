@@ -58,7 +58,7 @@ test.describe('sidebar section menu', () => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     // A second agent in this repository's own checkout, so the section's tabs
     // carry a git toplevel the menu can offer.
-    await openAgentViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId, frontendRoot)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, authenticatedWorkspace.workspaceId, frontendRoot)
     await page.reload()
     await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
 

@@ -106,7 +106,7 @@ describe('exerciseOpencodeMcpInputLimit', () => {
     const directory = workingDir.mock.results[0]?.value
     if (typeof directory !== 'string')
       throw new Error('The rule of the provider created no directory.')
-    expect(limit.open).toHaveBeenCalledExactlyOnceWith('http://unused.invalid', 'controlled-token', 'private-limit-worker', 'limit-workspace', directory, agentOpenOptions(AgentProvider.OPENCODE))
+    expect(limit.open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'private-limit-worker' }), 'limit-workspace', directory, agentOpenOptions(AgentProvider.OPENCODE))
     expect(existsSync(join(directory, 'form-server.mjs'))).toBe(true)
     const environment = limit.startupWorker.mock.calls[0]?.[2].workerEnvironment?.({} as NativeStartupWrapper)
     expect(environment?.OPENCODE_CONFIG_CONTENT).toContain(JSON.stringify(join(directory, 'form-server.mjs')))

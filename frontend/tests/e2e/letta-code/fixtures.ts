@@ -37,7 +37,7 @@ export function openMcpLettaAgent(
   workingDir: string,
   agentSessionId?: string,
 ): Promise<string> {
-  return openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
+  return openAgentViaAPI(server, workspaceId, workingDir, {
     ...agentOpenOptions(AgentProvider.LETTA, { optionValues: { [OPTION_ID_PERMISSION_MODE]: LETTA_MODE.Unrestricted } }),
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
   })

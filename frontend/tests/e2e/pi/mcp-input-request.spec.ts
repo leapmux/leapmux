@@ -18,7 +18,7 @@ piTest('returns the native MCP elicitation refusal without a browser form', asyn
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: context.provider, ...settings })
+    await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: context.provider, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const callId = 'native-pi-elicitation'
     await expectUnsupportedMcpInput(context, { receiptLog, callId, additionalTestIds: ['control-banner'], invoke: () => invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} }) })

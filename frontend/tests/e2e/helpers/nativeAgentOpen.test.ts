@@ -31,7 +31,7 @@ beforeEach(() => {
   opened.events = []
   opened.selected = 'agent-1'
   opened.open.mockReset()
-  opened.open.mockImplementation(async (_hub: string, _cookie: string, _worker: string, _workspace: string, directory: string) => {
+  opened.open.mockImplementation(async (_server: unknown, _workspace: string, directory: string) => {
     opened.events.push(`open ${directory}`)
     return 'agent-1'
   })
@@ -65,7 +65,7 @@ function repositoryAgent() {
 describe('openNativeAgent', () => {
   it('opens the agent in a fresh directory, shows the workspace, and returns the agent and the directory', async () => {
     expect(await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })).toEqual({ agentId: 'agent-1', workingDir: '/run/native-code-execution-directory' })
-    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-code-execution-directory', agentOpenOptions(AgentProvider.CURSOR))
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-execution-directory', agentOpenOptions(AgentProvider.CURSOR))
     expect(opened.events).toEqual(['directory native-code-execution-', 'open /run/native-code-execution-directory', 'workspace workspace-1', 'selected tab'])
   })
 

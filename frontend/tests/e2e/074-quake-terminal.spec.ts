@@ -87,7 +87,7 @@ function freshDir() {
 async function openAgentTab(page: Page, server: QuakeServer) {
   const workingDir = freshDir()
   const { workspaceId } = server
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir)
+  const agentId = await openAgentViaAPI(server, workspaceId, workingDir)
   await loginViaToken(page, server.adminToken)
   await openWorkspace(page, workspaceId)
   await expect(visibleOnly(agentTabs(page)).first()).toBeVisible()
@@ -515,8 +515,8 @@ test.describe('Quake-mode terminal', () => {
     const { hubUrl, adminToken, workerId } = quakeServer
     const dir = freshDir()
     const { workspaceId } = quakeServer
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dir)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dir)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, dir)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, dir)
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
     await expect(visibleOnly(agentTabs(page))).toHaveCount(2)
@@ -549,8 +549,8 @@ test.describe('Quake-mode terminal', () => {
     const dirOne = freshDir()
     const dirTwo = freshDir()
     const { workspaceId } = quakeServer
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dirOne)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, dirTwo)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, dirOne)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, dirTwo)
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
     await expect(visibleOnly(agentTabs(page))).toHaveCount(2)

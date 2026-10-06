@@ -23,11 +23,11 @@ vi.mock('../helpers/workspace', () => ({
 }))
 
 vi.mock('../helpers/api', () => ({
-  openAgentViaAPI: async (_hubUrl: string, _token: string, _workerId: string, workspaceId: string) => {
+  openAgentViaAPI: async (_server: unknown, workspaceId: string) => {
     steps.events.push(`open-agent:${workspaceId}`)
     return 'restart-agent'
   },
-  openPinnedModeAgentViaAPI: async (_hubUrl: string, _token: string, _workerId: string, workspaceId: string) => {
+  openPinnedModeAgentViaAPI: async (_server: unknown, workspaceId: string) => {
     steps.events.push(`open-pinned-agent:${workspaceId}`)
     return 'pinned-agent'
   },
