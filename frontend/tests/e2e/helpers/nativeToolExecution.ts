@@ -260,7 +260,11 @@ export async function exerciseShellToolExecution(
 }
 
 interface FileToolOptions extends ToolPreparation {
-  editCall?: (callId: string, path: string, before: string, after: string) => MockModelToolCall
+  /**
+   * The tool step that changes the line `before` of the file at `path` to `after`, with the call ID `callId`. The
+   * default is one edit call of the provider. A provider that edits through another tool, or that needs a capture from
+   * its own request, states the step.
+   */
   editStep?: (callId: string, path: string, before: string, after: string) => NativeToolStep
   readAfterCall?: (callId: string, path: string) => MockModelToolCall
 }
@@ -391,7 +395,7 @@ export async function exerciseFileToolExecution(
     steps: [
       { toolCalls: [readToolCall(context.provider, 'native-read-before', file)] },
       options.editStep?.('native-edit', file, before, after)
-      ?? { toolCalls: [options.editCall?.('native-edit', file, before, after) ?? editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
+      ?? { toolCalls: [editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
       { toolCalls: [options.readAfterCall?.('native-read-after', file) ?? readToolCall(context.provider, 'native-read-after', file)] },
       { toolCalls: [writeToolCall(context.provider, 'native-write', { path: created, content: written })] },
     ],

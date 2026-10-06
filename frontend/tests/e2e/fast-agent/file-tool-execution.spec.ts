@@ -45,5 +45,5 @@ fastAgentTest.describe('Fast Agent tool execution', () => {
 })
 
 fastAgentTest('reads and changes native files and keeps the applied diff after reload', async ({ native }) => {
-  await exerciseFileToolExecution(native, { editCall: (callId, path, _before, after) => writeToolCall(native.provider, callId, { path, content: `${after}\n` }) })
+  await exerciseFileToolExecution(native, { editStep: (callId, path, _before, after) => ({ toolCalls: [writeToolCall(native.provider, callId, { path, content: `${after}\n` })] }) })
 })
