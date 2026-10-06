@@ -2,45 +2,67 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { currentNativeAgent, nativeOptionValue, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 /** Prove the selected native ZCode mode through its actual mutation and permission path. */
 export async function exerciseZCodeMode(context: ManagedNativeScenarioContext, mode: 'plan' | 'yolo' | 'build'): Promise<void> {
   const agent = await currentNativeAgent(context)
   if (!agent.workingDir)
     throw new Error('The native ZCode mode proof requires a working directory.')
-  expect(agent.optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe(mode)
+  expect(nativeOptionValue(agent, 'permissionMode')).toBe(mode)
   const suffix = uniqueMarker()
   const path = join(agent.workingDir, `zcode-mode-write-${suffix}.txt`)
   const callId = `zcode-${mode}-write-${suffix}`
-  const content = `${mode} mutation\n`
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue(
-    { toolCalls: [writeToolCall(context.provider, callId, { path, content })] },
-    { text: `The ${mode} check ended.` },
-  )
-  await sendMessage(context.page, context.modelScript.prompt(`Try the scripted write in ${mode} mode.`))
+  const toolCall = writeToolCall(context.provider, callId, { path, content: `${mode} mutation\n` })
   if (mode === 'build') {
-    await context.modelScript.waitForSteps(start + 1)
-    const banner = await waitForControlBanner(context.page)
-    await expect(banner).toContainText(basename(path))
-    await context.page.getByTestId('control-deny-btn').filter({ visible: true }).click()
+    // Build mode asks before a write. A denial keeps the file absent, and ZCode returns the refusal to the model.
+    await exerciseNativePermissionDecision(context, {
+      toolCall,
+      decision: 'deny',
+      beforeDecision: banner => expect(banner).toContainText(basename(path)),
+      nativeProof: (request) => {
+        expect(existsSync(path)).toBe(false)
+        // The model reads one result for the refused call. The reader throws when the request holds none.
+        nativeToolResult(request, callId)
+      },
+    })
+    await expectNoControlBanner(context.page)
+    return
   }
-  const status = await context.modelScript.waitForSteps(start + 2)
+  // Plan and Yolo modes raise no permission request, so the turn must end with no click. A banner would hold the
+  // turn, and the step wait would fail.
+  const start = await context.modelScript.queue({ toolCalls: [toolCall] }, nativeTextStep(context, `The ${mode} check ended.`))
+  await sendMessage(context.page, context.modelScript.prompt(`Try the scripted write in ${mode} mode.`))
+  await context.modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(context.page)
-  await expect(context.page.locator('[data-testid="control-banner"]:visible')).toHaveCount(0)
-  const result = nativeToolResult(status.requests.find(request => request.stepIndex === start + 1), callId)
+  await expectNoControlBanner(context.page)
+  const result = nativeToolResult(await context.modelScript.requestAt(start + 1), callId)
   if (mode === 'yolo') {
-    expect(readFileSync(path, 'utf8')).toBe(content)
+    expect(readFileSync(path, 'utf8')).toBe(`${mode} mutation\n`)
     expect(result).toContain(basename(path))
   }
   else {
     expect(existsSync(path)).toBe(false)
-    if (mode === 'plan')
-      expect(result).toMatch(/plan|not available|denied/i)
+    expect(result).toMatch(/plan|not available|denied/i)
+  }
+}
+
+/**
+ * Prove that Plan mode refuses a native write that Yolo mode runs, and that each mode keeps its behavior after a
+ * reload. Each mode runs one write before the reload and one after it.
+ */
+export async function exerciseZCodePlanAndYolo(context: ManagedNativeScenarioContext): Promise<void> {
+  for (const mode of ['plan', 'yolo'] as const) {
+    await chooseSettingsOption(context.page, `permissionMode-${mode}`)
+    await waitForSettingsIdle(context.page)
+    await exerciseZCodeMode(context, mode)
+    await context.page.reload()
+    await expectSettingsOptionChosen(context.page, `permissionMode-${mode}`)
+    await exerciseZCodeMode(context, mode)
   }
 }

@@ -1,14 +1,14 @@
 /**
- * The unit tests check the order and the targets of the plan review absence proof.
- * The plan-approval-banner browser specs of each provider check the actual transcript.
+ * The unit tests check the order and the targets of the plan review absence proof and of the plan option absence
+ * proof. The plan-approval-banner and plan-mode browser specs of each provider check the actual agents.
  */
 import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { expectNoPlanReview, PLAN_REVIEW_BUTTON_TEST_IDS } from './unsupportedPlanMode'
+import { expectNoPlanOption, expectNoPlanReview, PLAN_REVIEW_BUTTON_TEST_IDS } from './unsupportedPlanMode'
 
 /** The browser actions and checks that the fakes record, in order. */
-const recorded = vi.hoisted(() => ({ events: [] as string[], counts: {} as Record<string, number> }))
+const recorded = vi.hoisted(() => ({ events: [] as string[], counts: {} as Record<string, number>, modes: [] as string[][] }))
 
 vi.mock('./nativeControlObservation', () => ({
   expectNoNativeControl: async (_context: unknown, options: { testId: string, additionalTestIds?: readonly string[], relatedProof: () => Promise<void> }) => {
@@ -23,19 +23,46 @@ vi.mock('./ui', async importOriginal => ({
   waitForNativeSettingsHydrated: async () => {
     recorded.events.push('hydrated')
   },
+  openSettingsMenu: async (_page: unknown, groupId: string) => {
+    recorded.events.push(`menu ${groupId}`)
+    return { getByTestId: (testId: string) => ({ testId }) }
+  },
+  closeComposerMenus: async () => {
+    recorded.events.push('close menus')
+  },
+}))
+
+vi.mock('./nativeConversation', () => ({
+  sendNativeAnswer: async () => {
+    recorded.events.push('answer')
+  },
+}))
+
+vi.mock('./nativeScenario', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeScenario')>(),
+  currentNativeAgent: async () => {
+    recorded.events.push('agent')
+    const options = recorded.modes.shift()
+    return { optionGroups: options === undefined ? [] : [{ id: 'permissionMode', options: options.map(id => ({ id })) }] }
+  },
 }))
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   return {
     ...actual,
-    expect: (target: { testId: string }) => ({
-      toHaveCount: async (count: number) => {
-        recorded.events.push(`count ${target.testId}`)
-        // The fake reports the count that the test set, so a present button fails as Playwright fails.
-        expect(recorded.counts[target.testId] ?? 0).toBe(count)
-      },
-    }),
+    // A fake locator records its count check. Every other value reaches the real `expect`.
+    expect: (target: unknown, message?: string) => typeof target === 'object' && target !== null && 'testId' in target
+      ? {
+          toHaveCount: async (count: number) => {
+            const { testId } = target as { testId: string }
+            recorded.events.push(`count ${testId}`)
+            // The fake reports the count that the test set, so a present button fails as Playwright fails, with the
+            // message of the helper.
+            expect(recorded.counts[testId] ?? 0, message).toBe(count)
+          },
+        }
+      : actual.expect(target, message),
   }
 })
 
@@ -53,6 +80,7 @@ function fakeContext(): ManagedNativeScenarioContext {
 beforeEach(() => {
   recorded.events = []
   recorded.counts = {}
+  recorded.modes = []
 })
 
 describe('expectNoPlanReview', () => {
@@ -78,7 +106,14 @@ describe('expectNoPlanReview', () => {
         recorded.events.push('chip')
       },
     })
-    expect(recorded.events.slice(3)).toEqual(['reload', 'chip', 'count plan-approve-btn', 'count plan-reject-btn'])
+    expect(recorded.events).toEqual([
+      'observe plan-approve-btn plan-reject-btn',
+      'observation ended',
+      'reload',
+      'chip',
+      'count plan-approve-btn',
+      'count plan-reject-btn',
+    ])
   })
 
   it.each(PLAN_REVIEW_BUTTON_TEST_IDS)('fails when the reloaded page holds %s', async (testId) => {
@@ -90,6 +125,51 @@ describe('expectNoPlanReview', () => {
     await expect(expectNoPlanReview(fakeContext(), { relatedProof: async () => {
       throw new Error('the native operation failed')
     } })).rejects.toThrow('the native operation failed')
+    expect(recorded.events).not.toContain('reload')
+  })
+})
+
+describe('expectNoPlanOption', () => {
+  it('runs a native turn, then checks the catalog and the menu before and after a reload', async () => {
+    recorded.modes = [['default', 'acceptEdits'], ['default', 'acceptEdits']]
+    await expectNoPlanOption(fakeContext())
+    expect(recorded.events).toEqual([
+      'answer',
+      'hydrated',
+      'agent',
+      'menu permissionMode',
+      'count permissionMode-plan',
+      'close menus',
+      'reload',
+      'hydrated',
+      'agent',
+      'menu permissionMode',
+      'count permissionMode-plan',
+      'close menus',
+    ])
+  })
+
+  // Each case gives both passes a catalog, so only the catalog check can fail it.
+  it.each([
+    { label: 'before the reload', modes: [['default', 'plan'], ['default']] },
+    { label: 'after the reload', modes: [['default'], ['default', 'plan']] },
+  ])('fails for a catalog that offers plan $label', async ({ modes }) => {
+    recorded.modes = modes
+    await expect(expectNoPlanOption(fakeContext())).rejects.toThrow('the native mode catalog offers no plan value')
+  })
+
+  it.each([
+    { label: 'no mode group', modes: [] },
+    { label: 'an empty mode group', modes: [[]] },
+  ])('fails for $label', async ({ modes }) => {
+    recorded.modes = modes
+    await expect(expectNoPlanOption(fakeContext())).rejects.toThrow('native mode catalog is absent')
+  })
+
+  it('fails for a menu that offers plan, before the reload', async () => {
+    recorded.modes = [['default'], ['default']]
+    recorded.counts['permissionMode-plan'] = 1
+    await expect(expectNoPlanOption(fakeContext())).rejects.toThrow('the mode menu offers no plan value')
     expect(recorded.events).not.toContain('reload')
   })
 })

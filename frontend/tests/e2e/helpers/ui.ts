@@ -187,6 +187,11 @@ export function queuePauseButton(page: Page): Locator {
   return page.locator('[data-testid="queue-pause-button"]:visible')
 }
 
+/** Locate the input queue of the visible composer: the messages that wait for the end of the running turn. */
+export function inputQueue(page: Page): Locator {
+  return page.locator('[data-testid="agent-input-queue"]:visible')
+}
+
 /**
  * Resume a paused input queue.
  * The queue must be paused. A running queue fails the call, so a pause that never happened cannot pass.
@@ -298,6 +303,15 @@ export function toolRows(page: Page): Locator {
 }
 
 /**
+ * Locate every visible row that draws at least one span rail.
+ * A tool call opens a span, and each row of the span draws its rail. `data-span-columns` states how many rails a row
+ * draws, and a row without a rail states zero. No component gives a span a test ID, so the attribute is the one handle.
+ */
+export function railedRows(page: Page): Locator {
+  return page.locator(`[data-span-columns]:not([data-span-columns="0"])${VISIBLE}`)
+}
+
+/**
  * Locate the visible bubble in which a subagent's report reached its parent, and which holds `report`.
  * The bubble header reads "<reporter> reported", and "Subagent" is the reporter when the provider gives no label.
  */
@@ -388,6 +402,15 @@ export function controlButton(page: Page, action: ControlAction): Locator {
  */
 export function questionPagination(page: Page): Locator {
   return page.getByTestId('control-pagination').filter({ visible: true })
+}
+
+/**
+ * Locate the visible fieldset of the control request actions.
+ * The composer draws it outside `control-banner`, so the scope choices and the decision buttons of a request are in it,
+ * not in the banner.
+ */
+export function controlActions(page: Page): Locator {
+  return page.getByTestId('control-actions').filter({ visible: true })
 }
 
 /**
@@ -1235,6 +1258,18 @@ export async function expectSettingsChip(page: Page, text: string | RegExp) {
 /** Assert that NO status-bar chip displays `text`. */
 export async function expectNoSettingsChip(page: Page, text: string | RegExp) {
   await expect(settingsChips(page).filter({ hasText: text })).toHaveCount(0)
+}
+
+/**
+ * Press Shift+Tab in the composer, which moves the session to its next mode, and require `expectedChip` after the
+ * press. The check does not prove that the chip was absent before the press. The press reaches the composer only while
+ * the composer holds the focus.
+ */
+export async function toggleModeWithShortcut(page: Page, expectedChip: string): Promise<void> {
+  await focusComposer(page)
+  await page.keyboard.press('Shift+Tab')
+  await waitForSettingsIdle(page)
+  await expectSettingsChip(page, expectedChip)
 }
 
 /**

@@ -23,7 +23,8 @@ export async function exerciseUnsupportedNativeControl(
     purpose: UnsupportedControlPurpose
     isQuestionRequest?: (payload: Record<string, unknown>) => boolean
     classify: NativeControlClassifier
-    relatedProof: (beforeDecision: (banner: Locator) => Promise<void>) => Promise<void>
+    /** Run the related native operation. Its result, such as the model request that a decision helper returns, is unused. */
+    relatedProof: (beforeDecision: (banner: Locator) => Promise<void>) => Promise<unknown>
   },
 ): Promise<void> {
   const agent = await currentNativeAgent(context)

@@ -8,11 +8,35 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision, expectDeclinedToolRow } from './nativePermission'
+import { createNativePermissionFileWrite, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, expectDeclinedToolRow } from './nativePermission'
 import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
 const declinedRow = vi.hoisted(() => ({ assertions: [] as string[] }))
+/** The browser steps of a decision flow, in order. */
+const flow = vi.hoisted(() => ({ events: [] as string[], onAnswer: undefined as ((decision: string) => void) | undefined }))
+vi.mock('./ui', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./ui')>()
+  const probe = { declinedRowProbe: true }
+  // A filtered bubble list is itself a fake row, so a check with or without `first()` reaches the recording `expect`.
+  const bubbles: { declinedRowProbe: true, filter: () => unknown, first: () => unknown } = { declinedRowProbe: true, filter: () => bubbles, first: () => probe }
+  return {
+    ...original,
+    sendMessage: async () => { flow.events.push('send') },
+    waitForControlBanner: async () => {
+      flow.events.push('banner')
+      return probe
+    },
+    answerControl: async (_page: unknown, decision: string) => {
+      flow.events.push(`answer:${decision}`)
+      flow.onAnswer?.(decision)
+    },
+    enterControlFeedback: async (_page: unknown, text: string) => { flow.events.push(`feedback:${text}`) },
+    waitForAgentIdle: async () => { flow.events.push('idle') },
+    assistantBubbles: () => bubbles,
+    messageBubbles: () => bubbles,
+  }
+})
 vi.mock('./nativeScenario', async (importOriginal) => {
   const original = await importOriginal<typeof import('./nativeScenario')>()
   return { ...original, currentNativeAgent: native.currentAgent }
@@ -27,6 +51,7 @@ vi.mock('@playwright/test', async (importOriginal) => {
           toHaveCount: async (count: number) => { declinedRow.assertions.push(`count:${count}`) },
           toHaveAttribute: async (name: string, text: string) => { declinedRow.assertions.push(`attribute:${name}=${text}`) },
           toContainText: async (text: string) => { declinedRow.assertions.push(`text:${text}`) },
+          toBeVisible: async () => { declinedRow.assertions.push('visible') },
         }
       : original.expect(value),
   }
@@ -45,6 +70,7 @@ const context: ManagedNativeScenarioContext = {
 beforeEach(() => {
   vi.clearAllMocks()
   declinedRow.assertions.length = 0
+  flow.events.length = 0
   delete context.readToolResult
   mkdirSync(scratchRoot, { recursive: true })
   native.directory = mkdtempSync(join(scratchRoot, 'native-permission-plan-unit-'))
@@ -138,7 +164,78 @@ describe('createNativePermissionFileWrite', () => {
   })
 })
 
+/** A context whose script records each step, and whose page answers each locator with the fake row. */
+function flowContext(): { context: ManagedNativeScenarioContext, request: MockModelRequestRecord } {
+  const request = result('decided-native', 'DECIDED42')
+  const page = Object.assign({} as Page, {
+    locator: (selector: string) => {
+      flow.events.push(`locator:${selector}`)
+      return { declinedRowProbe: true }
+    },
+  })
+  const modelScript = {
+    prompt: (text: string) => text,
+    queue: async () => {
+      flow.events.push('queue')
+      return 4
+    },
+    waitForSteps: async (count: number) => {
+      flow.events.push(`steps:${count}`)
+    },
+    requestAt: async (index: number) => {
+      flow.events.push(`request:${index}`)
+      return request
+    },
+  } as unknown as ModelScript
+  // The shared context throws on a browser or model access, so a spread of it would throw. Copy its plain fields.
+  return { context: { provider: context.provider, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }, request }
+}
+
 describe('exerciseNativePermissionDecision', () => {
+  it('answers the request, proves the native result and the view, and returns the request after the decision', async () => {
+    const { context: decided, request } = flowContext()
+    const returned = await exerciseNativePermissionDecision(decided, {
+      toolCall: { id: 'decided-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      decision: 'deny',
+      beforeDecision: () => { flow.events.push('before') },
+      nativeProof: (read) => {
+        expect(read).toBe(request)
+        flow.events.push('native')
+      },
+      viewProof: async () => { flow.events.push('view') },
+    })
+    expect(returned).toBe(request)
+    expect(flow.events).toEqual([
+      'queue',
+      'send',
+      'steps:5',
+      'banner',
+      'before',
+      'locator:[data-testid="dialog-editor"]:visible',
+      'answer:deny',
+      'steps:6',
+      'idle',
+      'request:5',
+      'native',
+      'view',
+    ])
+    expect(declinedRow.assertions).toEqual(['count:0', 'visible'])
+  })
+
+  it('reaches no view proof when the native proof fails', async () => {
+    const { context: decided } = flowContext()
+    const viewProof = vi.fn(async () => {})
+    await expect(exerciseNativePermissionDecision(decided, {
+      toolCall: { id: 'decided-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      decision: 'allow',
+      nativeProof: () => {
+        throw new Error('the native result is absent')
+      },
+      viewProof,
+    })).rejects.toThrow('the native result is absent')
+    expect(viewProof).not.toHaveBeenCalled()
+  })
+
   it('refuses an output gate on a denial before it touches the model or the browser', async () => {
     const outputGate = { gate: createOutputGate(native.directory), shown: vi.fn(async () => {}) }
     await expect(exerciseNativePermissionDecision(context, {
@@ -148,6 +245,73 @@ describe('exerciseNativePermissionDecision', () => {
       nativeProof: () => {},
     })).rejects.toThrow('A denied command prints no output')
     expect(outputGate.shown).not.toHaveBeenCalled()
+  })
+})
+
+describe('exerciseAllowThenFeedbackRejection', () => {
+  /** A context whose agent writes the allowed file when the browser allows, and whose third request holds `body`. */
+  function feedbackContext(body: unknown): ManagedNativeScenarioContext {
+    flow.onAnswer = (decision) => {
+      if (decision === 'allow')
+        writeFileSync(join(native.directory, 'approved.txt'), 'approved')
+    }
+    const press = async (key: string) => {
+      flow.events.push(`press:${key}`)
+    }
+    const page = Object.assign({} as Page, { keyboard: { press } })
+    const modelScript = {
+      prompt: (text: string) => text,
+      queue: async (...steps: unknown[]) => {
+        flow.events.push(`queue:${steps.length}`)
+        return 4
+      },
+      waitForSteps: async (count: number) => { flow.events.push(`steps:${count}`) },
+      requestAt: async (index: number): Promise<MockModelRequestRecord> => {
+        flow.events.push(`request:${index}`)
+        return { protocol: 'anthropic-messages', path: '/v1/messages', body }
+      },
+    } as unknown as ModelScript
+    return { provider: context.provider, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }
+  }
+
+  afterEach(() => {
+    flow.onAnswer = undefined
+  })
+
+  it('allows the first command, refuses the second with the reason, and reads the reason in the same turn', async () => {
+    flow.events = []
+    declinedRow.assertions = []
+    const reason = 'Do not create the second file.'
+    await exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [{ role: 'user', content: reason }] }), { workingDir: native.directory })
+    expect(flow.events).toEqual([
+      'queue:3',
+      'send',
+      'steps:5',
+      'banner',
+      'answer:allow',
+      'steps:6',
+      `feedback:${reason}`,
+      'press:Meta+Enter',
+      'steps:7',
+      'idle',
+      'request:6',
+    ])
+    expect(declinedRow.assertions).toEqual([
+      `text:printf approved > ${join(native.directory, 'approved.txt')}`,
+      `text:printf rejected > ${join(native.directory, 'rejected.txt')}`,
+      'count:0',
+      'visible',
+      'visible',
+    ])
+    expect(existsSync(join(native.directory, 'rejected.txt'))).toBe(false)
+  })
+
+  it('fails when the request after the refusal lacks the reason', async () => {
+    await expect(exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [] }), { workingDir: native.directory })).rejects.toThrow()
+  })
+
+  it.each(['relative/dir', '/path with space', '/path/$(touch marker)', '/path/\'quote\''])('refuses the working directory %j before it touches the model', async (workingDir) => {
+    await expect(exerciseAllowThenFeedbackRejection(context, { workingDir })).rejects.toThrow('needs no shell quoting')
   })
 })
 

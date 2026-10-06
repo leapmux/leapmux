@@ -1,12 +1,19 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { MockModelScenarioStatus } from './mockModelScript'
 import type { NativeControlFrame } from './nativeControlWatch'
 import type { NativeMessageSnapshot } from './nativeMessages'
 import { create } from '@bufbuild/protobuf'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD, MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { AgentChatMessageSchema, ContentCompression, ControlResponseState, MarkType, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from './nativeStoredControlDecision'
+import { expectTurnEndedAfter, onlyObservedNativeControl, readNativeStoredControlDecision, readObservedNativeDecision, waitForOneNativeControl } from './nativeStoredControlDecision'
+
+const reads = vi.hoisted(() => ({ snapshot: vi.fn<(context: unknown, agentId: string) => Promise<NativeMessageSnapshot>>() }))
+vi.mock('./nativeMessages', () => ({ readNativeMessageSnapshot: reads.snapshot }))
+beforeEach(() => {
+  reads.snapshot.mockReset()
+})
 
 const SESSION = 'native-session'
 const REQUEST_ID = 'observed-request'
@@ -196,5 +203,87 @@ describe('onlyObservedNativeControl', () => {
 
   it.each(['', ' '])('refuses an observed request without a request ID: %j', (requestId) => {
     expect(() => onlyObservedNativeControl([frame(requestId, NATIVE_REQUEST)])).toThrow('has no request ID')
+  })
+})
+
+describe('waitForOneNativeControl', () => {
+  it('returns the first frame of the one request that the watch observed', async () => {
+    const ready = frame(REQUEST_ID, NATIVE_REQUEST)
+    const completed = frame(REQUEST_ID, structuredClone(NATIVE_REQUEST), ControlResponseState.COMPLETED)
+    await expect(waitForOneNativeControl({ controls: () => [ready, completed] })).resolves.toBe(ready)
+  })
+
+  it('refuses a watch that observed two requests', async () => {
+    await expect(waitForOneNativeControl({ controls: () => [frame(REQUEST_ID, NATIVE_REQUEST), frame('second-request', NATIVE_REQUEST)] })).rejects.toThrow('second native control request')
+  })
+})
+
+describe('readObservedNativeDecision', () => {
+  const context = { leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker' } }
+  const agent = { id: 'root-agent', agentSessionId: SESSION }
+  const observed = frame(REQUEST_ID, NATIVE_REQUEST)
+
+  it('reads the saved answer of the agent and returns it with its snapshot', async () => {
+    const saved = snapshot()
+    reads.snapshot.mockResolvedValue(saved)
+    const { decision, snapshot: read } = await readObservedNativeDecision(context, agent, { controls: () => [observed] }, observed)
+    expect(reads.snapshot).toHaveBeenCalledWith(context, 'root-agent')
+    expect(read).toBe(saved)
+    expect(decision).toMatchObject({ requestId: REQUEST_ID, claimToken: CLAIM_TOKEN, request: NATIVE_REQUEST, response: NATIVE_ANSWER })
+  })
+
+  it('refuses a second request that the watch observed after the decision, before it reads the Worker', async () => {
+    await expect(readObservedNativeDecision(context, agent, { controls: () => [observed, frame('second-request', NATIVE_REQUEST)] }, observed)).rejects.toThrow('second native control request')
+    expect(reads.snapshot).not.toHaveBeenCalled()
+  })
+
+  it('refuses a frame other than the observed one, before it reads the Worker', async () => {
+    reads.snapshot.mockResolvedValue(snapshot())
+    const other = frame(REQUEST_ID, structuredClone(NATIVE_REQUEST))
+    await expect(readObservedNativeDecision(context, agent, { controls: () => [other] }, observed)).rejects.toThrow('the watch still holds the observed request as its first frame')
+    expect(reads.snapshot).not.toHaveBeenCalled()
+  })
+
+  it('refuses a snapshot of another native session', async () => {
+    // The rows belong to the other session too, so only the session check can refuse the snapshot.
+    reads.snapshot.mockResolvedValue(snapshot([decisionRow({ row: { agentSessionId: 'other-session' } })], { agentSessionId: 'other-session' }))
+    await expect(readObservedNativeDecision(context, agent, { controls: () => [observed] }, observed)).rejects.toThrow('the saved decision belongs to the native session of the agent')
+  })
+
+  it('refuses a stored request that differs from the observed payload', async () => {
+    reads.snapshot.mockResolvedValue(snapshot([decisionRow({ supplemental: supplement(REQUEST_ID, CLAIM_TOKEN, { ...NATIVE_REQUEST, id: 1 }) })]))
+    await expect(readObservedNativeDecision(context, agent, { controls: () => [observed] }, observed)).rejects.toThrow('the Worker stored the native request that the browser answered')
+  })
+})
+
+describe('expectTurnEndedAfter', () => {
+  function status(nextStep: number, unexpected = 0): MockModelScenarioStatus {
+    return {
+      complete: true,
+      nextStep,
+      stepCount: nextStep,
+      requests: [],
+      unexpectedRequests: Array.from({ length: unexpected }, () => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', reason: 'unscripted', body: {} })),
+      ruleMatches: {},
+      pendingGates: [],
+    }
+  }
+
+  it('accepts a turn that requested exactly the stated steps', async () => {
+    await expect(expectTurnEndedAfter({ status: async () => status(3) }, 3)).resolves.toBeUndefined()
+  })
+
+  it.each([2, 4])('refuses a turn that requested %i ordered steps instead of 3', async (nextStep) => {
+    await expect(expectTurnEndedAfter({ status: async () => status(nextStep) }, 3)).rejects.toThrow()
+  })
+
+  it('refuses a request that the script did not expect', async () => {
+    await expect(expectTurnEndedAfter({ status: async () => status(3, 1) }, 3)).rejects.toThrow()
+  })
+
+  it.each([0, -1, 1.5, Number.NaN])('refuses the step count %s before it reads the script', async (nextStep) => {
+    const read = vi.fn(async () => status(1))
+    await expect(expectTurnEndedAfter({ status: read }, nextStep)).rejects.toThrow('one or more ordered steps')
+    expect(read).not.toHaveBeenCalled()
   })
 })

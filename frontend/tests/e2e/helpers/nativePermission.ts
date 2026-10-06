@@ -5,18 +5,19 @@ import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nati
 import type { GatedOutput } from './outputGate'
 import { Buffer } from 'node:buffer'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
+import { expectTurnEndedAfter } from './nativeStoredControlDecision'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { answerControl, assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, enterControlFeedback, messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
 export interface NativePermissionOperationPlan {
@@ -56,24 +57,33 @@ export async function createNativePermissionFileWrite(context: ManagedNativeScen
   }
 }
 
-/** Answer an actual native permission request and prove its subsequent result. */
-export async function exerciseNativePermissionDecision(
-  context: NativeScenarioContext,
-  options: {
-    toolCall: MockModelToolCall
-    decision: 'allow' | 'deny'
-    /**
-     * The gate that holds the command of `toolCall`. The gate opens after the browser shows the
-     * output of the allowed command. A denied command prints nothing, so a denial cannot use it.
-     */
-    outputGate?: GatedOutput
-    beforeDecision?: (banner: Locator) => void | Promise<void>
-    nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
-  },
-): Promise<void> {
+/** What {@link exerciseNativePermissionDecision} runs around one native permission request. */
+export interface NativePermissionDecision {
+  toolCall: MockModelToolCall
+  decision: 'allow' | 'deny'
+  /**
+   * The gate that holds the command of `toolCall`. The gate opens after the browser shows the
+   * output of the allowed command. A denied command prints nothing, so a denial cannot use it.
+   */
+  outputGate?: GatedOutput
+  /** Check the banner of the request, and the target of the tool before the decision. */
+  beforeDecision?: (banner: Locator) => void | Promise<void>
+  /** Prove the native result of the decision from the model request that follows it. */
+  nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
+  /** Prove provider-owned view state after the turn ended, such as the saved answer of the request. */
+  viewProof?: () => Promise<void>
+}
+
+/**
+ * Answer an actual native permission request, prove its subsequent result, and return the model request that
+ * follows the decision. The turn must continue after the decision: the runtime sends that request with the tool
+ * result or the refusal. A runtime that ends the turn after a refusal needs `exerciseNativePermissionRefusal`.
+ */
+export async function exerciseNativePermissionDecision(context: NativeScenarioContext, options: NativePermissionDecision): Promise<MockModelRequestRecord> {
   if (options.outputGate && options.decision === 'deny')
     throw new Error('A denied command prints no output, so it cannot open an output gate.')
-  const answer = 'The native permission decision reached the next turn.'
+  // A test can answer two requests in one session, so each decision gets its own answer text.
+  const answer = `The native permission decision reached the next turn. ${uniqueMarker('DECISION')}`
   const start = await context.modelScript.queue({ toolCalls: [options.toolCall] }, nativeTextStep(context, answer))
   await sendMessage(context.page, context.modelScript.prompt('Run the scripted permission probe.'))
   await context.modelScript.waitForSteps(start + 1)
@@ -85,8 +95,58 @@ export async function exerciseNativePermissionDecision(
     await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
   })
-  await options.nativeProof(await context.modelScript.requestAt(start + 1))
+  const request = await context.modelScript.requestAt(start + 1)
+  await options.nativeProof(request)
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+  await options.viewProof?.()
+  return request
+}
+
+/**
+ * Allow one shell command that writes a file, then refuse the next one with a typed reason that the same turn reads.
+ * The runtime puts the reason into its native refusal, hands it to the model inside the same turn, and the model
+ * answers. The refused command never runs, and the saved answer shows the reason, not the words of an option.
+ * Grok Build and Kiro carry a reason this way.
+ */
+export async function exerciseAllowThenFeedbackRejection(context: NativeScenarioContext, options: { workingDir: string }): Promise<void> {
+  // The commands hold the paths unquoted, as the model writes them, so a path must not need shell quoting.
+  if (!isAbsolute(options.workingDir) || !/^[\w./-]+$/.test(options.workingDir))
+    throw new Error('The allow-then-refuse scenario requires an absolute working directory that needs no shell quoting.')
+  const approved = join(options.workingDir, 'approved.txt')
+  const rejected = join(options.workingDir, 'rejected.txt')
+  const reason = 'Do not create the second file.'
+  const answer = 'I read the reason and stopped.'
+  // Each command redirects its output, because a write is what makes these runtimes ask. The banner shows the command as
+  // the model wrote it.
+  const approvedCommand = `printf approved > ${approved}`
+  const rejectedCommand = `printf rejected > ${rejected}`
+  const start = await context.modelScript.queue(
+    { toolCalls: [bashToolCall(context.provider, 'native-approved', approvedCommand)] },
+    { toolCalls: [bashToolCall(context.provider, 'native-rejected', rejectedCommand)] },
+    nativeTextStep(context, answer),
+  )
+  await sendMessage(context.page, context.modelScript.prompt('Create the two scripted files.'))
+  await context.modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(context.page)
+  await expect(banner).toContainText(approvedCommand)
+  expect(existsSync(approved)).toBe(false)
+  await answerControl(context.page, 'allow')
+
+  await context.modelScript.waitForSteps(start + 2)
+  await expect(banner).toContainText(rejectedCommand)
+  expect(existsSync(approved)).toBe(true)
+  // Text in the composer turns the decision into a refusal with that text, and the send key answers the request.
+  await enterControlFeedback(context.page, reason)
+  await context.page.keyboard.press('Meta+Enter')
+  await expect(banner).toHaveCount(0)
+  await context.modelScript.waitForSteps(start + 3)
+  await waitForAgentIdle(context.page)
+
+  // The reason reached the model inside the same turn, and the saved answer shows it.
+  expect(JSON.stringify((await context.modelScript.requestAt(start + 2)).body)).toContain(reason)
+  await expect(messageBubbles(context.page).filter({ hasText: 'Sent feedback:' }).filter({ hasText: reason }).first()).toBeVisible()
+  await expect(assistantBubbles(context.page).filter({ hasText: answer })).toBeVisible()
+  expect(existsSync(rejected)).toBe(false)
 }
 
 /**
@@ -106,8 +166,13 @@ export async function expectDeclinedToolRow(page: Page, renderedCallId: string, 
  * Deny an actual native permission request whose runtime ends the turn after the refusal.
  * Such a runtime sends no further model request, so the scenario queues only the turn that asks for the tool.
  * A model turn queued after it would stay unconsumed.
- * After the decision and after a reload, the scenario proves the unchanged target, the same native session,
- * the stored native refusal, and that the model received no further request.
+ *
+ * After the decision and after a reload, the scenario proves these facts:
+ *
+ * - The target did not change.
+ * - The native session is the same.
+ * - The Worker stored the native refusal.
+ * - The model received no further request.
  */
 export async function exerciseNativePermissionRefusal(context: ManagedNativeScenarioContext, options: {
   toolCall: MockModelToolCall
@@ -154,10 +219,7 @@ export async function exerciseNativePermissionRefusal(context: ManagedNativeScen
       }
     }).toBe('proved')
     await options.viewProof?.()
-    const status = await context.modelScript.status()
-    expect(status.stepCount).toBe(start + 1)
-    expect(status.nextStep).toBe(start + 1)
-    expect(status.unexpectedRequests).toEqual([])
+    await expectTurnEndedAfter(context.modelScript, start + 1)
   }
 }
 

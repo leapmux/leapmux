@@ -27,6 +27,7 @@ import {
   chatScrollContainer,
   chooseSettingsOption,
   composerEditor,
+  controlActions,
   controlBanner,
   controlButton,
   deleteWorkspaceViaUI,
@@ -39,6 +40,7 @@ import {
   expectPermissionShortcuts,
   expectRowsInOrder,
   focusComposer,
+  inputQueue,
   isMaybeVisible,
   offeredSettingsOptions,
   openAppAs,
@@ -47,6 +49,7 @@ import {
   platformModifier,
   questionPagination,
   queuePauseButton,
+  railedRows,
   resumePausedQueue,
   resumeQueueAfterFailure,
   rowOrderProblem,
@@ -59,6 +62,7 @@ import {
   submitLoginForm,
   terminalTabs,
   tiles,
+  toggleModeWithShortcut,
   toolCallRow,
   toolRows,
   treeRow,
@@ -656,6 +660,19 @@ describe('queuePauseButton', () => {
   })
 })
 
+describe('inputQueue', () => {
+  it('selects the visible input queue of the composer', () => {
+    const queue = opaqueHandle<PlaywrightLocator>({})
+    const page = opaqueHandle<Page>({
+      locator: (selector: string) => {
+        expect(selector).toBe('[data-testid="agent-input-queue"]:visible')
+        return queue
+      },
+    })
+    expect(inputQueue(page)).toBe(queue)
+  })
+})
+
 describe('resumePausedQueue', () => {
   it('requires the paused label, clicks once, and requires the running label', async () => {
     const log: string[] = []
@@ -709,6 +726,44 @@ describe('focusComposer', () => {
     } })
     expect(await focusComposer(page)).toBe(editor)
     expect(log).toEqual(['editor:to.be.visible', 'editor:click'])
+  })
+})
+
+describe('toggleModeWithShortcut', () => {
+  function modePage(chip: string) {
+    const log: string[] = []
+    const click = async () => {
+      log.push('editor:click')
+    }
+    const editor = assertingLocator('editor', log, () => true, { click })
+    const spinner = assertingLocator('spinner', log, expression => expression !== 'to.be.visible')
+    const chips = opaqueHandle<PlaywrightLocator>({ filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
+      const hasText = String(options?.hasText)
+      return assertingLocator(`chip ${hasText}`, log, (_expression, count) => (count.expectedNumber === 0) !== (hasText === chip))
+    } })
+    const page = opaqueHandle<Page>({
+      keyboard: opaqueHandle<Page['keyboard']>({ press: async (key: string) => { log.push(`press ${key}`) } }),
+      locator: (selector: string) => {
+        if (selector === '[data-testid="composer-editor"]:visible .ProseMirror')
+          return editor
+        if (selector === '[data-testid="settings-loading-spinner"]')
+          return spinner
+        if (selector === '[data-testid="composer-status-bar"] [data-testid$="-trigger"]')
+          return chips
+        throw new Error(`The mode page has no locator for ${selector}.`)
+      },
+    })
+    return { page, log }
+  }
+
+  it('focuses the composer before the press, waits for the settings, and requires the chip', async () => {
+    const { page, log } = modePage('Plan')
+    await toggleModeWithShortcut(page, 'Plan')
+    expect(log).toEqual(['editor:to.be.visible', 'editor:click', 'press Shift+Tab', 'spinner:to.be.visible', 'chip Plan:to.have.count=0'])
+  })
+
+  it('fails when the press selects another chip', async () => {
+    await expect(toggleModeWithShortcut(modePage('Act').page, 'Plan')).rejects.toThrow()
   })
 })
 
@@ -956,6 +1011,30 @@ describe('questionPagination', () => {
       return pagination
     })
     expect(questionPagination(page)).toBe(pagination)
+  })
+})
+
+describe('railedRows', () => {
+  it('selects each visible row that draws a span rail', () => {
+    const rows = opaqueHandle<PlaywrightLocator>({})
+    const page = opaqueHandle<Page>({
+      locator: (selector: string) => {
+        expect(selector).toBe('[data-span-columns]:not([data-span-columns="0"]):visible')
+        return rows
+      },
+    })
+    expect(railedRows(page)).toBe(rows)
+  })
+})
+
+describe('controlActions', () => {
+  it('selects the visible fieldset of the control request actions', () => {
+    const fieldset = opaqueHandle<PlaywrightLocator>({})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe('control-actions')
+      return fieldset
+    })
+    expect(controlActions(page)).toBe(fieldset)
   })
 })
 

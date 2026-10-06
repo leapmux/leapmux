@@ -2,11 +2,11 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { sendNativeAnswer } from './nativeConversation'
-import { currentNativeAgent, nativeModelContextText, nativeTextStep, nativeToolOutcome } from './nativeScenario'
+import { currentNativeAgent, nativeModelContextText, nativeOptionGroup, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { bashToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
-import { closeComposerMenus, messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
+import { closeComposerMenus, messageContents, openPlusMenu, openSettingsMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
 
 /** The test IDs of the two buttons of a plan review. */
 export const PLAN_REVIEW_BUTTON_TEST_IDS = ['plan-approve-btn', 'plan-reject-btn'] as const
@@ -68,6 +68,27 @@ export async function exerciseMissingNativePlanMode(context: ManagedNativeScenar
     const menu = await openPlusMenu(context.page)
     await expect(menu.locator('[data-testid$="-plan"]:visible')).toHaveCount(0)
     // Escape closes only the popover that holds the focus, so close every composer menu.
+    await closeComposerMenus(context.page)
+  }
+}
+
+/**
+ * Prove that the permission mode group of the agent offers no `plan` value, in the live catalog and in the settings
+ * menu, before and after a reload. A native turn comes first: it proves that the agent works, and the agent states
+ * its catalog by then.
+ */
+export async function expectNoPlanOption(context: ManagedNativeScenarioContext): Promise<void> {
+  await sendNativeAnswer(context, 'Complete the native mode catalog probe.', 'The native mode catalog probe completed.')
+  for (const reload of [false, true]) {
+    if (reload)
+      await context.page.reload()
+    await waitForNativeSettingsHydrated(context.page)
+    const mode = nativeOptionGroup(await currentNativeAgent(context), 'permissionMode')
+    if (!mode || mode.options.length === 0)
+      throw new Error('The native mode catalog is absent.')
+    expect(mode.options.map(option => option.id), 'the native mode catalog offers no plan value').not.toContain('plan')
+    const menu = await openSettingsMenu(context.page, 'permissionMode')
+    await expect(menu.getByTestId('permissionMode-plan'), 'the mode menu offers no plan value').toHaveCount(0)
     await closeComposerMenus(context.page)
   }
 }

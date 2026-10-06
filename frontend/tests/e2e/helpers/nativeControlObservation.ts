@@ -55,7 +55,7 @@ export function disposeNativeControlObservation(id: string): void {
 /** Observe a real native operation until the Worker applies its new idle edge. */
 export async function expectNoNativeControl(
   context: ManagedNativeScenarioContext,
-  options: { testId: string, additionalTestIds?: readonly string[], relatedProof: () => Promise<void> },
+  options: { testId: string, additionalTestIds?: readonly string[], relatedProof: () => Promise<unknown> },
 ): Promise<void> {
   await assertNoNativeControl(context, options)
 }
@@ -63,14 +63,14 @@ export async function expectNoNativeControl(
 /** Observe the native startup route before the new agent resolves its first control. */
 export async function expectNoNativeStartupControl(
   context: ManagedNativeScenarioContext,
-  options: { testId: string, additionalTestIds?: readonly string[], start: () => Promise<void>, relatedProof: () => Promise<void>, nativeCompletion?: () => Promise<void> },
+  options: { testId: string, additionalTestIds?: readonly string[], start: () => Promise<void>, relatedProof: () => Promise<unknown>, nativeCompletion?: () => Promise<void> },
 ): Promise<void> {
   await assertNoNativeControl(context, options)
 }
 
 async function assertNoNativeControl(
   context: ManagedNativeScenarioContext,
-  options: { testId: string, additionalTestIds?: readonly string[], start?: () => Promise<void>, relatedProof: () => Promise<void>, nativeCompletion?: () => Promise<void> },
+  options: { testId: string, additionalTestIds?: readonly string[], start?: () => Promise<void>, relatedProof: () => Promise<unknown>, nativeCompletion?: () => Promise<void> },
 ): Promise<void> {
   const observations = [options.testId, ...(options.additionalTestIds ?? [])].map(testId => ({ id: randomUUID(), testId }))
   await withCleanup(async () => {

@@ -9,9 +9,13 @@ import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeS
 import { bashToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
-import { applyPermissionPreset, sendMessage, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
+import { applyPermissionPreset, assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
-interface NativeShortcutProof {
+/** What a permission shortcut proof runs around its native command. */
+export interface NativeShortcutProof {
+  /** Bring the session to the state that the shortcut must change, before the shortcut applies. */
+  prepare?: () => Promise<void>
+  /** Prove the native settings of the agent before each pass of the command. */
   settingsProof?: (agent: AgentInfo) => void | Promise<void>
 }
 
@@ -27,6 +31,7 @@ export async function exerciseSmartPermissions(context: ManagedNativeScenarioCon
 
 /** Run the same private native command through either actual permission shortcut. */
 async function exercisePermissionShortcut(context: ManagedNativeScenarioContext, preset: 'smart' | 'bypass', options: NativeShortcutProof): Promise<void> {
+  await options.prepare?.()
   const agent = await currentNativeAgent(context)
   assertPrivateNativePath(agent.workingDir, getGlobalState().tmpDir)
   const target = join(agent.workingDir, `native-${preset}-proof`)
@@ -43,18 +48,25 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
     }
     await options.settingsProof?.(await currentNativeAgent(context))
     await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
-      // One agent session runs both passes, so each pass gives its tool call its own ID.
+      // One agent session runs both passes. Each pass gives its tool call, its output, and its answer their own text,
+      // so a check of the second pass cannot pass on what the first pass shows.
+      const pass = Number(reload) + 1
       const id = `native-${preset}-${Number(reload)}`
+      const output = `${outputPrefix}-${pass}-42`
+      const answer = `The native ${preset} command completed in pass ${pass}.`
       const start = await context.modelScript.queue(
-        { toolCalls: [bashToolCall(context.provider, id, `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(outputPrefix, 42)}`)] },
-        nativeTextStep(context, `The native ${preset} command completed.`),
+        { toolCalls: [bashToolCall(context.provider, id, `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(`${outputPrefix}-${pass}-`, 42)}`)] },
+        nativeTextStep(context, answer),
       )
       await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
       await context.modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(context.page)
       expect(existsSync(target)).toBe(false)
       const request = await context.modelScript.requestAt(start + 1)
-      expect((await nativeToolOutcome(context, request, id)).text).toContain(`${outputPrefix}42`)
+      expect((await nativeToolOutcome(context, request, id)).text).toContain(output)
+      // The command computes no part of the output in its text, so only the run of the command shows it.
+      await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
+      await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
     } })
   }
 }
