@@ -45,19 +45,21 @@ describe('parseDurationHistory', () => {
       .toEqual(new Map([['a.spec.ts', { durationMs: 100, cases: 2 }]]))
   })
 
+  const notHistory = 'the file is not version 1 of the duration history'
+  const invalidEntry = 'an entry has no valid durationMs and cases'
   it.each([
-    { label: 'a non-object', value: [] },
-    { label: 'another version', value: { version: 2, files: {} } },
-    { label: 'no file map', value: { version: 1 } },
-    { label: 'an empty file path', value: { version: 1, files: { '': { durationMs: 1, cases: 1 } } } },
-    { label: 'a negative duration', value: { version: 1, files: { 'a.spec.ts': { durationMs: -1, cases: 1 } } } },
-    { label: 'an infinite duration', value: { version: 1, files: { 'a.spec.ts': { durationMs: Number.POSITIVE_INFINITY, cases: 1 } } } },
-    { label: 'a string duration', value: { version: 1, files: { 'a.spec.ts': { durationMs: '1', cases: 1 } } } },
-    { label: 'zero cases', value: { version: 1, files: { 'a.spec.ts': { durationMs: 1, cases: 0 } } } },
-    { label: 'a fractional case count', value: { version: 1, files: { 'a.spec.ts': { durationMs: 1, cases: 1.5 } } } },
-    { label: 'a missing entry field', value: { version: 1, files: { 'a.spec.ts': { durationMs: 1 } } } },
-  ])('rejects $label instead of planning from a partial history', ({ value }) => {
-    expect(() => parseDurationHistory(value)).toThrow()
+    { label: 'a non-object', value: [], message: notHistory },
+    { label: 'another version', value: { version: 2, files: {} }, message: notHistory },
+    { label: 'no file map', value: { version: 1 }, message: notHistory },
+    { label: 'an empty file path', value: { version: 1, files: { '': { durationMs: 1, cases: 1 } } }, message: 'an entry has an empty file path' },
+    { label: 'a negative duration', value: { version: 1, files: { 'a.spec.ts': { durationMs: -1, cases: 1 } } }, message: invalidEntry },
+    { label: 'an infinite duration', value: { version: 1, files: { 'a.spec.ts': { durationMs: Number.POSITIVE_INFINITY, cases: 1 } } }, message: invalidEntry },
+    { label: 'a string duration', value: { version: 1, files: { 'a.spec.ts': { durationMs: '1', cases: 1 } } }, message: invalidEntry },
+    { label: 'zero cases', value: { version: 1, files: { 'a.spec.ts': { durationMs: 1, cases: 0 } } }, message: invalidEntry },
+    { label: 'a fractional case count', value: { version: 1, files: { 'a.spec.ts': { durationMs: 1, cases: 1.5 } } }, message: invalidEntry },
+    { label: 'a missing entry field', value: { version: 1, files: { 'a.spec.ts': { durationMs: 1 } } }, message: invalidEntry },
+  ])('rejects $label instead of planning from a partial history', ({ value, message }) => {
+    expect(() => parseDurationHistory(value)).toThrow(message)
   })
 })
 

@@ -131,7 +131,7 @@ describe('E2ELastRunReporter', () => {
     const instance = reporter(path)
     instance.onBegin(undefined, { allTests: () => [] })
 
-    expect(() => instance.onEnd({ status: 'passed' })).toThrow()
+    expect(() => instance.onEnd({ status: 'passed' })).toThrow(expect.objectContaining({ syscall: 'rename', dest: path }))
     expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
   })
 

@@ -909,7 +909,8 @@ describe('end-to-end launcher', () => {
       expect(env.GIT_DIR).toBeUndefined()
       const directory = join(dirname(env.LEAPMUX_E2E_NONCE_PATH!), 'working-directory')
       mkdirSync(directory)
-      expect(() => execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, env, stdio: 'ignore' })).toThrow()
+      // Git exits with status 128 when it finds no repository. A failure for another reason, such as an absent git executable, does not give that status.
+      expect(() => execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, env, stdio: 'ignore' })).toThrow(expect.objectContaining({ status: 128 }))
       execFileSync('git', ['-c', 'init.templateDir=', 'init', '--quiet'], { cwd: directory, env, stdio: 'ignore' })
       for (const [key, value] of [['core.fsmonitor', 'false'], ['gc.auto', '0'], ['maintenance.auto', 'false']])
         execFileSync('git', ['config', key!, value!], { cwd: directory, env, stdio: 'ignore' })
