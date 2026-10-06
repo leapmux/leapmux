@@ -43,10 +43,7 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await modelScript.waitForSteps(planStep + 2)
     await waitForAgentIdle(page)
     expect(existsSync(written)).toBe(false)
-    const planRequest = await modelScript.requestAt(planStep + 1)
-    const planMessages = (planRequest.body as { messages?: { role?: string, content?: unknown }[] } | undefined)?.messages ?? []
-    const planToolResults = planMessages.filter(message => message.role === 'tool')
-    expect(JSON.stringify(planToolResults)).toMatch(/plan|refus|denied|not allowed/i)
+    expect(nativeToolResult(await modelScript.requestAt(planStep + 1), 'plan-write-proof')).toMatch(/plan|refus|denied|not allowed/i)
 
     await page.reload()
     await waitForSettingsHydrated(page)

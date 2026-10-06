@@ -1,9 +1,8 @@
 import { expect } from '@playwright/test'
-import { isObject } from '../../../src/lib/jsonPick'
-
 import { clineTest } from '../cline-fixtures'
 import { contentText } from '../helpers/mockModelScript'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
+import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chatText, toolRows } from '../helpers/ui'
 
@@ -12,19 +11,6 @@ import { applyPermissionPreset, chatText, toolRows } from '../helpers/ui'
  *
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
-/**
- * The text of the tool message that answers one call in a Chat Completions request.
- * Cline calls the mock through its DeepSeek provider, which speaks that
- * protocol.
- */
-function toolMessageText(body: unknown, callId: string): string {
-  const messages = isObject(body) && Array.isArray(body.messages) ? body.messages : []
-  return messages
-    .filter((message): message is Record<string, unknown> => isObject(message) && message.role === 'tool' && message.tool_call_id === callId)
-    .map(message => contentText(message.content))
-    .join('\n')
-}
-
 clineTest.describe('Cline tool execution', () => {
   clineTest('draws the output of a command', async ({ native }) => {
     // The command text states no `cline-42`, so only the command's own output can put
@@ -59,7 +45,7 @@ clineTest.describe('Cline tool execution', () => {
     // The header states the code. The body does not state it again.
     await expect(tools.filter({ hasText: 'Command exited with code' })).toHaveCount(0)
     // The model reads why: the result of this call states the stderr text and the code.
-    const answer = toolMessageText(resultRequest.body, 'fail-call')
+    const answer = contentText(nativeToolResultContent(resultRequest, 'fail-call'))
     expect(answer).toContain('cline-fail-77')
     expect(answer).toContain('Command exited with code 3')
   })

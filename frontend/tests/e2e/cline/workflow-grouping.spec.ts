@@ -2,6 +2,7 @@ import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { clineTest } from '../cline-fixtures'
 import { stepRequest } from '../helpers/mockModelScript'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { clineRunTeammateTaskToolCall, clineSpawnTeammateToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -38,25 +39,16 @@ clineTest.describe('Cline workflow grouping', () => {
     expect(offeredTools(bodyAt(1))).toContain('team_spawn_teammate')
     expect(offeredTools(bodyAt(2))).toContain('team_run_task')
     expect(offeredTools(bodyAt(3))).toContain('team_run_task')
-    // A request carries the result of the call that the step before it made, so the requests of the two steps after
-    // the run steps carry the two run IDs.
-    const runIDs: string[] = []
-    for (const offset of [3, 4]) {
-      const queuedBody = bodyAt(offset)
-      if (!isObject(queuedBody) || !Array.isArray(queuedBody.messages))
-        throw new Error('the Cline model request has no message list after an async run')
-      const resultMessage = queuedBody.messages
-        .filter(message => isObject(message) && message.role === 'tool' && typeof message.content === 'string' && message.content.includes('"runId"'))
-        .at(-1)
-      if (!isObject(resultMessage) || typeof resultMessage.content !== 'string')
-        throw new Error('the Cline async run returned no tool result with a run ID')
-      const result: unknown = JSON.parse(resultMessage.content)
+    // A request carries the result of the call that the step before it made. The run steps follow the two spawn
+    // steps, so the requests at offsets 3 and 4 carry the results of the two runs.
+    const runIDs = teammates.map(({ agentId }, index) => {
+      const result: unknown = JSON.parse(nativeToolResult(stepRequest(status, start + 3 + index), `run-${agentId}`))
       if (!isObject(result) || typeof result.runId !== 'string')
-        throw new Error('the Cline async run result has no run ID')
+        throw new Error(`the Cline async run of ${agentId} returned no run ID`)
       expect(result.mode).toBe('async')
       expect(result.runId).toMatch(/^run_/)
-      runIDs.push(result.runId)
-    }
+      return result.runId
+    })
     expect(new Set(runIDs).size).toBe(2)
     for (const { agentId } of teammates)
       await expect.poll(async () => (await modelScript.status()).ruleMatches[`the ${agentId} answers`] ?? 0).toBe(1)
