@@ -1,6 +1,9 @@
 import type { Buffer } from 'node:buffer'
+import type { FSWatcher } from 'node:fs'
+import type { Mock } from 'vitest'
 import type { FixturePolicy, FixtureRecord, FixtureRun, LauncherCompletion } from '../tests/e2e/helpers/launcherFixtureProject'
 import { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readdirSync, readFileSync, watch, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import process from 'node:process'
@@ -11,6 +14,15 @@ import { cleanupLauncherFixtureProject, createLauncherFixtureProject, fixtureStr
 import * as processHelpers from '../tests/e2e/helpers/process'
 import * as processRegistry from '../tests/e2e/helpers/processRegistry'
 
+// A test replaces one watch with a watcher that reports no event: the case of a file that appears before the FSEvents
+// stream of the watcher starts. Every other watch is the real one.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, watch: vi.fn(actual.watch) }
+})
+
+/** The time between two existence checks of `waitForFixtureFiles`, in milliseconds. It never sets when the wait ends. */
+const RECORD_CHECK_INTERVAL_MS = 50
 const INTEGRATION_DEADLINE_MS = 30_000
 const CANCELLATION_PHASE_DEADLINE_MS = 15_000
 const CANCELLATION_CLEANUP_DEADLINE_MS = 10_000
@@ -30,8 +42,21 @@ afterEach((context) => {
   }
   fixtures.clear()
   vi.restoreAllMocks()
+  // Drop a silent watcher that a failed test did not consume, and restore the real watch.
+  vi.mocked(watch).mockReset()
+  vi.useRealTimers()
   vi.unstubAllEnvs()
 })
+
+/** A directory watcher that reports no event, as a watch does when the file appears before its stream starts. */
+type SilentWatcher = FSWatcher & { close: Mock<() => void> }
+
+/** Make the next watch report no event, and return that watcher. */
+function silenceNextWatch(): SilentWatcher {
+  const watcher = Object.assign(new EventEmitter(), { close: vi.fn<() => void>(), ref: vi.fn(), unref: vi.fn() }) as unknown as SilentWatcher
+  vi.mocked(watch).mockImplementationOnce(() => watcher)
+  return watcher
+}
 
 function createFixture(policy: FixturePolicy = {}): string {
   const root = createLauncherFixtureProject(policy)
@@ -62,21 +87,22 @@ function startPrivateRunner(root: string): ReturnType<typeof startLauncher> {
 /**
  * Wait until the fixture writes each of the files into the records directory.
  *
- * A directory watch and one first check are enough here, unlike `waitForFile` in the fixture project. macOS starts
- * the FSEvents stream of a watcher after watch() returns, and a file that appears before the stream starts gives no
- * event. Each caller starts the launcher and then this wait in one synchronous step, and the launcher writes no record
- * itself. The process that writes a record starts only after the launcher starts Task or Playwright, and that chain of
- * process starts takes far longer than the start of the stream. The stream therefore runs before the first record
- * appears, and the first check finds a file that exists already.
+ * The wait checks for the files when it starts, on each watch event, and every RECORD_CHECK_INTERVAL_MS, as
+ * `waitForFile` in the fixture project does. A directory watch alone cannot end the wait. macOS starts the FSEvents
+ * stream of a watcher after watch() returns, so a file that appears in that window gives no event. The interval check
+ * finds such a file, so the wait does not depend on the start order of the processes. The watch only ends the wait
+ * sooner.
  */
 function waitForFixtureFiles(records: string, files: string[], completion: Promise<LauncherCompletion>, signal: AbortSignal): Promise<void> {
   return new Promise((accept, reject) => {
     let finished = false
     const listener = watch(records, check)
+    const timer = setInterval(check, RECORD_CHECK_INTERVAL_MS)
     const finish = (error?: unknown) => {
       if (finished)
         return
       finished = true
+      clearInterval(timer)
       listener.close()
       signal.removeEventListener('abort', abort)
       if (error === undefined)
@@ -250,6 +276,48 @@ function retainedArtifactFiles(root: string): Map<string, Buffer> {
   return files
 }
 
+describe('waitForFixtureFiles', () => {
+  /** Start a wait on a watch that reports no event. The test advances the interval check itself. */
+  function silentWait(files: string[], completion: Promise<LauncherCompletion> = new Promise(() => {})) {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const records = join(createFixture(), 'records')
+    const watcher = silenceNextWatch()
+    const wait = waitForFixtureFiles(records, files, completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
+    return { records, watcher, wait }
+  }
+
+  it('finds records that appear after its first check and give no watch event', async () => {
+    const { records, watcher, wait } = silentWait(['entry-alpha.json', 'entry-beta.json'])
+    writeFileSync(join(records, 'entry-alpha.json'), '{}')
+    await vi.advanceTimersByTimeAsync(RECORD_CHECK_INTERVAL_MS)
+    expect(watcher.close, 'one of the two records must not end the wait').not.toHaveBeenCalled()
+    writeFileSync(join(records, 'entry-beta.json'), '{}')
+    await vi.advanceTimersByTimeAsync(RECORD_CHECK_INTERVAL_MS)
+
+    await expect(wait).resolves.toBeUndefined()
+    expect(watcher.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  }, CANCELLATION_TEST_DEADLINE_MS)
+
+  it('stops its interval check when the watcher fails', async () => {
+    const { watcher, wait } = silentWait(['entry-alpha.json'])
+    const failure = new Error('The controlled watcher fails.')
+    watcher.emit('error', failure)
+
+    await expect(wait).rejects.toBe(failure)
+    expect(watcher.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('stops its interval check when the runner exits before the records appear', async () => {
+    const { watcher, wait } = silentWait(['entry-alpha.json'], Promise.resolve({ code: 1, signal: null }))
+
+    await expect(wait).rejects.toThrow('The private runner exited before it created entry-alpha.json.')
+    expect(watcher.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
 describe('stopPrivateRunner', () => {
   it.each(['stop', 'completion'])('preserves the %s failure beside a fixture descendant cleanup failure', async (stage) => {
     const root = createFixture()
@@ -405,6 +473,18 @@ describe('runE2E Playwright integration', () => {
     const alphaExit = readFixtureRecord(join(run.records, 'exit-alpha.json'))
     expect(alpha.workerProcessId).toBe(beta.workerProcessId)
     expect(BigInt(fixtureStringField(beta, 'started'))).toBeGreaterThanOrEqual(BigInt(fixtureStringField(alphaExit, 'finished')))
+  }, INTEGRATION_DEADLINE_MS)
+
+  it.each([
+    { workers: 1 as const, parallelRelease: false },
+    { workers: 2 as const, parallelRelease: true },
+  ])('releases the cases of $workers worker(s) when the records watch reports no event', async ({ workers, parallelRelease }) => {
+    const watcher = silenceNextWatch()
+    const run = await executeFixture(workers)
+    expect(run.code, launcherFixtureDiagnostics(run)).toBe(0)
+    expect(run.cases.map(test => test.status), launcherFixtureDiagnostics(run)).toEqual(['expected', 'expected'])
+    expect(run.parallelRelease).toBe(parallelRelease)
+    expect(watcher.close).toHaveBeenCalledOnce()
   }, INTEGRATION_DEADLINE_MS)
 
   it('retains a failed fixture case and cleans both shards before returning failure', async () => {

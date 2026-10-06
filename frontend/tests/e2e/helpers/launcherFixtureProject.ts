@@ -499,13 +499,14 @@ export async function runLauncherFixtureProject(root: string, options: FixtureRu
       failWatcher(error)
     }
   }
-  // A directory watch alone is enough for `releaseCases`, unlike `waitForFile` in the fixture project. macOS starts
-  // the FSEvents stream of a watcher after watch() returns, and a file that appears before the stream starts gives no
-  // event. This watch starts before the launcher. Each entry record comes from a Playwright worker, which the launcher
-  // starts only after its build and its discovery run. The stream therefore runs before the first record appears. Each
-  // event reads the complete directory again, so the event of the latest entry record also sees each earlier one.
+  // `releaseCases` reads the complete records directory on each watch event and every FILE_CHECK_INTERVAL_MS, as
+  // `waitForFile` in the fixture project checks for its file. A directory watch alone cannot release the cases. macOS
+  // starts the FSEvents stream of a watcher after watch() returns, so an entry record that appears in that window gives
+  // no event. The interval read finds such a record, so the release does not depend on the start order of the
+  // processes. The watch only releases the cases sooner.
   const listener = watch(records, releaseCases)
   listener.once('error', failWatcher)
+  const releaseCheck = setInterval(releaseCases, FILE_CHECK_INTERVAL_MS)
   let launcher: ReturnType<typeof startLauncher> | undefined
   return withCleanup(async () => {
     launcher = startLauncher(root, { args: [`--workers=${workers}`, '--reporter=json', `--output=${output}`, ...(options.args ?? [])], reportPath })
@@ -517,6 +518,7 @@ export async function runLauncherFixtureProject(root: string, options: FixtureRu
     const report = readFixtureRecord(reportPath)
     return { root, records, report, cases: fixtureCases(report), code: result.code, parallelRelease, reportPath, consolePath: launcher.log }
   }, async () => {
+    clearInterval(releaseCheck)
     listener.close()
     releaseFixtureProcesses(records)
     if (launcher) {
