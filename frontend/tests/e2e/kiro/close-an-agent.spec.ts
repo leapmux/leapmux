@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { listProcesses, withDescendants } from '../helpers/processTree'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { kiroEngineProcesses, kiroRunProcesses } from './processOwnership'
+import { nativeContext } from './scenarios'
 
 kiroTest.describe('kiro process lifetime', () => {
   kiroTest('stops the whole process tree when the agent closes', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
@@ -15,15 +15,10 @@ kiroTest.describe('kiro process lifetime', () => {
     const beforePids = new Set(listProcesses().map(row => row.pid))
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     let workerPid = 0
 
-    await exerciseCloseAgent({
-      page,
-      modelScript,
-      provider: AgentProvider.KIRO,
-      leapmuxServer,
-      workspaceId: authenticatedEmptyWorkspace.workspaceId,
-    }, {
+    await exerciseCloseAgent(context, {
       nativeOwnership: ({ rows, ownership }) => {
         workerPid = ownership.workerPid
         const owned = new Set(ownership.ownedPids)

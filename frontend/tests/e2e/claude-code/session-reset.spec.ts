@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { exerciseSessionReset } from '../helpers/nativeLifecycle'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, visibleOnly } from '../helpers/ui'
@@ -10,9 +9,9 @@ claudeTest.describe('Clear Command', () => {
     void authenticatedWorkspace // fixture trigger
 
     // Send a message to establish a session
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const first = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(first + 1)
     await expectAssistantAnswer(page)
 
     // Send /reset (alias for /clear)
@@ -22,9 +21,9 @@ claudeTest.describe('Clear Command', () => {
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
 
     // Verify agent is still responsive (new session)
-    await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+    const second = await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(second + 1)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
   })
 
@@ -32,9 +31,9 @@ claudeTest.describe('Clear Command', () => {
     void authenticatedWorkspace // fixture trigger
 
     // Send a message to establish a session
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const first = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(first + 1)
     await expectAssistantAnswer(page)
 
     // Send /clear
@@ -44,9 +43,9 @@ claudeTest.describe('Clear Command', () => {
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
 
     // Verify agent is still responsive (new session)
-    await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+    const second = await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(second + 1)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // The new session reports system prompt tokens after its first reply.
@@ -57,7 +56,7 @@ claudeTest.describe('Clear Command', () => {
 })
 
 for (const command of ['/clear', '/reset'] as const) {
-  claudeTest(`excludes unique prior native context after ${command} and keeps saved Worker rows`, async ({ authenticatedClaudeWorkspace, page, leapmuxServer, modelScript }) => {
-    await exerciseSessionReset({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE, workspaceId: authenticatedClaudeWorkspace.workspaceId }, { command })
+  claudeTest(`excludes unique prior native context after ${command} and keeps saved Worker rows`, async ({ native }) => {
+    await exerciseSessionReset(native, { command })
   })
 }

@@ -1,8 +1,6 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 
-clineTest('reopens the native picker handle and restores the saved transcript', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE }
-  await exerciseSessionResume(context)
+clineTest('reopens the native picker handle and restores the saved transcript', async ({ native }) => {
+  await exerciseSessionResume(native)
 })

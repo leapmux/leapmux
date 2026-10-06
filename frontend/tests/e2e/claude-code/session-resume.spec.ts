@@ -428,9 +428,9 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
 
     // A turn, so the worker records a resume handle: an agent that never spoke
     // has no session to offer.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const original = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(original + 1)
     await expectAssistantAnswer(page)
 
     const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
@@ -519,9 +519,9 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
 
     // The resumed tab reaches the worker and takes a turn, which proves the
     // handle the picker sent is one the provider accepts.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const resumed = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(resumed + 1)
     await expectAssistantAnswer(page)
   })
 

@@ -11,6 +11,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentInputState, AgentStatus, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { isObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from './api'
 import { sendNativeAnswer } from './nativeConversation'
@@ -252,6 +253,21 @@ export async function exerciseCloseAgent(
     if (toolPid > 0 && isAlive(toolPid))
       process.kill(toolPid, 'SIGTERM')
   }
+}
+
+/**
+ * Read the script of the MCP server `server` from the JSON configuration at `configPath`, for a close proof that finds
+ * the process of that script among the processes that the agent owns. `serversKey` gives the object that holds the
+ * servers: `servers` for Codewhale, and `mcpServers` for Pi.
+ */
+export function configuredMcpScript(configPath: string, serversKey: 'servers' | 'mcpServers', server: string): string {
+  const config: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
+  const servers = isObject(config) && isObject(config[serversKey]) ? config[serversKey] : null
+  const entry = servers && isObject(servers[server]) ? servers[server] : null
+  const script = entry && Array.isArray(entry.args) ? entry.args[0] : undefined
+  if (typeof script !== 'string' || script === '')
+    throw new Error(`The MCP configuration ${configPath} states no script for the server ${server} under ${serversKey}.`)
+  return script
 }
 
 /** Prove that the selected reset command starts a new native context and preserves the old LeapMux rows. */
