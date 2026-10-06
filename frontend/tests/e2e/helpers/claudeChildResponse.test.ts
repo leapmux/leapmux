@@ -1,7 +1,7 @@
 import type { MockModelStep } from './mockModelScript'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { applyClaudeChildHandback, claudeDeliveredChildResponse } from './claudeChildResponse'
+import { applyClaudeChildHandback, claudeDeliveredChildResponse, claudeToolResultText } from './claudeChildResponse'
 import { claudeSubagentHandbackToolCall, claudeSubagentHandbackToolDefinition, readToolCall } from './providerToolCalls'
 
 const nativeCatalog = { tools: [claudeSubagentHandbackToolDefinition()] }
@@ -16,6 +16,27 @@ function deliveredRequest(report: string, result: unknown = { success: true, mes
     ],
   }
 }
+
+describe('claudeToolResultText', () => {
+  it('reads a string content and the text of one text block', () => {
+    expect(claudeToolResultText('Direct text.')).toBe('Direct text.')
+    expect(claudeToolResultText('')).toBe('')
+    expect(claudeToolResultText([{ type: 'text', text: 'Block text.' }])).toBe('Block text.')
+  })
+
+  it.each([
+    [],
+    [{ type: 'text', text: 'First.' }, { type: 'text', text: 'Second.' }],
+    [{ type: 'image', source: {} }],
+    [{ type: 'text', text: 7 }],
+    ['Text.'],
+    { type: 'text', text: 'Not in a list.' },
+    null,
+    undefined,
+  ])('states no text for any other content: %j', (content) => {
+    expect(claudeToolResultText(content)).toBeUndefined()
+  })
+})
 
 describe('claudeDeliveredChildResponse', () => {
   it.each([

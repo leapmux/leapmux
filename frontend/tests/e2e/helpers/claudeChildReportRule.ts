@@ -4,22 +4,26 @@ import { expect } from '@playwright/test'
 import { CLAUDE_TOOL_NAMES } from '../../../src/components/chat/providers/claude/toolNames'
 import { isObject } from '../../../src/lib/jsonPick'
 import { escapeRegExp } from '../../../src/lib/regexp'
+import { claudeToolResultText } from './claudeChildResponse'
 
 export interface ClaudeChildReportOptions {
   spawnCallId: string
   report: string
   reply: string
-  completionStatus: string
-  completionReply: string
+  /** The status of the native completion notification. It is `completed` unless a spec states another one. */
+  completionStatus?: string
+  /** The scripted parent reply to the native completion notification. */
+  completionReply?: string
 }
 
-function nativeResultText(content: unknown): string | undefined {
-  if (typeof content === 'string')
-    return content
-  if (!Array.isArray(content) || content.length !== 1 || !isObject(content[0]) || content[0].type !== 'text' || typeof content[0].text !== 'string')
-    return undefined
-  return content[0].text
-}
+/** The completion status of a child that ends its task. */
+export const CLAUDE_CHILD_COMPLETED_STATUS = 'completed'
+
+/** The parent reply to the completion notification when a spec states no reply of its own. */
+export const CLAUDE_CHILD_COMPLETION_REPLY = 'The native child completion notification arrived.'
+
+/** The options with each default applied. */
+type CompleteReportOptions = Required<ClaudeChildReportOptions>
 
 /** Read a native child ID only from the result of its actual Agent call. */
 export function claudeSpawnedChildId(requestBody: unknown, spawnCallId: string): string | undefined {
@@ -43,7 +47,7 @@ export function claudeSpawnedChildId(requestBody: unknown, spawnCallId: string):
         continue
       if (callCount !== 1 || (Object.hasOwn(block, 'is_error') && block.is_error !== false))
         return undefined
-      const text = nativeResultText(block.content)
+      const text = claudeToolResultText(block.content)
       if (!text?.startsWith('Async agent launched successfully.'))
         return undefined
       const ids = [...text.matchAll(/^agentId: ([\w-]{1,128}) \(internal ID\b/gim)]
@@ -55,18 +59,24 @@ export function claudeSpawnedChildId(requestBody: unknown, spawnCallId: string):
   return callCount === 1 ? childId : undefined
 }
 
-function validateOptions(options: ClaudeChildReportOptions): void {
+function validateOptions(options: ClaudeChildReportOptions): CompleteReportOptions {
   if (!options)
     throw new Error('The Claude parent report rule requires text options.')
+  const complete: CompleteReportOptions = {
+    ...options,
+    completionStatus: options.completionStatus ?? CLAUDE_CHILD_COMPLETED_STATUS,
+    completionReply: options.completionReply ?? CLAUDE_CHILD_COMPLETION_REPLY,
+  }
   for (const key of ['spawnCallId', 'report', 'reply', 'completionStatus', 'completionReply'] as const) {
-    if (typeof options[key] !== 'string' || options[key].trim() === '')
+    if (typeof complete[key] !== 'string' || complete[key].trim() === '')
       throw new Error(`The Claude parent report rule requires nonempty text for ${key}.`)
   }
+  return complete
 }
 
 /** Match one actual delivered report from one native child, with an explicit scripted parent reply. */
-export function claudeChildReportRule(requestBody: unknown, options: ClaudeChildReportOptions): MockModelRule {
-  validateOptions(options)
+export function claudeChildReportRule(requestBody: unknown, given: ClaudeChildReportOptions): MockModelRule {
+  const options = validateOptions(given)
   const childId = claudeSpawnedChildId(requestBody, options.spawnCallId)
   if (!childId)
     throw new Error('The Claude parent report rule has no matching actual Agent spawn result.')
@@ -83,8 +93,8 @@ export function claudeChildReportRule(requestBody: unknown, options: ClaudeChild
 }
 
 /** Match the native completion notification with both actual IDs and its exact status. */
-export function claudeChildCompletionRule(requestBody: unknown, options: ClaudeChildReportOptions): MockModelRule {
-  validateOptions(options)
+export function claudeChildCompletionRule(requestBody: unknown, given: ClaudeChildReportOptions): MockModelRule {
+  const options = validateOptions(given)
   const childId = claudeSpawnedChildId(requestBody, options.spawnCallId)
   if (!childId)
     throw new Error('The Claude completion rule has no matching actual Agent spawn result.')
@@ -109,8 +119,8 @@ export function claudeChildCompletionRule(requestBody: unknown, options: ClaudeC
 }
 
 /** Register the expected parent report before the held child can deliver it. */
-export async function registerClaudeChildReportRules(modelScript: Pick<ModelScript, 'status' | 'rule'>, options: ClaudeChildReportOptions): Promise<{ reportRule: MockModelRule, completionRule: MockModelRule }> {
-  validateOptions(options)
+export async function registerClaudeChildReportRules(modelScript: Pick<ModelScript, 'status' | 'rule'>, given: ClaudeChildReportOptions): Promise<{ reportRule: MockModelRule, completionRule: MockModelRule }> {
+  const options = validateOptions(given)
   let requestBody: unknown
   await expect.poll(async () => {
     const requests = (await modelScript.status()).requests

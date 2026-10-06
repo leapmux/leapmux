@@ -2,6 +2,18 @@ import type { MockModelStep } from './mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
 import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolCall } from './providerToolCalls'
 
+/**
+ * The text of a Claude tool result: a string content, or a content of exactly one text block. Any other content
+ * states no text that a child report or a spawn receipt can carry, so the answer is undefined.
+ */
+export function claudeToolResultText(content: unknown): string | undefined {
+  if (typeof content === 'string')
+    return content
+  if (!Array.isArray(content) || content.length !== 1 || !isObject(content[0]) || content[0].type !== 'text' || typeof content[0].text !== 'string')
+    return undefined
+  return content[0].text
+}
+
 function hasNativeHandback(requestBody: unknown): boolean {
   if (!isObject(requestBody) || !Array.isArray(requestBody.tools))
     return false
@@ -31,12 +43,7 @@ function deliveredChildReport(requestBody: unknown): string | undefined {
     || (Object.hasOwn(result, 'is_error') && result.is_error !== false)) {
     return undefined
   }
-  const text = typeof result.content === 'string'
-    ? result.content
-    : Array.isArray(result.content) && result.content.length === 1 && isObject(result.content[0])
-      && result.content[0].type === 'text' && typeof result.content[0].text === 'string'
-      ? result.content[0].text
-      : undefined
+  const text = claudeToolResultText(result.content)
   if (text === undefined)
     return undefined
   let delivered: unknown

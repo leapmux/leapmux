@@ -1,7 +1,7 @@
 import type { MockModelRule, MockModelScenarioStatus } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import { describe, expect, it } from 'vitest'
-import { claudeChildCompletionRule, claudeChildReportRule, claudeSpawnedChildId, registerClaudeChildReportRules } from './claudeChildReportRule'
+import { CLAUDE_CHILD_COMPLETED_STATUS, CLAUDE_CHILD_COMPLETION_REPLY, claudeChildCompletionRule, claudeChildReportRule, claudeSpawnedChildId, registerClaudeChildReportRules } from './claudeChildReportRule'
 
 function nativeSpawnBody(childId = 'a7886d73ffa77cc1e') {
   return { messages: [
@@ -155,6 +155,19 @@ describe('claudeChildCompletionRule', () => {
     expect(pattern(rule).test(completionNotification())).toBe(true)
     for (const changed of [{ childId: 'other-child' }, { spawnCallId: 'other-spawn' }, { status: 'failed' }, { status: 'completed later' }, { deliveredId: 'other-child' }])
       expect(pattern(rule).test(completionNotification(changed))).toBe(false)
+  })
+
+  it('matches the completed status and answers the default reply when the options state neither', () => {
+    const rule = claudeChildCompletionRule(nativeSpawnBody(), { spawnCallId: 'actual-spawn', report: 'The native report.', reply: 'The report reply.' })
+    expect(rule.respond).toEqual({ text: CLAUDE_CHILD_COMPLETION_REPLY })
+    expect(pattern(rule).test(completionNotification({ status: CLAUDE_CHILD_COMPLETED_STATUS }))).toBe(true)
+    expect(pattern(rule).test(completionNotification({ status: 'failed' }))).toBe(false)
+  })
+
+  it('matches a status that the options state in place of the default', () => {
+    const rule = claudeChildCompletionRule(nativeSpawnBody(), { spawnCallId: 'actual-spawn', report: 'The native report.', reply: 'The report reply.', completionStatus: 'failed' })
+    expect(pattern(rule).test(completionNotification({ status: 'failed' }))).toBe(true)
+    expect(pattern(rule).test(completionNotification())).toBe(false)
   })
 
   it('rejects a user prefix and duplicate or nested native notification fields', () => {
