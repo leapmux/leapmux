@@ -3,7 +3,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { expect } from '@playwright/test'
 import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER } from '../helpers/mockAgentEnvironment'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
-import { closeComposerMenus, waitForSettingsHydrated } from '../helpers/ui'
+import { closeComposerMenus, waitForNativeSettingsHydrated } from '../helpers/ui'
 import { junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
@@ -27,8 +27,8 @@ junieTest.describe('Junie settings', () => {
     await exerciseNativeOption(context, {
       groupId: 'effort',
       value: 'low',
+      // The prepare step runs on the live catalog, so the picker lists the proxy models that Junie reports.
       prepare: async () => {
-        await waitForSettingsHydrated(page)
         const proxyModel = (await openModelPicker(page)).getByRole('option', { name: 'GPT-5.3-codex', exact: true })
         await expect(proxyModel).toHaveCount(1)
         await expect(proxyModel).toHaveAttribute('aria-selected', 'true')
@@ -52,8 +52,9 @@ junieTest.describe('Junie settings', () => {
           await expect.poll(async () => (await modelScript.status()).ruleMatches['junie-effort-next-prompt'] ?? 0).toBe(1)
       },
     })
-    // The restore keeps the proxy model, not only the effort.
-    await waitForSettingsHydrated(page)
+    // The restore keeps the proxy model, not only the effort. An open picker keeps the list that it showed when it
+    // opened, so the picker opens on the live catalog.
+    await waitForNativeSettingsHydrated(page)
     await expect((await openModelPicker(page)).getByTestId(proxyModelOptionID)).toHaveAttribute('aria-selected', 'true')
     await closeComposerMenus(page)
   })

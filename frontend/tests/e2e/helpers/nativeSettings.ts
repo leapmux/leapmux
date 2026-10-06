@@ -45,19 +45,36 @@ export async function exerciseRestoredNativeOption(context: ManagedNativeScenari
   await options.nativeProof(next)
 }
 
+/**
+ * Run a prepare step of an option scenario on the live catalog of the active agent.
+ *
+ * The wait for the live catalog comes first. Before the agent runs, the Worker offers a read-only model group, so
+ * `waitForSettingsHydrated` can end before the live catalog arrives. A prepare step that reads or changes a setting
+ * before that arrival acts on the wrong options. A settings menu that it opens also keeps the list that it showed when
+ * it opened, until it closes. The wait comes again after the prepare step, because a setting that the step changes can
+ * restart the agent.
+ */
+async function prepareOnLiveCatalog(page: Page, prepare: (() => Promise<void>) | undefined): Promise<void> {
+  await waitForNativeSettingsHydrated(page)
+  if (prepare === undefined)
+    return
+  await prepare()
+  await waitForNativeSettingsHydrated(page)
+}
+
 /** Prove one offered setting through its provider-owned native request fields. */
 export async function exerciseNativeOption(
   context: ManagedNativeScenarioContext,
   options: NativeOptionProof & {
+    /** Runs on the live catalog, before the choice. See {@link prepareOnLiveCatalog}. */
     prepare?: () => Promise<void>
   },
 ): Promise<void> {
-  await options.prepare?.()
-  await waitForNativeSettingsHydrated(context.page)
+  await prepareOnLiveCatalog(context.page, options.prepare)
   const before = await currentNativeAgent(context)
   const group = nativeOptionGroup(before, options.groupId)
-  expect(group?.mutable).toBe(true)
-  expect(group?.options.map(option => option.id)).toContain(options.value)
+  expect(group?.mutable, `the live catalog lets the user change ${options.groupId}`).toBe(true)
+  expect(group?.options.map(option => option.id), `the live catalog offers ${options.groupId}=${options.value}`).toContain(options.value)
   const optionId = `${options.groupId}-${options.value}`
   await chooseSettingsOption(context.page, optionId)
   await waitForSettingsIdle(context.page)
@@ -84,11 +101,11 @@ export async function exerciseModelSwitchKeepsOption(
     model: string
     /** Check that the next native request carries the new model and the kept setting. */
     nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
+    /** Runs on the live catalog, before the choices. See {@link prepareOnLiveCatalog}. */
     prepare?: () => Promise<void>
   },
 ): Promise<void> {
-  await options.prepare?.()
-  await waitForNativeSettingsHydrated(context.page)
+  await prepareOnLiveCatalog(context.page, options.prepare)
   const keptId = `${options.kept.groupId}-${options.kept.value}`
   const modelId = `model-${options.model}`
   await chooseSettingsOption(context.page, keptId)
