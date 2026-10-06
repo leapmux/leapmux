@@ -2,7 +2,31 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { copilotChildTaskId } from './childIdentity'
+import { matchesRequest } from '../helpers/mockModelScript'
+import { copilotChildTaskId, copilotChildTaskMatcher } from './childIdentity'
+
+describe('copilotChildTaskMatcher', () => {
+  const task = 'NATIVECHILDTASK1 report one word.'
+  const selects = (userText: string, matched = task) => matchesRequest(copilotChildTaskMatcher(matched), { protocol: 'openai-chat-completions', userText, systemText: '', body: {} })
+
+  it('selects the child turn after the datetime block that Copilot puts first', () => {
+    expect(selects(`<current_datetime>2026-10-06T00:00:00Z</current_datetime>\n${task}\n\nSCENARIO_MARK`)).toBe(true)
+    expect(selects(task)).toBe(true)
+  })
+
+  it('refuses a turn that holds the task inside a line', () => {
+    expect(selects(`Delegate this: ${task}`)).toBe(false)
+  })
+
+  it('reads regular expression syntax in the task as plain text', () => {
+    expect(selects('Read a.b once', 'Read a.b once')).toBe(true)
+    expect(selects('Read aXb once', 'Read a.b once')).toBe(false)
+  })
+
+  it('refuses an empty task', () => {
+    expect(() => copilotChildTaskMatcher('')).toThrow('nonempty task')
+  })
+})
 
 const encoder = new TextEncoder()
 function event(agentId: unknown = 'actual_native_child', toolCallId = 'spawn', sessionId = 'native-session') {

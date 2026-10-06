@@ -5,6 +5,7 @@ import type { SubagentRequest } from './providerToolCalls'
 import type { RunningNativeChild } from './unsupportedSubagent'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { cssAttributeValue } from './cssAttribute'
 import { validateGateName } from './mockModelScript'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
@@ -33,9 +34,9 @@ const NATIVE_CHILD_FINAL_RULE = 'the native child holds its final reply'
  *
  * The gate of the child holds the final answer, so the child keeps its running state until the caller releases it.
  */
-export type NativeChildScript =
-  | { matcher: MockModelMatcher, finalStep?: MockModelStep, tool?: never, finalMatcher?: never }
-  | { matcher: MockModelMatcher, tool: MockModelToolCall, finalMatcher?: MockModelMatcher, finalStep?: MockModelStep }
+export type NativeChildScript
+  = | { matcher: MockModelMatcher, finalStep?: MockModelStep, tool?: never, finalMatcher?: never }
+    | { matcher: MockModelMatcher, tool: MockModelToolCall, finalMatcher?: MockModelMatcher, finalStep?: MockModelStep }
 
 export interface RunningChildOptions {
   /** The spawn call of the parent. */
@@ -148,6 +149,94 @@ export function heldChildOptions(
     rowText: identity.description,
     ...overrides,
   }
+}
+
+/** Match a child turn whose last user text starts with `task`. */
+export function childTaskAtStart(task: string): MockModelMatcher {
+  return { user: `^${escapeRegExp(requireTask(task))}` }
+}
+
+/**
+ * Match a child turn whose last user text holds `task` at any place.
+ * Use it only for a provider that puts text of its own before the task and keeps the task out of the last user text
+ * of each parent turn.
+ */
+export function childTaskAnywhere(task: string): MockModelMatcher {
+  return { user: escapeRegExp(requireTask(task)) }
+}
+
+function requireTask(task: string): string {
+  if (task.trim() === '')
+    throw new Error('A child task matcher needs a task that is not empty.')
+  return task
+}
+
+/** One held child of {@link openProfiledNativeChild}: its generated identity and its unique final answer. */
+export interface ProfiledNativeChild extends HeldChildIdentity {
+  report: string
+}
+
+/**
+ * The facts of one provider that a held child, which only answers its task, needs.
+ * Each provider states its profile once, in its own directory.
+ */
+export interface NativeChildProfile {
+  /** Match the model turn of the child from its task text. The text can hold regular expression syntax. */
+  childTask: (task: string) => MockModelMatcher
+  /**
+   * True when a spec of the provider shows that the registry row title holds the spawn description.
+   * The helper then also selects the child by that title. A provider with `resolveTaskId` selects by the task ID.
+   */
+  rowTitleHoldsDescription: boolean
+  /** Prepare the parent before the spawn, such as with a permission preset. */
+  prepare?: (context: ManagedNativeScenarioContext) => Promise<void>
+  /** Register report handling that the provider owns while the child is held. */
+  beforeRelease?: (context: ManagedNativeScenarioContext, child: ProfiledNativeChild) => Promise<void>
+  /** Resolve the exact native task ID of the child from the native frames of its parent. */
+  resolveTaskId?: (context: ManagedNativeScenarioContext, parentId: string, child: ProfiledNativeChild) => Promise<string>
+}
+
+/** What a profiled child may vary: the rows of earlier children, and a tool turn before its final answer. */
+export interface ProfiledChildOptions {
+  allowExistingRows?: boolean
+  childTool?: MockModelToolCall
+}
+
+/** Build the options of a profiled child without browser operations. */
+export function profiledChildOptions(
+  context: ManagedNativeScenarioContext,
+  profile: NativeChildProfile,
+  child: ProfiledNativeChild,
+  options: ProfiledChildOptions = {},
+): RunningChildOptions {
+  const script = nativeChildScriptContext(context)
+  const matcher = profile.childTask(child.task)
+  const finalStep = script.textStep(child.report)
+  const { prepare, beforeRelease, resolveTaskId } = profile
+  return {
+    spawn: child.spawn,
+    gate: child.gate,
+    child: options.childTool ? { matcher, tool: options.childTool, finalStep } : { matcher, finalStep },
+    parentSteps: [{ toolCalls: [child.spawn] }, script.textStep('The native parent received its child report.')],
+    allowExistingRows: options.allowExistingRows ?? false,
+    ...(profile.rowTitleHoldsDescription ? { rowText: child.description } : {}),
+    ...(prepare ? { prepare: () => prepare(context) } : {}),
+    ...(beforeRelease ? { beforeRelease: () => beforeRelease(context, child) } : {}),
+    ...(resolveTaskId ? { resolveTaskId: (parentId: string) => resolveTaskId(context, parentId, child) } : {}),
+  }
+}
+
+/**
+ * Spawn one uniquely identified child from the profile of its provider, and hold its final answer.
+ * Each call generates a new task, description, spawn call ID, gate, and final answer.
+ */
+export async function openProfiledNativeChild(
+  context: ManagedNativeScenarioContext,
+  profile: NativeChildProfile,
+  options: ProfiledChildOptions = {},
+): Promise<HeldNativeChild> {
+  const child: ProfiledNativeChild = { ...heldChildIdentity(nativeChildScriptContext(context)), report: uniqueMarker('NATIVECHILDREPORT') }
+  return openRunningNativeChild(context, profiledChildOptions(context, profile, child, options))
 }
 
 export type NativeChildTask = Pick<BackgroundTaskItem, 'id' | 'kind' | 'status' | 'childAgentId' | 'parentAgentId' | 'title'>

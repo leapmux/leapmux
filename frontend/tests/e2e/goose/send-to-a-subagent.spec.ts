@@ -3,10 +3,11 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { gooseTest } from '../goose-fixtures'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { openProfiledNativeChild } from '../helpers/runningChildProof'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, requireRegistryRow } from '../helpers/subagentRegistry'
-import { applyPermissionPreset, sendMessage } from '../helpers/ui'
+import { sendMessage } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
+import { GOOSE_CHILD } from './childScenario'
 
 gooseTest('send-to-a-subagent: delegate spawn creates a clickable row with a tool-request transcript', async ({
   authenticatedGooseWorkspace,
@@ -123,17 +124,6 @@ gooseTest('send-to-a-subagent: delegate spawn creates a clickable row with a too
   })
 })
 
-gooseTest('refuses native child send while the actual child task runs', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId, provider: AgentProvider.GOOSE }
-  const gate = `native-child-control-${crypto.randomUUID()}`
-  const childPrompt = 'Reply with exactly NATIVE_CHILD_CAPABILITY after the operator releases the response.'
-  await expectUnsupportedSubagent(context, {
-    operation: 'send',
-    openChild: () => openRunningNativeChild(context, {
-      spawn: spawnSubagentToolCall(AgentProvider.GOOSE, 'native-child-control', { description: 'Hold the native child', prompt: modelScript.prompt(childPrompt) }),
-      gate,
-      child: { matcher: { user: '^(?:Subagent ID: [^\\n]*\\n+)?Reply with exactly NATIVE_CHILD_CAPABILITY' } },
-      prepare: () => applyPermissionPreset(page, 'bypass'),
-    }),
-  })
+gooseTest('refuses native child send while the actual child task runs', async ({ native }) => {
+  await expectUnsupportedSubagent(native, { operation: 'send', openChild: () => openProfiledNativeChild(native, GOOSE_CHILD) })
 })

@@ -1,8 +1,21 @@
+import type { MockModelMatcher } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { COPILOT_EVENT, COPILOT_METHOD } from '../../../src/generated/contracts/copilot-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+
+/**
+ * Match the own turn of a Copilot child from the start of a line of its task.
+ * Copilot puts a `<current_datetime>` block before each user turn, so the task starts a line, not the text.
+ * Copilot returns a tool result as a `tool` message, so the last user text of a parent turn never holds the task.
+ */
+export function copilotChildTaskMatcher(task: string): MockModelMatcher {
+  if (task.trim() === '')
+    throw new Error('The native Copilot child matcher requires a nonempty task.')
+  return { user: `(?:^|\\n)${escapeRegExp(task)}` }
+}
 
 /** Resolve the actual child start event that belongs to this exact parent task call. */
 export function copilotChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId: string): string {

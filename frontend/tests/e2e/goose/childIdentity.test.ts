@@ -2,7 +2,31 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { gooseChildTaskId } from './childIdentity'
+import { matchesRequest } from '../helpers/mockModelScript'
+import { gooseChildTaskId, gooseChildTaskMatcher } from './childIdentity'
+
+describe('gooseChildTaskMatcher', () => {
+  const task = 'NATIVECHILDTASK1 report one word.'
+  const selects = (userText: string, matched = task) => matchesRequest(gooseChildTaskMatcher(matched), { protocol: 'openai-chat-completions', userText, systemText: '', body: {} })
+
+  it('selects the child turn with and without the Subagent ID line of Goose', () => {
+    expect(selects(`${task}\n\nSCENARIO_MARK`)).toBe(true)
+    expect(selects(`Subagent ID: 20260101_7\n\n${task}`)).toBe(true)
+  })
+
+  it('refuses a parent turn that quotes the task after text of its own', () => {
+    expect(selects(`Delegate this: ${task}`)).toBe(false)
+  })
+
+  it('reads regular expression syntax in the task as plain text', () => {
+    expect(selects('Read a.b once', 'Read a.b once')).toBe(true)
+    expect(selects('Read aXb once', 'Read a.b once')).toBe(false)
+  })
+
+  it('refuses an empty task', () => {
+    expect(() => gooseChildTaskMatcher(' ')).toThrow('nonempty task')
+  })
+})
 
 const encoder = new TextEncoder()
 const prompt = 'ACTUAL_CHILD_TASK\n\nLEAPMUXE2ESCENARIO:current-task'

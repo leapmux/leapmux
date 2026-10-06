@@ -1,8 +1,21 @@
+import type { MockModelMatcher } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { GOOSE_SUBAGENT } from '../../../src/generated/contracts/goose-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+
+/**
+ * Match the own turn of a Goose child from the start of its task.
+ * Goose 1.52 opens the message of a subagent with a `Subagent ID: <id>` line of its own, which the matcher admits.
+ * The anchor keeps a parent turn that quotes the task in its delegate call from matching.
+ */
+export function gooseChildTaskMatcher(task: string): MockModelMatcher {
+  if (task.trim() === '')
+    throw new Error('The native Goose child matcher requires a nonempty task.')
+  return { user: `^(?:Subagent ID: [^\\n]*\\n+)?${escapeRegExp(task)}` }
+}
 
 /** Correlate the native Goose delegate frame with its exact child prompt. */
 export function gooseChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId: string, prompt: string): string {

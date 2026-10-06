@@ -1,21 +1,24 @@
-import type { MockModelRequestRecord } from './mockModelScript'
+import type { MockModelMatcher, MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { NativeScenarioContext } from './nativeScenario'
-import type { NativeChildScript, NativeChildScriptContext, NativeChildTask, RunningChildOptions } from './runningChildProof'
+import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
+import type { NativeChildProfile, NativeChildScript, NativeChildScriptContext, NativeChildTask, ProfiledNativeChild, RunningChildOptions } from './runningChildProof'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from './mockModelScenario'
-import { parseScenarioSpec } from './mockModelScript'
+import { matchesRequest, parseScenarioSpec } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import {
+  childTaskAnywhere,
+  childTaskAtStart,
   heldChildFinalRequest,
   heldChildIdentity,
   heldChildOptions,
   NATIVE_CHILD_FINAL_REPLY,
   nativeChildRuleId,
   nativeChildScriptContext,
+  profiledChildOptions,
   runningNativeChildRules,
   selectRunningChildTask,
 } from './runningChildProof'
@@ -277,6 +280,128 @@ describe('heldChildIdentity', () => {
 
   it.each(['', '   '])('refuses an empty task: %j', (task) => {
     expect(() => heldChildIdentity(SCRIPT, { task })).toThrow('task that is not empty')
+  })
+})
+
+/** Decide whether `matcher` selects a child turn whose last user text is `userText`. */
+function selectsTurn(matcher: MockModelMatcher, userText: string): boolean {
+  return matchesRequest(matcher, { protocol: 'openai-chat-completions', userText, systemText: '', body: {} })
+}
+
+describe('childTaskAtStart', () => {
+  it('selects a turn that opens with the task, and refuses a turn that only quotes it', () => {
+    const matcher = childTaskAtStart('NATIVECHILDTASK1 report one word.')
+    expect(selectsTurn(matcher, 'NATIVECHILDTASK1 report one word.\n\nSCENARIO_MARK')).toBe(true)
+    expect(selectsTurn(matcher, 'The parent quotes NATIVECHILDTASK1 report one word.')).toBe(false)
+  })
+
+  it('reads regular expression syntax in the task as plain text', () => {
+    const matcher = childTaskAtStart('Read a.b (once) [now]+?')
+    expect(selectsTurn(matcher, 'Read a.b (once) [now]+?')).toBe(true)
+    expect(selectsTurn(matcher, 'Read aXb (once) [now]+?')).toBe(false)
+  })
+
+  it.each(['', '  '])('refuses an empty task: %j', (task) => {
+    expect(() => childTaskAtStart(task)).toThrow('task that is not empty')
+  })
+})
+
+describe('childTaskAnywhere', () => {
+  it('selects a turn that holds the task after text of its own', () => {
+    const matcher = childTaskAnywhere('NATIVECHILDTASK2 report one word.')
+    expect(selectsTurn(matcher, '<context>Provider text.</context>\nNATIVECHILDTASK2 report one word.')).toBe(true)
+    expect(selectsTurn(matcher, 'NATIVECHILDTASK2 report another word.')).toBe(false)
+  })
+
+  it('reads regular expression syntax in the task as plain text', () => {
+    expect(selectsTurn(childTaskAnywhere('a.b'), 'aXb')).toBe(false)
+  })
+
+  it.each(['', '  '])('refuses an empty task: %j', (task) => {
+    expect(() => childTaskAnywhere(task)).toThrow('task that is not empty')
+  })
+})
+
+describe('profiledChildOptions', () => {
+  /** A scenario context that the option builder may read only for the provider, the prompt, and the text step. */
+  function context(): ManagedNativeScenarioContext {
+    return {
+      provider: AgentProvider.KILO,
+      workspaceId: 'profiled-child',
+      modelScript: Object.assign({} as ModelScript, { prompt: (text: string) => `${text}\nMARKED` }),
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+      get page(): never {
+        throw new Error('The option builder must not read the page.')
+      },
+    }
+  }
+
+  function child(): ProfiledNativeChild {
+    return { ...heldChildIdentity(nativeChildScriptContext(context())), report: 'NATIVECHILDREPORT1' }
+  }
+
+  it('matches the task through the profile, holds the unique report, and answers the parent once', () => {
+    const tasks: string[] = []
+    const profile: NativeChildProfile = { childTask: (task) => {
+      tasks.push(task)
+      return { user: `matcher for ${task}` }
+    }, rowTitleHoldsDescription: false }
+    const held = child()
+    const options = profiledChildOptions(context(), profile, held)
+    expect(tasks).toEqual([held.task])
+    expect(options).toEqual({
+      spawn: held.spawn,
+      gate: held.gate,
+      child: { matcher: { user: `matcher for ${held.task}` }, finalStep: { text: 'NATIVECHILDREPORT1' } },
+      parentSteps: [{ toolCalls: [held.spawn] }, { text: 'The native parent received its child report.' }],
+      allowExistingRows: false,
+    })
+  })
+
+  it('adds the tool turn, the earlier rows, and the row title when the caller and the profile state them', () => {
+    const tool = readToolCall(AgentProvider.KILO, 'native-child-read', '/project/native.txt')
+    const held = child()
+    const options = profiledChildOptions(context(), { childTask: childTaskAtStart, rowTitleHoldsDescription: true }, held, { childTool: tool, allowExistingRows: true })
+    expect(options.child).toEqual({ matcher: childTaskAtStart(held.task), tool, finalStep: { text: 'NATIVECHILDREPORT1' } })
+    expect(options.allowExistingRows).toBe(true)
+    expect(options.rowText).toBe(held.description)
+  })
+
+  it('forwards the context and the child to each callback of the profile', async () => {
+    const calls: string[] = []
+    const scenario = context()
+    const held = child()
+    const profile: NativeChildProfile = {
+      childTask: childTaskAtStart,
+      rowTitleHoldsDescription: false,
+      prepare: async (received) => {
+        expect(received).toBe(scenario)
+        calls.push('prepare')
+      },
+      beforeRelease: async (received, receivedChild) => {
+        expect(received).toBe(scenario)
+        expect(receivedChild).toBe(held)
+        calls.push('beforeRelease')
+      },
+      resolveTaskId: async (received, parentId, receivedChild) => {
+        expect(received).toBe(scenario)
+        expect(receivedChild).toBe(held)
+        calls.push(`resolveTaskId ${parentId}`)
+        return 'native-task'
+      },
+    }
+    const options = profiledChildOptions(scenario, profile, held)
+    await options.prepare?.()
+    await options.beforeRelease?.()
+    expect(await options.resolveTaskId?.('native-parent')).toBe('native-task')
+    expect(calls).toEqual(['prepare', 'beforeRelease', 'resolveTaskId native-parent'])
+  })
+
+  it('leaves out each callback that the profile does not state', () => {
+    const options = profiledChildOptions(context(), { childTask: childTaskAtStart, rowTitleHoldsDescription: false }, child())
+    expect(options.prepare).toBeUndefined()
+    expect(options.beforeRelease).toBeUndefined()
+    expect(options.resolveTaskId).toBeUndefined()
   })
 })
 
