@@ -1,18 +1,17 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
+import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-protocol'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
+import { commandCodeToolCompleted } from './toolCompleted'
 
 /** Read the original completed shell event and its native pointer footer. */
 export function readCommandCodeNativeOutput(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,
-    accepts: (frame) => {
-      const event = pickObject(frame, 'event')
-      return frame.type === 'event' && event?.type === 'tool_completed' && event.toolName === 'shell_command' && event.toolCallId === callId
-    },
+    accepts: commandCodeToolCompleted(COMMAND_CODE_TOOL.ShellCommand, callId),
   })
   const result = pickObject(record.frame, 'event')?.result
   if (!Array.isArray(result) || result.some(block => !isObject(block) || block.type !== 'text' || typeof block.text !== 'string'))

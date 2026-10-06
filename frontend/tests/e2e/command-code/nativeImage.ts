@@ -1,6 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
+import { commandCodeToolCompleted } from './toolCompleted'
 
 export interface CommandCodeNativeImage {
   mediaType: string
@@ -19,10 +20,7 @@ export function readCommandCodeNativeImage(snapshot: NativeMessageSnapshot, call
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,
-    accepts: (frame) => {
-      const event = pickObject(frame, 'event')
-      return frame.type === 'event' && event?.type === 'tool_completed' && event.toolName === 'read_file' && event.toolCallId === callId
-    },
+    accepts: commandCodeToolCompleted('read_file', callId),
   })
   const result = pickObject(record.frame, 'event')?.result
   const images = Array.isArray(result) ? result.filter(isObject).filter(block => block.type === 'image') : []
