@@ -81,6 +81,7 @@ import { AppShellDialogs } from './AppShellDialogs'
 import { CustomTitlebar } from './CustomTitlebar'
 import * as titlebarStyles from './CustomTitlebar.css'
 import { DesktopLayout } from './DesktopLayout'
+import { followActiveTabSelection } from './fileTreeSelection'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { GridPopoverHostProvider } from './GridPopoverHost'
 import { handleBranchChanged } from './handleBranchChanged'
@@ -733,6 +734,27 @@ export const AppShell: Component = () => {
     return { workerId, workingDir: tab.workingDir ?? '', homeDir, gitToplevel }
   }
 
+  // The Files tree selects the working directory of the active tab, and keeps a
+  // file that the user selected over an update of the same tab (see
+  // `followActiveTabSelection`).
+  //
+  // No `'~'` fallback: this feeds the tree's `selectedPath`, which it compares
+  // against the absolute paths the worker reports. A tilde resolves only on
+  // the worker, so it matches no node and selects nothing -- an empty string
+  // says that with no pretence, and the tree then reveals its own
+  // `revealPath` instead.
+  const activeTabIdentity = createMemo(() => {
+    const tab = activeTab()
+    return tab ? tabKey(tab) : ''
+  })
+  const activeWorkingDir = createMemo(() => getCurrentTabContext().workingDir)
+  followActiveTabSelection({
+    activeTabKey: activeTabIdentity,
+    workingDir: activeWorkingDir,
+    selection: fileTreePath,
+    setSelection: setFileTreePath,
+  })
+
   /**
    * Refresh git file status for the active tab's working tree.
    *
@@ -875,7 +897,6 @@ export const AppShell: Component = () => {
     getCurrentTabContext,
     focusEditor,
     getScrollState: () => getScrollStateRef()?.(),
-    setFileTreePath,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
     workerOnlineState: workerId => workerOnlineState(workerSection.workers(), workerId),
     repoGitStore,
