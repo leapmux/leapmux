@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { editToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -20,7 +20,6 @@ droidTest.describe('Factory Droid control requests', () => {
     writeFileSync(note, 'a')
     // Normal autonomy asks before the native Edit tool.
     // It permits the native Execute tool. Use Edit to test an actual approval.
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [editToolCall(PROVIDER, 'allow-call', { path: 'notes.txt', before: 'a', after: 'b' })] },
       { text: 'The edit landed.' },
@@ -47,7 +46,6 @@ droidTest.describe('Factory Droid control requests', () => {
   droidTest('keeps the command from running after the reader denies it', async ({ askingDroidWorkspace, page, modelScript }) => {
     const note = join(askingDroidWorkspace.workingDir, 'notes.txt')
     writeFileSync(note, 'a')
-    await modelScript.rule(DROID_TITLE_RULE)
     // Cancellation ends this turn without another model request.
     // This script needs only the initial tool step.
     await modelScript.queue(
@@ -72,7 +70,6 @@ droidTest.describe('Factory Droid control requests', () => {
   droidTest('sends the reason for a denial as the next message', async ({ askingDroidWorkspace, page, modelScript }) => {
     const note = join(askingDroidWorkspace.workingDir, 'notes.txt')
     writeFileSync(note, 'a')
-    await modelScript.rule(DROID_TITLE_RULE)
     // Cancellation ends the first turn without another model request. The reason
     // opens the second turn, which answers it.
     await modelScript.queue(

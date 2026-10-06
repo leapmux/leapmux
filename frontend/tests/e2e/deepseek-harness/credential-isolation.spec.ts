@@ -5,7 +5,7 @@ import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolatio
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('uses private native configuration and the exact mock credential', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const home = leapmuxServer.agentEnv.DSH_HOME
   if (!home)
     throw new Error('The private DeepSeek Harness home is absent.')

@@ -1,4 +1,4 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -8,8 +8,9 @@ import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 
-export function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider'>): ManagedNativeScenarioContext {
-  return { ...context, provider: AgentProvider.COMMAND_CODE }
+/** Build the scenario context of Command Code. Its native protocol needs no field beyond the provider. */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return { ...fixtures, provider: AgentProvider.COMMAND_CODE }
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {

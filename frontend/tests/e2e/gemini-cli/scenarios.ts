@@ -1,4 +1,4 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -14,9 +14,9 @@ import { writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-/** Use the native Gemini model protocol with the shared browser scenarios. */
-export function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider'>): ManagedNativeScenarioContext {
-  return { ...context, provider: AgentProvider.GEMINI_CLI }
+/** Build the scenario context of Gemini CLI. Its native protocol needs no field beyond the provider. */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return { ...fixtures, provider: AgentProvider.GEMINI_CLI }
 }
 
 /** Use a native file tool to prove automatic approval in autoEdit. */

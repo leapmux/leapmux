@@ -31,7 +31,6 @@ junieTest.describe('Junie settings', () => {
     await modelScript.rule(
       { name: 'junie-effort-capability-filter', when: { system: 'classify a user request and route it to the correct handler' }, respond: { text: 'CODE' } },
       { name: 'junie-effort-language', when: { system: 'You are a language identification utility.' }, respond: { text: JSON.stringify({ iso: 'en', confidence: 1 }) } },
-      { name: 'junie-effort-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Effort switch task' } },
       { name: 'junie-effort-next-prompt', when: { user: 'Return ONLY the predicted prompt \\(max 7 tokens\\)' }, respond: { text: 'NONE' } },
     )
     await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-effort-answer', 'The low effort model answered.')] })

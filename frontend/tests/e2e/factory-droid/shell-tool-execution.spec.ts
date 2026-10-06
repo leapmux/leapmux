@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -16,7 +16,6 @@ droidTest.describe('Factory Droid tool execution', () => {
     void authenticatedDroidWorkspace
     // The command text states no `droid-42`, so only the command's own output can
     // put it on the page.
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'echo-call', 'echo "droid-$((40 + 2))"')] },
       { text: 'The command printed its number.' },

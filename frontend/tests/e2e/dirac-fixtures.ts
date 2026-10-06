@@ -5,10 +5,11 @@
  * so every scripted turn must queue a tool call, not text.
  */
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './dirac/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -22,7 +23,7 @@ export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefi
 /** The asking workspace opens its agent only after the isolated Dirac home turns automatic approval off. */
 const askingDiracWorkspace = authenticatedAgentWorkspace({ ...DIRAC_AGENT, prefix: 'dirac-e2e-ask' })
 
-export const diracTest = base.extend<CliSkipFixture & {
+export const diracTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedDiracWorkspace: AgentWorkspace
   approvalDisabledDiracHome: string
   askingDiracWorkspace: AgentWorkspace
@@ -51,6 +52,9 @@ export const diracTest = base.extend<CliSkipFixture & {
   askingDiracWorkspace: async ({ page, leapmuxServer, approvalDisabledDiracHome }, use, testInfo) => {
     void approvalDisabledDiracHome
     await askingDiracWorkspace({ page, leapmuxServer }, use, testInfo)
+  },
+  native: async ({ page, modelScript, leapmuxServer, authenticatedDiracWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId }))
   },
 })
 

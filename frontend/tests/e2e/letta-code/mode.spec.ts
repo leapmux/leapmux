@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code modes', () => {
   lettaTest('the mode menu lists Standard, Accept Edits, Unrestricted and Strict', async ({ authenticatedLettaWorkspace, page }) => {
@@ -40,7 +40,6 @@ lettaTest.describe('Letta Code modes', () => {
     const file = join(askingLettaWorkspace.workingDir, 'letta-mode-proof.txt')
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Standard')
-    await modelScript.rule(LETTA_TITLE_RULE)
 
     await modelScript.queue(
       { toolCalls: [writeToolCall(AgentProvider.LETTA, 'standard-mode-write', { path: file, content: 'standard\n' })] },
@@ -77,7 +76,6 @@ lettaTest.describe('Letta Code settings', () => {
   lettaTest('applies a permission-mode change to the session', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
     await waitForSettingsHydrated(page)
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()

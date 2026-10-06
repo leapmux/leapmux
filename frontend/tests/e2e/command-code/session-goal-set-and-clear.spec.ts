@@ -5,6 +5,6 @@ import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguratio
 import { nativeContext } from './scenarios'
 
 commandCodeTest('refuses the unsupported native goal actions and keeps the Worker state', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   await expectUnsupportedGoalActions(context, { actions: [AgentGoalAction.SET, AgentGoalAction.CLEAR], relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
 })

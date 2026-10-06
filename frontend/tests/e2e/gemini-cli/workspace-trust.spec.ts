@@ -8,7 +8,7 @@ import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTru
 import { nativeContext } from './scenarios'
 
 geminiTest('reads native workspace instructions without a workspace trust control', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: project => writeFileSync(join(project.directory, 'GEMINI.md'), `${project.marker}: preserve the workspace instruction.\n`),

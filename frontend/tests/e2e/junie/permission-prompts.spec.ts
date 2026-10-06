@@ -9,20 +9,12 @@ import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 junieTest.describe('Junie control requests', () => {
   const PROVIDER = AgentProvider.JUNIE
 
-  function junieHousekeeping() {
-    return [
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Command task' } },
-    ]
-  }
-
   junieTest('an allowed command runs, and its output reaches the chat', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
     const output = join(workingDir, 'junie-allow-out.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
 
-    await modelScript.rule(...junieHousekeeping())
     await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'junie-allow', `echo "junie-$((40 + 2))" | tee ${output}`)] },
       { toolCalls: [junieAnswerToolCall('junie-allow-answer', 'The command ran.')] },
@@ -46,7 +38,6 @@ junieTest.describe('Junie control requests', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
 
-    await modelScript.rule(...junieHousekeeping())
     await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'junie-deny', `echo "junie-should-not-run" | tee ${output}`)] },
       { toolCalls: [junieAnswerToolCall('junie-deny-answer', 'I did not run it.')] },

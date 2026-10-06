@@ -13,7 +13,7 @@ commandCodeTest('keeps the actual untrusted project mod unloaded without a nativ
   const mods = join(workingDir, '.commandcode/mods')
   mkdirSync(mods, { recursive: true })
   writeFileSync(join(mods, 'native-project-trust.mjs'), `import {writeFileSync} from 'node:fs';export default function(){writeFileSync(${JSON.stringify(marker)},'Native project mod executed.')}`)
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await expectNoNativeStartupControl(context, {
     testId: 'control-banner',
     additionalTestIds: ['dialog-editor'],

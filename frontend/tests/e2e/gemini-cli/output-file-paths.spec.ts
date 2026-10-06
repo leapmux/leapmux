@@ -17,7 +17,7 @@ import { readGeminiToolOutput } from './toolResult'
 
 geminiTest('keeps the native inline record after model-only masking without a Worker output path', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }, testInfo) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const output = computedNativeToolOutput({ prefix: 'GEMININATIVE', lineCount: 8000, padding: 12 })
   const capture = await captureNativeToolOutput(context, testInfo, {
     output,

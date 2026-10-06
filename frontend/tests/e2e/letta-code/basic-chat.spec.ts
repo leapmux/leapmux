@@ -1,12 +1,11 @@
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code basic chat', () => {
   lettaTest('draws the answer and ends the turn', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     const status = await modelScript.waitForSteps()

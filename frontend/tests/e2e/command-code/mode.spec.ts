@@ -6,7 +6,7 @@ import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('applies the native planning mode and preserves context across its process restart', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   await sendNativeAnswer(context, 'Keep COMMANDCODE_MODE_CONTEXT before the native process restarts.', 'COMMANDCODE_MODE_ANSWER')
   await exerciseNativeOption(context, { groupId: 'permissionMode', value: 'plan', nativeProof: (request) => {
     expect(nativeModelInstructionText(request)).toMatch(/plan[\s\S]*(?:read-only|read only)/i)

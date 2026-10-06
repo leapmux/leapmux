@@ -4,7 +4,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { nativeContext, runningChild } from './scenarios'
 
 commandCodeTest('follows an actual native child from running to completed', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const child = await runningChild(context)
   await withCleanup(async () => {
     await expect(child.row).toHaveAttribute('data-kind', 'subagent')

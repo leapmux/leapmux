@@ -1,7 +1,7 @@
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, expectSettingsOptionChosen, openPlusMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code settings', () => {
@@ -24,7 +24,6 @@ lettaTest.describe('Letta Code settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, `model-${alternate}`)
 
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue({ text: 'The selected model answered.' })
     await sendMessage(page, modelScript.prompt('Reply once after the model switch.'))
     const status = await modelScript.waitForSteps()

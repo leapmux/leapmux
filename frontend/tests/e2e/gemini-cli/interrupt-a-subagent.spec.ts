@@ -4,6 +4,6 @@ import { openGeminiRunningChild } from './childScenarios'
 import { nativeContext } from './scenarios'
 
 geminiTest('refuses the unsupported native child interrupt route while the child still runs', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await expectUnsupportedSubagent(context, { operation: 'interrupt', openChild: () => openGeminiRunningChild(context) })
 })

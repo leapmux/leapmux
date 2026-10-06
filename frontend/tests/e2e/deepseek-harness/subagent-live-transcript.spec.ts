@@ -7,7 +7,7 @@ import { waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { nativeContext, registerChildReports } from './scenarios'
 
 deepseekHarnessTest('shows a real child file result while its native model reply remains open', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const childTask = 'DEEPSEEKLIVECHILD read the supplied live file.'
   const parent = await currentNativeAgent(context)
   let childId = ''

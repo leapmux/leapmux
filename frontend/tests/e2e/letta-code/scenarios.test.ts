@@ -10,7 +10,6 @@ vi.mock('../helpers/runningChildProof', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../helpers/runningChildProof')>()
   return { ...actual, openRunningNativeChild: calls.open }
 })
-vi.mock('../letta-fixtures', () => ({ LETTA_TITLE_RULE: { name: 'title-letta', when: { body: 'session title' }, respond: { text: 'The native session title.' } } }))
 
 function rejectModelAccess(): never {
   throw new Error('The child setup unit must not contact a model.')

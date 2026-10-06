@@ -2,7 +2,7 @@ import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -29,7 +29,6 @@ droidTest.describe('Factory Droid MCP input form', () => {
       await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.DROID, prefix: 'droid-mcp-form' }, async (workspace) => {
         await loginViaToken(page, leapmuxServer.adminToken)
         await openWorkspace(page, workspace.workspaceId)
-        await modelScript.rule(DROID_TITLE_RULE)
         await modelScript.queue(
           { toolCalls: [droidToolSearchToolCall('search-form', 'form_probe ask')] },
           { toolCalls: [mcpToolCall(AgentProvider.DROID, 'call-form', { server: 'form_probe', tool: 'ask', input: {} })] },

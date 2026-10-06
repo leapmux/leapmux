@@ -2,13 +2,15 @@
  * Junie e2e test fixtures.
  */
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_RESPONSES_MODEL } from './helpers/mockAgentEnvironment'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { JUNIE_HOUSEKEEPING_RULES } from './junie/housekeeping'
+import { nativeContext } from './junie/scenarios'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const JUNIE_E2E_SKIP_REASON: string | null = missingBinaryReason('junie', 'Junie E2E requires a junie CLI on PATH')
@@ -16,7 +18,7 @@ export const JUNIE_E2E_SKIP_REASON: string | null = missingBinaryReason('junie',
 /** How a Junie agent opens. */
 export const JUNIE_AGENT: ProviderAgent = { provider: AgentProvider.JUNIE, prefix: 'junie-e2e' }
 
-export const junieTest = base.extend<CliSkipFixture & {
+export const junieTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedJunieWorkspace: AgentWorkspace
   authenticatedResponsesJunieWorkspace: AgentWorkspace
   authenticatedNativeEffortJunieWorkspace: AgentWorkspace
@@ -33,6 +35,16 @@ export const junieTest = base.extend<CliSkipFixture & {
     prefix: 'junie-e2e-native-effort',
     openOptions: { model: JUNIE_NATIVE_EFFORT_MODEL, optionValues: { [OPTION_ID_EFFORT]: 'high' } },
   }),
+  // Junie runs its capability-filter and task-name turns at times that no test controls, so every test of the
+  // provider answers them. A spec that needs another answer registers its own rule under another name: a newer rule
+  // matches first.
+  modelScript: async ({ modelScript }, use) => {
+    await modelScript.rule(...JUNIE_HOUSEKEEPING_RULES)
+    await use(modelScript)
+  },
+  native: async ({ page, modelScript, leapmuxServer, authenticatedJunieWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

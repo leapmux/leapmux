@@ -1,4 +1,4 @@
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { DROID_MOCK_MODEL_IDS, MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
@@ -14,7 +14,6 @@ droidTest.describe('Factory Droid settings', () => {
       update.requestId?.startsWith('leapmux-') && update.modelId === DROID_MOCK_MODEL_IDS.alternate)).toBe(true)
     await expectSettingsOptionChosen(page, `model-${DROID_MOCK_MODEL_IDS.alternate}`)
 
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue({ text: 'The alternate model answered.' })
     await sendMessage(page, modelScript.prompt('Reply through the selected model.'))
     await modelScript.waitForSteps()

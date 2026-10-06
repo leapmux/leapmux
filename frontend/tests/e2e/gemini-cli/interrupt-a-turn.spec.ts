@@ -4,6 +4,6 @@ import { nativeContext } from './scenarios'
 
 for (const kind of ['model', 'tool'] as const) {
   geminiTest(`interrupts a held native ${kind} turn and keeps the session usable`, async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-    await exerciseInterruptTurn(nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId }), { kind })
+    await exerciseInterruptTurn(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId }), { kind })
   })
 }

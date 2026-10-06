@@ -1,5 +1,5 @@
 import type { MockModelToolCall } from '../helpers/mockModelScript'
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -10,9 +10,12 @@ import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { diracChildResultRule } from './childResult'
 
-/** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
-export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep'>): Promise<ManagedNativeScenarioContext> {
-  return { ...context, provider: AgentProvider.DIRAC, textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }) }
+/**
+ * Build the scenario context of Dirac, with every field that its native protocol needs.
+ * A Dirac turn ends only when the model calls `respond` with `operation: "complete"`, so each answer is that call.
+ */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return { ...fixtures, provider: AgentProvider.DIRAC, textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }) }
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

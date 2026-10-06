@@ -10,7 +10,7 @@ import { sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('updates the whole native to-do snapshot and keeps sidebar status after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const start = (await modelScript.status()).stepCount
   await modelScript.queue(
     { toolCalls: [updateTodosToolCall(context.provider, 'native-todo-create', [{ step: 'Inspect the native source', status: 'in_progress' }, { step: 'Report the native result', status: 'pending' }])] },

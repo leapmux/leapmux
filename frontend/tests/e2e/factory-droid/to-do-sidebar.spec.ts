@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -7,7 +7,6 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 droidTest.describe('factory Droid to-do sidebar', () => {
   droidTest('shows native TodoWrite state and restores it after reload', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
     void authenticatedDroidWorkspace
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [updateTodosToolCall(AgentProvider.DROID, 'droid-todos-first', [
         { step: 'Inspect the repository', status: 'completed' },

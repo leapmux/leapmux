@@ -15,7 +15,7 @@ import { nativeContext } from './scenarios'
 // shared proof answers no approval, so this case runs under the bypass shortcut
 // (native yolo). The next case answers the approval in the default mode.
 geminiTest('stores an exact native task snapshot and preserves it after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const item = 'Keep the native Gemini task'
   await exerciseRelatedTodo(context, {
     toolCall: updateTodosToolCall(context.provider, 'gemini-sidebar-todo', [{ step: item, status: 'pending' }]),
@@ -26,7 +26,7 @@ geminiTest('stores an exact native task snapshot and preserves it after reload',
 })
 
 geminiTest('preserves all native task statuses and replaces and clears the saved snapshot', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const statuses = ['pending', 'in_progress', 'completed', 'cancelled', 'blocked'] as const
   const nativeTodos = statuses.map(status => ({ description: `GEMINI_NATIVE_TASK_${status}`, status }))
   const canonicalStatuses = {

@@ -1,12 +1,11 @@
 import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { lettaTaskCreateToolCall, lettaTaskListToolCall, lettaTaskUpdateToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('tracks the Letta Code to-do list', () => {
   lettaTest('the sidebar follows task creation and updates, and keeps them after a reload', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [lettaTaskCreateToolCall('create-first', 'Inspect the repository', 'Read the repository files.')] },
       { toolCalls: [lettaTaskCreateToolCall('create-second', 'List three checks', 'List three checks to run.')] },

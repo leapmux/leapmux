@@ -7,7 +7,7 @@ import { finishGeminiChildWithReload, openGeminiRunningChild } from './childScen
 import { nativeContext } from './scenarios'
 
 geminiTest('stores the actual native child row and its final state after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const child = await openGeminiRunningChild(context)
   await withCleanup(async () => {
     await expect(child.row).toHaveAttribute('data-child-agent-id', child.childId)

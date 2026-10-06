@@ -9,8 +9,9 @@
  */
 import type { Page } from '@playwright/test'
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './codewhale/scenarios'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { closeComposerMenus, openSettingsMenu } from './helpers/ui'
@@ -73,11 +74,14 @@ export async function expectCodewhalePosture(page: Page, posture: string): Promi
 /** How a Codewhale agent opens. */
 export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-e2e' }
 
-export const codewhaleTest = base.extend<CliSkipFixture & {
+export const codewhaleTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedCodewhaleWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(CODEWHALE_E2E_SKIP_REASON),
   authenticatedCodewhaleWorkspace: authenticatedAgentWorkspace(CODEWHALE_AGENT),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

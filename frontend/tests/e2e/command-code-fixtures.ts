@@ -1,6 +1,7 @@
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './command-code/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -18,7 +19,7 @@ export function createCommandCodeWorkingDir(): string {
 /** How a Command Code agent opens. */
 export const COMMAND_CODE_AGENT: ProviderAgent = { provider: AgentProvider.COMMAND_CODE, prefix: 'command-code-e2e', workingDir: createCommandCodeWorkingDir }
 
-export const commandCodeTest = base.extend<CliSkipFixture & {
+export const commandCodeTest = base.extend<CliSkipFixture & NativeFixture & {
   /** An agent in bypass mode, which runs every tool call at once. */
   authenticatedCommandCodeWorkspace: AgentWorkspace
   /**
@@ -30,6 +31,9 @@ export const commandCodeTest = base.extend<CliSkipFixture & {
   cliSkip: cliSkipFixture(COMMAND_CODE_E2E_SKIP_REASON),
   authenticatedCommandCodeWorkspace: authenticatedAgentWorkspace({ ...COMMAND_CODE_AGENT, openOptions: { optionValues: { permissionMode: 'bypass' } } }),
   refusingCommandCodeWorkspace: authenticatedAgentWorkspace({ ...COMMAND_CODE_AGENT, prefix: 'command-code-e2e-default', openOptions: { optionValues: { permissionMode: 'default' } } }),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedCommandCodeWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

@@ -12,9 +12,10 @@
  * start. See `helpers/binaryOnPath.ts`.
  */
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { CLINE_PERMISSION_MODE } from '../../src/generated/contracts/cline-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './cline/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -48,7 +49,7 @@ export const CLINE_AGENT: ProviderAgent = { provider: AgentProvider.CLINE, prefi
  */
 const AUTO_APPROVE = { optionValues: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove } }
 
-export const clineTest = base.extend<CliSkipFixture & {
+export const clineTest = base.extend<CliSkipFixture & NativeFixture & {
   /** An agent in Auto-approve, which raises no banner for a tool call. */
   authenticatedClineWorkspace: AgentWorkspace
   /** An agent in LeapMux's default Act mode, which asks before each edit and command. */
@@ -60,6 +61,9 @@ export const clineTest = base.extend<CliSkipFixture & {
   authenticatedClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, openOptions: AUTO_APPROVE }),
   askingClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, prefix: 'cline-e2e-act' }),
   planningClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, prefix: 'cline-e2e-plan', openOptions: { optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan } } }),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

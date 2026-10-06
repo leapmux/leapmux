@@ -7,18 +7,6 @@ import { nativeContext } from './scenarios'
 junieTest.describe('Junie basic chat', () => {
   junieTest('send message and receive response', async ({ authenticatedJunieWorkspace, page, modelScript }) => {
     void authenticatedJunieWorkspace
-    await modelScript.rule(
-      {
-        name: 'junie-capability-filter',
-        when: { system: 'capability filter agent' },
-        respond: { text: '' },
-      },
-      {
-        name: 'junie-task-name',
-        when: { system: 'task description summarizer' },
-        respond: { text: 'Greeting task' },
-      },
-    )
     await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-answer', 'Hello from the mock model.')] })
     await sendMessage(page, modelScript.prompt('Say hello.'))
     await waitForAgentIdle(page)

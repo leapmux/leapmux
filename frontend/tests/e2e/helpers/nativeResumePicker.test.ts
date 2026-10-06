@@ -477,17 +477,6 @@ describe('resumePickerScenario', () => {
       expect(turns).toEqual(['original', 'resumed'])
       expect(picker.queued.every(step => step.toolCalls?.length === 0)).toBe(true)
     })
-
-    it('registers the housekeeping rules before it queues the first answer', async () => {
-      await run({ rules: [{ name: 'housekeeping', when: { body: 'title' }, respond: { text: 'title' } }] })
-      expect(picker.events.indexOf('rule:1')).toBeGreaterThan(-1)
-      expect(picker.events.indexOf('rule:1')).toBeLessThan(picker.events.indexOf('queue:1'))
-    })
-
-    it('registers no rule for an empty rule list', async () => {
-      await run({ rules: [] })
-      expect(picker.events.some(event => event.startsWith('rule:'))).toBe(false)
-    })
   })
 
   describe('worker session', () => {

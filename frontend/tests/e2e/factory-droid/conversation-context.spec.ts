@@ -1,4 +1,4 @@
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { exerciseConversationContext } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
@@ -10,7 +10,6 @@ droidTest('carries the earlier user prompt and assistant answer into the next na
 
 droidTest('carries the conversation into the next request', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
   void authenticatedDroidWorkspace
-  await modelScript.rule(DROID_TITLE_RULE)
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   const status = await modelScript.waitForSteps()

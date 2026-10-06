@@ -1,5 +1,5 @@
 import type { MockModelToolCall } from '../helpers/mockModelScript'
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { NativeChildScriptContext } from '../helpers/runningChildProof'
 import { randomUUID } from 'node:crypto'
@@ -10,9 +10,9 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 
-/** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
-export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep'>): Promise<ManagedNativeScenarioContext> {
-  return { ...context, provider: AgentProvider.FAST_AGENT }
+/** Build the scenario context of Fast Agent. Its native protocol needs no field beyond the provider. */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return { ...fixtures, provider: AgentProvider.FAST_AGENT }
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

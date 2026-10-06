@@ -9,10 +9,6 @@ export async function exerciseCompressAcknowledgement(context: NativeScenarioCon
 
   const oldMarker = 'JUNIEOLDCONTEXTMARKER'
   const priorAnswerMarker = 'JUNIEPRIORANSWERMARKER'
-  await modelScript.rule(
-    { name: 'junie-compress-capability', when: { system: 'capability filter agent' }, respond: { text: '' } },
-    { name: 'junie-compress-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Compaction task' } },
-  )
   for (const [index, prompt] of [
     'Start a baseline task.',
     `${oldMarker} is old work to replace.`,

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
@@ -18,7 +18,6 @@ droidTest.describe('Factory Droid settings', () => {
       update.requestId?.startsWith('leapmux-') && update.interactionMode === 'auto' && update.autonomyLevel === 'high')).toBe(true)
     await expectSettingsOptionChosen(page, 'permissionMode-auto-high')
 
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [readToolCall(AgentProvider.DROID, 'bypass-read', path)] },
       { toolCalls: [editToolCall(AgentProvider.DROID, 'bypass-edit', { path, before: 'before', after: 'after' })] },

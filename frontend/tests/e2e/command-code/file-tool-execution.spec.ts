@@ -12,7 +12,7 @@ import { messageContents, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('reads and changes actual native files and preserves the native result snippet', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const directory = createNativeToolDirectory(agent.workingDir)
   const marker = uniqueMarker()

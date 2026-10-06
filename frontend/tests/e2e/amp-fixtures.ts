@@ -1,7 +1,8 @@
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AMP_PERMISSION_MODE } from '../../src/generated/contracts/amp-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './amp/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -29,7 +30,7 @@ export const AMP_AGENT: ProviderAgent = { provider: AgentProvider.AMP, prefix: '
  */
 export const AMP_ALLOW_ALL = { optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll } }
 
-export const ampTest = base.extend<CliSkipFixture & {
+export const ampTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedAmpWorkspace: AgentWorkspace
   /** An agent in LeapMux's default Ask mode, which raises a banner for each call. */
   askingAmpWorkspace: AgentWorkspace
@@ -37,6 +38,9 @@ export const ampTest = base.extend<CliSkipFixture & {
   cliSkip: cliSkipFixture(AMP_E2E_SKIP_REASON),
   authenticatedAmpWorkspace: authenticatedAgentWorkspace({ ...AMP_AGENT, openOptions: AMP_ALLOW_ALL }),
   askingAmpWorkspace: authenticatedAgentWorkspace({ ...AMP_AGENT, prefix: 'amp-e2e-ask' }),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

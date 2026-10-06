@@ -1,4 +1,4 @@
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { assistantBubbles, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
@@ -13,7 +13,6 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await expect.poll(async () => (await droidNativeSettingsUpdates(leapmuxServer, askingDroidWorkspace.workspaceId)).some(update =>
       update.requestId?.startsWith('leapmux-') && update.interactionMode === 'spec' && update.autonomyLevel === 'off')).toBe(true)
 
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue({ text: 'Spec mode is active.' })
     await sendMessage(page, modelScript.prompt('Reply while Spec mode is active.'))
     const status = await modelScript.waitForSteps()

@@ -8,7 +8,7 @@ import { invokeGeminiMcp, withGeminiMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
 
 geminiTest('returns the exact native MCP input refusal without a browser form', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const receiptLog = join(agent.workingDir, 'gemini-form-receipt.json')
   const script = writeMcpFormServer(agent.workingDir, 'gemini-form-server.mjs', { receiptLog })

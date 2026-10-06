@@ -22,7 +22,7 @@ import { nativeContext } from './scenarios'
 deepseekHarnessTest('uses real native MCP results and preserves failure state after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const directory = createTestDirectory('deepseek-mcp-results-')
   const script = writeMcpResultServer(directory, { receiptLog: join(directory, 'receipts.json') })
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await withDeepseekHarnessMcp(context, { name: 'results', script, workingDir: directory }, async (privateContext) => {
     const inspect = await invokeDeepseekHarnessMcp(privateContext, { server: 'results', tool: 'inspect', callId: 'native-inspect', input: { count: 0, enabled: false, text: 'Exact native MCP argument' } })
     expect(deepseekHarnessToolResultText(inspect, 'native-inspect')).toBe('NATIVE_MCP_INSPECT:{"count":0,"enabled":false,"text":"Exact native MCP argument"}')
@@ -44,7 +44,7 @@ deepseekHarnessTest('preserves the computed canonical native MCP result while re
   const script = writeMcpResultServer(directory, { receiptLog, inspectNullable: null })
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   const input = { count: 0, enabled: false, text: output.text }
-  const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   // The native standard preset offers no run_code tool. The native PTC preset offers run_code and keeps the MCP bindings.
   await withDeepseekHarnessMcp(native, { name: 'results', script, workingDir: directory, agentPreset: 'ptc' }, async (privateContext) => {
     const callId = 'native-canonical-mcp-result'

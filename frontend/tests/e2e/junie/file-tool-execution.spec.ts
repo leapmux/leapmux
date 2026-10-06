@@ -17,10 +17,6 @@ junieTest.describe('Junie tool execution', () => {
     writeFileSync(note, 'junie-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
-    await modelScript.rule(
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Tool run' } },
-    )
     await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'junie-shell', 'echo "junie-$((40 + 2))"')] },
       { toolCalls: [readToolCall(PROVIDER, 'junie-read', note)] },

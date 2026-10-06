@@ -9,47 +9,26 @@
  *
  * The mock MUST answer Droid's session-title housekeeping turn, which fires
  * before the first real turn and would otherwise consume a scripted step. The
- * rule keys off the title helper's own system prompt, never off call order.
+ * test object answers it for every test through `DROID_TITLE_RULE`, which keys
+ * off the title helper's own prompt, never off call order.
  *
  * The skip check looks for the `droid` binary without running it: the check runs
  * with the developer's own HOME, and Droid writes into `~/.factory` on every
  * start. See `helpers/binaryOnPath.ts`.
  */
-import type { MockModelRule } from './helpers/mockModelScript'
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { DROID_TITLE_RULE } from './factory-droid/housekeeping'
+import { nativeContext } from './factory-droid/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid', 'Factory Droid E2E requires the droid CLI on PATH (https://docs.factory.ai/)')
-
-/**
- * Droid's session-title housekeeping turn.
- *
- * The CLI names a session through a helper whose system prompt opens with this
- * sentence. A mock that keyed the answer off call order would let this turn eat
- * the step the test scripted for the real one. The prompt is the anchor; the
- * research report captured it from a live mock request.
- */
-const DROID_TITLE_PROMPT_FRAGMENT = 'session titles for a session picker'
-
-/**
- * The rule that answers the title turn, so no scripted step is consumed by it.
- *
- * Matched on the request BODY rather than the system slot: the title helper's
- * prompt is the anchor whatever message slot carries it, and a real turn never
- * contains that sentence.
- */
-export const DROID_TITLE_RULE: MockModelRule = {
-  name: 'title-droid',
-  when: { body: DROID_TITLE_PROMPT_FRAGMENT },
-  respond: { text: 'LeapMux E2E' },
-}
 
 /** How a Factory Droid agent opens. */
 export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefix: 'droid-e2e' }
@@ -65,7 +44,7 @@ export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefi
 const AUTO_HIGH = { optionValues: { permissionMode: DROID_MODE.AutoHigh } }
 const REASONING_AUTO_HIGH = { optionValues: { ...AUTO_HIGH.optionValues, [OPTION_ID_EFFORT]: DROID_EFFORT.High } }
 
-export const droidTest = base.extend<CliSkipFixture & {
+export const droidTest = base.extend<CliSkipFixture & NativeFixture & {
   /** An agent in Auto (High), which raises no banner for a tool call. */
   authenticatedDroidWorkspace: AgentWorkspace
   /** A custom-model agent with high reasoning effort. */
@@ -77,6 +56,15 @@ export const droidTest = base.extend<CliSkipFixture & {
   authenticatedDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, openOptions: AUTO_HIGH }),
   authenticatedReasoningDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, prefix: 'droid-e2e-reasoning', openOptions: REASONING_AUTO_HIGH }),
   askingDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, prefix: 'droid-e2e-ask' }),
+  // Droid runs its session-title turn at a time that no test controls, so every test of the provider answers it.
+  // A spec that needs another answer registers its own rule under another name: a newer rule matches first.
+  modelScript: async ({ modelScript }, use) => {
+    await modelScript.rule(DROID_TITLE_RULE)
+    await use(modelScript)
+  },
+  native: async ({ page, modelScript, leapmuxServer, authenticatedDroidWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

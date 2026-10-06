@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { DROID_TOOL } from '../../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -17,7 +17,6 @@ droidTest.describe('Factory Droid tool execution', () => {
 
   droidTest('draws the lines a write and a read return', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
     const notes = join(authenticatedDroidWorkspace.workingDir, 'notes.txt')
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [writeToolCall(PROVIDER, 'write-notes', { path: notes, content: 'droid-write-1\n' })] },
       { toolCalls: [readToolCall(PROVIDER, 'read-notes', notes)] },

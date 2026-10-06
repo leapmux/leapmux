@@ -9,7 +9,7 @@ import { nativeContext } from './scenarios'
 import { commandCodeLoadedToolNames, commandCodeToolCatalog } from './toolCatalog'
 
 commandCodeTest('checks the complete native catalog and its exact executor lookup before a real shell command', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const request = await sendNativeAnswer(context, 'Return the actual native catalog before the executor lookup.', 'The native catalog completed.')
   const names = commandCodeToolCatalog(request)
   const executors = ['REPL', 'codemode', 'run_code', 'execute_code']

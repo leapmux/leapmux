@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { DROID_TITLE_RULE, expect } from '../droid-fixtures'
+import { expect } from '../droid-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -27,7 +27,6 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
   const followUp = modelScript.prompt('DROID_CHILD_FOLLOWUP_REQUEST: Report the file marker once more.')
   const followUpGate = 'droid-child-followup'
   await modelScript.rule(
-    DROID_TITLE_RULE,
     {
       name: 'the Droid child reads its note',
       when: { system: 'READ-ONLY exploration', body: CHILD_TASK },

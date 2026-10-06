@@ -11,10 +11,6 @@ junieTest.describe('Junie session resume', () => {
     await resumePickerScenario({ page, leapmuxServer, modelScript }, {
       provider,
       label,
-      rules: [
-        { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-        { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Resume task' } },
-      ],
       answerStep: (texts, turn) => turn === 'original'
         ? { toolCalls: [junieAnswerToolCall('junie-resume-first', texts.originalAnswer)] }
         : { toolCalls: [junieAnswerToolCall('junie-resume-second', texts.resumedAnswer)] },

@@ -7,7 +7,7 @@ import { uniqueMarker } from '../helpers/shellArguments'
 import { nativeContext } from './scenarios'
 
 geminiTest('changes the native model and restores the selected model after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const before = await currentNativeAgent(context)
   const marker = uniqueMarker('GEMINIMODELCONTEXT')
   await sendNativeAnswer(context, `Preserve ${marker} before the model change.`, `The previous model preserved ${marker}.`)

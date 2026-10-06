@@ -21,7 +21,6 @@ junieTest.describe('Junie MCP input form', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(
       { name: 'junie-mcp-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },
-      { name: 'junie-mcp-task-name', when: { system: 'task description summarizer' }, respond: { text: 'MCP form task' } },
     )
     await modelScript.queue(
       { toolCalls: [mcpToolCall(AgentProvider.JUNIE, 'junie-mcp-form', { server: 'form_probe', tool: 'ask', input: {} })] },

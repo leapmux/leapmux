@@ -13,10 +13,6 @@ junieTest.describe('Junie settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, `model-${JUNIE_RESPONSES_MODEL}`)
 
-    await modelScript.rule(
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Model switch task' } },
-    )
     await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-model-answer', 'The selected model answered.')] })
     await sendMessage(page, modelScript.prompt('Reply once with the selected model.'))
     const status = await modelScript.waitForSteps()

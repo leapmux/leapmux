@@ -48,6 +48,13 @@ export interface ManagedNativeScenarioContext extends NativeScenarioContext {
   workspaceId: string
 }
 
+/**
+ * The fixtures that the `nativeContext` of a provider directory builds its context from.
+ * The provider sets every other field: `provider`, and each of `textStep`, `answerToolNames`, `readToolResult`, and
+ * `readModelContext` that its native protocol needs.
+ */
+export type NativeContextFixtures = Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'leapmuxServer' | 'workspaceId'>
+
 /** Build a native answer while keeping provider decisions at the call site. */
 export function nativeTextStep(context: NativeScenarioContext, text: string): MockModelStep {
   return context.textStep?.(text) ?? { text }

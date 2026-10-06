@@ -3,7 +3,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 lettaTest.describe('Letta Code subagents', () => {
@@ -15,7 +15,6 @@ lettaTest.describe('Letta Code subagents', () => {
     const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId, provider: PROVIDER }
     const gate = `letta-tab-final-${crypto.randomUUID()}`
     await withCleanup(async () => {
-      await modelScript.rule(LETTA_TITLE_RULE)
       const childPrompt = modelScript.prompt(CHILD_TASK)
       // Matched on the child's own last user turn. The root's next request after the
       // spawn carries the Agent call, and so the child prompt, in its history: a body

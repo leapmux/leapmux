@@ -10,7 +10,7 @@ import { nativeContext } from './scenarios'
 
 for (const decision of ['approve', 'reject'] as const) {
   geminiTest(`reads the complete native plan file before ${decision}`, async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-    const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
     await chooseSettingsOption(page, 'permissionMode-plan')
     await waitForSettingsIdle(page)
     const agent = await currentNativeAgent(context)

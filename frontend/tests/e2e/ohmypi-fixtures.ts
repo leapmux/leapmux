@@ -1,9 +1,10 @@
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { nativeContext } from './oh-my-pi/scenarios'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 const OH_MY_PI_MISSING_REASON = 'Oh My Pi E2E requires the omp CLI on PATH (https://github.com/can1357/oh-my-pi)'
@@ -34,7 +35,7 @@ export const OH_MY_PI_AGENT: ProviderAgent = { provider: AgentProvider.OH_MY_PI,
  */
 export const OH_MY_PI_YOLO = { optionValues: { permissionMode: 'yolo' } }
 
-export const ohMyPiTest = base.extend<CliSkipFixture & {
+export const ohMyPiTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedOhMyPiWorkspace: AgentWorkspace
   /** An agent in LeapMux's default `write` mode, which asks before a command runs. */
   askingOhMyPiWorkspace: AgentWorkspace
@@ -42,6 +43,9 @@ export const ohMyPiTest = base.extend<CliSkipFixture & {
   cliSkip: cliSkipFixture(OH_MY_PI_E2E_SKIP_REASON),
   authenticatedOhMyPiWorkspace: authenticatedAgentWorkspace({ ...OH_MY_PI_AGENT, openOptions: OH_MY_PI_YOLO }),
   askingOhMyPiWorkspace: authenticatedAgentWorkspace({ ...OH_MY_PI_AGENT, prefix: 'omp-e2e-approve' }),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

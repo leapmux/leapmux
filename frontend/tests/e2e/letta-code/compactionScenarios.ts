@@ -1,12 +1,12 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE } from '../letta-fixtures'
+import { expect } from '../letta-fixtures'
+
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseOrdinaryCompactText(context: NativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
 
-  await modelScript.rule(LETTA_TITLE_RULE)
   const priorAnswer = 'LETTA_PRIOR_CONTEXT_MARKER stays in the conversation.'
   await modelScript.queue(
     { text: priorAnswer },

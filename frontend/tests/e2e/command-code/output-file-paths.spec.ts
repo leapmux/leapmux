@@ -11,7 +11,7 @@ import { nativeContext } from './scenarios'
 
 commandCodeTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedCommandCodeWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   await captureNativeToolOutput(native, testInfo, {
     output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),
     callId: 'native-output-path',

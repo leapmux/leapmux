@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs'
 import { DROID_CONFIRMATION_TYPE, DROID_PERMISSION_OPTION, DROID_REPLY, DROID_TOOL } from '../../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickString } from '../../../src/lib/jsonPick'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -19,7 +19,6 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await chooseSettingsOption(page, 'permissionMode-spec')
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, 'permissionMode-spec')
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-1', '# Native plan\n\n- Apply the change.')] },
       { text: 'The plan was approved.' },
@@ -56,7 +55,6 @@ droidTest.describe('Factory Droid Spec mode', () => {
     const agent = await waitForNativeOptionApplied({ page, leapmuxServer }, 'permissionMode', 'spec')
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
-      await modelScript.rule(DROID_TITLE_RULE)
       await modelScript.queue({
         toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-rejected', '# Native plan\n\n- Keep this plan unapproved.')],
       })
@@ -110,7 +108,6 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await chooseSettingsOption(page, 'permissionMode-spec')
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, 'permissionMode-spec')
-    await modelScript.rule(DROID_TITLE_RULE)
     // The turn that the typed reason starts. A rule answers it, because the
     // rejection — not the script's order — decides when it arrives.
     await modelScript.rule({

@@ -36,17 +36,9 @@ export function expectNativePlanToolCatalog(request: MockModelRequestRecord): vo
   expect(planWithheldToolsOffered(tools), 'Plan mode withholds these tools of the Default catalog').toEqual([])
 }
 
-function junieHousekeeping() {
-  return [
-    { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-    { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Plan task' } },
-  ]
-}
-
 interface PlanPromptOptions {
   selectMode?: boolean
   callPrefix?: string
-  housekeepingRegistered?: boolean
 }
 
 function submitPlanStep(prefix: string): MockModelStep {
@@ -69,8 +61,6 @@ async function sendPlanPrompt(context: NativeScenarioContext, options: PlanPromp
   }
   await expectSettingsChip(page, 'Plan')
 
-  if (!options.housekeepingRegistered)
-    await modelScript.rule(...junieHousekeeping())
   const start = (await modelScript.status()).stepCount
   await modelScript.queue(...steps)
   await sendMessage(page, modelScript.prompt('Plan the change.'))
@@ -93,9 +83,8 @@ async function readModelRequest(context: NativeScenarioContext, stepIndex: numbe
 /**
  * Exercise the actual native control and retain every original assertion.
  *
- * Each call registers the two housekeeping rules of Junie's own side requests, and the model script
- * accepts a rule name once. A test that calls this function again with the same script must pass
- * `housekeepingRegistered: true`.
+ * The Junie test object answers Junie's own side requests (`junie/housekeeping.ts`), so a test can call
+ * this function more than once with the same script.
  *
  * Approval ends Plan mode in Junie, and Junie keeps the approved plan in the session. In some runs,
  * Junie then answers the next planning prompt with the question "You already have a plan in this
@@ -139,7 +128,6 @@ export async function exerciseNativePlanReview(
  * model about that prompt, and the rule of this helper answers `NO`. Junie plans again. In 17 of 17
  * probe runs of Junie 26.9.22, it did not ask "You already have a plan in this session" after a
  * denied plan.
- * The housekeeping rules follow the same contract as in `exerciseNativePlanReview`.
  */
 export async function exerciseNativePlanRevision(
   context: NativeScenarioContext,

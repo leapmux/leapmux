@@ -1,14 +1,14 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
-import { DROID_TITLE_RULE, expect } from '../droid-fixtures'
+import { expect } from '../droid-fixtures'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseCompletedManualCompaction(context: NativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
 
   const oldMarker = 'DROID_OLD_CONTEXT_MARKER'
   const summaryMarker = 'DROID_COMPACT_SUMMARY_MARKER'
-  await modelScript.rule(DROID_TITLE_RULE)
   const olderAnswer = Array.from({ length: 300 }, (_, index) => `${oldMarker} item ${index}: detail ${index * 7}.`).join(' ')
   for (let turn = 0; turn < 4; turn++) {
     await modelScript.queue({ text: turn === 0 ? olderAnswer : `Recent task answer ${turn}.` })

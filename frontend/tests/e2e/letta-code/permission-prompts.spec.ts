@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { messageContents, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code control requests', () => {
   const PROVIDER = AgentProvider.LETTA
@@ -17,7 +17,6 @@ lettaTest.describe('Letta Code control requests', () => {
 
   lettaTest('runs a command after the reader allows it', async ({ askingLettaWorkspace, page, modelScript }) => {
     void askingLettaWorkspace
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'allow-call', 'echo "letta-$((40 + 2))"')] },
       { text: 'The command ran.' },
@@ -39,7 +38,6 @@ lettaTest.describe('Letta Code control requests', () => {
 
   lettaTest('keeps the command from running after the reader denies it', async ({ askingLettaWorkspace, page, modelScript }) => {
     void askingLettaWorkspace
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue(
       // `tee` writes a file, so Letta does not treat the call as a READ-ONLY
       // shell command: those auto-approve in every mode but `strict` and no

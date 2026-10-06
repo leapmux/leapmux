@@ -13,7 +13,7 @@ import { messageBubbles, openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 geminiTest('requires a native permission decision before a real file change', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await exerciseNativePermissionWrite(context)
 })
 
@@ -23,7 +23,7 @@ geminiTest('requires a native permission decision before a real file change', as
  * The agent loop continues with that response, so the next model request carries it.
  */
 geminiTest('sends the exact native refusal after a Deny decision and keeps the file bytes', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const fileName = 'native-denied-write.txt'
   const file = join(agent.workingDir, fileName)
@@ -55,7 +55,7 @@ geminiTest('sends the exact native refusal after a Deny decision and keeps the f
  * the proposed text.
  */
 geminiTest('reads a denied file write as declined, with its file and no proposed text', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const fileName = 'native-denied-file-write.txt'
   const file = join(agent.workingDir, fileName)

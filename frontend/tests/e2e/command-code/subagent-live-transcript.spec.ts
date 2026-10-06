@@ -6,7 +6,7 @@ import { messageContents, tabById, userBubbles } from '../helpers/ui'
 import { nativeContext, runningChild } from './scenarios'
 
 commandCodeTest('shows exact native child tool activity before the final report', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const child = await runningChild(context)
   await withCleanup(async () => {
     await openChildTabFromRow(page, child.row)

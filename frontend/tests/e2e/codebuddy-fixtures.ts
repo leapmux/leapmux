@@ -12,9 +12,10 @@
  * JSON completion is dropped with `error_during_execution`.
  */
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { CODEBUDDY_MODE } from '../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './codebuddy-code/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -39,7 +40,7 @@ export const CODEBUDDY_AGENT: ProviderAgent = { provider: AgentProvider.CODEBUDD
  */
 export const CODEBUDDY_BYPASS = { optionValues: { permissionMode: CODEBUDDY_MODE.BypassPermissions } }
 
-export const codebuddyTest = base.extend<CliSkipFixture & {
+export const codebuddyTest = base.extend<CliSkipFixture & NativeFixture & {
   /** An agent in Bypass Permissions, which raises no banner for a tool call. */
   authenticatedCodebuddyWorkspace: AgentWorkspace
   /**
@@ -52,6 +53,9 @@ export const codebuddyTest = base.extend<CliSkipFixture & {
   cliSkip: cliSkipFixture(CODEBUDDY_E2E_SKIP_REASON),
   authenticatedCodebuddyWorkspace: authenticatedAgentWorkspace({ ...CODEBUDDY_AGENT, openOptions: CODEBUDDY_BYPASS }),
   askingCodebuddyWorkspace: authenticatedAgentWorkspace({ ...CODEBUDDY_AGENT, prefix: 'codebuddy-e2e-ask' }),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedCodebuddyWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

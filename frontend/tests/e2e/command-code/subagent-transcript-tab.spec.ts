@@ -5,7 +5,7 @@ import { messageContents, userBubbles } from '../helpers/ui'
 import { nativeContext, runningChild } from './scenarios'
 
 commandCodeTest('preserves the actual native child prompt and final report in its own tab', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const child = await runningChild(context)
   await child.finish()
   await openChildTabFromRow(page, child.row)

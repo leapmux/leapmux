@@ -1,4 +1,4 @@
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { DROID_MOCK_MODEL_IDS } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
@@ -17,7 +17,6 @@ droidTest.describe('Factory Droid settings', () => {
       update.requestId?.startsWith('leapmux-') && update.modelId === 'claude-fable-5.1' && update.reasoningEffort === 'high')).toBe(true)
     await expectSettingsOptionChosen(page, 'effort-high')
 
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue({ text: 'Droid answered at high effort.' })
     await sendMessage(page, modelScript.prompt('Reply once after the effort switch.'))
     const status = await modelScript.waitForSteps()
@@ -47,7 +46,6 @@ droidTest.describe('Factory Droid model switch', () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId })
     await exerciseModelSwitchKeepsOption(context, {
       prepare: async () => {
-        await modelScript.rule(DROID_TITLE_RULE)
         await waitForSettingsHydrated(page)
         await chooseSettingsOption(page, 'model-claude-fable-5.1')
         await waitForSettingsIdle(page)

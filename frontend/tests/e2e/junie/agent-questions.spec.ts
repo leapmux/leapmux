@@ -13,10 +13,6 @@ junieTest.describe('Junie questions', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
 
-    await modelScript.rule(
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Choice task' } },
-    )
     await modelScript.queue(
       {
         toolCalls: [askUserQuestionToolCall(PROVIDER, 'junie-question', [{

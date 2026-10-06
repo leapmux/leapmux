@@ -14,7 +14,7 @@ import { withCommandCodeMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('ignores the actual unsupported MCP input request and ends its tool after a controlled server close', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const workingDir = createCommandCodeWorkingDir()
   const receipt = join(workingDir, 'native-mcp-form-receipt.json')
   const script = writeMcpFormServer(workingDir, 'form-server.mjs', { receiptLog: receipt })

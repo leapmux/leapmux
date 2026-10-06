@@ -52,7 +52,7 @@ junieTest.describe('Junie settings', () => {
     await page.reload()
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Plan')
-    const restored = await exerciseNativePlanReview(context, { selectMode: false, callPrefix: 'junie-restored-mode', housekeepingRegistered: true })
+    const restored = await exerciseNativePlanReview(context, { selectMode: false, callPrefix: 'junie-restored-mode' })
     expectNativePlanToolCatalog(restored)
   })
 })

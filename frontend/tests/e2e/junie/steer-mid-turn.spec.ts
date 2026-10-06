@@ -9,10 +9,6 @@ junieTest.describe('junie unsupported controls', () => {
     const firstPrompt = modelScript.prompt('Answer the first request.')
     const secondPrompt = modelScript.prompt('Answer the second request after the first.')
     const firstGate = 'junie-first-turn'
-    await modelScript.rule(
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Queued request' } },
-    )
     await modelScript.queue(
       { gate: firstGate, toolCalls: [junieAnswerToolCall('junie-first-answer', 'FIRST_JUNIE_ANSWER')] },
       { toolCalls: [junieAnswerToolCall('junie-second-answer', 'SECOND_JUNIE_ANSWER')] },

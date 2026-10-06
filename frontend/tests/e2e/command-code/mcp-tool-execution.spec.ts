@@ -10,7 +10,7 @@ import { withCommandCodeMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('calls the real native MCP server and uses its result in the next model request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const workingDir = createCommandCodeWorkingDir()
   const receipt = join(workingDir, 'native-mcp-receipt.json')
   const script = writeMcpEchoServer(workingDir, { receiptLog: receipt })

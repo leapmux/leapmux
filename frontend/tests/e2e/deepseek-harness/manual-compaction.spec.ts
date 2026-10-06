@@ -6,7 +6,7 @@ import { exerciseDeepseekHarnessCompaction } from './compactionScenarios'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('accepts an empty-history compact command and then replaces actual model context through native compaction', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await sendMessage(page, '/compact')
   await waitForAgentIdle(page)
   await expect(compactionNoticeRow(page)).toHaveCount(0)

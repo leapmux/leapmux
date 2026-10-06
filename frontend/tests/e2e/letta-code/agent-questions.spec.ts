@@ -4,7 +4,7 @@ import { lastUserText } from '../helpers/mockModelScript'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code control requests', () => {
   const PROVIDER = AgentProvider.LETTA
@@ -26,7 +26,6 @@ lettaTest.describe('Letta Code control requests', () => {
 
   lettaTest('answers a question through the shared question banner', async ({ askingLettaWorkspace, page, modelScript }) => {
     void askingLettaWorkspace
-    await modelScript.rule(LETTA_TITLE_RULE)
     // Letta Code 0.34 posts the questions and returns a receipt at once, so the turn goes on and
     // ends before the reader answers. The answer returns later as a user message that holds a task
     // notification, and that message starts the third model request.

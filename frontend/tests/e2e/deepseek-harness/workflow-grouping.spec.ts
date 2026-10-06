@@ -11,7 +11,7 @@ import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflo
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('groups two actual one-shot children under their native workflow run and keeps that group after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const parent = await currentNativeAgent(context)
   const firstGate = 'native-workflow-first'
   const secondGate = 'native-workflow-second'

@@ -8,7 +8,7 @@ import { waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { nativeContext, runningChild } from './scenarios'
 
 deepseekHarnessTest('interrupts only the actual continuable child and leaves the parent able to accept a prompt', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const child = await runningChild(context)
   await withCleanup(async () => {
     await openChildTabFromRow(page, child.row)

@@ -2,7 +2,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code tool execution', () => {
@@ -16,7 +16,6 @@ lettaTest.describe('Letta Code tool execution', () => {
     void authenticatedLettaWorkspace
     // The command text states no `letta-42`, so only the command's own output can
     // put it on the page.
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'echo-call', 'echo "letta-$((40 + 2))"')] },
       { text: 'The command printed its number.' },

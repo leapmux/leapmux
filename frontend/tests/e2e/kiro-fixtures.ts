@@ -10,13 +10,14 @@
  * every start. See `helpers/binaryOnPath.ts`.
  */
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+import { nativeContext } from './kiro/scenarios'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 /**
@@ -35,11 +36,14 @@ export const KIRO_E2E_SKIP_REASON: string | null = missingBinaryReason('kiro-cli
 /** How a Kiro agent opens. */
 export const KIRO_AGENT: ProviderAgent = { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: createKiroWorkingDir }
 
-export const kiroTest = base.extend<CliSkipFixture & {
+export const kiroTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedKiroWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(KIRO_E2E_SKIP_REASON),
   authenticatedKiroWorkspace: authenticatedAgentWorkspace(KIRO_AGENT),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedKiroWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedKiroWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

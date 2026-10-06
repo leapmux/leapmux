@@ -6,7 +6,7 @@ import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('uses the native plan mode after a real file read', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await exerciseNativeReadOnlyPlan(context, {
     preparePlan: async () => {
       await chooseSettingsOption(page, 'permissionMode-plan')

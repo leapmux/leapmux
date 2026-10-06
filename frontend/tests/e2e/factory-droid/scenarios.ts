@@ -1,9 +1,8 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { NativeChildScriptContext } from '../helpers/runningChildProof'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE } from '../droid-fixtures'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
@@ -12,10 +11,12 @@ import { uniqueMarker } from '../helpers/shellArguments'
 import { droidChildNoticeRule } from './childNotice'
 import { readDroidToolResult } from './toolResult'
 
-/** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
-export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep'>): Promise<ManagedNativeScenarioContext> {
-  await context.modelScript.rule({ ...DROID_TITLE_RULE, name: 'droid-native-context-title' })
-  return { ...context, provider: AgentProvider.DROID, readToolResult: readDroidToolResult }
+/**
+ * Build the scenario context of Factory Droid, with every field that its native protocol needs.
+ * The Droid test object registers the title rule of every test (`droid-fixtures.ts`), so the context registers none.
+ */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return { ...fixtures, provider: AgentProvider.DROID, readToolResult: readDroidToolResult }
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

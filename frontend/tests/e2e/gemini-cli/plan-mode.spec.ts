@@ -6,7 +6,7 @@ import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, wai
 import { nativeContext } from './scenarios'
 
 geminiTest('reads real file context through native plan mode after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await exerciseNativeReadOnlyPlan(context, {
     preparePlan: async () => {
       await chooseSettingsOption(page, 'permissionMode-plan')

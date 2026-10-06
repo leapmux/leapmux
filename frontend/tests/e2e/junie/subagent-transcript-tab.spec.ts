@@ -12,20 +12,11 @@ junieTest.describe('Junie subagents and background tasks', () => {
 
   const CHILD_GATE = 'junie-docs-submit'
 
-  function junieHousekeeping() {
-    return [
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Subagent task' } },
-      { name: 'junie-task-summary', when: { system: 'You are a task summarizer' }, respond: { text: '<summary>Junie stores sessions in Junie Home.</summary><title>Session history</title>' } },
-    ]
-  }
-
   junieTest('routes the child task and report into a tab opened from the registry row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const childPrompt = modelScript.prompt(CHILD_TASK)
 
-    await modelScript.rule(...junieHousekeeping())
     await modelScript.rule({
       name: 'the docs child submits its answer',
       when: { system: 'You are the Junie documentation assistant', body: CHILD_TASK },

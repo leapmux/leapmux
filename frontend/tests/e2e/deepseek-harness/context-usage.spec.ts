@@ -15,7 +15,7 @@ deepseekHarnessTest('shows actual native nonzero context use', async ({ authenti
 })
 
 deepseekHarnessTest('preserves explicit zero native usage in the Context row after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   await modelScript.queue({ text: 'The actual native zero-count turn completed.', usage: { inputTokens: 0, outputTokens: 0 } })
   await sendMessage(page, modelScript.prompt('Complete the exact native zero-count turn.'))

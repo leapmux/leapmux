@@ -1,4 +1,4 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -8,14 +8,14 @@ import { JUNIE_ANSWER_TOOL, junieAnswerToolCall, junieSubagentSubmitToolCall, sp
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 
-/** Supply this provider's native answer and housekeeping turns to neutral browser scenarios. */
-export async function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider' | 'textStep' | 'answerToolNames'>): Promise<ManagedNativeScenarioContext> {
-  await context.modelScript.rule(
-    { name: 'junie-native-capability', when: { system: 'capability filter agent' }, respond: { text: '' } },
-    { name: 'junie-native-title', when: { system: 'task description summarizer' }, respond: { text: 'Native scenario' } },
-  )
+/**
+ * Build the scenario context of Junie, with every field that its native protocol needs.
+ * Junie answers through its `answer` tool, so each answer is that call, and a turn with only that call has no tool row.
+ * The Junie test object registers the housekeeping rules of every test (`junie-fixtures.ts`), so the context registers none.
+ */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   return {
-    ...context,
+    ...fixtures,
     provider: AgentProvider.JUNIE,
     textStep: (text: string) => ({ toolCalls: [junieAnswerToolCall(`junie-answer-${randomUUID()}`, text)] }),
     answerToolNames: [JUNIE_ANSWER_TOOL],
@@ -41,6 +41,5 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
     allowExistingRows: options.allowExistingRows ?? false,
     rowText: agentType,
     parentSteps: [{ toolCalls: [spawn] }, nativeTextStep(context, 'The native parent completed.')],
-    rules: [{ name: 'junie-native-task-summary', when: { system: 'You are a task summarizer' }, respond: { text: '<summary>The native child completed.</summary><title>Native child</title>' } }],
   })
 }

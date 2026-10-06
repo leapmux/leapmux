@@ -16,7 +16,6 @@ junieTest.describe('native mcp tool execution', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(
       { name: 'junie-echo-capability', when: { system: 'capability filter agent' }, respond: { text: '2' } },
-      { name: 'junie-echo-task-name', when: { system: 'task description summarizer' }, respond: { text: 'MCP echo task' } },
     )
     await modelScript.queue(
       { toolCalls: [mcpToolCall(AgentProvider.JUNIE, 'junie-mcp-echo', { server: 'form_probe', tool: 'echo', input: echoArguments })] },

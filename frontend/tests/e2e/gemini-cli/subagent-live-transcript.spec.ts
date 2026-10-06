@@ -4,7 +4,7 @@ import { expectGeminiLiveChild, finishGeminiChildWithReload, openGeminiRunningCh
 import { nativeContext } from './scenarios'
 
 geminiTest('shows original child content and tool output before the native child completes', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const child = await openGeminiRunningChild(context)
   await withCleanup(async () => {
     await expectGeminiLiveChild(context, child)

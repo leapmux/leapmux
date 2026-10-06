@@ -7,7 +7,7 @@ import { nativeContext } from './scenarios'
 import { exerciseGeminiShellToolExecution } from './shellScenarios'
 
 geminiTest('excludes a native script executor while a real shell command still executes', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const catalog = await sendNativeAnswer(context, 'Return the native executor catalog.', 'The native executor catalog reached the mock.')
   expect(nativeModelToolNames(catalog)).toContain('run_shell_command')
   expectNativeCodeExecutionAbsent(catalog, ['codemode', 'execute_code', 'run_code', 'execute_script'])

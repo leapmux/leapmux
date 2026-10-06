@@ -7,7 +7,7 @@ import { getTestChannel } from '../helpers/api'
 import { lettaViewImageToolCall } from '../helpers/providerToolCalls'
 import { writeToolImage } from '../helpers/toolImages'
 import { sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
-import { LETTA_TITLE_RULE, expect as lettaExpect, lettaTest } from '../letta-fixtures'
+import { expect as lettaExpect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code images in tool results', () => {
   lettaTest('keeps the PNG in model input but receives text-only live and stored rows', async ({ authenticatedVisionLettaWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
@@ -43,7 +43,6 @@ lettaTest.describe('Letta Code images in tool results', () => {
     })
     try {
       await lettaExpect.poll(() => subscribed).toBe(true)
-      await modelScript.rule(LETTA_TITLE_RULE)
       await modelScript.queue(
         { toolCalls: [lettaViewImageToolCall('letta-view-image', join(workingDir, imageName))] },
         { text: 'I inspected the picture.' },

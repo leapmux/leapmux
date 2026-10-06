@@ -8,7 +8,7 @@ import { nativeContext } from './scenarios'
 
 for (const approval of [true, false]) {
   deepseekHarnessTest(`routes native plan ${approval ? 'approval' : 'rejection'} and retains the selected native mode`, async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
     await chooseSettingsOption(page, 'permissionMode-plan')
     await waitForSettingsIdle(page)
     const plan = '# Exact native plan\n\n1. Inspect the scratch file.\n2. Implement only after approval.'

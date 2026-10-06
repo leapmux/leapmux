@@ -16,21 +16,12 @@ junieTest.describe('Junie subagents and background tasks', () => {
 
   const CUSTOM_GATE = 'junie-custom-submit'
 
-  function junieHousekeeping() {
-    return [
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Subagent task' } },
-      { name: 'junie-task-summary', when: { system: 'You are a task summarizer' }, respond: { text: '<summary>Junie stores sessions in Junie Home.</summary><title>Session history</title>' } },
-    ]
-  }
-
   junieTest('streams a custom child read result into its tab before the final answer', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { agentId, workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     const note = join(workingDir, 'junie-child-note.txt')
     writeFileSync(note, `${CUSTOM_READ_MARKER}\n`)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
-    await modelScript.rule(...junieHousekeeping())
     await modelScript.rule(
       {
         name: 'the custom Junie child reads the marker file',

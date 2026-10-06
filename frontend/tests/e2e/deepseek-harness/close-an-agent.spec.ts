@@ -3,6 +3,6 @@ import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('stops the native process and its owned command processes', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await exerciseCloseAgent(context)
 })

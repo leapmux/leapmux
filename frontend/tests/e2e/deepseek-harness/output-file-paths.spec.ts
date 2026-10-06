@@ -19,7 +19,7 @@ import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('keeps native output paths and the exact inline preview after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await captureNativeToolOutput(native, testInfo, {
     output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),
     callId: 'native-output-file-paths',
@@ -64,7 +64,7 @@ for (const layout of ['omitted-middle-image', 'retained-end-images'] as const) {
       : [{ type: 'text', text: output.firstMarker }, image, { type: 'text', text: output.text }, image, { type: 'text', text: output.lastMarker }]
     const receiptLog = join(directory, 'receipts.json')
     const script = writeMcpResultServer(directory, { receiptLog, inspectContent: content })
-    const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     await withDeepseekHarnessMcp(native, { name: 'results', script, workingDir: directory }, async (privateContext) => {
       const callId = `native-mcp-paths-${layout}`
       const input = { count: 0, enabled: false, text: 'The exact native mixed result.' }

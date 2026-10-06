@@ -4,7 +4,7 @@ import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
 import { nativeContext } from './scenarios'
 
 geminiTest('exposes no native setting for selectable reasoning effort', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await expectMissingOptionGroup(context, { groupId: 'effort', relatedProof: async () => {
     await sendNativeAnswer(context, 'Complete the native setting capability check.', 'The native setting capability check completed.')
   } })

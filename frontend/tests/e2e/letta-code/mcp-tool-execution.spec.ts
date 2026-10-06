@@ -13,7 +13,7 @@ import { lettaMcpCliToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { writeToolImage } from '../helpers/toolImages'
 import { assistantBubbles, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { mcpLettaTest, withRegisteredLettaMcp } from './fixtures'
 import { exerciseLettaMcpCatalog } from './mcpScenario'
 import { nativeContext } from './scenarios'
@@ -29,7 +29,6 @@ lettaTest.describe('native mcp tool execution', () => {
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.LETTA))
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue({ text: 'The native turn ended.' })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     const status = await modelScript.waitForSteps()

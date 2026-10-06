@@ -8,7 +8,7 @@ import { deepseekHarnessModelContextText } from './modelContextText'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('keeps the literal clear objective and clears the actual native goal without interpreting it as a command', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await sendNativeAnswer(context, 'Prepare the session for a native goal.', 'The native session is ready for its goal.')
   const gate = 'deepseek-reserved-objective'
   const owner = await captureDeepseekHarnessGoalOwner(context)

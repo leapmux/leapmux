@@ -1,6 +1,6 @@
 import { exerciseConversationContext } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest('carries the earlier user prompt and assistant answer into the next native request', async ({ authenticatedLettaWorkspace, page, modelScript, leapmuxServer }) => {
@@ -10,7 +10,6 @@ lettaTest('carries the earlier user prompt and assistant answer into the next na
 
 lettaTest('carries the conversation into the request', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
   void authenticatedLettaWorkspace
-  await modelScript.rule(LETTA_TITLE_RULE)
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   const status = await modelScript.waitForSteps()

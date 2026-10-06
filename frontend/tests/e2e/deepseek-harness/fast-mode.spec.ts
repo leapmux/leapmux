@@ -4,6 +4,6 @@ import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('proves the missing fast-mode setting against native options and a real native tool', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await expectMissingOptionGroup(context, { groupId: 'fastMode', relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
 })

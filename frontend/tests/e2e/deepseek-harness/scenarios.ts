@@ -1,4 +1,4 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -12,8 +12,13 @@ import { finishDeepseekHarnessChild, waitForDeepseekHarnessChildReport } from '.
 import { registerDeepseekHarnessChildReport } from './childReportRegistration'
 import { deepseekHarnessModelContextText } from './modelContextText'
 
-export function nativeContext(context: Omit<ManagedNativeScenarioContext, 'provider'>): ManagedNativeScenarioContext {
-  return { ...context, provider: AgentProvider.DEEPSEEK_HARNESS, readModelContext: deepseekHarnessModelContextText }
+/**
+ * Build the scenario context of DeepSeek Harness, with every field that its native protocol needs.
+ * The generic model-context reader reads the JSON body, where a quote arrives escaped, so the context reads the text
+ * of the native Anthropic Messages request.
+ */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return { ...fixtures, provider: AgentProvider.DEEPSEEK_HARNESS, readModelContext: deepseekHarnessModelContextText }
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {

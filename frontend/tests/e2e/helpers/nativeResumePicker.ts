@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ServerInfo } from '../fixtures'
-import type { MockModelRequestRecord, MockModelRule, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeResumeResult } from './nativeLifecycle'
 import type { NativeResumeTexts } from './nativeResume'
@@ -31,8 +31,6 @@ export interface ResumePickerOptions {
   readonly provider: AgentProvider
   /** The label names the workspace and nothing else. */
   readonly label: string
-  /** Rules that answer the provider's own housekeeping turns, so they never take a scripted answer. */
-  readonly rules?: readonly MockModelRule[]
   /** Build the scripted answer of one turn. A plain text step by default; a provider whose final answer is a tool call passes its own. */
   readonly answerStep?: (texts: NativeResumeTexts, turn: 'original' | 'resumed') => MockModelStep
   /**
@@ -94,8 +92,6 @@ export async function resumePickerScenario(
   await loginViaToken(page, adminToken)
   await openWorkspace(page, workspaceId)
   await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
-  if (options.rules && options.rules.length > 0)
-    await modelScript.rule(...options.rules)
   const texts = nativeResumeTexts()
   const answerStep = (turn: 'original' | 'resumed'): MockModelStep =>
     options.answerStep?.(texts, turn) ?? { text: turn === 'original' ? texts.originalAnswer : texts.resumedAnswer }

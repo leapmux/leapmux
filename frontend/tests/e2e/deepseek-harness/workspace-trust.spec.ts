@@ -8,7 +8,7 @@ import { deepseekHarnessModelContextText } from './modelContextText'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('loads actual workspace instructions without a native workspace trust question', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: project => writeFileSync(join(project.directory, 'AGENTS.md'), `${project.marker}: preserve the exact workspace instruction.\n`),

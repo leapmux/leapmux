@@ -1,12 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { runningChildOptions } from './scenarios'
-
-// The child constructor uses no browser fixture or native title turn.
-// Keep the browser fixture out of this unit's import graph.
-vi.mock('../droid-fixtures', () => ({
-  DROID_TITLE_RULE: { name: 'unused-fixture-title', when: { system: 'Unused native title turn.' }, respond: { text: '' } },
-}))
 
 describe('runningChildOptions', () => {
   const context = { provider: AgentProvider.DROID, prompt: (text: string) => `${text}\nNATIVE_SCENARIO`, textStep: (text: string) => ({ text }) }

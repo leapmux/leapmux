@@ -6,7 +6,7 @@ import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolatio
 import { nativeContext } from './scenarios'
 
 geminiTest('uses private native settings and a file credential through the local model API', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const env = leapmuxServer.agentEnv
   if (!env)
     throw new Error('The credential scenario requires the isolated Gemini environment.')

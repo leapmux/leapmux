@@ -10,7 +10,7 @@
  */
 import type { Page, TestInfo } from '@playwright/test'
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
-import type { CliSkipFixture } from './provider-fixture-factory'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
@@ -21,6 +21,7 @@ import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
+import { nativeContext } from './qoder-cli/scenarios'
 
 export const QODER_E2E_SKIP_REASON: string | null = missingBinaryReason('qodercli', 'Qoder E2E requires the qodercli CLI on PATH (https://qoder.com)')
 
@@ -58,7 +59,7 @@ async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: 
 
 const QODER_DIAGNOSTICS = { onFailure: (testInfo: TestInfo, server: { agentEnv: Record<string, string> }) => attachQoderNativeLog(server.agentEnv, testInfo) }
 
-export const qoderTest = base.extend<CliSkipFixture & {
+export const qoderTest = base.extend<CliSkipFixture & NativeFixture & {
   /** An agent in Accept Edits, which answers every edit at once. */
   authenticatedQoderWorkspace: AgentWorkspace
   /**
@@ -71,6 +72,9 @@ export const qoderTest = base.extend<CliSkipFixture & {
   cliSkip: cliSkipFixture(QODER_E2E_SKIP_REASON),
   authenticatedQoderWorkspace: authenticatedAgentWorkspace({ ...QODER_AGENT, openOptions: ACCEPT_EDITS, ...QODER_DIAGNOSTICS }),
   askingQoderWorkspace: authenticatedAgentWorkspace({ ...QODER_AGENT, prefix: 'qoder-e2e-ask', ...QODER_DIAGNOSTICS }),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedQoderWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId }))
+  },
 })
 
 export { expect }

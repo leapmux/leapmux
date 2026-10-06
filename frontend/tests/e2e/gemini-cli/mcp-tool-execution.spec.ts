@@ -14,12 +14,12 @@ import { nativeContext } from './scenarios'
 import { readGeminiStoredToolRecord } from './toolRecord'
 
 geminiTest('executes a real MCP echo through the native Google model protocol', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await exerciseMcpEcho(context.page, context.modelScript, context.provider, 'gemini')
 })
 
 geminiTest('preserves native MCP zero and empty arguments and failed results after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const parent = await currentNativeAgent(context)
   const receiptLog = join(parent.workingDir, 'gemini-mcp-result-receipt.json')
   const script = writeMcpResultServer(parent.workingDir, { receiptLog })

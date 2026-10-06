@@ -6,7 +6,7 @@ import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('reads actual file context in the native planning mode', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   await exerciseNativeReadOnlyPlan(context, {
     preparePlan: async () => {
       await chooseSettingsOption(page, 'permissionMode-plan')

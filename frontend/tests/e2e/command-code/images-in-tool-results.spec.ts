@@ -11,7 +11,7 @@ import { readCommandCodeNativeImage } from './nativeImage'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('shows exact image bytes from the actual native file tool before and after reload', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const path = join(agent.workingDir, 'native-tool-image.png')
   copyFileSync(writeAttachmentFixture('image'), path)

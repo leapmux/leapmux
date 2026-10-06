@@ -4,7 +4,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { nativeContext, runningChild } from './scenarios'
 
 deepseekHarnessTest('keeps the actual native child in the sidebar from running through completion', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const child = await runningChild(context)
   await withCleanup(async () => {
     await expect(child.row).toHaveAttribute('data-kind', 'subagent')

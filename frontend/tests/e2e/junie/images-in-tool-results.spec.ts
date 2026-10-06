@@ -20,7 +20,6 @@ junieTest.describe('Junie images in tool results', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(
       { name: 'junie-image-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },
-      { name: 'junie-image-task-name', when: { system: 'task description summarizer' }, respond: { text: 'MCP image task' } },
     )
     await modelScript.queue(
       { toolCalls: [mcpToolCall(AgentProvider.JUNIE, 'junie-mcp-image', { server: 'image_probe', tool: 'show', input: {} })] },

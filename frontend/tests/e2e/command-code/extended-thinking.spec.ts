@@ -4,6 +4,6 @@ import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('proves the missing extended-thinking setting against the live catalog and a native tool', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   await expectMissingOptionGroup(context, { groupId: 'thinking', relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
 })

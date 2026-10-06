@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code tool execution', () => {
@@ -16,7 +16,6 @@ lettaTest.describe('Letta Code tool execution', () => {
 
   lettaTest('draws the lines a write and a read return', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     const notes = join(authenticatedLettaWorkspace.workingDir, 'notes.txt')
-    await modelScript.rule(LETTA_TITLE_RULE)
     await modelScript.queue(
       { toolCalls: [writeToolCall(PROVIDER, 'write-notes', { path: notes, content: 'letta-write-1\n' })] },
       { toolCalls: [readToolCall(PROVIDER, 'read-notes', notes)] },

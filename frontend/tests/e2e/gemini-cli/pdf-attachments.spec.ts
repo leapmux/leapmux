@@ -3,6 +3,6 @@ import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { nativeContext } from './scenarios'
 
 geminiTest('delivers the actual pdf attachment bytes through the native model request', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await exerciseAttachmentDelivery(context.page, context.modelScript, 'pdf', 'gemini-native.pdf')
 })

@@ -14,7 +14,7 @@ import { nativeContext } from './scenarios'
 import { readGeminiStoredToolRecord } from './toolRecord'
 
 geminiTest('recovers the actual native image bytes into the exact tool result after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const filename = writeToolImage(agent.workingDir, 'gemini-native')
   const bytes = readFileSync(join(agent.workingDir, filename)).toString('base64')

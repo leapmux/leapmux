@@ -13,14 +13,6 @@ import { nativeContext, runningChild } from './scenarios'
 junieTest.describe('Junie subagents and background tasks', () => {
   const PROVIDER = AgentProvider.JUNIE
 
-  function junieHousekeeping() {
-    return [
-      { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-      { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Subagent task' } },
-      { name: 'junie-task-summary', when: { system: 'You are a task summarizer' }, respond: { text: '<summary>Junie stores sessions in Junie Home.</summary><title>Session history</title>' } },
-    ]
-  }
-
   function nativeBackgroundCommand(release: string, done: string): string {
     const source = `
 const fs = require('node:fs')
@@ -47,7 +39,6 @@ finish()
     const done = join(workingDir, 'junie-background-done.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
-    await modelScript.rule(...junieHousekeeping())
     await modelScript.queue(
       { toolCalls: [backgroundBashToolCall(PROVIDER, 'junie-bg', nativeBackgroundCommand(release, done))] },
       { toolCalls: [junieAnswerToolCall('junie-bg-answer', 'I started the command in the background.')] },

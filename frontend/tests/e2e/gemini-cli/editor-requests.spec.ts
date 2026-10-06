@@ -8,7 +8,7 @@ import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeCo
 import { nativeContext } from './scenarios'
 
 geminiTest('excludes the unsupported native editor control while a real permission still works', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const request = await sendNativeAnswer(context, 'Return the native control catalog.', 'The native control catalog reached the mock.')
   expect(nativeModelToolNames(request)).toContain('run_shell_command')
   expect(nativeModelToolNames(request)).not.toContain('ask_user')

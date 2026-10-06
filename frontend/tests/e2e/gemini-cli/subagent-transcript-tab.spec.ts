@@ -8,7 +8,7 @@ import { geminiNativeProject } from './nativeStore'
 import { nativeContext } from './scenarios'
 
 geminiTest('stores the original native child prompt and results in its distinct tab after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   const child = await openGeminiRunningChild(context)
   await withCleanup(async () => {
     await expectGeminiLiveChild(context, child)

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -15,7 +15,6 @@ droidTest.describe('Factory Droid control requests', () => {
 
   droidTest('answers a question through the shared question banner', async ({ askingDroidWorkspace, page, modelScript }) => {
     void askingDroidWorkspace
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       {
         toolCalls: [askUserQuestionToolCall(PROVIDER, 'ask-1', [
@@ -51,7 +50,6 @@ droidTest.describe('Factory Droid control requests', () => {
   // in the order of the questions, each under the index of its question.
   droidTest('sends every pick of a multiple-choice question, one answer for each question', async ({ askingDroidWorkspace, page, modelScript }) => {
     void askingDroidWorkspace
-    await modelScript.rule(DROID_TITLE_RULE)
     await modelScript.queue(
       {
         toolCalls: [askUserQuestionToolCall(PROVIDER, 'ask-multi', [

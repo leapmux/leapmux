@@ -33,12 +33,6 @@ junieTest.describe('Junie plan review', () => {
     const agent = await waitForNativeOptionApplied({ page, leapmuxServer }, 'permissionMode', 'plan')
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
-      // The same two helper prompts that exerciseNativePlanReview answers. Junie asks
-      // them by itself for a task, so a rule answers each one that arrives.
-      await modelScript.rule(
-        { name: 'junie-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },
-        { name: 'junie-task-name', when: { system: 'task description summarizer' }, respond: { text: 'Plan task' } },
-      )
       await modelScript.queue({
         toolCalls: [junieSubmitPlanToolCall(
           'junie-denied-plan',

@@ -4,6 +4,6 @@ import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'
 import { nativeContext } from './scenarios'
 
 geminiTest('retains the native quota result without an unsupported rate-limit surface', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
   await expectNoRateLimitState(context, { relatedProof: () => exerciseNativeQuotaHeaders(context) })
 })

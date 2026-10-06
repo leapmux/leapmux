@@ -5,7 +5,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 lettaTest.describe('Letta Code subagents', () => {
@@ -23,7 +23,6 @@ lettaTest.describe('Letta Code subagents', () => {
       const note = join(authenticatedLettaWorkspace.workingDir, 'letta-child-note.txt')
       writeFileSync(note, `${CHILD_READ_MARKER}\n`)
       const childPrompt = modelScript.prompt(`${CHILD_READ_TASK}\nPath: ${note}`)
-      await modelScript.rule(LETTA_TITLE_RULE)
       // Matched on the child's own last user turn. The root's next request after the
       // spawn carries the Agent call, and so the child prompt, in its history: a body
       // matcher gave that root request the child's turn and the child the root's.
