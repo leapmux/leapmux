@@ -159,7 +159,8 @@ function fakeScript(offset: number, request: (stepIndex: number, queued: readonl
     waitForSteps: vi.fn(async (count: number) => {
       harness.events.push(`steps:${count}`)
     }),
-    status: vi.fn(async () => ({ requests: [] })),
+    // The held turn consumed its step, and the step after it waits.
+    status: vi.fn(async () => ({ requests: [], nextStep: offset + 1 })),
     requestAt: vi.fn(async (stepIndex: number) => {
       harness.events.push(`request:${stepIndex}`)
       return request(stepIndex, queued)
@@ -322,6 +323,13 @@ describe('exerciseQueuedTurnWithoutSteering', () => {
     const { script } = fakeScript(0, (stepIndex, queued) => bodyRequest(stepIndex, harness.sent[0] ?? '', harness.sent[1] ?? '', queued[0]?.text ?? ''))
     queueSecondPrompt(script)
     await expect(exerciseQueuedTurnWithoutSteering(context(script))).rejects.toThrow('NEXTQUEUEDPROMPT')
+  })
+
+  it('fails when the model received the next step before the held turn ended', async () => {
+    const { script } = fakeScript(0, turns)
+    queueSecondPrompt(script)
+    script.status = vi.fn(async () => ({ requests: [], nextStep: 2 }))
+    await expect(exerciseQueuedTurnWithoutSteering(context(script))).rejects.toThrow('the queued prompt waits for the held turn')
   })
 
   it('refuses a provider that steers before it sends anything', async () => {

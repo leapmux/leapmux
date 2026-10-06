@@ -61,8 +61,7 @@ async function sendPlanPrompt(context: NativeScenarioContext, options: PlanPromp
   }
   await expectSettingsChip(page, 'Plan')
 
-  const start = (await modelScript.status()).stepCount
-  await modelScript.queue(...steps)
+  const start = await modelScript.queue(...steps)
   await sendMessage(page, modelScript.prompt('Plan the change.'))
   await modelScript.waitForSteps(start + 1)
 
@@ -71,13 +70,6 @@ async function sendPlanPrompt(context: NativeScenarioContext, options: PlanPromp
   await expect(banner).toContainText('Implement this plan?')
   await expect(banner).toContainText('Inspect the repository')
   return start
-}
-
-async function readModelRequest(context: NativeScenarioContext, stepIndex: number): Promise<MockModelRequestRecord> {
-  const request = (await context.modelScript.status()).requests.find(candidate => candidate.stepIndex === stepIndex)
-  if (!request)
-    throw new Error('The related native scenario reached no model request.')
-  return request
 }
 
 /**
@@ -114,7 +106,7 @@ export async function exerciseNativePlanReview(
   await expect(list).toContainText('Inspect the repository')
   await expect(list).toContainText('Apply the change')
 
-  return readModelRequest(context, start)
+  return modelScript.requestAt(start)
 }
 
 /**
@@ -147,5 +139,5 @@ export async function exerciseNativePlanRevision(
   expect(status.unexpectedRequests).toEqual([])
   expect(status.nextStep, 'Junie sends no model request after a denied plan').toBe(start + 1)
 
-  return readModelRequest(context, start)
+  return modelScript.requestAt(start)
 }

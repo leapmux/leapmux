@@ -160,7 +160,7 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
       .rejects
       .toMatchObject({ source: 'rpc', code: Code.FailedPrecondition, message: 'agent provider does not support steering' })
     expect((await readQueue()).snapshot?.items.find(candidate => candidate.id === item.id)?.state).toBe(AgentInputState.QUEUED)
-    expect((await context.modelScript.status()).requests.some(request => request.stepIndex === start + 1), 'the queued prompt waits for the held turn').toBe(false)
+    expect((await context.modelScript.status()).nextStep, 'the queued prompt waits for the held turn').toBeLessThanOrEqual(start + 1)
     await context.modelScript.releaseGate(gate)
     await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)

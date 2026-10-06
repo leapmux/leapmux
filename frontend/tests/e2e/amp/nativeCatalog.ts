@@ -14,10 +14,11 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
+import { stepRequest } from '../helpers/mockModelScript'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { commandStartsWithExecutable, resolveNativeProcessOwnership, sameExecutablePath, workerDataDirectory } from '../helpers/nativeProcessOwnership'
-import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeAgentById, nativeOptionValue } from '../helpers/nativeScenario'
 import { clickNativeToolApproval, processNativeToolApproval } from '../helpers/nativeToolExecution'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
@@ -258,22 +259,22 @@ export async function readAmpExecutorCatalog(
   const callId = `amp-catalog-pid-${marker}`
   const script = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({pid:process.pid,ppid:process.ppid,workingDir:process.cwd(),home:process.env.HOME,endpoint:process.env.AMP_URL}));const finish=()=>{if(fs.existsSync(${JSON.stringify(releaseFile)})){process.stdout.write('AMP_CATALOG_PID:'+process.pid+'\\n');process.exit(0)}};fs.watch(${JSON.stringify(before.workingDir)},finish);finish();setTimeout(()=>process.exit(1),600000)`
   const shellCommand = `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`
-  const permissionMode = before.optionGroups.find(group => group.id === 'permissionMode')?.currentValue
+  const permissionMode = nativeOptionValue(before, 'permissionMode')
   if (permissionMode !== AMP_PERMISSION_MODE.Ask && permissionMode !== AMP_PERMISSION_MODE.AllowAll)
     throw new Error('The native Amp catalog requires the actual Ask or Allow All permission mode.')
-  const start = (await context.modelScript.status()).stepCount
   const watch = await watchNativeControls(context.leapmuxServer, before.id)
+  // The index of the queued tool step. It stays undefined until the queue holds the step.
+  let start: number | undefined
   let started = false
-  let submitted = false
   let approved = false
   return withCleanup(async () => {
-    await context.modelScript.queue(
+    const queued = await context.modelScript.queue(
       { toolCalls: [bashToolCall(context.provider, callId, shellCommand)] },
       { text: 'The native Amp catalog process completed.' },
     )
-    submitted = true
+    start = queued
     await sendMessage(context.page, context.modelScript.prompt('Run the supplied native process proof for the local Amp catalog.'))
-    await context.modelScript.waitForSteps(start + 1)
+    await context.modelScript.waitForSteps(queued + 1)
     if (permissionMode === AMP_PERMISSION_MODE.Ask) {
       let permissionError: unknown
       await expect.poll(async () => {
@@ -382,7 +383,7 @@ export async function readAmpExecutorCatalog(
     expect(agent.agentSessionId.trim()).not.toBe('')
     if (before.agentSessionId !== '')
       expect(agent.agentSessionId).toBe(before.agentSessionId)
-    const mode = agent.optionGroups.find(group => group.id === 'agent_mode')?.currentValue
+    const mode = nativeOptionValue(agent, 'agent_mode')
     if (!mode)
       throw new Error('The native Amp catalog requires the actual thread mode.')
     const output = await command(binary, ['tools', 'list', '--json', '--mode', mode, '--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color'], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: ampCatalogCommandTimeout(context.modelScript.testDeadline()) })
@@ -400,22 +401,20 @@ export async function readAmpExecutorCatalog(
     return { tools: ampExecutorToolNames(output.stdout), settings, ...(workspaceMcpConfiguration === undefined ? {} : { workspaceMcpConfiguration }) }
   }, async () => {
     let completed = false
+    const queued = start
     try {
-      if (started || existsSync(pidFile)) {
+      if (queued !== undefined && (started || existsSync(pidFile))) {
         writeFileSync(releaseFile, '')
-        const status = await context.modelScript.waitForSteps(start + 2)
+        const status = await context.modelScript.waitForSteps(queued + 2)
         await waitForAgentIdle(context.page)
         completed = true
-        const request = status.requests.find(value => value.stepIndex === start + 1)
-        if (!request)
-          throw new Error('The released native Amp process proof reached no model result.')
-        const result = await ampToolResultReader(context)(request, callId)
+        const result = await ampToolResultReader(context)(stepRequest(status, queued + 1), callId)
         expect(result.failed).not.toBe(true)
         expect(result.exitCode).toBe(0)
         const receipt = ampPidReceipt(readFileSync(pidFile, 'utf8'))
         expect(result.text).toContain(`AMP_CATALOG_PID:${receipt.pid}`)
       }
-      else if (submitted) {
+      else if (queued !== undefined) {
         await closeNativeAgentAndWait(context, before.id)
         completed = true
       }

@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { isObject } from '../../../src/lib/jsonPick'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeOptionValue } from '../helpers/nativeScenario'
 import { stopProcess } from '../helpers/process'
 import { hubSpawnEnv } from '../helpers/server'
 
@@ -214,6 +214,6 @@ export async function readCopilotBuiltinCatalog(context: ManagedNativeScenarioCo
   const env = hubSpawnEnv(environment)
   const binary = requireBinary('copilot', 'The native Copilot catalog requires its installed CLI', env)
   const agent = await currentNativeAgent(context)
-  const model = agent.optionGroups.find(group => group.id === 'model')?.currentValue
+  const model = nativeOptionValue(agent, 'model')
   return queryCopilotBuiltinCatalog({ executable: binary, args: ['--server', '--stdio', '--no-remote', '--no-remote-export'], cwd: agent.workingDir, env, ...(model === undefined ? {} : { model }) })
 }

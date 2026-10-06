@@ -402,12 +402,12 @@ describe('readAmpExecutorCatalog', () => {
     expect(workerClose).toHaveBeenCalledTimes(1)
   })
 
-  it('reads the model baseline before it starts a native control subscription', async () => {
+  it('cancels its native control subscription and sends nothing when the tool step cannot be queued', async () => {
     const { context } = catalogFixture()
-    const failure = new Error('The native model baseline could not be read.')
-    context.modelScript.status = vi.fn<ModelScript['status']>().mockRejectedValue(failure)
+    const failure = new Error('The native tool step could not be queued.')
+    context.modelScript.queue = vi.fn<ModelScript['queue']>().mockRejectedValue(failure)
     await expect(readAmpExecutorCatalog(context, {}, calls.catalog)).rejects.toBe(failure)
-    expect(calls.watch).not.toHaveBeenCalled()
+    expect(calls.cancelWatch).toHaveBeenCalledTimes(1)
     expect(calls.send).not.toHaveBeenCalled()
     expect(calls.catalog).not.toHaveBeenCalled()
   })

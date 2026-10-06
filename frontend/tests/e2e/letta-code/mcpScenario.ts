@@ -3,10 +3,11 @@ import type { PrivateMcpLettaWorkspace } from './fixtures'
 import { realpathSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { requireBinary } from '../helpers/binaryOnPath'
-import { nativeModelInstructionText, nativeTextStep } from '../helpers/nativeScenario'
+import { nativeModelInstructionText } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { lettaMcpCatalogArguments, lettaMcpCatalogToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles } from '../helpers/ui'
 import { parseLettaMcpCatalog } from './mcpCatalog'
 import { readLettaMcpCliReceipt, writeLettaMcpCliCapture } from './mcpCliReceipt'
 
@@ -24,13 +25,15 @@ export async function exerciseLettaMcpCatalog(context: ManagedNativeScenarioCont
     captureScriptPath: capture.scriptPath,
     receiptId: capture.receiptId,
   })
-  const start = await context.modelScript.queue({ toolCalls: [toolCall] }, nativeTextStep(context, answer))
-  await sendMessage(context.page, context.modelScript.prompt('Read the actual registered MCP catalog before its tool call.'))
-  await context.modelScript.waitForSteps(start + 2)
-  const instructions = nativeModelInstructionText(await context.modelScript.requestAt(start))
+  const { toolRequest, resultRequest } = await runNativeToolTurn(context, {
+    toolCalls: [toolCall],
+    prompt: 'Read the actual registered MCP catalog before its tool call.',
+    answer,
+  })
+  const instructions = nativeModelInstructionText(toolRequest)
   expect(instructions).toContain(server)
   expect(instructions).toContain('letta mcp call')
-  const result = nativeToolResult(await context.modelScript.requestAt(start + 1), callId)
+  const result = nativeToolResult(resultRequest, callId)
   const receipt = readLettaMcpCliReceipt(capture.receiptPath, result, {
     receiptId: capture.receiptId,
     callId,
@@ -38,7 +41,6 @@ export async function exerciseLettaMcpCatalog(context: ManagedNativeScenarioCont
     args: lettaMcpCatalogArguments(agentId, server),
   })
   const catalog = parseLettaMcpCatalog(receipt)
-  await waitForAgentIdle(context.page)
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
   return catalog
 }

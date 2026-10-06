@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { ZCODE_MODE } from '../../../src/generated/contracts/zcode-protocol'
+import { stepRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent, expectNativeOptionValue, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -46,10 +47,10 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
     await expect(messageContents(context.page).filter({ hasText: output }).first()).toBeVisible()
     expect(existsSync(path)).toBe(false)
     // ZCode can end the turn after the tool runs, before it asks the model again. So the follow-up request is
-    // optional, and the scenario reads its result only when the request exists.
-    const followUp = (await context.modelScript.status()).requests.find(request => request.stepIndex === start + 1)
-    if (followUp)
-      expect(nativeToolResult(followUp, callId)).toContain(output)
+    // optional, and the scenario reads its result only when the agent consumed the follow-up step.
+    const status = await context.modelScript.status()
+    if (status.nextStep > start + 1)
+      expect(nativeToolResult(stepRequest(status, start + 1), callId)).toContain(output)
   }
   else {
     await answerControl(context.page, 'deny')
