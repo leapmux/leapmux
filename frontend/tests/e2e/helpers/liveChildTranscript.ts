@@ -2,12 +2,16 @@ import type { Locator } from '@playwright/test'
 import type { MockModelMatcher, MockModelRule, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { HeldNativeChild } from './runningChildProof'
 import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
+import { decompressContentToString } from '../../../src/lib/decompress'
 import { finishCleanup, withCleanup } from './cleanup'
+import { readAllAgentMessages } from './nativeMessages'
 import { expandNativeResultView } from './nativeResultView'
 import { selectedAgentTabId } from './nativeScenario'
+import { nativeToolResult } from './nativeToolResult'
 import { bashToolCall, readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
 import { expectNoRegistryRows, openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
@@ -38,9 +42,9 @@ export type LiveChildContext = Pick<ManagedNativeScenarioContext, 'page' | 'mode
  *   row is not in the page while the view is collapsed.
  * - `shell`: the child runs `command`. Its tool row must show in the child tab.
  */
-export type LiveChildToolProof =
-  | { read: { workingDir: string, expandResult?: boolean } }
-  | { shell: { command: string } }
+export type LiveChildToolProof
+  = | { read: { workingDir: string, expandResult?: boolean } }
+    | { shell: { command: string } }
 
 export interface LiveChildSpec {
   childWhen: MockModelMatcher
@@ -187,4 +191,64 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
 export async function completeLiveChildTranscript(modelScript: Pick<ModelScript, 'waitForSteps'>, afterComplete?: () => Promise<void>): Promise<void> {
   await modelScript.waitForSteps()
   await afterComplete?.()
+}
+
+/** A file that a child reads, and the unique marker that only the file holds. */
+export interface ChildMarkerFile {
+  path: string
+  marker: string
+}
+
+/** Write a file with a new unique marker into `directory`, for a child to read. */
+export function writeChildMarkerFile(directory: string, fileName: string): ChildMarkerFile {
+  if (directory.trim() === '')
+    throw new Error('A child marker file needs the working directory of the agent.')
+  if (fileName.trim() === '' || basename(fileName) !== fileName)
+    throw new Error(`A child marker file needs a plain file name, not ${JSON.stringify(fileName)}.`)
+  const file = { path: join(directory, fileName), marker: uniqueMarker('NATIVECHILDREAD') }
+  writeFileSync(file.path, file.marker)
+  return file
+}
+
+/** Require that no stored Worker message of the agent holds `text`. The read covers every page of the messages. */
+export async function expectStoredMessagesLack(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string, text: string): Promise<void> {
+  if (text.trim() === '')
+    throw new Error('A stored message check needs a text that is not empty, because every message holds an empty text.')
+  const messages = await readAllAgentMessages(context, agentId)
+  const holders = messages.filter(message => decompressContentToString(message.content, message.contentCompression)?.includes(text) ?? false)
+  expect(holders.map(message => message.id), `no stored Worker message of agent ${agentId} holds ${JSON.stringify(text)}`).toEqual([])
+}
+
+/**
+ * Prove that the result of a native Read of a held child stays out of its tab and out of the Worker store while the
+ * child runs. Some providers deliver only the prompt and the report of a child, so its tool output never shows live:
+ *
+ * - The Read ran natively, and its result reached the model of the child.
+ * - The child tab shows neither the marker nor a tool row of the file.
+ * - No stored Worker message of the child holds the marker.
+ * - The row of the child stays running.
+ *
+ * The helper then finishes the child. `restoredAfterCompletion` requires the marker in the child tab after the
+ * completion and after a reload, for a provider that restores the transcript of a completed child.
+ */
+export async function expectChildToolOutputDeferred(
+  context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>,
+  child: HeldNativeChild,
+  options: { marker: string, fileName: string, readCallId: string, restoredAfterCompletion: boolean },
+): Promise<void> {
+  const { page } = context
+  await withCleanup(async () => {
+    expect(nativeToolResult(await child.heldRequest(), options.readCallId), 'the native Read result reached the model of the child').toContain(options.marker)
+    await openChildTabFromRow(page, child.row)
+    await expect(messageContents(page).filter({ hasText: options.marker })).toHaveCount(0)
+    await expect(toolRows(page).filter({ hasText: options.fileName })).toHaveCount(0)
+    await expectStoredMessagesLack(context, child.childId, options.marker)
+    await expect(child.row).toHaveAttribute('data-status', 'running')
+  }, child.finish)
+  if (!options.restoredAfterCompletion)
+    return
+  await tabById(page, child.childId).click()
+  await expect(messageContents(page).filter({ hasText: options.marker }).first()).toBeVisible()
+  await page.reload()
+  await expect(messageContents(page).filter({ hasText: options.marker }).first()).toBeVisible()
 }

@@ -1,14 +1,17 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
+import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { LiveChild, LiveChildSpec } from './liveChildTranscript'
 import type { MockModelScenarioStatus, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
+import type { HeldNativeChild } from './runningChildProof'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { deferred } from '../../../src/test-support/async'
 import { withCleanup } from './cleanup'
-import { completeLiveChildTranscript, exerciseLiveChildTranscript, LIVE_CHILD_SHELL_CALL_ID } from './liveChildTranscript'
+import { completeLiveChildTranscript, exerciseLiveChildTranscript, expectChildToolOutputDeferred, LIVE_CHILD_SHELL_CALL_ID, writeChildMarkerFile } from './liveChildTranscript'
 import { MOCK_MODEL_IDS, MOCK_MODELS } from './mockAgentEnvironment'
 import { isRecord } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
@@ -45,6 +48,16 @@ const browser = vi.hoisted(() => ({
   send: vi.fn<(prompt: string) => Promise<void>>(),
   /** The registry guard and the prompt send, in the order in which the helper made them. */
   events: [] as string[],
+  /** How many times the helper reloaded the page. */
+  reloads: 0,
+}))
+
+/** The messages that the Worker stores for the child, which the fake message read returns. */
+const stored = vi.hoisted(() => ({ messages: [] as unknown[] }))
+
+vi.mock('./nativeMessages', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeMessages')>(),
+  readAllAgentMessages: async () => stored.messages,
 }))
 
 /** A fake locator over the visible rows of the selected tab. */
@@ -398,8 +411,11 @@ async function runNativeAgent(serverURL: string, parentPrompt: string, log: stri
 }
 
 function fakePage(): Page {
-  // The fake supplies only the two page queries that the helper makes directly.
+  // The fake supplies only the two page queries that the helper makes directly, and a reload that it counts.
   return Object.assign({} as Page, {
+    reload: async () => {
+      browser.reloads += 1
+    },
     locator: (selector: string) => {
       if (selector === '[data-tool-message]:visible')
         return rows('tool')
@@ -713,5 +729,121 @@ describe('exerciseLiveChildTranscript', () => {
       await run.agent
       expectOrder(run.log, ['gate-released', 'final-delivered'])
     })
+  })
+})
+
+const MARKER_FILE = 'native-child-live.txt'
+const READ_CALL_ID = 'native-child-read'
+
+describe('expectChildToolOutputDeferred', () => {
+  const encoder = new TextEncoder()
+  let marker = ''
+
+  beforeEach(() => {
+    marker = `NATIVECHILDREAD${crypto.randomUUID().replaceAll('-', '')}`
+    browser.tabs = new Map<string, FakeRow[]>([[PARENT_TAB, []], [CHILD_AGENT, [{ kind: 'user', text: CHILD_TASK }]]])
+    browser.selected = PARENT_TAB
+    browser.childAgentId = CHILD_AGENT
+    browser.childStatus = 'running'
+    browser.events = []
+    browser.reloads = 0
+    stored.messages = []
+  })
+
+  /** One stored Worker message of the child with `text` as its uncompressed content. */
+  function storedMessage(id: string, text: string): AgentChatMessage {
+    return create(AgentChatMessageSchema, { id, contentCompression: ContentCompression.NONE, content: encoder.encode(text) })
+  }
+
+  /**
+   * A held child whose held request carries `readResult` as the result of its Read.
+   * `restore` makes the completed child tab show the Read result, as a provider that restores its transcript does.
+   */
+  function heldChild(options: { readResult: string, restore: boolean }): HeldNativeChild {
+    return {
+      row: registryRow() as unknown as Locator,
+      childId: CHILD_AGENT,
+      parentId: PARENT_TAB,
+      heldRequest: async () => ({
+        protocol: 'openai-chat-completions',
+        path: '/v1/chat/completions',
+        rule: 'the fake held child answer',
+        body: { messages: [{ role: 'tool', tool_call_id: READ_CALL_ID, content: options.readResult }] },
+      }),
+      finish: async () => {
+        browser.events.push('finish')
+        browser.childStatus = 'completed'
+        if (options.restore)
+          appendRow(CHILD_AGENT, 'tool', `${MARKER_FILE}\n${marker}`)
+      },
+    }
+  }
+
+  const context = () => ({ page: fakePage(), leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } })
+  const options = (restoredAfterCompletion: boolean) => ({ marker, fileName: MARKER_FILE, readCallId: READ_CALL_ID, restoredAfterCompletion })
+
+  it('proves the deferred Read result, then finishes the child', async () => {
+    stored.messages = [storedMessage('prompt', CHILD_TASK)]
+    await expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: false }), options(false))
+    expect(browser.events).toEqual(['finish'])
+    expect(browser.reloads).toBe(0)
+  })
+
+  it('fails and finishes the child when the child tab shows the Read result', async () => {
+    appendRow(CHILD_AGENT, 'tool', `${MARKER_FILE}\n${marker}`)
+    await expect(expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: false }), options(false))).rejects.toThrow(`in tab ${CHILD_AGENT}`)
+    expect(browser.events).toEqual(['finish'])
+  })
+
+  it('fails when a stored Worker message of the child holds the Read result', async () => {
+    stored.messages = [storedMessage('prompt', CHILD_TASK), storedMessage('read-result', `The file holds ${marker}.`)]
+    await expect(expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: false }), options(false))).rejects.toThrow('no stored Worker message of agent')
+    expect(browser.events).toEqual(['finish'])
+  })
+
+  it('fails when the held request carries no Read result with the marker', async () => {
+    await expect(expectChildToolOutputDeferred(context(), heldChild({ readResult: 'another file', restore: false }), options(false))).rejects.toThrow('the native Read result reached the model of the child')
+    expect(browser.events).toEqual(['finish'])
+  })
+
+  it('requires the Read result after the completion and after a reload when the provider restores it', async () => {
+    await expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: true }), options(true))
+    expect(browser.events).toEqual(['finish'])
+    expect(browser.reloads).toBe(1)
+    expect(browser.selected).toBe(CHILD_AGENT)
+  })
+
+  it('fails a restored proof when the completed child tab lacks the Read result', async () => {
+    await expect(expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: false }), options(true))).rejects.toThrow(`in tab ${CHILD_AGENT}`)
+    expect(browser.reloads).toBe(0)
+  })
+})
+
+describe('writeChildMarkerFile', () => {
+  let directory = ''
+
+  beforeEach(() => {
+    const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+    mkdirSync(scratch, { recursive: true })
+    directory = mkdtempSync(join(scratch, 'child-marker-file-'))
+  })
+
+  afterEach(() => rmSync(directory, { recursive: true, force: true }))
+
+  it('writes a new unique marker into the file', () => {
+    const first = writeChildMarkerFile(directory, 'first.txt')
+    const second = writeChildMarkerFile(directory, 'second.txt')
+    expect(first.path).toBe(join(directory, 'first.txt'))
+    expect(readFileSync(first.path, 'utf8')).toBe(first.marker)
+    expect(first.marker).toMatch(/^NATIVECHILDREAD[0-9a-f]{32}$/)
+    expect(first.marker).not.toBe(second.marker)
+  })
+
+  it('refuses an empty working directory', () => {
+    expect(() => writeChildMarkerFile(' ', 'child.txt')).toThrow('working directory')
+  })
+
+  it.each(['', 'nested/child.txt', '../child.txt'])('refuses a file name that is not plain: %j', (fileName) => {
+    expect(() => writeChildMarkerFile(directory, fileName)).toThrow('plain file name')
   })
 })

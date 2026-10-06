@@ -10,6 +10,7 @@ import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow }
 import { assistantBubbles, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
+import { allowReadIfAsked } from './readPermission'
 
 fastAgentTest.describe('Fast Agent subagent transcript', () => {
   const PROVIDER = AgentProvider.FAST_AGENT
@@ -177,16 +178,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
 
     await modelScript.releaseGate('fast-child-first')
-    const banner = page.locator('[data-testid="control-banner"]:visible')
-    await expect.poll(async () => {
-      if (await banner.isVisible())
-        return 'permission'
-      return (await modelScript.status()).ruleMatches['the Fast Agent child reports its count'] === 1 ? 'continued' : 'waiting'
-    }).not.toBe('waiting')
-    if (await banner.isVisible()) {
-      await expect(banner).toContainText('read_text_file')
-      await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-    }
+    await allowReadIfAsked(page, async () => (await modelScript.status()).ruleMatches['the Fast Agent child reports its count'] === 1)
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
@@ -254,16 +246,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await expect(userBubbles(page).filter({ hasText: childPrompt })).toHaveCount(1)
 
     await modelScript.releaseGate('fast-resume-child-first')
-    const banner = page.locator('[data-testid="control-banner"]:visible')
-    await expect.poll(async () => {
-      if (await banner.isVisible())
-        return 'permission'
-      return (await modelScript.status()).ruleMatches['the resumed Fast Agent child reports its result'] === 1 ? 'continued' : 'waiting'
-    }).not.toBe('waiting')
-    if (await banner.isVisible()) {
-      await expect(banner).toContainText('read_text_file')
-      await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-    }
+    await allowReadIfAsked(page, async () => (await modelScript.status()).ruleMatches['the resumed Fast Agent child reports its result'] === 1)
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(1)
