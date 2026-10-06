@@ -133,7 +133,18 @@ CREATE UNIQUE INDEX idx_agents_provider_child_key ON agents(parent_agent_id, pro
 CREATE TABLE messages (
     id                  TEXT PRIMARY KEY,
     agent_id            TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    seq                 INTEGER NOT NULL,
+    -- Sequences start at 1. Each writer stores 1 or more:
+    -- - CreateMessage and UpdateNotificationThread allocate
+    --   message_seq_hwm + 1.
+    -- - The input queue reserves its sequence the same way.
+    -- - The high-water starts at 0 and only rises.
+    -- - The resume clone copies stored sequences.
+    -- A reader treats 0 as "before the first message" (the cursor of
+    -- ListMessagesByAgentID) or "no message" (GetMaxSeqByAgentID). A stored
+    -- 0 or a negative sequence therefore hides its row from each cursor read,
+    -- and a reader cannot tell a stored 0 from "no message". The CHECK moves
+    -- that failure to the write.
+    seq                 INTEGER NOT NULL CHECK (seq >= 1),
     agent_session_id    TEXT NOT NULL DEFAULT '',
     source              INTEGER NOT NULL,
     content             BLOB NOT NULL,
