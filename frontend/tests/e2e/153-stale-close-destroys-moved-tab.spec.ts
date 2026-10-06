@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { gotoWorkspace } from './helpers/ui'
+import { withExtraClients } from './helpers/multiClient'
+import { gotoWorkspace, tiles } from './helpers/ui'
 
 /**
  * Documents the "stale close destroys recently-moved tab" UX trade-off
@@ -25,14 +25,10 @@ import { gotoWorkspace } from './helpers/ui'
  */
 
 test.describe('Stale close-tile semantics', () => {
-  test('close-tile from one client tombstones the tile in another (remove-wins)', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'remove-wins')
-    const ctxA = await browser.newContext({ baseURL: hubUrl })
-    const ctxB = await browser.newContext({ baseURL: hubUrl })
-    const pageA = await ctxA.newPage()
-    const pageB = await ctxB.newPage()
-    try {
+  test('close-tile from one client tombstones the tile in another (remove-wins)', async ({ browser, emptyWorkspace, leapmuxServer }) => {
+    const { adminToken } = leapmuxServer
+    const wsId = emptyWorkspace.workspaceId
+    await withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {
       await Promise.all([
         gotoWorkspace(pageA, adminToken, wsId),
         gotoWorkspace(pageB, adminToken, wsId),
@@ -40,13 +36,13 @@ test.describe('Stale close-tile semantics', () => {
 
       // Split into two tiles in A. Both contexts converge on 2 tiles.
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(2)
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageA)).toHaveCount(2)
+      await expect(tiles(pageB)).toHaveCount(2)
 
       // Capture the right-side tile id from B's DOM. B's view is
       // independent of A's nanoid generation; both contexts' tile ids
       // are sourced from the CRDT projection so they agree.
-      const tileIds = await pageB.locator('[data-testid="tile"]').evaluateAll((els) => {
+      const tileIds = await tiles(pageB).evaluateAll((els) => {
         return els.map(e => (e as HTMLElement).dataset.tileId ?? '')
       })
       expect(tileIds.length).toBe(2)
@@ -56,24 +52,15 @@ test.describe('Stale close-tile semantics', () => {
 
       // Both views collapse back to one tile (single-child SPLIT
       // collapse projection rule).
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(1)
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(1)
-    }
-    finally {
-      await ctxA.close()
-      await ctxB.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsId).catch(() => {})
-    }
+      await expect(tiles(pageB)).toHaveCount(1)
+      await expect(tiles(pageA)).toHaveCount(1)
+    })
   })
 
-  test('close-tile after a fast remote split is permanent (remove-wins guards against stale-resurrect)', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'fast-split-close')
-    const ctxA = await browser.newContext({ baseURL: hubUrl })
-    const ctxB = await browser.newContext({ baseURL: hubUrl })
-    const pageA = await ctxA.newPage()
-    const pageB = await ctxB.newPage()
-    try {
+  test('close-tile after a fast remote split is permanent (remove-wins guards against stale-resurrect)', async ({ browser, emptyWorkspace, leapmuxServer }) => {
+    const { adminToken } = leapmuxServer
+    const wsId = emptyWorkspace.workspaceId
+    await withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {
       await Promise.all([
         gotoWorkspace(pageA, adminToken, wsId),
         gotoWorkspace(pageB, adminToken, wsId),
@@ -84,11 +71,11 @@ test.describe('Stale close-tile semantics', () => {
       // the right tile after A's close. The projection must converge
       // to a single tile on both clients.
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageB)).toHaveCount(2)
 
       // A splits the new right tile vertically.
       await pageA.locator('[data-testid="split-vertical"]').nth(1).click()
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(3)
+      await expect(tiles(pageB)).toHaveCount(3)
 
       // B closes one of the inner tiles right away.
       await pageB.locator('[data-testid="close-tile"]').first().click()
@@ -96,17 +83,12 @@ test.describe('Stale close-tile semantics', () => {
       // (the projection's single-child SPLIT collapse may further
       // reduce to 1; either is acceptable for this invariant).
       await expect(async () => {
-        const a = await pageA.locator('[data-testid="tile"]').count()
-        const b = await pageB.locator('[data-testid="tile"]').count()
+        const a = await tiles(pageA).count()
+        const b = await tiles(pageB).count()
         expect(a).toBeLessThanOrEqual(2)
         expect(b).toBeLessThanOrEqual(2)
         expect(a).toBe(b)
       }).toPass()
-    }
-    finally {
-      await ctxA.close()
-      await ctxB.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsId).catch(() => {})
-    }
+    })
   })
 })

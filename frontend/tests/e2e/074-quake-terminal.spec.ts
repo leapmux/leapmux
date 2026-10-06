@@ -4,6 +4,7 @@ import type { WorkspaceFixture } from './helpers/workspace'
 import { test as base, expect } from './fixtures'
 import { listWorkspacesViaAPI, openAgentViaAPI } from './helpers/api'
 import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
+import { withExtraClients } from './helpers/multiClient'
 import { createTestDirectory } from './helpers/runDirectory'
 import { getTerminalText, waitForTerminalReady } from './helpers/terminal'
 import { loginViaToken, openTerminalViaUI, openWorkspace, setInitialBrowserPref, waitForActiveTabContext } from './helpers/ui'
@@ -595,9 +596,7 @@ test.describe('Quake-mode terminal', () => {
     await waitForTerminalReady(page)
     await runInQuake(page, 'echo from-browser-a', 'from-browser-a')
 
-    const context = await browser.newContext({ baseURL: quakeServer.hubUrl })
-    const second = await context.newPage()
-    try {
+    await withExtraClients(browser, quakeServer, 1, async ([second]) => {
       await loginViaToken(second, quakeServer.adminToken)
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
@@ -619,10 +618,7 @@ test.describe('Quake-mode terminal', () => {
       await expect(panel(page)).not.toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
       await runInQuake(second, 'echo still-alive', 'still-alive')
-    }
-    finally {
-      await context.close()
-    }
+    })
   })
 
   /**
@@ -638,9 +634,7 @@ test.describe('Quake-mode terminal', () => {
     const { workspaceId, workingDir } = await openAgentTab(page, quakeServer)
     const cli = await mintCLITokenForAdmin(quakeServer)
 
-    const context = await browser.newContext({ baseURL: quakeServer.hubUrl })
-    const second = await context.newPage()
-    try {
+    await withExtraClients(browser, quakeServer, 1, async ([second]) => {
       await loginViaToken(second, quakeServer.adminToken)
       await openWorkspace(second, workspaceId)
       await expect(second.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first()).toBeVisible()
@@ -662,9 +656,6 @@ test.describe('Quake-mode terminal', () => {
       await runCLI(cli, ['terminal', 'quake', 'toggle', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
       await expect(panel(page)).toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
-    }
-    finally {
-      await context.close()
-    }
+    })
   })
 })

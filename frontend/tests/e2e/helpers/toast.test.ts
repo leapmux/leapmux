@@ -47,6 +47,13 @@ describe('attachToastLog', () => {
     expect(attach).toHaveBeenCalledExactlyOnceWith('toast-log', { body: formatToastLog(toasts), contentType: 'text/plain' })
   })
 
+  it('attaches the toasts under the name that the caller gives', async () => {
+    const toasts = [toast('Saved', 'success')]
+    const { testInfo, attach } = reportingTestInfo()
+    await attachToastLog(recordingPage(toasts), testInfo, 'toast-log-client-2')
+    expect(attach).toHaveBeenCalledExactlyOnceWith('toast-log-client-2', { body: formatToastLog(toasts), contentType: 'text/plain' })
+  })
+
   it('attaches nothing when the page recorded no toast', async () => {
     const { testInfo, attach } = reportingTestInfo()
     await attachToastLog(recordingPage([]), testInfo)

@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { gotoWorkspace } from './helpers/ui'
+import { createWorkspaceViaAPI } from './helpers/api'
+import { withExtraClients } from './helpers/multiClient'
+import { gotoWorkspace, tiles, workspaceRow } from './helpers/ui'
 
 /**
  * Cross-workspace tab move convergence and workspace isolation.
@@ -33,69 +34,41 @@ import { gotoWorkspace } from './helpers/ui'
 test.describe('Cross-workspace projection isolation', () => {
   test('a layout edit in W1 does not reach a client viewing W2', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
+    // The suite reset deletes both workspaces before the next test.
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W1')
     const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W2')
-    const ctxA = await browser.newContext({ baseURL: hubUrl })
-    const ctxB = await browser.newContext({ baseURL: hubUrl })
-    const pageA = await ctxA.newPage()
-    const pageB = await ctxB.newPage()
-    try {
+    await withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {
       await Promise.all([
         gotoWorkspace(pageA, adminToken, ws1),
         gotoWorkspace(pageB, adminToken, ws2),
       ])
 
       // Both workspaces start with one tile.
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(1)
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(1)
+      await expect(tiles(pageA)).toHaveCount(1)
+      await expect(tiles(pageB)).toHaveCount(1)
 
       // Split in W1 — W2's view must remain a single tile.
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageA)).toHaveCount(2)
 
       // Wait long enough for any cross-talk to land if the projection
       // were broken — 750ms is well past the in-process WS round-trip
       // budget (the plan's 500ms window).
       await pageB.waitForTimeout(750)
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(1)
-    }
-    finally {
-      await ctxA.close()
-      await ctxB.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws2).catch(() => {})
-    }
+      await expect(tiles(pageB)).toHaveCount(1)
+    })
   })
 
-  test('a workspace created in one client appears in another client subscribed to userevents', async ({ browser, leapmuxServer }) => {
+  test('a workspace created in one client appears in another client subscribed to userevents', async ({ page, emptyWorkspace, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
-    const seedWs = await createWorkspaceViaAPI(hubUrl, adminToken, 'seed')
-    const ctx = await browser.newContext({ baseURL: hubUrl })
-    const page = await ctx.newPage()
-    try {
-      await gotoWorkspace(page, adminToken, seedWs)
+    await gotoWorkspace(page, adminToken, emptyWorkspace.workspaceId)
 
-      // Create a sibling workspace via the hub API; the userevents WS
-      // stream should deliver `WorkspaceCreated` and the sidebar
-      // should pick it up. The sidebar's row is keyed off the
-      // workspace list, which the UserCRDT lifecycle events feed.
-      const newWsTitle = 'sibling-via-userevents-stream'
-      const newWsId = await createWorkspaceViaAPI(hubUrl, adminToken, newWsTitle)
-      try {
-        // The workspace switcher / sidebar surfaces titles in both
-        // the left and right sidebars; match either. Strict-mode
-        // violations on a non-`.first()` locator turn fast lifecycle
-        // delivery (both sidebars repopulate before the assertion
-        // runs) into a false negative.
-        await expect(page.getByText(newWsTitle, { exact: false }).first()).toBeVisible()
-      }
-      finally {
-        await deleteWorkspaceViaAPI(hubUrl, adminToken, newWsId).catch(() => {})
-      }
-    }
-    finally {
-      await ctx.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, seedWs).catch(() => {})
-    }
+    // Create a sibling workspace via the hub API; the userevents WS
+    // stream should deliver `WorkspaceCreated` and the sidebar
+    // should pick it up. The sidebar's row is keyed off the
+    // workspace list, which the UserCRDT lifecycle events feed.
+    const newWsTitle = 'sibling-via-userevents-stream'
+    const newWsId = await createWorkspaceViaAPI(hubUrl, adminToken, newWsTitle)
+    await expect(workspaceRow(page, newWsId)).toContainText(newWsTitle)
   })
 })

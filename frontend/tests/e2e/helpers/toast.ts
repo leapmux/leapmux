@@ -128,15 +128,17 @@ export function formatToastLog(toasts: readonly RecordedToast[]): string {
 }
 
 /**
- * Attach the toasts that the page recorded to the test report as `toast-log`.
+ * Attach the toasts that the page recorded to the test report, as `name`.
+ * The fixture page uses the default name. Give each other page of the test a name of its own, so that the report
+ * keeps the logs apart.
  * The function attaches nothing when the page recorded no toast. It also attaches nothing when the page cannot answer,
  * as after a crash or a close, because a missing toast log must not hide the failure of the test.
  */
-export async function attachToastLog(page: Page, testInfo: TestInfo): Promise<void> {
+export async function attachToastLog(page: Page, testInfo: TestInfo, name = 'toast-log'): Promise<void> {
   const toasts = await getRecordedToasts(page).catch(() => [])
   if (toasts.length === 0)
     return
-  await testInfo.attach('toast-log', { body: formatToastLog(toasts), contentType: 'text/plain' })
+  await testInfo.attach(name, { body: formatToastLog(toasts), contentType: 'text/plain' })
 }
 
 /**

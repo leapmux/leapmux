@@ -23,14 +23,13 @@
  * the user at the recovery action.
  */
 
-import type { Browser, Page } from '@playwright/test'
 import type { CLIConfigDir } from './helpers/cli'
 import type { MultiWorkerHarness } from './helpers/multiWorker'
 import { test as base, expect } from '@playwright/test'
 import { callHub, openAgentViaAPI } from './helpers/api'
 import { cliAgentOpen, CLIError, mintCLITokenForAdmin, runCLI } from './helpers/cli'
+import { withExtraClients } from './helpers/multiClient'
 import { startMultiWorkerHarness } from './helpers/multiWorker'
-import { installToastRecorder } from './helpers/toast'
 import { expectAgentTabCount, loginViaToken, openWorkspace, tabById } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 
@@ -60,22 +59,6 @@ const test = base.extend<{ crossWorker: CrossWorkerEnv }, {
   },
 })
 
-/** Open two browser pages logged in as admin against the harness hub. */
-async function openTwoBrowsers(browser: Browser, harness: MultiWorkerHarness): Promise<{ pageA: Page, pageB: Page, close: () => Promise<void> }> {
-  const ctxA = await browser.newContext({ baseURL: harness.hubUrl })
-  const ctxB = await browser.newContext({ baseURL: harness.hubUrl })
-  const pageA = await ctxA.newPage()
-  const pageB = await ctxB.newPage()
-  await installToastRecorder(pageA)
-  await installToastRecorder(pageB)
-  await loginViaToken(pageA, harness.adminToken)
-  await loginViaToken(pageB, harness.adminToken)
-  const close = async () => {
-    await Promise.all([ctxA.close(), ctxB.close()])
-  }
-  return { pageA, pageB, close }
-}
-
 test.describe('control CLI cross-worker', () => {
   test('CLI agent-open on Worker B propagates to both browsers', async ({ browser, crossWorker }) => {
     const { harness, cli } = crossWorker
@@ -92,16 +75,17 @@ test.describe('control CLI cross-worker', () => {
       // open via the CLI — lives on Worker B.
       const agentA = await openAgentViaAPI(harness.hubUrl, harness.adminToken, workerA.id, workspaceId)
 
-      const pages = await openTwoBrowsers(browser, harness)
-      try {
+      await withExtraClients(browser, harness, 2, async ([pageA, pageB]) => {
+        await loginViaToken(pageA, harness.adminToken)
+        await loginViaToken(pageB, harness.adminToken)
         await Promise.all([
-          openWorkspace(pages.pageA, workspaceId),
-          openWorkspace(pages.pageB, workspaceId),
+          openWorkspace(pageA, workspaceId),
+          openWorkspace(pageB, workspaceId),
         ])
-        await Promise.all([expectAgentTabCount(pages.pageA, 1), expectAgentTabCount(pages.pageB, 1)])
+        await Promise.all([expectAgentTabCount(pageA, 1), expectAgentTabCount(pageB, 1)])
         await Promise.all([
-          expect(tabById(pages.pageA, agentA)).toBeVisible(),
-          expect(tabById(pages.pageB, agentA)).toBeVisible(),
+          expect(tabById(pageA, agentA)).toBeVisible(),
+          expect(tabById(pageB, agentA)).toBeVisible(),
         ])
 
         // 1. CLI-driven `agent open` against Worker B. The hub
@@ -113,8 +97,8 @@ test.describe('control CLI cross-worker', () => {
         //    → frontend reconciler.
         const agentB = await cliAgentOpen(cli, { workspaceId, workerId: workerB.id })
         await Promise.all([
-          expect(tabById(pages.pageA, agentB)).toBeVisible(),
-          expect(tabById(pages.pageB, agentB)).toBeVisible(),
+          expect(tabById(pageA, agentB)).toBeVisible(),
+          expect(tabById(pageB, agentB)).toBeVisible(),
         ])
 
         // The tab the CLI created really is on Worker B (not A),
@@ -124,10 +108,7 @@ test.describe('control CLI cross-worker', () => {
         const tabBInfo = await fetchTab(harness, workspaceId, agentB)
         expect(tabBInfo.workerId).toBe(workerB.id)
         expect(tabBInfo.workerId).not.toBe(workerA.id)
-      }
-      finally {
-        await pages.close()
-      }
+      })
     })
   })
 

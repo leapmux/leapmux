@@ -1,6 +1,5 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { tiles } from './helpers/ui'
 
 /**
  * Desktop-mode `/ws/userevents` streaming smoke.
@@ -21,23 +20,12 @@ import { loginViaToken, openWorkspace } from './helpers/ui'
  */
 
 test.describe('userevents WebSocket streaming', () => {
-  test('WatchUserEvent frames arrive within 500ms of hub-side commit', async ({ browser, leapmuxServer }) => {
-    const { hubUrl, adminToken } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'UserEvents Stream')
-    const ctx = await browser.newContext({ baseURL: hubUrl })
-    const page = await ctx.newPage()
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, wsId)
-      // The bootstrap event hits the page within the workspace-ready
-      // window; if `useUserEvents` were buffered the page wouldn't
-      // render the initial tile in time. waitForWorkspaceReady
-      // already waits up to its own timeout for that.
-      await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
-    }
-    finally {
-      await ctx.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsId).catch(() => {})
-    }
+  test('WatchUserEvent frames arrive within 500ms of hub-side commit', async ({ page, authenticatedEmptyWorkspace }) => {
+    void authenticatedEmptyWorkspace
+    // The bootstrap event hits the page within the workspace-ready
+    // window; if `useUserEvents` were buffered the page wouldn't
+    // render the initial tile in time. waitForWorkspaceReady
+    // already waits up to its own timeout for that.
+    await expect(tiles(page)).toHaveCount(1)
   })
 })

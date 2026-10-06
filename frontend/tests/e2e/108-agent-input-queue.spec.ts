@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { getUserId } from './helpers/api'
+import { withExtraClients } from './helpers/multiClient'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
@@ -54,9 +55,7 @@ test.describe('agent input queue', () => {
     await page.getByTestId('queue-pause-button').click()
     await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
 
-    const secondContext = await browser.newContext({ baseURL: separateHubWorker.hubUrl })
-    try {
-      const secondPage = await secondContext.newPage()
+    await withExtraClients(browser, separateHubWorker, 1, async ([secondPage]) => {
       await loginViaToken(secondPage, separateHubWorker.adminToken)
       await openWorkspace(secondPage, authenticatedWorkspace.workspaceId)
       await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
@@ -153,10 +152,7 @@ test.describe('agent input queue', () => {
       await page.getByTestId('queue-pause-button').click()
       await expect(page.getByTestId('queue-pause-button')).toHaveText('Pause Queue')
       await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Pause Queue')
-    }
-    finally {
-      await secondContext.close()
-    }
+    })
   })
 
   test.describe('touch reorder (phone)', () => {
