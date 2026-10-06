@@ -236,6 +236,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/cursorWire.test.ts',
   'tests/e2e/helpers/devServer.test.ts',
   'tests/e2e/helpers/dualVersionListener.test.ts',
+  'tests/e2e/helpers/frames.test.ts',
   'tests/e2e/helpers/geminiEnvironment.test.ts',
   'tests/e2e/helpers/goalsAndTodos.test.ts',
   'tests/e2e/helpers/goalTransitions.test.ts',

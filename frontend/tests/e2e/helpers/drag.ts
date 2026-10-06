@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { settleFrames } from './touch'
+import { settleFrames } from './frames'
 import { boxOf } from './ui'
 
 /**

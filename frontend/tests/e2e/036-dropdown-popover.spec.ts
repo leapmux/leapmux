@@ -1,10 +1,10 @@
 import type { Locator } from '@playwright/test'
 import { POPOVER_CARD_PADDING } from '../../src/styles/popoverTokens'
 import { expect, test } from './fixtures'
+import { settleFrames } from './helpers/frames'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
 import { waitTimeoutBeforeTestDeadline } from './helpers/testDeadline'
-import { settleFrames } from './helpers/touch'
 import { closeComposerMenus, composerEditor, openAgentInfoCard, openAgentViaUI, openPlusMenu, resolvedColor, stableBox } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/

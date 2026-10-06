@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { devices, expect } from '@playwright/test'
+import { settleFrames } from './frames'
 
 /**
  * Real touch input for the E2E specs, plus the device metrics that give Blink a coarse pointer.
@@ -133,25 +134,6 @@ export async function touchSwipe(
   finally {
     await finger.end()
   }
-}
-
-/**
- * Wait until the input events already dispatched are RENDERED.
- *
- * CDP acknowledges the dispatch of a pointer event, not its processing on the
- * main thread, so a lift issued straight after the last move can race the
- * dragOver that decides where the drop lands. Two frames is the guarantee: the
- * first callback runs after the main thread consumes the pending work, the
- * second after that work paints.
- *
- * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
- * on schedule however far behind the main thread runs, which makes it exactly
- * wrong under load -- the condition it exists to cover.
- */
-export async function settleFrames(page: Page): Promise<void> {
-  await page.evaluate(() => new Promise<void>(resolve =>
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-  ))
 }
 
 /** The `click` events that a page received after {@link recordClicks}, oldest first. */

@@ -1,9 +1,10 @@
 import type { Locator, Page } from '@playwright/test'
 import type { TouchPoint } from './helpers/touch'
 import { expect, test } from './fixtures'
+import { settleFrames } from './helpers/frames'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
-import { COARSE_POINTER_METRICS, recordClicks, settleFrames, touchHold, touchSwipe, touchTap } from './helpers/touch'
+import { COARSE_POINTER_METRICS, recordClicks, touchHold, touchSwipe, touchTap } from './helpers/touch'
 import { userBubbles } from './helpers/ui'
 
 /**
