@@ -94,7 +94,9 @@ function catalogFixture(options: {
   delayedSession?: boolean
   siblingControls?: boolean
   editorOutsideTile?: boolean
+  agentId?: string
 } = {}) {
+  const agentId = options.agentId ?? 'actual-agent'
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
   const { settingsPath, worker, amp, tool } = processFixture()
   calls.executable.mockImplementation(async (pid: number) => {
@@ -105,7 +107,7 @@ function catalogFixture(options: {
   // The same Amp PID exists before the next scripted turn and stays under the exact Worker.
   calls.processes.mockImplementation(() => calls.send.mock.calls.length === 0 ? [worker, amp] : [worker, amp, tool])
   const liveAgent = create(AgentInfoSchema, {
-    id: 'actual-agent',
+    id: agentId,
     agentProvider: AgentProvider.AMP,
     status: AgentStatus.ACTIVE,
     agentSessionId: 'T-actual-session',
@@ -155,7 +157,10 @@ function catalogFixture(options: {
     count: async () => 0,
   })
   const outsideTile = document.createElement('div')
-  outsideTile.innerHTML = '<div data-testid="tile"><div data-testid="tab" data-tab-id="actual-agent" aria-selected="true"></div></div><div data-testid="agent-editor-panel" data-agent-id="actual-agent"><fieldset data-testid="control-actions"><button data-testid="control-allow-btn"></button></fieldset></div>'
+  outsideTile.innerHTML = '<div data-testid="tile"><div data-testid="tab" aria-selected="true"></div></div><div data-testid="agent-editor-panel"><fieldset data-testid="control-actions"><button data-testid="control-allow-btn"></button></fieldset></div>'
+  // The attributes go through the DOM, so an agent ID with a quote stays one attribute value.
+  outsideTile.querySelector('[data-testid="tab"]')?.setAttribute('data-tab-id', agentId)
+  outsideTile.querySelector('[data-testid="agent-editor-panel"]')?.setAttribute('data-agent-id', agentId)
   const page = guardedHandle<Page>({ locator: (selector) => {
     if (options.editorOutsideTile) {
       const matched = outsideTile.querySelectorAll(selector.replaceAll(':visible', ''))
@@ -338,6 +343,12 @@ describe('readAmpExecutorCatalog', () => {
     expect(approve).toHaveBeenCalledTimes(1)
   })
 
+  it('approves in the editor of an agent whose ID holds a quote and a backslash', async () => {
+    const { context, approve } = catalogFixture({ permission: 'ask', editorOutsideTile: true, agentId: 'agent-"quoted"\\id' })
+    await readAmpExecutorCatalog(context, {}, calls.catalog)
+    expect(approve).toHaveBeenCalledTimes(1)
+  })
+
   it('proves the physical owned executable when the observed native argv starts with bare amp', async () => {
     const { context, worker, amp, tool } = catalogFixture()
     const observed = { pid: amp.pid, ppid: amp.ppid, command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp') }
@@ -391,6 +402,14 @@ describe('readAmpExecutorCatalog', () => {
   it('approves the exact active agent footer when its controls are siblings of the banner', async () => {
     const { context, approve } = catalogFixture({ permission: 'ask', siblingControls: true })
     await readAmpExecutorCatalog(context, {}, calls.catalog)
+    expect(approve).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the agent again after a Worker read fails during a reconnect, and approves the exact request once', async () => {
+    const { context, approve } = catalogFixture({ permission: 'ask' })
+    calls.nativeAgent.mockRejectedValueOnce(new Error('The Worker channel closed during a reconnect.'))
+    await readAmpExecutorCatalog(context, {}, calls.catalog)
+    expect(calls.nativeAgent).toHaveBeenCalledTimes(2)
     expect(approve).toHaveBeenCalledTimes(1)
   })
 

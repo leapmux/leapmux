@@ -1,3 +1,4 @@
+import type { Locator, Page } from '@playwright/test'
 import type { NativeControlFrame } from '../helpers/nativeControlWatch'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { ProcessRow } from '../helpers/processTree'
@@ -14,6 +15,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
+import { cssAttributeValue } from '../helpers/cssAttribute'
 import { stepRequest } from '../helpers/mockModelScript'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -23,6 +25,7 @@ import { clickNativeToolApproval, processNativeToolApproval } from '../helpers/n
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
 import { bashToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -31,6 +34,17 @@ import { ampToolResultReader } from './toolResult'
 
 const execFileAsync = promisify(execFile)
 const NATIVE_CATALOG_COMMAND_LIMIT_MS = 60_000
+
+/** A Worker read of the catalog's agent that failed. A reconnect of the Worker causes it, so a wait reads again. */
+class AmpCatalogWorkerReadFailure extends Error {}
+
+/**
+ * Locate the visible Allow button in the editor panel of one agent.
+ * `controlButton` locates the buttons of the whole page. The catalog must click only the button of its own agent.
+ */
+function agentAllowButton(page: Page, agentId: string): Locator {
+  return page.locator(`[data-testid="agent-editor-panel"][data-agent-id="${cssAttributeValue(agentId)}"]:visible [data-testid="control-actions"] [data-testid="control-allow-btn"]:visible`)
+}
 
 /** Require one current Amp permission request for the exact held shell call. */
 export function ampCatalogPermission(controls: readonly NativeControlFrame[], threadId: string, callId: string, command: string): NativeControlFrame | undefined {
@@ -276,45 +290,60 @@ export async function readAmpExecutorCatalog(
     await sendMessage(context.page, context.modelScript.prompt('Run the supplied native process proof for the local Amp catalog.'))
     await context.modelScript.waitForSteps(queued + 1)
     if (permissionMode === AMP_PERMISSION_MODE.Ask) {
-      let permissionError: unknown
-      await expect.poll(async () => {
+      // `approveNativeToolsUntil` cannot run this wait, because it takes only the locator of an Allow button and clicks
+      // each button that shows. Before its one click, this wait must also require the unchanged native session and
+      // the exact pending request of the held call, and it must refuse a tool that started before the click.
+      const approval: Parameters<typeof processNativeToolApproval>[0] = {
+        completed: async () => {
+          if (existsSync(pidFile) && !approved)
+            throw new Error('The native Amp catalog tool started before its exact permission approval.')
+          return existsSync(pidFile)
+        },
+        clickIfReady: async () => {
+          if (approved)
+            return false
+          let live: Awaited<ReturnType<typeof nativeAgentById>>
+          try {
+            live = await nativeAgentById(context, before.id)
+          }
+          catch (error) {
+            throw new AmpCatalogWorkerReadFailure('The native Amp catalog could not read its agent from the Worker.', { cause: error })
+          }
+          if (!live || live.id !== before.id || live.workingDir !== before.workingDir
+            || live.agentProvider !== before.agentProvider || (before.agentSessionId && live.agentSessionId !== before.agentSessionId)) {
+            throw new Error('The native Amp catalog session changed before its permission decision.')
+          }
+          if (!live.agentSessionId)
+            return false
+          const permission = ampCatalogPermission(watch.controls(), live.agentSessionId, callId, shellCommand)
+          if (!permission)
+            return false
+          if (existsSync(pidFile))
+            throw new Error('The native Amp catalog PID exists before approval.')
+          const clicked = await agentAllowButton(context.page, before.id).evaluateAll(clickNativeToolApproval)
+          if (clicked)
+            approved = true
+          return clicked
+        },
+      }
+      const decision = await retryUntilPass(async (): Promise<{ passed: true } | { passed: false, failure: unknown }> => {
+        let state: Awaited<ReturnType<typeof processNativeToolApproval>>
         try {
-          return await processNativeToolApproval({
-            completed: async () => {
-              if (existsSync(pidFile) && !approved)
-                throw new Error('The native Amp catalog tool started before its exact permission approval.')
-              return existsSync(pidFile)
-            },
-            clickIfReady: async () => {
-              if (approved)
-                return false
-              const live = await nativeAgentById(context, before.id)
-              if (!live || live.id !== before.id || live.workingDir !== before.workingDir
-                || live.agentProvider !== before.agentProvider || (before.agentSessionId && live.agentSessionId !== before.agentSessionId)) {
-                throw new Error('The native Amp catalog session changed before its permission decision.')
-              }
-              if (!live.agentSessionId)
-                return false
-              const permission = ampCatalogPermission(watch.controls(), live.agentSessionId, callId, shellCommand)
-              if (!permission)
-                return false
-              if (existsSync(pidFile))
-                throw new Error('The native Amp catalog PID exists before approval.')
-              const allow = context.page.locator(`[data-testid="agent-editor-panel"][data-agent-id="${before.id}"]:visible [data-testid="control-actions"] [data-testid="control-allow-btn"]:visible`)
-              const clicked = await allow.evaluateAll(clickNativeToolApproval)
-              if (clicked)
-                approved = true
-              return clicked
-            },
-          })
+          state = await processNativeToolApproval(approval)
         }
         catch (error) {
-          permissionError = error
-          return 'failed'
+          // A Worker read fails while the Worker reconnects, so the wait reads again. Each other failure is a
+          // decision that a later attempt cannot change, so the wait ends with it.
+          if (error instanceof AmpCatalogWorkerReadFailure)
+            throw error
+          return { passed: false, failure: error }
         }
-      }).not.toBe('waiting')
-      if (permissionError !== undefined)
-        throw permissionError
+        if (state === 'waiting')
+          throw new Error('The native Amp catalog did not approve the exact permission request of its held call yet.')
+        return { passed: true }
+      })
+      if (!decision.passed)
+        throw decision.failure
     }
     await expect.poll(() => existsSync(pidFile)).toBe(true)
     started = true
