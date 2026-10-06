@@ -190,6 +190,8 @@ vi.mock('@playwright/test', async (importOriginal) => {
         toHaveCount: async (expected: number) => expect(count(), message).toBe(expected),
         toBeVisible: async () => expect(count(), message).toBeGreaterThan(0),
         toHaveAttribute: async (key: string, expected: string) => expect(attribute(key), message).toBe(expected),
+        // The negated form without a value, as `expandSidebarSection` checks that the section carries no `data-closed`.
+        not: { toHaveAttribute: async (key: string) => expect(attribute(key), message).toBeNull() },
       }
     }
     return expect(value, message)
@@ -211,8 +213,11 @@ describe('requireRegistryRow', () => {
     const row: Locator = Object.assign({} as Locator, {
       first: () => row,
       isVisible,
-      // `expandSidebarSection` reads the header. An open header needs no click.
+      // `expandSidebarSection` reads the header. An open header needs no click, and it carries no `data-closed`,
+      // which the fake `expect` below reads to confirm that the section is open.
       evaluate: async () => true,
+      readCount: () => 1,
+      readAttribute: () => null,
     })
     const page = Object.assign({} as Page, {
       locator: (selector: string) => {

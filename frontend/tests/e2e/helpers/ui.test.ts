@@ -12,20 +12,25 @@ import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema
 import { cssAttributeValue } from './cssAttribute'
 import { startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 import {
+  activeWorkspaceId,
   agentTabs,
   answerControl,
   answerPlanReview,
   applyPermissionPreset,
+  archiveWorkspaceViaUI,
   ARITHMETIC_ANSWER,
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
+  branchGroupRow,
   chatScrollContainer,
   chooseSettingsOption,
   composerEditor,
   controlBanner,
   controlButton,
+  deleteWorkspaceViaUI,
   enterControlFeedback,
   enterMessageText,
+  expandSidebarSection,
   expectAgentTabCount,
   expectNoControlBanner,
   expectPermissionShortcuts,
@@ -33,6 +38,7 @@ import {
   focusComposer,
   isMaybeVisible,
   offeredSettingsOptions,
+  openWorkspaceRowMenu,
   questionPagination,
   queuePauseButton,
   resumePausedQueue,
@@ -41,15 +47,20 @@ import {
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
+  sidebarLeaves,
+  sidebarSectionHeader,
   subagentReportBubble,
   terminalTabs,
   tiles,
   toolCallRow,
   toolRows,
+  treeRow,
   waitForAgentIdle,
   waitForControlBanner,
   waitForLayoutSave,
   waitForNativeSettingsHydrated,
+  workspaceChildren,
+  workspaceMenuItem,
 } from './ui'
 
 const native = vi.hoisted(() => ({ agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>() }))
@@ -1040,5 +1051,240 @@ describe('ARITHMETIC_ANSWER', () => {
   it('keeps the two answers from satisfying each other', () => {
     expect(ARITHMETIC_ANSWER.test(SECOND_ARITHMETIC_ANSWER_TEXT)).toBe(false)
     expect(SECOND_ARITHMETIC_ANSWER.test(ARITHMETIC_ANSWER_TEXT)).toBe(false)
+  })
+})
+
+/**
+ * A fake locator tree. Each locator has a path that states how it was built, and the shared log records each click,
+ * hover, and assertion with that path. `answer` decides each assertion and each visibility read from the path.
+ */
+interface FakeTree {
+  log: string[]
+  root: Page
+}
+
+function fakeTree(answer: (expression: string, path: string) => boolean = () => true): FakeTree {
+  const log: string[] = []
+  class FakeLocator {
+    readonly _apiName = 'Locator'
+    constructor(readonly path: string) {}
+    locator(selector: string) {
+      return new FakeLocator(`${this.path} >> ${selector}`)
+    }
+
+    first() {
+      return new FakeLocator(`${this.path}.first`)
+    }
+
+    nth(index: number) {
+      return new FakeLocator(`${this.path}.nth(${index})`)
+    }
+
+    filter(options: { hasText?: string | RegExp, has?: FakeLocator, visible?: boolean }) {
+      const parts = [
+        options.hasText === undefined ? '' : `hasText=${String(options.hasText)}`,
+        options.has === undefined ? '' : `has=(${options.has.path})`,
+        options.visible === undefined ? '' : `visible=${options.visible}`,
+      ].filter(Boolean)
+      return new FakeLocator(`${this.path}[${parts.join(' ')}]`)
+    }
+
+    getByRole(role: string, options?: { name?: string, exact?: boolean }) {
+      return new FakeLocator(`${this.path} >> role=${role}${options?.name === undefined ? '' : `[name=${options.name}${options.exact ? ' exact' : ''}]`}`)
+    }
+
+    getByTestId(testId: string) {
+      return new FakeLocator(`${this.path} >> testid=${testId}`)
+    }
+
+    getByText(text: string, options?: { exact?: boolean }) {
+      return new FakeLocator(`${this.path} >> text=${text}${options?.exact ? ' exact' : ''}`)
+    }
+
+    async hover() {
+      log.push(`hover ${this.path}`)
+    }
+
+    async click() {
+      log.push(`click ${this.path}`)
+    }
+
+    async isVisible() {
+      return answer('isVisible', this.path)
+    }
+
+    async getAttribute(name: string) {
+      log.push(`read ${name} ${this.path}`)
+      return answer(`attribute ${name}`, this.path) ? 'workspace-item-ws-active' : 'not-a-workspace-row'
+    }
+
+    async _expect(expression: string, options: { isNot: boolean }) {
+      log.push(`${options.isNot ? 'not ' : ''}${expression} ${this.path}`)
+      const matches = answer(expression, this.path)
+      return { matches, received: matches, log: [], timedOut: false }
+    }
+  }
+  const root = new FakeLocator('page') as unknown as Page
+  return { log, root }
+}
+
+describe('sidebarSectionHeader', () => {
+  it('selects the first visible header of the section', () => {
+    const { root } = fakeTree()
+    expect((sidebarSectionHeader(root, 'workers') as unknown as { path: string }).path)
+      .toBe('page >> [data-testid="section-header-workers"]:visible.first')
+  })
+})
+
+describe('expandSidebarSection', () => {
+  function section(closed: { value: boolean }, log: string[]) {
+    class Section {
+      readonly _apiName = 'Locator'
+      async evaluate() {
+        return !closed.value
+      }
+
+      locator(selector: string) {
+        expect(selector).toBe('> [role="button"]')
+        return { click: async () => {
+          log.push('click header')
+          closed.value = false
+        } }
+      }
+
+      async _expect(expression: string, options: { isNot: boolean, expressionArg?: string }) {
+        log.push(`${options.isNot ? 'not ' : ''}${expression}`)
+        return { matches: closed.value, received: closed.value, log: [], timedOut: false }
+      }
+    }
+    return new Section() as unknown as PlaywrightLocator
+  }
+
+  it('opens a closed section and requires that it is open', async () => {
+    const log: string[] = []
+    const closed = { value: true }
+    await expandSidebarSection(section(closed, log))
+    expect(log).toEqual(['click header', 'not to.have.attribute'])
+  })
+
+  it('leaves an open section untouched, with no click, and still requires that it is open', async () => {
+    const log: string[] = []
+    await expandSidebarSection(section({ value: false }, log))
+    expect(log).toEqual(['not to.have.attribute'])
+  })
+
+  it('fails when the section stays closed after the click', async () => {
+    const log: string[] = []
+    const closed = { value: true }
+    const stuck = section(closed, log)
+    const original = stuck.locator.bind(stuck)
+    stuck.locator = ((selector: string) => ({ click: async () => {
+      original(selector)
+      log.push('click header without effect')
+    } })) as PlaywrightLocator['locator']
+    await expect(expandSidebarSection(stuck)).rejects.toThrow('the sidebar section is open')
+  })
+})
+
+describe('workspace row menu', () => {
+  const row = 'page >> [data-testid="workspace-item-ws-1"]:visible.first'
+
+  it('locates an item of the row\'s own menu by its exact name', () => {
+    const { root } = fakeTree()
+    expect((workspaceMenuItem(root, 'ws-1', 'Delete') as unknown as { path: string }).path)
+      .toBe(`${row} >> role=menuitem[name=Delete exact]`)
+  })
+
+  it('opens the menu through the trigger test ID of the hovered row, and waits for the required item', async () => {
+    // The item is hidden until the trigger click.
+    const { root, log } = fakeTree((expression, path) => expression !== 'isVisible' || !path.endsWith('[name=Unarchive exact]'))
+    await openWorkspaceRowMenu(root, 'ws-1', 'Unarchive')
+    expect(log).toEqual([
+      `hover ${row}`,
+      `click ${row} >> testid=workspace-row-menu-trigger`,
+      `to.be.visible ${row} >> role=menuitem[name=Unarchive exact]`,
+    ])
+  })
+
+  it('archives through the menu item and the dialog button, and waits for the archived section', async () => {
+    const { root, log } = fakeTree((expression, path) => expression !== 'isVisible' || !path.includes('role=menuitem'))
+    await archiveWorkspaceViaUI(root, 'ws-1')
+    expect(log.filter(entry => !entry.startsWith('hover'))).toEqual([
+      `click ${row} >> testid=workspace-row-menu-trigger`,
+      `to.be.visible ${row} >> role=menuitem[name=Archive exact]`,
+      `click ${row} >> role=menuitem[name=Archive exact]`,
+      'click page >> role=dialog[name=Archive workspace] >> role=button[name=Archive exact]',
+      'to.be.hidden page >> role=dialog[name=Archive workspace]',
+      'to.be.visible page >> [data-testid="section-header-workspaces_archived"]:visible.first',
+    ])
+  })
+
+  it('deletes through both steps of the confirm button, and waits until the row is gone', async () => {
+    const { root, log } = fakeTree((expression, path) => expression !== 'isVisible' || !path.includes('role=menuitem'))
+    await deleteWorkspaceViaUI(root, 'ws-1')
+    expect(log.filter(entry => !entry.startsWith('hover'))).toEqual([
+      `click ${row} >> testid=workspace-row-menu-trigger`,
+      `to.be.visible ${row} >> role=menuitem[name=Delete exact]`,
+      `click ${row} >> role=menuitem[name=Delete exact]`,
+      'click page >> role=dialog[name=Delete workspace] >> role=button[name=Delete exact]',
+      'click page >> role=dialog[name=Delete workspace] >> role=button[name=Confirm?]',
+      `to.be.hidden ${row}`,
+    ])
+  })
+})
+
+describe('sidebar subtree locators', () => {
+  const row = 'page >> [data-testid="workspace-item-ws-1"]:visible.first'
+
+  it('reaches the children wrapper as the next sibling of the visible row, and requires its test ID', () => {
+    const { root } = fakeTree()
+    expect((workspaceChildren(root, 'ws-1') as unknown as { path: string }).path)
+      .toBe(`${row} >> xpath=following-sibling::*[1][@data-testid="workspace-children-ws-1"]`)
+  })
+
+  it('finds the leaves inside that wrapper', () => {
+    const { root } = fakeTree()
+    expect((sidebarLeaves(root, 'ws-1') as unknown as { path: string }).path)
+      .toBe(`${row} >> xpath=following-sibling::*[1][@data-testid="workspace-children-ws-1"] >> [data-testid="tab-tree-leaf"]`)
+  })
+
+  it('scopes a branch group row below the root that the caller passes', () => {
+    const { root } = fakeTree()
+    const subtree = workspaceChildren(root, 'ws-1')
+    expect((branchGroupRow(subtree) as unknown as { path: string }).path)
+      .toBe(`${row} >> xpath=following-sibling::*[1][@data-testid="workspace-children-ws-1"] >> [data-testid="tab-tree-branch-group"]:visible.first`)
+    expect((branchGroupRow(root) as unknown as { path: string }).path)
+      .toBe('page >> [data-testid="tab-tree-branch-group"]:visible.first')
+  })
+})
+
+describe('activeWorkspaceId', () => {
+  it('reads the workspace ID from the test ID of the visible active row', async () => {
+    const { root, log } = fakeTree()
+    await expect(activeWorkspaceId(root)).resolves.toBe('ws-active')
+    expect(log).toEqual([
+      'to.be.visible page >> [data-testid^="workspace-item-"][data-active="true"]:visible.first',
+      'read data-testid page >> [data-testid^="workspace-item-"][data-active="true"]:visible.first',
+    ])
+  })
+
+  it('refuses a row whose test ID is not a workspace row ID', async () => {
+    const { root } = fakeTree(expression => !expression.startsWith('attribute'))
+    await expect(activeWorkspaceId(root)).rejects.toThrow('unexpected test ID: not-a-workspace-row')
+  })
+})
+
+describe('treeRow', () => {
+  const rows = 'page >> [data-testid="tree-row"]:visible'
+
+  it('matches the name as a substring of the row text by default', () => {
+    const { root } = fakeTree()
+    expect((treeRow(root, 'src') as unknown as { path: string }).path).toBe(`${rows}[hasText=src].first`)
+  })
+
+  it('matches the row label exactly when asked, so a longer name that contains it stays out', () => {
+    const { root } = fakeTree()
+    expect((treeRow(root, 'src', { exact: true }) as unknown as { path: string }).path)
+      .toBe(`${rows}[has=(page >> testid=tree-row-name >> text=src exact)].first`)
   })
 })

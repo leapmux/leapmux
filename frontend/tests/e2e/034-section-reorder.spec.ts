@@ -1,4 +1,6 @@
 import { expect, test } from './fixtures'
+import { boxCenter, mouseDragOnto } from './helpers/drag'
+import { boxOf } from './helpers/ui'
 
 /**
  * Smoke test for sidebar section drag-drop. The drop-position math and
@@ -45,19 +47,18 @@ test.describe('Section Reorder & Move', () => {
     await expect(sourceHandle).toBeVisible()
     await expect(targetSummary).toBeVisible()
 
-    const sourceBox = (await sourceHandle.boundingBox())!
-    const targetBox = (await targetSummary.boundingBox())!
+    const targetBox = await boxOf(targetSummary)
 
     const saved = waitForMoveSection(page)
-    await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
-    await page.waitForTimeout(100)
-    await page.mouse.down()
-    await page.waitForTimeout(100)
-    await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + 5, { steps: 15 })
-    await page.waitForTimeout(100)
-    await page.mouse.up()
+    // Onto the top edge of the target section's summary row, so the section
+    // lands before it.
+    await mouseDragOnto(page, {
+      from: await boxCenter(sourceHandle),
+      to: { x: targetBox.x + targetBox.width / 2, y: targetBox.y + 5 },
+      steps: 15,
+    })
+    // The hub answered MoveSection, so the reload below reads the stored order.
     await saved
-    await page.waitForTimeout(500)
 
     await page.reload()
     await expect(page.locator(`[data-testid="${source}"]`)).toBeVisible()

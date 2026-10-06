@@ -674,14 +674,16 @@ export async function openAgentViaAPI(
  * Use this helper when a test requires an exact mode or a mode-change notification.
  * A test of the provider default must open the agent without this helper.
  * Read the offered modes to select expectations, as 044-agent-settings.spec.ts does.
+ * Omit `workingDir` for the Worker's default directory.
  */
 export async function openPinnedModeAgentViaAPI(
   hubUrl: string,
   cookie: string,
   workerId: string,
   workspaceId: string,
+  workingDir?: string,
 ): Promise<string> {
-  return openAgentViaAPI(hubUrl, cookie, workerId, workspaceId, undefined, {
+  return openAgentViaAPI(hubUrl, cookie, workerId, workspaceId, workingDir, {
     optionValues: { permissionMode: 'default' },
   })
 }

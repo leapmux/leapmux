@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type { AgentServer } from './workspace'
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -24,6 +25,7 @@ import {
   ListTerminalsResponseSchema,
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
 import { API_POLL_INTERVAL_MS, callHub, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
+import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 import { expectAnyVisible, isMaybeVisible } from './ui'
 
 /**
@@ -417,6 +419,59 @@ export async function listAgentsViaAPI(
     return []
   }
   return (resp.agents ?? []).map(a => ({ id: a.id, title: a.title, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
+}
+
+/**
+ * The status of one agent of the workspace, as its Worker reports it, or undefined while the Worker lists no such
+ * agent. Poll it with `expect.poll`: the Worker, not the tab bar, is the authority on an agent's state.
+ */
+export async function agentStatusViaAPI(server: AgentServer, workspaceId: string, agentId: string): Promise<number | undefined> {
+  const agents = await listAgentsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
+  return agents.find(agent => agent.id === agentId)?.status
+}
+
+/**
+ * Whether the Worker reports one terminal of the workspace as exited, or undefined while it lists no such terminal.
+ * Poll it with `expect.poll`, as `agentStatusViaAPI`.
+ */
+export async function terminalExitedViaAPI(server: AgentServer, workspaceId: string, terminalId: string): Promise<boolean | undefined> {
+  const terminals = await listTerminalsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
+  return terminals.find(terminal => terminal.id === terminalId)?.exited
+}
+
+/**
+ * Wait until the workspace holds exactly one agent on its Worker, and return it.
+ * More than one agent fails at once, because a test that reads "the" agent would then read an arbitrary one.
+ */
+export async function waitForSoleAgentViaAPI(
+  server: AgentServer,
+  workspaceId: string,
+): Promise<{ id: string, title: string, workingDir: string, status: number, startupError: string }> {
+  const agents = await waitForAgentsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
+  const [agent, ...others] = agents
+  if (!agent || others.length > 0)
+    throw new Error(`Workspace ${workspaceId} must hold exactly one agent, but its Worker lists ${agents.length}: ${agents.map(item => item.id).join(', ')}.`)
+  return agent
+}
+
+/**
+ * Wait until one of the titles that `list` returns equals `title`, and state `message` on a timeout.
+ * The Worker's database is the one durable home of a tab title, so `list` reads the Worker, for example through
+ * `listTerminalsViaAPI`. A read that throws counts as a miss, and the wait reads again. A timeout reports the last
+ * failure: the failed read, or the titles that the last read returned.
+ */
+export async function waitForWorkerTabTitle(
+  list: () => Promise<ReadonlyArray<{ title: string }>>,
+  title: string,
+  message: string,
+): Promise<void> {
+  if (title === '')
+    throw new Error('A stored tab title check needs a title, because a tab with no title would match an empty one.')
+  // `expect.poll` cannot retry a read here: it ends at the first read that throws, and only a failed match starts its
+  // next attempt. `toPass` retries the read and the match together.
+  await expect(async () => {
+    expect((await list()).map(tab => tab.title), message).toContain(title)
+  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
 }
 
 /**

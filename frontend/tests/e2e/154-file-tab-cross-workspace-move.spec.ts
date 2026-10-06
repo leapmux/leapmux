@@ -1,6 +1,7 @@
+import { Code } from '@connectrpc/connect'
 import { fileTabPayload } from '~/lib/tabPayload'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel } from './helpers/api'
+import { getTestChannel } from './helpers/api'
 
 /**
  * File-tab path bookkeeping over the E2EE channel.
@@ -21,8 +22,8 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel } from './
 test.describe('file-tab E2EE worker round-trip', () => {
   test('register / get / revoke round-trip is keyed by tab id alone', async ({ leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'file-W1')
-
+    // No workspace: the worker keys the row by the tab ID alone, and a channel
+    // carries no workspace set.
     const channel = await getTestChannel(hubUrl, adminToken)
 
     const {
@@ -34,54 +35,46 @@ test.describe('file-tab E2EE worker round-trip', () => {
       RevokeTabPayloadResponseSchema,
     } = await import('../../src/generated/proto/leapmux/v1/worker_private_pb')
 
-    try {
-      const tabId = `t-${Date.now()}`
-      const filePath = '/repo/test-file.go'
+    const tabId = `t-${Date.now()}`
+    const filePath = '/repo/test-file.go'
 
-      // 1. Register. No workspace is named -- the worker has nowhere to put one.
-      await channel.callWorker(
-        workerId,
-        'RegisterTabPayload',
-        RegisterTabPayloadRequestSchema,
-        RegisterTabPayloadResponseSchema,
-        { tabId, payload: fileTabPayload(filePath, '') },
-      )
+    // 1. Register. No workspace is named -- the worker has nowhere to put one.
+    await channel.callWorker(
+      workerId,
+      'RegisterTabPayload',
+      RegisterTabPayloadRequestSchema,
+      RegisterTabPayloadResponseSchema,
+      { tabId, payload: fileTabPayload(filePath, '') },
+    )
 
-      // 2. Get returns the path.
-      const got = await channel.callWorker(
-        workerId,
-        'GetTabPayload',
-        GetTabPayloadRequestSchema,
-        GetTabPayloadResponseSchema,
-        { tabId },
-      )
-      expect(got.payload?.kind.case === 'file' && got.payload.kind.value.filePath).toBe(filePath)
+    // 2. Get returns the path.
+    const got = await channel.callWorker(
+      workerId,
+      'GetTabPayload',
+      GetTabPayloadRequestSchema,
+      GetTabPayloadResponseSchema,
+      { tabId },
+    )
+    expect(got.payload?.kind.case === 'file' && got.payload.kind.value.filePath).toBe(filePath)
 
-      // 3. Revoke removes the row (subsequent Get returns NotFound).
-      await channel.callWorker(
-        workerId,
-        'RevokeTabPayload',
-        RevokeTabPayloadRequestSchema,
-        RevokeTabPayloadResponseSchema,
-        { tabId },
-      )
-      let revoked = false
-      try {
-        await channel.callWorker(
-          workerId,
-          'GetTabPayload',
-          GetTabPayloadRequestSchema,
-          GetTabPayloadResponseSchema,
-          { tabId },
-        )
-      }
-      catch {
-        revoked = true
-      }
-      expect(revoked).toBe(true)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
-    }
+    // 3. Revoke removes the row, so a later Get is refused as NOT_FOUND. The
+    //    check requires that refusal, so another failure, such as a channel
+    //    fault, cannot pass for a revoked row.
+    await channel.callWorker(
+      workerId,
+      'RevokeTabPayload',
+      RevokeTabPayloadRequestSchema,
+      RevokeTabPayloadResponseSchema,
+      { tabId },
+    )
+    const afterRevoke = await channel.callWorker(
+      workerId,
+      'GetTabPayload',
+      GetTabPayloadRequestSchema,
+      GetTabPayloadResponseSchema,
+      { tabId },
+    ).then(() => null, (error: unknown) => error)
+    expect(afterRevoke, 'the Get after the revoke is refused as not found')
+      .toMatchObject({ name: 'ChannelError', source: 'rpc', code: Code.NotFound })
   })
 })

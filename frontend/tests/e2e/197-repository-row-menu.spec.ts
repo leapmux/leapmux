@@ -1,7 +1,6 @@
-import type { Page } from '@playwright/test'
 import { execSync } from 'node:child_process'
 import { expect, test } from './fixtures'
-import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem } from './helpers/ui'
+import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem, workspaceChildren } from './helpers/ui'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
@@ -36,11 +35,6 @@ function createRepoWithOrigin(dataDir: string, name: string): string {
   return repoDir
 }
 
-/** This workspace's own subtree, so another spec's expanded rows stay out. */
-function workspaceSubtree(page: Page, workspaceId: string) {
-  return page.locator(`[data-testid="workspace-children-${workspaceId}"]`)
-}
-
 test.describe('repository row menu', () => {
   test('the kebab and a right-click both open it, with the repository block and the collapse item', async ({
     page,
@@ -61,7 +55,7 @@ test.describe('repository row menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const repoRow = repoGroupRow(workspaceSubtree(page, workspaceId))
+    const repoRow = repoGroupRow(workspaceChildren(page, workspaceId))
     await expect(repoRow).toBeVisible()
 
     // ── The kebab ───────────────────────────────────────────────────────────
@@ -123,7 +117,7 @@ test.describe('repository row menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const subtree = workspaceSubtree(page, workspaceId)
+    const subtree = workspaceChildren(page, workspaceId)
     const leaves = subtree.locator('[data-testid="tab-tree-leaf"]:visible')
     await expect(leaves.first()).toBeVisible()
 

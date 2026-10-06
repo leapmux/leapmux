@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 /* eslint-disable no-console */
 import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { ServerOutput } from './helpers/serverOutput'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspaceFixture } from './helpers/workspace'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { test as base, expect } from '@playwright/test'
@@ -33,7 +33,7 @@ import { getGlobalState, hubSpawnEnv, hubUrlFromStateJson, waitForHubReady, wait
 import { attachServerLog, createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { attachToastLog, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withTestWorkspace } from './helpers/workspace'
+import { agentWorkspaceFixture, withTestWorkspace } from './helpers/workspace'
 
 export interface SeparateServerInfo {
   hubUrl: string
@@ -146,8 +146,10 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 export const processTest = base.extend<
   ModelScriptFixtures & {
     toastRecorder: void
-    workspace: WorkspaceFixture
-    authenticatedWorkspace: WorkspaceFixture
+    /** The working directory of the agent that the `workspace` fixture opens. See the same option in `./fixtures.ts`. */
+    agentWorkingDir: string | undefined
+    workspace: AgentWorkspaceFixture
+    authenticatedWorkspace: AgentWorkspaceFixture
   },
   {
     separateHubWorker: SeparateServerInfo
@@ -282,13 +284,16 @@ export const processTest = base.extend<
       await attachServerLog(testInfo, separateHubWorker.output.since(serverMark))
   }, { auto: true }],
 
+  agentWorkingDir: [undefined, { option: true }],
+
   // Confirm the Worker connection before creating the workspace and its initial agent.
-  workspace: async ({ separateHubWorker }, use) => {
+  // The separate hub has no per-test reset, so `withTestWorkspace` deletes the workspace after the test.
+  workspace: async ({ separateHubWorker, agentWorkingDir }, use) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
     await withTestWorkspace(separateHubWorker, 'e2e', async (workspace) => {
-      await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspace.workspaceId)
-      await use(workspace)
+      const agentId = await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspace.workspaceId, agentWorkingDir)
+      await use(agentWorkspaceFixture(workspace, agentId, agentWorkingDir))
     })
   },
 

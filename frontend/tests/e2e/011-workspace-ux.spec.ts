@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { dangerToasts } from './helpers/toast'
-import { loginViaToken, workspaceRow } from './helpers/ui'
+import { deleteWorkspaceViaUI, loginViaToken, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 import { openNewWorkspaceDialog } from './helpers/worktree'
 
@@ -43,13 +43,7 @@ test.describe('workspace navigation', () => {
       const survivor = workspaceRow(page, second.workspaceId)
       await expect(first).toHaveAttribute('data-active', 'true')
       await expect(survivor).toBeVisible()
-      await first.getByTestId('workspace-row-menu-trigger').click()
-      await first.getByRole('menuitem', { name: 'Delete', exact: true }).click()
-      const dialog = page.getByRole('dialog')
-      await expect(dialog).toBeVisible()
-      await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
-      await dialog.getByRole('button', { name: 'Confirm?' }).click()
-      await expect(first).toBeHidden()
+      await deleteWorkspaceViaUI(page, authenticatedEmptyWorkspace.workspaceId)
       await expect(survivor).toHaveAttribute('data-active', 'true')
     })
   })

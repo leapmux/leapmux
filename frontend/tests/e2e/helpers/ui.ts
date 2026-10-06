@@ -93,14 +93,25 @@ export async function expectClipsLongText(label: Locator) {
 // ──────────────────────────────────────────────
 
 /**
- * Expand a collapsed sidebar section through its header button, and leave an open section unchanged.
+ * Locate the visible header of one sidebar section by its slug, such as `workers` or `workspaces_archived`.
+ * The desktop and mobile sidebars mount one copy each, so the locator takes the first visible copy.
+ */
+export function sidebarSectionHeader(page: Page, slug: string): Locator {
+  return page.locator(`[data-testid="section-header-${slug}"]:visible`).first()
+}
+
+/**
+ * Expand a collapsed sidebar section through its header button, leave an open section unchanged, and require that
+ * the section is open at the end.
  * Pass the section header locator, which carries `data-closed` while the section is collapsed.
- * A header that the read cannot reach counts as open. The next step then fails on the section content and states what is absent.
+ * The open state is read once and not waited for, because the header button toggles: a click on an open section
+ * closes it. A header that the read cannot reach counts as open, and the final check then fails with the reason.
  */
 export async function expandSidebarSection(section: Locator): Promise<void> {
   const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed')).catch(() => true)
   if (!isOpen)
     await section.locator('> [role="button"]').click()
+  await expect(section, 'the sidebar section is open').not.toHaveAttribute('data-closed')
 }
 
 // ──────────────────────────────────────────────
@@ -1444,9 +1455,15 @@ export async function expectSettingsOptionChosen(page: Page, testId: string) {
  * Locate a directory-tree row by its displayed name and row test ID.
  * A Tooltip duplicates truncated text, so a text-only locator can match twice.
  * Apply :visible before first() because the sidebar has another mounted copy. The other copy can intercept or reject pointer actions.
+ * The name matches as a substring by default. Pass `exact` where a longer name can contain it, such as `src` in
+ * `src-tauri`: the exact form compares the row's label, not the row's text, which also holds its menu items.
  */
-export function treeRow(page: Page, name: string): Locator {
-  return page.locator(`[data-testid="tree-row"]${VISIBLE}`).filter({ hasText: name }).first()
+export function treeRow(page: Page, name: string, options: { exact?: boolean } = {}): Locator {
+  const rows = page.locator(`[data-testid="tree-row"]${VISIBLE}`)
+  const matching = options.exact
+    ? rows.filter({ has: page.getByTestId('tree-row-name').getByText(name, { exact: true }) })
+    : rows.filter({ hasText: name })
+  return matching.first()
 }
 
 /**
@@ -1582,12 +1599,14 @@ export function treeMenuItem(row: Locator, testId: string): Locator {
 }
 
 /**
- * Locate the first visible branch-group row.
+ * Locate the first visible branch-group row below `root`.
  * The sidebar has two mounted copies. An unfiltered first() can select a covered copy that rejects pointer actions.
+ * Pass `workspaceChildren(page, id)` as the root when another workspace can also stay expanded, or when the row must
+ * belong to one workspace. A page-level lookup selects the first expanded workspace in the whole sidebar.
  * Use aria-expanded to identify the menu trigger. A last-button lookup can instead select a hidden menu item inside the popover.
  */
-export function branchGroupRow(page: Page): Locator {
-  return page.locator(`[data-testid="tab-tree-branch-group"]${VISIBLE}`).first()
+export function branchGroupRow(root: Page | Locator): Locator {
+  return root.locator(`[data-testid="tab-tree-branch-group"]${VISIBLE}`).first()
 }
 
 function branchMenuTrigger(row: Locator): Locator {
@@ -1632,6 +1651,63 @@ export async function clickRepoMenuItem(row: Locator, itemName: string) {
  */
 export function repoMenuItem(row: Locator, name: string): Locator {
   return row.getByRole('menuitem', { name, exact: true })
+}
+
+/**
+ * The three-dot trigger of a workspace row, by its test ID.
+ * A lookup by position, such as the first button of the row, finds another control when a button is added before it.
+ */
+function workspaceMenuTrigger(row: Locator): Locator {
+  return row.getByTestId('workspace-row-menu-trigger')
+}
+
+/**
+ * One item of a workspace row's menu, by its exact name.
+ * The menu lies inside its row, so the lookup never matches the menu of another row. `exact`, because the menu's
+ * info block joins every info row into one accessible name, so a loose `Delete` also matches that block.
+ */
+export function workspaceMenuItem(page: Page, workspaceId: string, name: string): Locator {
+  return workspaceRow(page, workspaceId).getByRole('menuitem', { name, exact: true })
+}
+
+/**
+ * Open the three-dot menu of a workspace row, with `requiredItem` on screen. The open is retried, because the
+ * sidebar replaces a row on each workspace, Worker, or to-do update.
+ * An archived workspace has no Rename item, so pass an item that its menu holds, such as `Unarchive`.
+ */
+export async function openWorkspaceRowMenu(page: Page, workspaceId: string, requiredItem = 'Rename'): Promise<void> {
+  const row = workspaceRow(page, workspaceId)
+  await openRowMenu(row, workspaceMenuTrigger(row), workspaceMenuItem(page, workspaceId, requiredItem))
+}
+
+/** Open a workspace row's menu and click one of its items, as one retried attempt. */
+export async function clickWorkspaceMenuItem(page: Page, workspaceId: string, name: string): Promise<void> {
+  const row = workspaceRow(page, workspaceId)
+  await clickRowMenuItem(row, workspaceMenuTrigger(row), workspaceMenuItem(page, workspaceId, name))
+}
+
+/**
+ * Archive a workspace through its row menu and the confirmation dialog, and wait for the Archived section.
+ * For a test that archives as a precondition. A test of the dialog itself drives each step and reads the dialog text.
+ */
+export async function archiveWorkspaceViaUI(page: Page, workspaceId: string): Promise<void> {
+  await clickWorkspaceMenuItem(page, workspaceId, 'Archive')
+  const dialog = page.getByRole('dialog', { name: 'Archive workspace' })
+  await dialog.getByRole('button', { name: 'Archive', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(sidebarSectionHeader(page, 'workspaces_archived')).toBeVisible()
+}
+
+/**
+ * Delete a workspace through its row menu and both steps of the confirm button, and wait until its row is gone.
+ * The first click arms the button, and its name changes to `Confirm?`. The second click deletes.
+ */
+export async function deleteWorkspaceViaUI(page: Page, workspaceId: string): Promise<void> {
+  await clickWorkspaceMenuItem(page, workspaceId, 'Delete')
+  const dialog = page.getByRole('dialog', { name: 'Delete workspace' })
+  await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Confirm?' }).click()
+  await expect(workspaceRow(page, workspaceId)).toBeHidden()
 }
 
 /**
@@ -1750,14 +1826,42 @@ export function workspaceChevron(page: Page, workspaceId: string): Locator {
 }
 
 /**
+ * Locate the visible active workspace row.
+ * The app keeps the active workspace in browser storage, not in the URL, so this row is the one place that shows it.
+ */
+export function activeWorkspaceRow(page: Page): Locator {
+  return page.locator(`[data-testid^="workspace-item-"][data-active="true"]${VISIBLE}`).first()
+}
+
+/** The ID of the active workspace, read from its visible sidebar row. The read waits for the row. */
+export async function activeWorkspaceId(page: Page): Promise<string> {
+  const row = activeWorkspaceRow(page)
+  await expect(row, 'the sidebar shows an active workspace').toBeVisible()
+  const testId = await row.getAttribute('data-testid')
+  const prefix = 'workspace-item-'
+  if (!testId?.startsWith(prefix) || testId.length === prefix.length)
+    throw new Error(`The active workspace row has an unexpected test ID: ${testId}.`)
+  return testId.slice(prefix.length)
+}
+
+/**
+ * Locate the children wrapper of the visible workspace row: the subtree that holds its branch, repository, and tab rows.
+ * The wrapper follows the row as its next sibling. The lookup starts at the visible row, because the other mounted
+ * sidebar copy holds a wrapper with the same test ID, and that copy can be hidden or unhydrated.
+ * The test ID check makes a change of that structure fail here, not as a missing row later.
+ */
+export function workspaceChildren(page: Page, workspaceId: string): Locator {
+  return workspaceRow(page, workspaceId)
+    .locator(`xpath=following-sibling::*[1][@data-testid="workspace-children-${workspaceId}"]`)
+}
+
+/**
  * Locate tab leaves below the visible workspace row.
  * The other mounted sidebar copy can retain unhydrated labels, so a page query can read a permanent generic Agent label.
- * The children wrapper follows the workspace row as a sibling. Use that sibling relationship for the lookup.
+ * A collapsed workspace keeps its leaves in the DOM with `visibility: hidden`, so add `:visible` to count what a user sees.
  */
 export function sidebarLeaves(page: Page, workspaceId: string): Locator {
-  return workspaceRow(page, workspaceId)
-    .locator('xpath=following-sibling::*[1]')
-    .locator('[data-testid="tab-tree-leaf"]')
+  return workspaceChildren(page, workspaceId).locator('[data-testid="tab-tree-leaf"]')
 }
 
 /**

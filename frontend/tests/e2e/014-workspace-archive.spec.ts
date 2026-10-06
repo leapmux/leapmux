@@ -1,13 +1,26 @@
-import path from 'node:path'
+import { frontendRoot } from '~/test-support/sourceTree'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { withCleanup } from './helpers/cleanup'
 import { sendActiveTerminalInput, typeInTerminal, waitForTerminalText } from './helpers/terminal'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openTerminalViaUI, openTreeContextMenu, openWorkspace, sendMessage, treeRow, workspaceRow } from './helpers/ui'
-import { listAgentsViaAPI, listTerminalsViaAPI } from './helpers/worktree'
+import {
+  agentTabs,
+  archiveWorkspaceViaUI,
+  ARITHMETIC_ANSWER_TEXT,
+  ARITHMETIC_PROMPT,
+  clickWorkspaceMenuItem,
+  expectAssistantAnswer,
+  openTerminalViaUI,
+  openTreeContextMenu,
+  openWorkspaceRowMenu,
+  sendMessage,
+  terminalTabs,
+  treeRow,
+  workspaceMenuItem,
+  workspaceRow,
+} from './helpers/ui'
+import { agentStatusViaAPI, terminalExitedViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, processTest, restartWorker, stopWorker, waitForWorkerOffline } from './process-control-fixtures'
-
-const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 /**
  * The workspace row menu carries an INFO BLOCK and, once the workspace spans
@@ -15,22 +28,19 @@ const frontendDir = path.resolve(import.meta.dirname, '../..')
  * matches an accessible name by SUBSTRING unless told otherwise -- so
  * `{ name: 'Delete' }` also matched the info block, whose name is every row of
  * it joined, and a repository named after a branch matched the branch items.
- * Every lookup below is `exact`.
+ * Every lookup below is `exact`, through `workspaceMenuItem`.
  */
 
-/** Open the context menu for a workspace item that's already located by testid. */
-async function openContextMenu(item: ReturnType<import('@playwright/test').Page['locator']>) {
-  await item.hover()
-  await item.locator('button').first().click()
-}
-
 test.describe('workspace archive', () => {
+  // The file tree and the file tabs below read the frontend directory.
+  test.use({ agentWorkingDir: frontendRoot })
+
   test('should archive workspace via context menu with confirmation dialog', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
+    const workspaceItem = workspaceRow(page, workspaceId)
 
     // Open context menu and click Archive (top-level menu item)
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
+    await clickWorkspaceMenuItem(page, workspaceId, 'Archive')
 
     // Confirmation dialog should appear
     const dialog = page.locator('dialog')
@@ -50,11 +60,11 @@ test.describe('workspace archive', () => {
   })
 
   test('should cancel archive via confirmation dialog', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
+    const workspaceItem = workspaceRow(page, workspaceId)
 
     // Open context menu and click Archive (top-level menu item)
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
+    await clickWorkspaceMenuItem(page, workspaceId, 'Archive')
 
     // Confirmation dialog should appear
     const dialog = page.locator('dialog')
@@ -69,83 +79,68 @@ test.describe('workspace archive', () => {
   })
 
   test('should unarchive workspace and restore normal behavior', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
 
-    // Archive the workspace first: open context menu using the workspace item directly
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+    // Archive the workspace first. The helper waits for the archived section.
+    await archiveWorkspaceViaUI(page, workspaceId)
+    await expect(workspaceRow(page, workspaceId)).toBeVisible()
 
-    // Wait for the archived section to appear (auto-expanded)
-    await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
-    await expect(workspaceItem).toBeVisible()
-
-    // Now unarchive it: open context menu using the workspace item directly
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Unarchive', exact: true }).click()
+    // Now unarchive it through the same row menu
+    await clickWorkspaceMenuItem(page, workspaceId, 'Unarchive')
 
     // Workspace is active again — add-tab buttons should be visible
     await expect(page.locator('[data-testid^="new-agent-button"]').first()).toBeVisible()
   })
 
   test('should not show Move-to when workspace is in the only target section', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
 
     // Open context menu — with only one workspace section (In Progress),
     // "Move to" should not appear since there are no other target sections
-    await openContextMenu(workspaceItem)
+    await openWorkspaceRowMenu(page, workspaceId)
 
     // "Move to" should not be visible (no other non-archived, non-shared sections to move to)
-    await expect(page.getByRole('menuitem', { name: 'Move to', exact: true })).not.toBeVisible()
+    await expect(workspaceMenuItem(page, workspaceId, 'Move to')).not.toBeVisible()
 
     // Other menu items should be present
-    await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: 'Archive', exact: true })).toBeVisible()
+    await expect(workspaceMenuItem(page, workspaceId, 'Rename')).toBeVisible()
+    await expect(workspaceMenuItem(page, workspaceId, 'Archive')).toBeVisible()
   })
 
   test('leaks no non-workspace section into the row menu', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
 
-    await openContextMenu(workspaceItem)
+    await openWorkspaceRowMenu(page, workspaceId)
 
     // Files and Goals & To-dos cannot hold workspaces and must not appear as move destinations.
     // This case has only one workspace section, so it does not open a Move-to submenu.
     // WorkspaceContextMenu.test.tsx verifies isMoveTargetSection with multiple sections.
     // Test 195 also creates another section and opens that submenu in the browser.
-    const allLabels = await page.getByRole('menuitem').allTextContents()
+    // The items are read from this row's open menu: a role query skips the items of a closed menu.
+    const allLabels = await workspaceRow(page, workspaceId).getByRole('menuitem').allTextContents()
     expect(allLabels).not.toContain('Files')
     expect(allLabels).not.toContain('Goals & To-dos')
   })
 
   test('should auto-expand archived section after archiving', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
 
-    // Archive the workspace
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
-
-    // The archived section should be visible and expanded (auto-expand)
-    const archivedSection = page.locator('[data-testid="section-header-workspaces_archived"]')
-    await expect(archivedSection).toBeVisible()
+    // Archive the workspace. The helper requires the archived section to be visible.
+    await archiveWorkspaceViaUI(page, workspaceId)
 
     // The workspace item should be visible inside the archived section without
     // manually expanding it — proving the section was auto-expanded
-    await expect(workspaceItem).toBeVisible()
+    await expect(workspaceRow(page, workspaceId)).toBeVisible()
   })
 
   test('should keep tabs visible after archiving active workspace', async ({ page, authenticatedWorkspace }) => {
     // The fixture auto-creates a workspace with an agent tab.
     // Verify at least one agent tab is visible before archiving.
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
     await expect(agentTab).toBeVisible()
 
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
-
     // Archive the workspace
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
 
     // Tabs should still be visible (read-only) after archiving
     await expect(agentTab).toBeVisible()
@@ -161,15 +156,10 @@ test.describe('workspace archive', () => {
   })
 
   test('stops processes, preserves content, and resumes only the agent', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedWorkspace.workspaceId
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
-    const agentId = await agentTab.getAttribute('data-tab-id')
-    expect(agentId).toBeTruthy()
-    await expect.poll(async () => {
-      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      return agents.find(agent => agent.id === agentId)?.status
-    }).toBe(AgentStatus.ACTIVE)
+    const { workspaceId, agentId } = authenticatedWorkspace
+    const agentTab = agentTabs(page).first()
+    await expect(agentTab).toHaveAttribute('data-tab-id', agentId)
+    await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
     // The answer has to SURVIVE the archive and the resume below, so it is a
     // scripted turn: the transcript is the subject, and a live model would make
     // its content the variable this test cannot control.
@@ -179,27 +169,17 @@ test.describe('workspace archive', () => {
     await expectAssistantAnswer(page)
 
     await openTerminalViaUI(page)
-    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]').first()
+    const terminalTab = terminalTabs(page).first()
     await expect(terminalTab).toBeVisible()
     const terminalId = await terminalTab.getAttribute('data-tab-id')
     expect(terminalId).toBeTruthy()
     await typeInTerminal(page, 'echo ARCHIVE_SCREEN_PRESERVED')
     await waitForTerminalText(page, 'ARCHIVE_SCREEN_PRESERVED')
 
-    const workspaceItem = workspaceRow(page, workspaceId)
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
-    await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
+    await archiveWorkspaceViaUI(page, workspaceId)
 
-    await expect.poll(async () => {
-      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      return agents.find(agent => agent.id === agentId)?.status
-    }).toBe(AgentStatus.INACTIVE)
-    await expect.poll(async () => {
-      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      return terminals.find(terminal => terminal.id === terminalId)?.exited
-    }).toBe(true)
+    await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.INACTIVE)
+    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId!)).toBe(true)
     await expect(agentTab).toBeVisible()
     await expect(terminalTab).toBeVisible()
     await agentTab.click()
@@ -219,153 +199,94 @@ test.describe('workspace archive', () => {
     expect(await sendActiveTerminalInput(page, '\r')).toBe(true)
     expect(await page.evaluate(() => (window as unknown as { __archiveRestartCalls?: number }).__archiveRestartCalls)).toBe(0)
 
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Unarchive', exact: true }).click()
-    await expect.poll(async () => {
-      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      return agents.find(agent => agent.id === agentId)?.status
-    }).toBe(AgentStatus.ACTIVE)
-    await expect.poll(async () => {
-      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      return terminals.find(terminal => terminal.id === terminalId)?.exited
-    }).toBe(true)
+    await clickWorkspaceMenuItem(page, workspaceId, 'Unarchive')
+    await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
+    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId!)).toBe(true)
   })
 
-  test('should keep file tabs uncloseable in an archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+  test('should keep file tabs uncloseable in an archived workspace', async ({ page, authenticatedWorkspace }) => {
+    // Wait for the file tree and open a file tab
+    await expect(treeRow(page, 'package.json')).toBeVisible()
+    await treeRow(page, 'package.json').click()
+    const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
+    await expect(fileTab).toBeVisible()
 
-      // Wait for the file tree and open a file tab
-      await expect(treeRow(page, 'package.json')).toBeVisible()
-      await treeRow(page, 'package.json').click()
-      const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible()
+    // Archive the workspace. The helper waits for the archived section.
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
 
-      // Archive the workspace
-      const wsItem = workspaceRow(page, workspaceId)
-      await openContextMenu(wsItem)
-      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-      await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+    // Agent tab close button should be hidden (readOnly mode)
+    await expect(agentTabs(page).first().locator('[data-testid="tab-close"]')).not.toBeVisible()
 
-      // Wait for archived section to appear
-      await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
-
-      // Agent tab close button should be hidden (readOnly mode)
-      const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
-      await expect(agentTab.locator('[data-testid="tab-close"]')).not.toBeVisible()
-
-      // The file tab stays visible, but archival blocks every tab mutation.
-      await expect(fileTab).toBeVisible()
-      const closeButton = fileTab.locator('[data-testid="tab-close"]')
-      await expect(closeButton).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // The file tab stays visible, but archival blocks every tab mutation.
+    await expect(fileTab).toBeVisible()
+    const closeButton = fileTab.locator('[data-testid="tab-close"]')
+    await expect(closeButton).not.toBeVisible()
   })
 
-  test('should hide tree mention button in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Mention')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+  test('should hide tree mention button in archived workspace', async ({ page, authenticatedWorkspace }) => {
+    // Wait for the file tree to load
+    const row = treeRow(page, 'package.json')
+    await expect(row).toBeVisible()
 
-      // Wait for the file tree to load
-      const row = treeRow(page, 'package.json')
-      await expect(row).toBeVisible()
+    // Verify mention button IS visible before archive (via context menu)
+    const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
+    await openTreeContextMenu(row, 'tree-mention-button')
+    // Close menu by pressing Escape
+    await page.keyboard.press('Escape')
+    await expect(mentionButton).toHaveCount(0)
 
-      // Verify mention button IS visible before archive (via context menu)
-      const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
-      await openTreeContextMenu(row, 'tree-mention-button')
-      // Close menu by pressing Escape
-      await page.keyboard.press('Escape')
-      await expect(mentionButton).toHaveCount(0)
+    // Move mouse away
+    await page.mouse.move(0, 0)
 
-      // Move mouse away
-      await page.mouse.move(0, 0)
+    // Archive the workspace. The helper waits for the archived section.
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
 
-      // Archive the workspace
-      const wsItem = workspaceRow(page, workspaceId)
-      await openContextMenu(wsItem)
-      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-      await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
-
-      // Wait for archived section
-      await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
-
-      // Open the context menu again — the mention entry must be gone, but the
-      // menu itself must still open, so assert on an item that SURVIVES
-      // archiving. Without that anchor a menu that failed to open at all would
-      // satisfy "mention button not visible" for the wrong reason.
-      await openTreeContextMenu(row)
-      await expect(mentionButton).toHaveCount(0)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // Open the context menu again — the mention entry must be gone, but the
+    // menu itself must still open, so assert on an item that SURVIVES
+    // archiving. Without that anchor a menu that failed to open at all would
+    // satisfy "mention button not visible" for the wrong reason.
+    await openTreeContextMenu(row)
+    await expect(mentionButton).toHaveCount(0)
   })
 
-  test('should hide file mention button in archived workspace', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No File Mention')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+  test('should hide file mention button in archived workspace', async ({ page, authenticatedWorkspace }) => {
+    // Wait for the file tree and open a file tab
+    await expect(treeRow(page, 'package.json')).toBeVisible()
+    await treeRow(page, 'package.json').click()
+    const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
+    await expect(fileTab).toBeVisible()
 
-      // Wait for the file tree and open a file tab
-      await expect(treeRow(page, 'package.json')).toBeVisible()
-      await treeRow(page, 'package.json').click()
-      const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible()
+    // Verify the mention action IS available before archive. It lives in
+    // the file viewer's actions dropdown, so open that first.
+    const fileActionsTrigger = page.locator('[data-testid="file-actions-trigger"]')
+    const fileMentionButton = page.locator('[data-testid="file-actions-mention-button"]')
+    await fileActionsTrigger.click()
+    await expect(fileMentionButton).toBeVisible()
+    // Close the menu before interacting with the sidebar.
+    await page.keyboard.press('Escape')
 
-      // Verify the mention action IS available before archive. It lives in
-      // the file viewer's actions dropdown, so open that first.
-      const fileActionsTrigger = page.locator('[data-testid="file-actions-trigger"]')
-      const fileMentionButton = page.locator('[data-testid="file-actions-mention-button"]')
-      await fileActionsTrigger.click()
-      await expect(fileMentionButton).toBeVisible()
-      // Close the menu before interacting with the sidebar.
-      await page.keyboard.press('Escape')
+    // Archive the workspace. The helper waits for the archived section.
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
 
-      // Archive the workspace
-      const wsItem = workspaceRow(page, workspaceId)
-      await openContextMenu(wsItem)
-      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-      await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+    // Click the file tab to view it again (it may have switched to agent tab)
+    await fileTab.click()
 
-      // Wait for archived section
-      await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
-
-      // Click the file tab to view it again (it may have switched to agent tab)
-      await fileTab.click()
-
-      // The actions menu still exists (save/copy items), but the mention
-      // item must be gone in an archived workspace.
-      await fileActionsTrigger.click()
-      await expect(fileMentionButton).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    // The actions menu still exists (save/copy items), but the mention
+    // item must be gone in an archived workspace.
+    await fileActionsTrigger.click()
+    await expect(fileMentionButton).not.toBeVisible()
   })
 
   test('should delete workspace using ConfirmDialog instead of native confirm', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
+    const workspaceItem = workspaceRow(page, workspaceId)
 
     // Navigate away so we can see delete result
     await page.goto('/')
     await expect(workspaceItem).toBeVisible()
 
     // Open context menu and click Delete
-    await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
+    await clickWorkspaceMenuItem(page, workspaceId, 'Delete')
 
     // ConfirmDialog should appear (not native dialog)
     const dialog = page.locator('dialog')
@@ -382,18 +303,14 @@ test.describe('workspace archive', () => {
 })
 
 processTest.describe('workspace archive reconciliation', () => {
-  processTest('prevents agent resume when archival happens while the Worker is offline', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Offline Archive')
-    const agentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-      await expect.poll(async () => {
-        const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-        return agents.find(agent => agent.id === agentId)?.status
-      }).toBe(AgentStatus.ACTIVE)
+  processTest.use({ agentWorkingDir: frontendRoot })
+
+  processTest('prevents agent resume when archival happens while the Worker is offline', async ({ separateHubWorker, page, authenticatedWorkspace, modelScript }) => {
+    const { workspaceId, agentId } = authenticatedWorkspace
+    // This test stops the worker-scoped Worker. The cleanup brings it back after
+    // a failure, so a later test of this Playwright worker does not fail for it.
+    await withCleanup(async () => {
+      await expect.poll(() => agentStatusViaAPI(separateHubWorker, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
       await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
       await modelScript.waitForSteps(1)
@@ -401,21 +318,10 @@ processTest.describe('workspace archive reconciliation', () => {
 
       await stopWorker(separateHubWorker)
       await waitForWorkerOffline(separateHubWorker)
-      const workspaceItem = workspaceRow(page, workspaceId)
-      await openContextMenu(workspaceItem)
-      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-      await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
-      await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
+      await archiveWorkspaceViaUI(page, workspaceId)
 
       await restartWorker(separateHubWorker)
-      await expect.poll(async () => {
-        const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-        return agents.find(agent => agent.id === agentId)?.status
-      }).toBe(AgentStatus.INACTIVE)
-    }
-    finally {
-      await restartWorker(separateHubWorker).catch(() => {})
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+      await expect.poll(() => agentStatusViaAPI(separateHubWorker, workspaceId, agentId)).toBe(AgentStatus.INACTIVE)
+    }, () => ensureWorkerOnline(separateHubWorker))
   })
 })

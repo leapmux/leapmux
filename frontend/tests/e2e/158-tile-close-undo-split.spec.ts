@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { tabbarAgentLabels } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, tabbarAgentLabels, tiles } from './helpers/ui'
 
 /**
  * Regression: closing one of two SPLIT children used to leave the
@@ -29,8 +29,7 @@ import { tabbarAgentLabels } from './helpers/ui'
 
 test.describe('Tile close undo-split', () => {
   test('closing the empty sibling leaves the surviving tab visible on the merged leaf; survives reload', async ({ page, authenticatedWorkspace }) => {
-    void authenticatedWorkspace
-    // Fixture seeds one agent. Capture its title so we can assert the
+    // Fixture seeds one agent, and gives its ID. Capture its title so we can assert the
     // tab survives the undo-split path with full metadata intact.
     //
     // The title is worker-side metadata fetched after the tab itself renders
@@ -38,19 +37,17 @@ test.describe('Tile close undo-split', () => {
     // bare "Agent" placeholder -- and then the post-close comparison fails
     // against the real title that arrived in between. Wait for hydration, which
     // is what "with full metadata intact" needs anyway.
-    await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
+    await expect(tiles(page)).toHaveCount(1)
     await expect.poll(async () => (await tabbarAgentLabels(page))[0]).not.toBe('Agent')
     const initialLabels = await tabbarAgentLabels(page)
     expect(initialLabels).toHaveLength(1)
-    const seededTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]')
-      .first()
-      .getAttribute('data-tab-id')
-    expect(seededTabId).toBeTruthy()
+    const seededTabId = authenticatedWorkspace.agentId
+    await expect(agentTabs(page).first()).toHaveAttribute('data-tab-id', seededTabId)
 
     // Split horizontally — the new right-side tile is empty, and the
     // seeded agent stays on the left. Both tiles render close buttons.
     await page.locator('[data-testid="split-horizontal"]').first().click()
-    await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)
+    await expect(tiles(page)).toHaveCount(2)
 
     // Close the empty (right) tile. Both children show a `close-tile`
     // button on a 2-child SPLIT; the second one (index 1) belongs to
@@ -65,11 +62,11 @@ test.describe('Tile close undo-split', () => {
     // sibling-id, so the tabbar rendered empty. The post-fix path
     // migrates the tab's tile_id to the parent SPLIT (which flips to
     // LEAF), and the tab is rendered on the merged tile.
-    await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
+    await expect(tiles(page)).toHaveCount(1)
+    await expectAgentTabCount(page, 1)
     const afterCloseLabels = await tabbarAgentLabels(page)
     expect(afterCloseLabels).toEqual(initialLabels)
-    const survivingTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const survivingTabId = await agentTabs(page)
       .first()
       .getAttribute('data-tab-id')
     expect(survivingTabId).toBe(seededTabId)
@@ -81,14 +78,14 @@ test.describe('Tile close undo-split', () => {
     // would re-derive a stale SPLIT-with-one-child tree from the
     // hub's confirmed state.
     await page.reload()
-    await page.locator('[data-testid="tile"]').first().waitFor()
-    await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
+    await tiles(page).first().waitFor()
+    await expect(tiles(page)).toHaveCount(1)
+    await expectAgentTabCount(page, 1)
     // The reload wiped the metadata store, so the title has to be re-fetched
     // from the worker; the tab itself renders from the CRDT projection first.
     // Poll rather than snapshot, exactly as above.
     await expect.poll(() => tabbarAgentLabels(page)).toEqual(initialLabels)
-    const reloadTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const reloadTabId = await agentTabs(page)
       .first()
       .getAttribute('data-tab-id')
     expect(reloadTabId).toBe(seededTabId)

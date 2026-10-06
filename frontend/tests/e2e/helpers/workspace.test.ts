@@ -6,7 +6,7 @@ import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { createTestDirectory } from './runDirectory'
 import { loginViaToken, openWorkspace } from './ui'
-import { authenticatedAgentWorkspace, openProviderAgent, withAgentWorkspace, withTestWorkspace } from './workspace'
+import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, withAgentWorkspace, withTestWorkspace } from './workspace'
 
 vi.mock('./api', () => ({ createWorkspaceViaAPI: vi.fn(), deleteWorkspaceViaAPI: vi.fn(), openAgentViaAPI: vi.fn() }))
 vi.mock('./runDirectory', () => ({ createTestDirectory: vi.fn(() => '/private-directory') }))
@@ -219,6 +219,60 @@ describe('openProviderAgent', () => {
       throw error
     } })).rejects.toBe(error)
     expect(openAgentViaAPI).not.toHaveBeenCalled()
+  })
+})
+
+describe('createWorkspaceWithAgentsViaAPI', () => {
+  it('creates the workspace and then opens one agent with the provider default', async () => {
+    const order: string[] = []
+    vi.mocked(createWorkspaceViaAPI).mockImplementation(async (_hub, _token, title) => {
+      order.push(`create ${title}`)
+      return 'workspace'
+    })
+    vi.mocked(openAgentViaAPI).mockImplementation(async () => {
+      order.push('open')
+      return 'agent-1'
+    })
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Docs')).resolves.toEqual({ workspaceId: 'workspace', agentIds: ['agent-1'] })
+    expect(order).toEqual(['create Docs', 'open'])
+    // No open options: the agent takes the provider default, as a hand-built workspace did.
+    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', undefined)
+  })
+
+  it('opens the agents one after another, in the working directory of the caller, and returns them in open order', async () => {
+    let next = 0
+    vi.mocked(openAgentViaAPI).mockImplementation(async () => `agent-${++next}`)
+    const created = await createWorkspaceWithAgentsViaAPI(server, 'Docs', { agentCount: 3, workingDir: '/repo' })
+    expect(created.agentIds).toEqual(['agent-1', 'agent-2', 'agent-3'])
+    for (const call of vi.mocked(openAgentViaAPI).mock.calls)
+      expect(call[4]).toBe('/repo')
+  })
+
+  it('creates an empty workspace for an agent count of zero', async () => {
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Empty', { agentCount: 0 })).resolves.toEqual({ workspaceId: 'workspace', agentIds: [] })
+    expect(openAgentViaAPI).not.toHaveBeenCalled()
+  })
+
+  it.each([-1, 1.5, Number.NaN])('refuses the agent count %s before it creates a workspace', async (agentCount) => {
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Bad', { agentCount })).rejects.toThrow(RangeError)
+    expect(createWorkspaceViaAPI).not.toHaveBeenCalled()
+  })
+
+  it('deletes nothing, because the per-test reset of the suite hub owns the cleanup', async () => {
+    await createWorkspaceWithAgentsViaAPI(server, 'Docs')
+    expect(deleteWorkspaceViaAPI).not.toHaveBeenCalled()
+  })
+})
+
+describe('agentWorkspaceFixture', () => {
+  it('carries the agent and the working directory that the fixture opened it in', () => {
+    expect(agentWorkspaceFixture({ workspaceId: 'workspace' }, 'agent', '/repo')).toEqual({ workspaceId: 'workspace', agentId: 'agent', workingDir: '/repo' })
+  })
+
+  it('leaves the working directory out for the Worker default, which the test does not know', () => {
+    const fixture = agentWorkspaceFixture({ workspaceId: 'workspace' }, 'agent', undefined)
+    expect(fixture).toEqual({ workspaceId: 'workspace', agentId: 'agent' })
+    expect('workingDir' in fixture).toBe(false)
   })
 })
 

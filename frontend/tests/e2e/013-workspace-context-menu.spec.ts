@@ -1,8 +1,8 @@
 import type { Locator } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI } from './helpers/api'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
-import { loginViaToken, openWorkspace, sidebarLeaves, workspaceRow } from './helpers/ui'
+import { clickWorkspaceMenuItem, deleteWorkspaceViaUI, loginViaToken, openWorkspace, openWorkspaceRowMenu, sidebarLeaves, workspaceRow } from './helpers/ui'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
@@ -65,13 +65,12 @@ test.describe('Workspace Context Menu', () => {
   })
 
   test('rename via context menu and delete via two-step confirm round-trip the backend', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
+    const { workspaceId } = authenticatedWorkspace
+    const workspaceItem = workspaceRow(page, workspaceId)
     await expect(workspaceItem).toBeVisible()
 
     // ── Rename ──────────────────────────────────────────────────────────────
-    await workspaceItem.hover()
-    await workspaceItem.locator('button').first().click()
-    await page.getByRole('menuitem', { name: 'Rename', exact: true }).click()
+    await clickWorkspaceMenuItem(page, workspaceId, 'Rename')
 
     const renameInput = workspaceItem.locator('input')
     await expect(renameInput).toBeVisible()
@@ -80,23 +79,15 @@ test.describe('Workspace Context Menu', () => {
     await renameInput.press('Enter')
 
     await expect(renameInput).not.toBeVisible()
-    await expect(page.getByText('Renamed Workspace')).toBeVisible()
+    await expect(workspaceItem).toContainText('Renamed Workspace')
 
     // ── Delete (two-step) ───────────────────────────────────────────────────
     // Navigate to the dashboard so the workspace can be safely deleted.
     await page.goto('/')
     await expect(workspaceItem).toBeVisible()
 
-    await workspaceItem.hover()
-    await workspaceItem.locator('button').first().click()
-    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
-
-    const dialog = page.locator('dialog')
-    await expect(dialog).toBeVisible()
-    await dialog.getByRole('button', { name: 'Delete' }).click()
-    await dialog.getByRole('button', { name: 'Confirm?' }).click()
-
-    await expect(workspaceItem).not.toBeVisible()
+    // The helper requires the row to be gone after the confirm.
+    await deleteWorkspaceViaUI(page, workspaceId)
   })
 
   /**
@@ -129,9 +120,7 @@ test.describe('Workspace Context Menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const row = workspaceRow(page, workspaceId)
-    await row.hover()
-    await row.locator('[data-testid="workspace-row-menu-trigger"]').click()
+    await openWorkspaceRowMenu(page, workspaceId)
 
     const menu = page.locator('menu[popover]:visible')
     // Flat: no `Repositories` header, and no submenu to walk into.
@@ -173,25 +162,18 @@ test.describe('Workspace Context Menu', () => {
     leapmuxServer,
   }) => {
     const emptyId = await createWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, 'No Repo WS')
-    try {
-      // Both rows are on screen, and the menu below belongs to the empty one.
-      // The fixture's workspace holds a repository, so its own menu names it --
-      // which is what made this row necessary.
-      await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
-      const row = workspaceRow(page, emptyId)
-      await expect(row).toBeVisible()
-      await row.hover()
-      await row.locator('[data-testid="workspace-row-menu-trigger"]').click()
+    // Both rows are on screen, and the menu below belongs to the empty one.
+    // The fixture's workspace holds a repository, so its own menu names it --
+    // which is what made this row necessary.
+    await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
+    await expect(workspaceRow(page, emptyId)).toBeVisible()
+    await openWorkspaceRowMenu(page, emptyId, 'New agent...')
 
-      const menu = page.locator('menu[popover]:visible')
-      await expect(menu.getByRole('menuitem', { name: 'New agent...', exact: true })).toBeVisible()
-      await expect(menu.getByRole('menuitem', { name: 'New terminal...', exact: true })).toBeVisible()
-      await expect(menu.getByText('Repository', { exact: true })).toHaveCount(0)
-      await expect(menu.getByText('Repositories', { exact: true })).toHaveCount(0)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, emptyId).catch(() => {})
-    }
+    const menu = page.locator('menu[popover]:visible')
+    await expect(menu.getByRole('menuitem', { name: 'New agent...', exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'New terminal...', exact: true })).toBeVisible()
+    await expect(menu.getByText('Repository', { exact: true })).toHaveCount(0)
+    await expect(menu.getByText('Repositories', { exact: true })).toHaveCount(0)
   })
 
   /**
@@ -298,29 +280,24 @@ test.describe('Workspace Context Menu', () => {
       // A SECOND workspace, so the "not selected" half of the rule has something
       // to be true about. With one row the comparison would be vacuous.
       const otherId = await createWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, 'Unselected')
-      try {
-        // The mobile layout keeps the sidebar in a drawer.
-        await page.getByRole('button', { name: 'Toggle workspaces' }).click()
+      // The mobile layout keeps the sidebar in a drawer.
+      await page.getByRole('button', { name: 'Toggle workspaces' }).click()
 
-        const selected = workspaceRow(page, authenticatedWorkspace.workspaceId)
-        const unselected = workspaceRow(page, otherId)
-        await expect(selected).toBeVisible()
-        await expect(unselected).toBeVisible()
-        await expect(selected).toHaveAttribute('data-active', 'true')
-        await expect(unselected).toHaveAttribute('data-active', 'false')
+      const selected = workspaceRow(page, authenticatedWorkspace.workspaceId)
+      const unselected = workspaceRow(page, otherId)
+      await expect(selected).toBeVisible()
+      await expect(unselected).toBeVisible()
+      await expect(selected).toHaveAttribute('data-active', 'true')
+      await expect(unselected).toHaveAttribute('data-active', 'false')
 
-        const kebabOpacity = (row: Locator) =>
-          row.locator('[aria-expanded]').first().evaluate(el => Number.parseFloat(getComputedStyle(el).opacity))
+      const kebabOpacity = (row: Locator) =>
+        row.locator('[aria-expanded]').first().evaluate(el => Number.parseFloat(getComputedStyle(el).opacity))
 
-        // Painted, not merely present: the trigger has always been hit-testable at
-        // `opacity: 0`, so only the computed value proves the rule fired.
-        await expect.poll(() => kebabOpacity(selected)).toBe(1)
-        // And the other row stays clean, which is the whole point of selecting one.
-        expect(await kebabOpacity(unselected)).toBe(0)
-      }
-      finally {
-        await deleteWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, otherId).catch(() => {})
-      }
+      // Painted, not merely present: the trigger has always been hit-testable at
+      // `opacity: 0`, so only the computed value proves the rule fired.
+      await expect.poll(() => kebabOpacity(selected)).toBe(1)
+      // And the other row stays clean, which is the whole point of selecting one.
+      expect(await kebabOpacity(unselected)).toBe(0)
     })
   })
 })

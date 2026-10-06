@@ -1,7 +1,7 @@
 import type { BrowserContext, Page, ViewportSize } from '@playwright/test'
 import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { SuiteServerState } from './helpers/suiteServer'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspaceFixture, WorkspaceFixture } from './helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { basename, relative } from 'node:path'
 import { test as base, expect } from '@playwright/test'
@@ -23,7 +23,7 @@ import { attachServerLog } from './helpers/serverOutput'
 import { markSuiteServerLog, readSuiteServerLog } from './helpers/suiteServerLog'
 import { attachToastLog, clearRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withTestWorkspace } from './helpers/workspace'
+import { agentWorkspaceFixture, withTestWorkspace } from './helpers/workspace'
 
 /** The shared hub of the run, as global setup started it. */
 export type ServerInfo = SuiteServerState
@@ -156,8 +156,14 @@ export const test = base.extend<
     pageErrorRecorder: void
     emptyWorkspace: WorkspaceFixture
     authenticatedEmptyWorkspace: WorkspaceFixture
-    workspace: WorkspaceFixture
-    authenticatedWorkspace: WorkspaceFixture
+    /**
+     * The working directory of the agent that the `workspace` fixture opens. Undefined gives the Worker's default
+     * directory. A spec states it once: `test.use({ agentWorkingDir: frontendRoot })`, or a fixture function that
+     * makes a directory for each test and removes it after the test.
+     */
+    agentWorkingDir: string | undefined
+    workspace: AgentWorkspaceFixture
+    authenticatedWorkspace: AgentWorkspaceFixture
   },
   {
     sharedPageState: SharedPageState
@@ -317,10 +323,12 @@ export const test = base.extend<
     await withTestWorkspace(leapmuxServer, 'e2e', use)
   },
 
-  workspace: async ({ leapmuxServer, emptyWorkspace }, use) => {
+  agentWorkingDir: [undefined, { option: true }],
+
+  workspace: async ({ leapmuxServer, emptyWorkspace, agentWorkingDir }, use) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, emptyWorkspace.workspaceId)
-    await use(emptyWorkspace)
+    const agentId = await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, emptyWorkspace.workspaceId, agentWorkingDir)
+    await use(agentWorkspaceFixture(emptyWorkspace, agentId, agentWorkingDir))
   },
 
   authenticatedEmptyWorkspace: async ({ page, emptyWorkspace, leapmuxServer }, use) => {

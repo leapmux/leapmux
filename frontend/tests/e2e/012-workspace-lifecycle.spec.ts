@@ -1,46 +1,33 @@
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { expectAnyVisible, loginViaToken, openWorkspace } from './helpers/ui'
+import { createWorkspaceViaAPI } from './helpers/api'
+import { expectAnyVisible, loginViaToken, openWorkspace, sidebarSectionHeader, workspaceRow } from './helpers/ui'
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
-    const workspaceIds: string[] = []
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Alpha'))
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Beta'))
-    workspaceIds.push(await createWorkspaceViaAPI(hubUrl, adminToken, 'Lifecycle WS Gamma'))
-    try {
-      await loginViaToken(page, adminToken)
-      const firstWorkspaceId = workspaceIds[0]
-      if (firstWorkspaceId === undefined)
-        throw new Error('expected the first created workspace id')
-      await openWorkspace(page, firstWorkspaceId)
+    // The titles are the subject, so each workspace states its own. The per-test
+    // reset of the fixtures deletes them before the next test.
+    const workspaces: Array<{ id: string, title: string }> = []
+    for (const title of ['Lifecycle WS Alpha', 'Lifecycle WS Beta', 'Lifecycle WS Gamma'])
+      workspaces.push({ id: await createWorkspaceViaAPI(hubUrl, adminToken, title), title })
 
-      // All three workspaces should appear in the sidebar
-      await expect(page.getByText('Lifecycle WS Alpha')).toBeVisible()
-      await expect(page.getByText('Lifecycle WS Beta')).toBeVisible()
-      await expect(page.getByText('Lifecycle WS Gamma')).toBeVisible()
-    }
-    finally {
-      for (const id of workspaceIds) {
-        await deleteWorkspaceViaAPI(hubUrl, adminToken, id).catch(() => {})
-      }
-    }
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaces[0]!.id)
+
+    // All three workspaces should appear in the sidebar, each in its own row.
+    for (const { id, title } of workspaces)
+      await expect(workspaceRow(page, id)).toContainText(title)
   })
 
   test('should handle workspace with special characters in title', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Test - My_Workspace 2.0')
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
 
-      // The workspace with special characters should appear correctly in the sidebar
-      await expect(page.getByText('Test - My_Workspace 2.0')).toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
-    }
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    // The workspace with special characters should appear correctly in the sidebar
+    await expect(workspaceRow(page, workspaceId)).toContainText('Test - My_Workspace 2.0')
   })
 
   test('should show workspace list or empty state on app home', async ({ page, leapmuxServer }) => {
@@ -56,8 +43,8 @@ test.describe('Workspace Lifecycle', () => {
     // text matches in context menus or other UI elements.
     await expectAnyVisible(
       page.locator('[data-testid="create-workspace-button"]'),
-      page.locator('[data-testid="section-header-workspaces_in_progress"]'),
-      page.locator('[data-testid="section-header-workspaces_archived"]'),
+      sidebarSectionHeader(page, 'workspaces_in_progress'),
+      sidebarSectionHeader(page, 'workspaces_archived'),
     )
   })
 })

@@ -19,6 +19,23 @@ export interface WorkspaceFixture {
   workingDir?: string
 }
 
+/** A workspace fixture with the one agent that the fixture opened in it. */
+export interface AgentWorkspaceFixture extends WorkspaceFixture {
+  agentId: string
+}
+
+/**
+ * The value of a workspace fixture after it opened `agentId` in `workingDir`.
+ * An undefined `workingDir` means the Worker's default directory, which the test does not know, so the field stays absent.
+ */
+export function agentWorkspaceFixture(workspace: WorkspaceFixture, agentId: string, workingDir: string | undefined): AgentWorkspaceFixture {
+  return {
+    workspaceId: workspace.workspaceId,
+    agentId,
+    ...(workingDir === undefined ? {} : { workingDir }),
+  }
+}
+
 /** A workspace with one agent of a provider, and the directory that the agent works in. */
 export interface AgentWorkspace {
   workspaceId: string
@@ -96,6 +113,34 @@ export async function withAgentWorkspace(
     await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, request)
     await use({ workspaceId: workspace.workspaceId, workingDir })
   })
+}
+
+/** A workspace that `createWorkspaceWithAgentsViaAPI` created, with its agents in the order that they opened. */
+export interface WorkspaceWithAgents {
+  workspaceId: string
+  agentIds: string[]
+}
+
+/**
+ * Create a workspace on the suite hub with `agentCount` agents, and return the workspace and the agents in open order.
+ * The agents open one after another with the provider default, so their tabs keep that order.
+ *
+ * A spec on the suite hub deletes nothing afterwards: the per-test reset of `./fixtures.ts` deletes every workspace
+ * before the next test and reports a failed delete. A spec on its own hub uses `withTestWorkspace` instead.
+ */
+export async function createWorkspaceWithAgentsViaAPI(
+  server: AgentServer,
+  title: string,
+  options: { agentCount?: number, workingDir?: string } = {},
+): Promise<WorkspaceWithAgents> {
+  const agentCount = options.agentCount ?? 1
+  if (!Number.isSafeInteger(agentCount) || agentCount < 0)
+    throw new RangeError(`An agent count must be a nonnegative integer, not ${agentCount}.`)
+  const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, title)
+  const agentIds: string[] = []
+  for (let index = 0; index < agentCount; index++)
+    agentIds.push(await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, options.workingDir))
+  return { workspaceId, agentIds }
 }
 
 /** What a test states for one more agent that it opens in an existing workspace. */

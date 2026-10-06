@@ -1,8 +1,10 @@
-import type { Page } from '@playwright/test'
-import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
+import { openAgentViaAPI } from './helpers/api'
+import { withCleanup } from './helpers/cleanup'
+import { boxCenter, mouseDragOnto } from './helpers/drag'
+import { nativeAgentsByIds } from './helpers/nativeScenario'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
-import { boxOf, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, tabById, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { withTestWorkspace } from './helpers/workspace'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
@@ -29,146 +31,108 @@ import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as t
  * stop and restart the Worker independently of the Hub.
  */
 
-/** Simulate a drag-and-drop from one point to another using mouse events. */
-async function dragTo(page: Page, source: { x: number, y: number }, target: { x: number, y: number }) {
-  await page.mouse.move(source.x, source.y)
-  await page.mouse.down()
-  const steps = 10
-  for (let i = 1; i <= steps; i++) {
-    await page.mouse.move(
-      source.x + (target.x - source.x) * (i / steps),
-      source.y + (target.y - source.y) * (i / steps),
-      { steps: 1 },
-    )
-    await page.waitForTimeout(30)
-  }
-  await page.mouse.up()
-}
-
-/**
- * Read the open agent IDs directly from the worker. ListAgents excludes rows with closed_at set.
- * reconcileAgents stops the process and marks the row closed in the same branch. This API exposes the row outcome.
- * Return null while a restarted worker channel is unavailable, so callers can poll during reconnection.
- */
-async function liveAgentIdsViaAPI(hubUrl: string, token: string, workerId: string, tabIds: string[]): Promise<string[] | null> {
-  const channel = await getTestChannel(hubUrl, token)
-  try {
-    const resp = await channel.callWorker(
-      workerId,
-      'ListAgents',
-      ListAgentsRequestSchema,
-      ListAgentsResponseSchema,
-      { tabIds },
-    )
-    return (resp.agents ?? []).map(a => a.id).sort()
-  }
-  catch {
-    return null
-  }
-}
-
 test.describe('Offline close and cross-workspace move', () => {
   test('close and move commit with the worker offline; the worker reaps on reconnect', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, workerId } = separateHubWorker
+    // The open agents of `agentIds`, as the Worker lists them. ListAgents excludes a row with `closed_at` set, and
+    // reconcileAgents stops the process and marks the row closed in one step, so this read shows the reap.
+    // A failed read throws, and `expect.poll` reads again while a restarted Worker reconnects.
+    const openAgentIds = async (agentIds: string[]) =>
+      (await nativeAgentsByIds({ leapmuxServer: separateHubWorker }, agentIds)).map(agent => agent.id).sort()
 
-    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Offline Source')
-    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Offline Target')
-    const closeTitle = 'Close Offline'
-    const moveTitle = 'Move Offline'
-    // Titles are opt-in on the API path (it defaults to ""). Non-empty ones
-    // let the pre-offline check prove the Worker had really hydrated both tabs
-    // before we killed it.
-    const closedAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: closeTitle })
-    const movedAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: moveTitle })
+    // The separate hub has no per-test reset, so each workspace is deleted after the test.
+    await withTestWorkspace(separateHubWorker, 'offline-source', async ({ workspaceId: wsA }) => {
+      await withTestWorkspace(separateHubWorker, 'offline-target', async ({ workspaceId: wsB }) => {
+        const closeTitle = 'Close Offline'
+        const moveTitle = 'Move Offline'
+        // Titles are opt-in on the API path (it defaults to ""). Non-empty ones
+        // let the pre-offline check prove the Worker had really hydrated both tabs
+        // before we killed it.
+        const closedAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: closeTitle })
+        const movedAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: moveTitle })
 
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, wsA)
-      await expectAgentTabCount(page, 2)
-      // Poll: titles are Worker-side metadata fetched after the tab itself
-      // renders from the CRDT projection, so a one-shot read races the fetch.
-      await expect.poll(async () => (await tabbarAgentLabels(page)).sort())
-        .toEqual([closeTitle, moveTitle].sort())
+        // `separateHubWorker` is worker-SCOPED: later specs in the same worker
+        // reuse it. This spec deliberately kills it mid-test, so the cleanup
+        // brings it back after a failure between the stop and the restart below.
+        // Otherwise every later spec would fail for an unrelated reason, masking
+        // the real one. `ensureWorkerOnline` restarts the Worker only when the
+        // hub does not list it as online, and the cleanup runs before the
+        // workspace deletes, which close the Worker's tabs.
+        await withCleanup(async () => {
+          await loginViaToken(page, adminToken)
+          await openWorkspace(page, wsA)
+          await expectAgentTabCount(page, 2)
+          // Poll: titles are Worker-side metadata fetched after the tab itself
+          // renders from the CRDT projection, so a one-shot read races the fetch.
+          await expect.poll(async () => (await tabbarAgentLabels(page)).sort())
+            .toEqual([closeTitle, moveTitle].sort())
 
-      // Both agents are live on the Worker before we kill it -- otherwise the
-      // post-restart assertion could pass for the trivial reason that nothing
-      // was ever there.
-      expect(await liveAgentIdsViaAPI(hubUrl, adminToken, workerId, [closedAgentId, movedAgentId]))
-        .toEqual([closedAgentId, movedAgentId].sort())
+          // Both agents are live on the Worker before we kill it -- otherwise the
+          // post-restart assertion could pass for the trivial reason that nothing
+          // was ever there.
+          expect(await openAgentIds([closedAgentId, movedAgentId]))
+            .toEqual([closedAgentId, movedAgentId].sort())
 
-      // ─── Take the Worker offline ────────────────────────────────────────
-      await stopWorker(separateHubWorker)
-      await waitForWorkerOffline(separateHubWorker)
+          // ─── Take the Worker offline ────────────────────────────────────────
+          await stopWorker(separateHubWorker)
+          await waitForWorkerOffline(separateHubWorker)
 
-      // ─── 1. Close a tab with the Worker offline ─────────────────────────
-      //
-      // The inspect RPC that normally decides whether to prompt cannot be
-      // answered, so `handleTabClose` takes its unreachable-worker branch:
-      // no dialog, an info toast, and the CRDT tombstone still commits.
-      const closingTab = page.locator(`[data-testid="tab"][data-tab-type="agent"][data-tab-id="${closedAgentId}"]`)
-      await expect(closingTab).toBeVisible()
-      // The recorder of the processTest page fixture keeps each toast after its
-      // 3s display. Clear it, so only a toast of this close can match below.
-      await clearRecordedToasts(page)
-      await closingTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
+          // ─── 1. Close a tab with the Worker offline ─────────────────────────
+          //
+          // The inspect RPC that normally decides whether to prompt cannot be
+          // answered, so `handleTabClose` takes its unreachable-worker branch:
+          // no dialog, an info toast, and the CRDT tombstone still commits.
+          const closingTab = tabById(page, closedAgentId)
+          await expect(closingTab).toBeVisible()
+          // The recorder of the processTest page fixture keeps each toast after its
+          // 3s display. Clear it, so only a toast of this close can match below.
+          await clearRecordedToasts(page)
+          await closingTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
-      await expectAgentTabCount(page, 1)
-      // The toast is what distinguishes "took the unreachable branch" from
-      // "the close somehow reached the worker" -- both end with one tab left.
-      await expectToastRecorded(page, 'Worker is unreachable')
+          await expectAgentTabCount(page, 1)
+          // The toast is what distinguishes "took the unreachable branch" from
+          // "the close somehow reached the worker" -- both end with one tab left.
+          await expectToastRecorded(page, 'Worker is unreachable')
 
-      // ─── 2. Move the surviving tab to another workspace, still offline ──
-      const movingTab = page.locator(`[data-testid="tab"][data-tab-type="agent"][data-tab-id="${movedAgentId}"]`)
-      const sourceBox = await boxOf(movingTab)
-      const targetBox = await boxOf(workspaceRow(page, wsB))
-      await dragTo(
-        page,
-        { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 },
-        { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 },
-      )
+          // ─── 2. Move the surviving tab to another workspace, still offline ──
+          // The tab leaves the page with the move, so the drag checks no dragging
+          // class after the release.
+          await mouseDragOnto(page, {
+            from: await boxCenter(tabById(page, movedAgentId)),
+            to: await boxCenter(workspaceRow(page, wsB)),
+          })
 
-      // wsA is left empty and wsB gained the tab, without a Worker round-trip.
-      await expectAgentTabCount(page, 0)
-      await workspaceRow(page, wsB).click()
-      await waitForWorkspaceReady(page)
-      await expectAgentTabCount(page, 1)
+          // wsA is left empty and wsB gained the tab, without a Worker round-trip.
+          await expectAgentTabCount(page, 0)
+          await workspaceRow(page, wsB).click()
+          await waitForWorkspaceReady(page)
+          await expectAgentTabCount(page, 1)
 
-      // ─── 3. Both edits are durable, not just optimistic UI ──────────────
-      //
-      // Reloading re-reads the layout from the hub's CRDT. If either gesture
-      // had needed the Worker to commit, the tab would come back to wsA (move)
-      // or reappear entirely (close).
-      await page.reload()
-      await waitForWorkspaceReady(page)
-      await expectAgentTabCount(page, 1)
-      await expect.poll(() => sidebarLeafIds(page, wsB)).toEqual([movedAgentId])
-      // Expand wsA so its (now empty) section mounts.
-      await workspaceChevron(page, wsA).click()
-      await expect.poll(() => sidebarLeafIds(page, wsA)).toEqual([])
+          // ─── 3. Both edits are durable, not just optimistic UI ──────────────
+          //
+          // Reloading re-reads the layout from the hub's CRDT. If either gesture
+          // had needed the Worker to commit, the tab would come back to wsA (move)
+          // or reappear entirely (close).
+          await page.reload()
+          await waitForWorkspaceReady(page)
+          await expectAgentTabCount(page, 1)
+          await expect.poll(() => sidebarLeafIds(page, wsB)).toEqual([movedAgentId])
+          // Expand wsA so its (now empty) section mounts.
+          await workspaceChevron(page, wsA).click()
+          await expect.poll(() => sidebarLeafIds(page, wsA)).toEqual([])
 
-      // ─── 4. The Worker converges on reconnect ───────────────────────────
-      //
-      // `bootstrap.Wire` triggers the orphan reconciler as soon as the Worker
-      // reconnects, so the closed agent is stopped and tombstoned without
-      // waiting out the hourly interval. The moved agent must survive: its
-      // hub-side ownership row never changed, only the tile it hangs off.
-      await restartWorker(separateHubWorker)
-      await expect.poll(() => liveAgentIdsViaAPI(hubUrl, adminToken, workerId, [closedAgentId, movedAgentId]))
-        .toEqual([movedAgentId])
-    }
-    finally {
-      // `separateHubWorker` is worker-SCOPED: later specs in the same worker
-      // reuse it. This spec deliberately kills it mid-test, so a failure between
-      // stopWorker(separateHubWorker) and the restart above would otherwise leave it dead and
-      // every later spec would fail for an unrelated reason, masking the real
-      // one. Restarting here is idempotent -- restartWorker is a no-op when the
-      // process is already up.
-      await restartWorker(separateHubWorker).catch(() => {})
-      // The shared delete helper closes worker resources as well as the hub workspace.
-      for (const ws of [wsA, wsB]) {
-        await deleteWorkspaceViaAPI(hubUrl, adminToken, ws).catch(() => {})
-      }
-    }
+          // ─── 4. The Worker converges on reconnect ───────────────────────────
+          //
+          // `bootstrap.Wire` triggers the orphan reconciler as soon as the Worker
+          // reconnects, so the closed agent is stopped and tombstoned without
+          // waiting out the hourly interval. The moved agent must survive: its
+          // hub-side ownership row never changed, only the tile it hangs off.
+          await restartWorker(separateHubWorker)
+          await expect.poll(() => openAgentIds([closedAgentId, movedAgentId]))
+            .toEqual([movedAgentId])
+        }, () => ensureWorkerOnline(separateHubWorker))
+      })
+    })
   })
 })
