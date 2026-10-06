@@ -29,10 +29,12 @@ const scratch = resolve(import.meta.dirname, '../../../../.tmp')
 export const WAIT_FOR_FILE_MODULE = 'wait-for-file.mjs'
 
 /**
- * The time between two existence checks of a file wait, in milliseconds. It sets how late a wait sees a file whose
- * watch event was lost. It never sets when a wait ends: the wait ends when the file exists.
+ * The time between two existence checks beside a directory watch, in milliseconds: of a file wait of the fixture
+ * project, of the record reads of `releaseCases`, and of the record wait of the launcher integration test. It sets
+ * how late a check sees a file whose watch event was lost. It never sets when a wait ends: the wait ends when the file
+ * exists.
  */
-const FILE_CHECK_INTERVAL_MS = 50
+export const FILE_CHECK_INTERVAL_MS = 50
 
 const waitForFileModule = String.raw`
 import { existsSync, watch } from 'node:fs'

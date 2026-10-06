@@ -10,7 +10,7 @@ import process from 'node:process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isObject } from '../src/lib/jsonPick'
 import { withCleanup } from '../tests/e2e/helpers/cleanup'
-import { cleanupLauncherFixtureProject, createLauncherFixtureProject, fixtureStringField, launcherFixtureDiagnostics, readFixtureRecord, releaseFixtureProcesses, runLauncherFixtureProject, startLauncher } from '../tests/e2e/helpers/launcherFixtureProject'
+import { cleanupLauncherFixtureProject, createLauncherFixtureProject, FILE_CHECK_INTERVAL_MS, fixtureStringField, launcherFixtureDiagnostics, readFixtureRecord, releaseFixtureProcesses, runLauncherFixtureProject, startLauncher } from '../tests/e2e/helpers/launcherFixtureProject'
 import * as processHelpers from '../tests/e2e/helpers/process'
 import * as processRegistry from '../tests/e2e/helpers/processRegistry'
 
@@ -21,8 +21,6 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, watch: vi.fn(actual.watch) }
 })
 
-/** The time between two existence checks of `waitForFixtureFiles`, in milliseconds. It never sets when the wait ends. */
-const RECORD_CHECK_INTERVAL_MS = 50
 const INTEGRATION_DEADLINE_MS = 30_000
 const CANCELLATION_PHASE_DEADLINE_MS = 15_000
 const CANCELLATION_CLEANUP_DEADLINE_MS = 10_000
@@ -87,7 +85,7 @@ function startPrivateRunner(root: string): ReturnType<typeof startLauncher> {
 /**
  * Wait until the fixture writes each of the files into the records directory.
  *
- * The wait checks for the files when it starts, on each watch event, and every RECORD_CHECK_INTERVAL_MS, as
+ * The wait checks for the files when it starts, on each watch event, and every FILE_CHECK_INTERVAL_MS, as
  * `waitForFile` in the fixture project does. A directory watch alone cannot end the wait. macOS starts the FSEvents
  * stream of a watcher after watch() returns, so a file that appears in that window gives no event. The interval check
  * finds such a file, so the wait does not depend on the start order of the processes. The watch only ends the wait
@@ -97,7 +95,7 @@ function waitForFixtureFiles(records: string, files: string[], completion: Promi
   return new Promise((accept, reject) => {
     let finished = false
     const listener = watch(records, check)
-    const timer = setInterval(check, RECORD_CHECK_INTERVAL_MS)
+    const timer = setInterval(check, FILE_CHECK_INTERVAL_MS)
     const finish = (error?: unknown) => {
       if (finished)
         return
@@ -289,10 +287,10 @@ describe('waitForFixtureFiles', () => {
   it('finds records that appear after its first check and give no watch event', async () => {
     const { records, watcher, wait } = silentWait(['entry-alpha.json', 'entry-beta.json'])
     writeFileSync(join(records, 'entry-alpha.json'), '{}')
-    await vi.advanceTimersByTimeAsync(RECORD_CHECK_INTERVAL_MS)
+    await vi.advanceTimersByTimeAsync(FILE_CHECK_INTERVAL_MS)
     expect(watcher.close, 'one of the two records must not end the wait').not.toHaveBeenCalled()
     writeFileSync(join(records, 'entry-beta.json'), '{}')
-    await vi.advanceTimersByTimeAsync(RECORD_CHECK_INTERVAL_MS)
+    await vi.advanceTimersByTimeAsync(FILE_CHECK_INTERVAL_MS)
 
     await expect(wait).resolves.toBeUndefined()
     expect(watcher.close).toHaveBeenCalledOnce()
