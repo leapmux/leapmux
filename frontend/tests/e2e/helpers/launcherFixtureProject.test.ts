@@ -97,7 +97,7 @@ function silentWatch(): { watchDirectory: () => EventEmitter, watcher: EventEmit
 }
 
 describe('cleanupLauncherFixtureProject', () => {
-  it('retains exact native reports, console, and attachments after an outer failure', () => {
+  it('retains the exact reports, console, and attachments of Playwright\'s own run after an outer failure', () => {
     const root = directory()
     const files = new Map([
       ['combined.json', '{"cases":[{"status":"timedOut","error":{"message":"The fixture case waits for beta."}}]}'],
@@ -114,7 +114,7 @@ describe('cleanupLauncherFixtureProject', () => {
       expect(readFileSync(join(root, file), 'utf8')).toBe(content)
   })
 
-  it('removes an intentionally failed native run after its outer test succeeds', () => {
+  it('removes Playwright\'s own run that failed on purpose after its outer test succeeds', () => {
     const root = directory()
     writeFileSync(join(root, 'combined.json'), '{"stats":{"unexpected":1}}')
 
@@ -125,7 +125,7 @@ describe('cleanupLauncherFixtureProject', () => {
 })
 
 describe('launcherFixtureDiagnostics', () => {
-  it('keeps exact native error text and the report and console paths', () => {
+  it('keeps the exact error text of Playwright\'s own run and the report and console paths', () => {
     const root = directory()
     const result = { status: 'timedOut', errors: [{ message: 'The fixture alpha case waits for beta.\nFixture detail42', stack: 'fixture.mjs:55' }], attachments: [{ name: 'fixture-record', path: join(root, 'record.txt') }] }
     const cases = [{ id: 'fixture-alpha', title: 'executes alpha', file: 'alpha.spec.ts', status: 'unexpected', results: [result] }]
@@ -202,38 +202,38 @@ describe('startLauncher', () => {
 })
 
 describe('readFixtureRecord', () => {
-  it('retains explicit false and zero fields in native records', () => {
+  it('retains explicit false and zero fields in the records of Playwright\'s own run', () => {
     const path = join(directory(), 'record.json')
     writeFileSync(path, '{"enabled":false,"count":0}')
 
     expect(readFixtureRecord(path)).toEqual({ enabled: false, count: 0 })
   })
 
-  it.each(['null', '[]', '"not a record"'])('rejects a non-object native record: %s', (content) => {
+  it.each(['null', '[]', '"not a record"'])('rejects a record of Playwright\'s own run that is not an object: %s', (content) => {
     const path = join(directory(), 'record.json')
     writeFileSync(path, content)
 
     expect(() => readFixtureRecord(path)).toThrow('not an object')
   })
 
-  it('returns a malformed native JSON error', () => {
+  it('returns the JSON error of a malformed record of Playwright\'s own run', () => {
     const path = join(directory(), 'record.json')
     writeFileSync(path, '{')
 
     expect(() => readFixtureRecord(path)).toThrow(SyntaxError)
   })
 
-  it('returns a missing native file error', () => {
+  it('returns the file error of a missing record of Playwright\'s own run', () => {
     expect(() => readFixtureRecord(join(directory(), 'absent.json'))).toThrow('ENOENT')
   })
 })
 
 describe('fixtureStringField', () => {
-  it('preserves a nonempty native identity string', () => {
+  it('preserves a nonempty identity string of Playwright\'s own report', () => {
     expect(fixtureStringField({ id: 'fixture-owned-id' }, 'id')).toBe('fixture-owned-id')
   })
 
-  it.each([undefined, null, '', 0, false, []])('rejects a missing or invalid native identity field: %j', (id) => {
+  it.each([undefined, null, '', 0, false, []])('rejects a missing or invalid identity field of Playwright\'s own report: %j', (id) => {
     expect(() => fixtureStringField({ id }, 'id')).toThrow('nonempty id')
   })
 })
@@ -241,11 +241,11 @@ describe('fixtureStringField', () => {
 describe('fixtureCases', () => {
   const spec = { id: 'fixture-id', title: 'fixture case', file: 'fixture.spec.ts', tests: [{ status: 'expected', results: [] }] }
 
-  it('reads native leaf suites that omit the child suite array', () => {
+  it('reads the leaf suites of Playwright\'s own report that omit the child suite array', () => {
     expect(fixtureCases({ suites: [{ specs: [spec] }] })).toEqual([{ id: 'fixture-id', title: 'fixture case', file: 'fixture.spec.ts', status: 'expected', results: [] }])
   })
 
-  it('accepts an empty native report', () => {
+  it('accepts an empty report of Playwright\'s own run', () => {
     expect(fixtureCases({ suites: [] })).toEqual([])
   })
 
@@ -257,7 +257,7 @@ describe('fixtureCases', () => {
     { suites: [{ specs: [{ ...spec, tests: [] }] }] },
     { suites: [{ specs: [{ ...spec, tests: [{ status: 'expected', results: null }] }] }] },
     { suites: [{ specs: [{ ...spec, id: '' }] }] },
-  ])('rejects incomplete native case records: %j', (report) => {
+  ])('rejects incomplete case records of Playwright\'s own report: %j', (report) => {
     expect(() => fixtureCases(report)).toThrow('fixture')
   })
 })
@@ -324,7 +324,7 @@ describe('createLauncherFixtureProject', () => {
 })
 
 describe('readPlaywrightZipEntries', () => {
-  it('preserves both native archive read and archive close failures', async () => {
+  it('preserves both the read failure and the close failure of Playwright\'s own archive reader', async () => {
     const readFailure = new Error('The archive read failed.')
     const closeFailure = new Error('The archive close failed.')
     boundary.archive.factory = class {
@@ -341,11 +341,11 @@ describe('readPlaywrightZipEntries', () => {
     expect(failure.errors).toEqual([readFailure, closeFailure])
   })
 
-  it('returns the installed native reader error for an absent archive', async () => {
+  it('returns the error of Playwright\'s own installed reader for an absent archive', async () => {
     await expect(readPlaywrightZipEntries(join(directory(), 'absent.zip'))).rejects.toThrow('ENOENT')
   })
 
-  it('rejects a file that is not a native ZIP archive', async () => {
+  it('rejects a file that Playwright\'s own reader cannot read as a ZIP archive', async () => {
     const path = join(directory(), 'invalid.zip')
     writeFileSync(path, 'not a ZIP archive')
 
@@ -354,7 +354,7 @@ describe('readPlaywrightZipEntries', () => {
 })
 
 describe('runLauncherFixtureProject', () => {
-  it('releases every held native case when its owning watcher emits an error', async () => {
+  it('releases every held case of Playwright\'s own run when its owning watcher emits an error', async () => {
     const root = createLauncherFixtureProject()
     roots.add(root)
     const child = new ChildProcess()
