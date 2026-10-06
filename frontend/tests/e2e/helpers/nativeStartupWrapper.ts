@@ -1,14 +1,15 @@
 import type { Buffer } from 'node:buffer'
 import type { Server, Socket } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import process from 'node:process'
 import { StringDecoder } from 'node:string_decoder'
 import { isObject } from '../../../src/lib/jsonPick'
 import { requireBinary } from './binaryOnPath'
 import { cleanupOnFailure } from './cleanup'
+import { writeNodeLauncher } from './nodeLauncher'
 import { isFileNameComponent } from './runDirectory'
 import { hubSpawnEnv } from './server'
 
@@ -237,8 +238,7 @@ export async function createNativeStartupWrapper(
     observeEnvironment: selectedKeys ?? null,
   }
   const scriptPath = join(directory, `${launch.binaryName}.startup.cjs`)
-  const source = `#!${process.execPath}
-const {spawn}=require('node:child_process');
+  const source = `const {spawn}=require('node:child_process');
 const {connect}=require('node:net');
 const config=${JSON.stringify(configuration)};
 const argv=process.argv.slice(2);
@@ -270,16 +270,8 @@ if(!runtime){run()}else{
 }
 `
   try {
-    writeFileSync(scriptPath, source)
-    chmodSync(scriptPath, 0o755)
-    if (process.platform === 'win32') {
-      writeFileSync(join(directory, `${launch.binaryName}.cmd`), `@"${process.execPath}" "${scriptPath}" %*\r\n`)
-    }
-    else {
-      const executable = join(directory, launch.binaryName)
-      writeFileSync(executable, source)
-      chmodSync(executable, 0o755)
-    }
+    writeFileSync(scriptPath, source, { mode: 0o600 })
+    writeNodeLauncher(resolve(directory), launch.binaryName, { node: process.execPath, script: resolve(scriptPath) })
   }
   catch (error) {
     return failStartup(server, error)

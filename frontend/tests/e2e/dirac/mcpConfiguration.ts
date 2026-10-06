@@ -1,7 +1,7 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
-import process from 'node:process'
 import { isObject } from '../../../src/lib/jsonPick'
+import { writeNodeLauncher } from '../helpers/nodeLauncher'
 
 export interface DiracStdioMcpServer {
   name: string
@@ -67,8 +67,7 @@ export function writeDiracMcpWrapper(options: {
   const receiptLog = join(options.directory, 'native-mcp-session.jsonl')
   const scriptPath = join(options.directory, 'dirac-mcp.cjs')
   const configuration = { executable: options.executable, args: [...options.args ?? []], servers: options.servers, receiptLog }
-  const source = `#!${options.nodeExecutable}
-const {spawn}=require('node:child_process');
+  const source = `const {spawn}=require('node:child_process');
 const {appendFileSync}=require('node:fs');
 const {createInterface}=require('node:readline');
 const config=${JSON.stringify(configuration)};
@@ -108,16 +107,8 @@ child.once('close',(code,signal)=>{
 });
 for(const signal of ['SIGTERM','SIGINT','SIGHUP'])process.on(signal,()=>child.kill(signal));
 `
-  writeFileSync(scriptPath, source, { mode: 0o700 })
-  chmodSync(scriptPath, 0o700)
-  if (process.platform === 'win32') {
-    writeFileSync(join(options.directory, 'dirac.cmd'), `@"${options.nodeExecutable}" "${scriptPath}" %*\r\n`)
-  }
-  else {
-    const executable = join(options.directory, 'dirac')
-    writeFileSync(executable, source, { mode: 0o700 })
-    chmodSync(executable, 0o700)
-  }
+  writeFileSync(scriptPath, source, { mode: 0o600 })
+  writeNodeLauncher(options.directory, 'dirac', { node: options.nodeExecutable, script: scriptPath })
   return { directory: options.directory, scriptPath, receiptLog }
 }
 

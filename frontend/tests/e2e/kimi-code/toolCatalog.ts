@@ -13,6 +13,7 @@ import { withCleanupSync } from '../helpers/cleanup'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { resolveNativeProcessOwnership, workerDataDirectory } from '../helpers/nativeProcessOwnership'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { writeNodeLauncher } from '../helpers/nodeLauncher'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
 import { getGlobalState } from '../helpers/server'
@@ -233,12 +234,7 @@ child.once('exit', (code, signal) => {
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => child.kill(signal));
 `
   writeFileSync(capture.scriptPath, source, { mode: 0o600 })
-  if (process.platform === 'win32') {
-    writeFileSync(join(directory, 'kimi.cmd'), `@"${capture.wrapperExecutable}" "${capture.scriptPath}" %*\r\n`, { mode: 0o700 })
-  }
-  else {
-    writeFileSync(join(directory, 'kimi'), `#!/bin/sh\nexec ${quotePosixShellArgument(capture.wrapperExecutable)} ${quotePosixShellArgument(capture.scriptPath)} "$@"\n`, { mode: 0o700 })
-  }
+  writeNodeLauncher(directory, 'kimi', { node: capture.wrapperExecutable, script: capture.scriptPath })
   return capture
 }
 

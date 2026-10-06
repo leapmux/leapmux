@@ -30,7 +30,10 @@ vi.mock('../helpers/mockAgentEnvironment', async original => ({
   createMockAgentEnvironment: vi.fn(),
 }))
 vi.mock('../helpers/nativeWorker', () => ({ withNativeWorker: vi.fn() }))
-vi.mock('../helpers/runDirectory', () => ({ createTestDirectory: vi.fn() }))
+vi.mock('../helpers/runDirectory', async original => ({
+  ...await original<typeof import('../helpers/runDirectory')>(),
+  createTestDirectory: vi.fn(),
+}))
 vi.mock('../helpers/binaryOnPath', async original => ({
   ...await original<typeof import('../helpers/binaryOnPath')>(),
   requireBinary: vi.fn(),
