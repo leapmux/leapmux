@@ -7,7 +7,7 @@ import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, toolRows, waitForSettingsIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, toolRows, waitForAgentStarted, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * The heartbeat case checks a native CLI tool_progress event in the browser.
@@ -63,9 +63,7 @@ server.listen(0, '127.0.0.1', () => {
 setTimeout(() => server.close(), 180000).unref()
 `)
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await expect(page.getByText(/^Starting /)).not.toBeVisible()
+    await waitForAgentStarted(page)
 
     // Default permission mode can stop Bash before it starts. Bypass permits the actual heartbeat command.
     await chooseSettingsOption(page, 'permissionMode-bypassPermissions')
