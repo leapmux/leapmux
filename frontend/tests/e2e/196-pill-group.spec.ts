@@ -1,20 +1,17 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { loginViaToken, openSettingsAt, resolvedColor } from './helpers/ui'
+import { openPreferencesAs } from './helpers/preferences'
+import { resolvedColor } from './helpers/ui'
 
 async function openThemeModes(page: Page, token: string): Promise<Locator> {
-  await loginViaToken(page, token)
-  await page.goto('/')
-  const dialog = await openSettingsAt(page, 'appearance')
+  const dialog = await openPreferencesAs(page, token, 'appearance')
   return dialog
     .locator('[data-setting-id="appearance.theme"]')
     .getByRole('radiogroup', { name: 'Theme mode' })
 }
 
 async function openAppTypes(page: Page, token: string): Promise<Locator> {
-  await loginViaToken(page, token)
-  await page.goto('/')
-  const dialog = await openSettingsAt(page, 'apps')
+  const dialog = await openPreferencesAs(page, token, 'apps')
   const registrations = dialog.locator('[data-setting-id="apps.registrations"]')
   await registrations.getByRole('button', { name: 'Register an app' }).click()
   return registrations.getByRole('radiogroup', { name: 'App type' })
@@ -102,22 +99,14 @@ test.describe('pill group segmented control', () => {
 
     const selected = group.getByRole('radio', { checked: true })
 
-    const tokens = await page.evaluate(() => {
-      const root = getComputedStyle(document.documentElement)
-      return {
-        primary: root.getPropertyValue('--primary').trim(),
-        primaryForeground: root.getPropertyValue('--primary-foreground').trim(),
-        mutedForeground: root.getPropertyValue('--muted-foreground').trim(),
-      }
-    })
     expect(await indicator.evaluate(element => getComputedStyle(element).backgroundColor))
-      .toBe(await resolvedColor(page, tokens.primary))
+      .toBe(await resolvedColor(page, 'var(--primary)'))
     expect(await selected.evaluate(element => getComputedStyle(element).backgroundColor))
       .toBe('rgba(0, 0, 0, 0)')
     expect(await group.locator(':scope > [data-pill-selection-labels]').evaluate(element => getComputedStyle(element).color))
-      .toBe(await resolvedColor(page, tokens.primaryForeground))
+      .toBe(await resolvedColor(page, 'var(--primary-foreground)'))
     expect(await group.getByRole('radio', { checked: false }).first().evaluate(element => getComputedStyle(element).color))
-      .toBe(await resolvedColor(page, tokens.mutedForeground))
+      .toBe(await resolvedColor(page, 'var(--muted-foreground)'))
 
     const governedGroup = page
       .locator('[data-setting-id="appearance.terminalTheme"]')
@@ -134,21 +123,14 @@ test.describe('pill group segmented control', () => {
     const dark = group.getByRole('radio', { name: 'Dark' })
     await dark.click()
     await expect(dark).toHaveAttribute('aria-checked', 'true')
-    const tokens = await page.evaluate(() => {
-      const root = getComputedStyle(document.documentElement)
-      return {
-        primary: root.getPropertyValue('--primary').trim(),
-        primaryForeground: root.getPropertyValue('--primary-foreground').trim(),
-      }
-    })
     expect(await system.evaluate(element => getComputedStyle(element).backgroundColor))
       .toBe('rgba(0, 0, 0, 0)')
     expect(await dark.evaluate(element => getComputedStyle(element).transitionProperty))
       .toBe('none')
     expect(await selectionIndicator(group).evaluate(element => getComputedStyle(element).backgroundColor))
-      .toBe(await resolvedColor(page, tokens.primary))
+      .toBe(await resolvedColor(page, 'var(--primary)'))
     expect(await group.locator(':scope > [data-pill-selection-labels]').evaluate(element => getComputedStyle(element).color))
-      .toBe(await resolvedColor(page, tokens.primaryForeground))
+      .toBe(await resolvedColor(page, 'var(--primary-foreground)'))
   })
 
   test('uses the accent background only for an unselected hover', async ({ page, leapmuxServer }) => {
@@ -156,7 +138,6 @@ test.describe('pill group segmented control', () => {
     await expect(selectionIndicator(group)).toHaveCount(1)
     const selected = group.getByRole('radio', { checked: true })
     const unselected = group.getByRole('radio', { checked: false }).first()
-    const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())
 
     await selected.hover()
     expect(await selected.evaluate(element => getComputedStyle(element).backgroundColor))
@@ -164,7 +145,7 @@ test.describe('pill group segmented control', () => {
 
     await unselected.hover()
     expect(await unselected.evaluate(element => getComputedStyle(element).backgroundColor))
-      .toBe(await resolvedColor(page, accent))
+      .toBe(await resolvedColor(page, 'var(--accent)'))
   })
 
   test('slides the active fill between segments', async ({ page, leapmuxServer }) => {
@@ -251,16 +232,12 @@ test.describe('pill group segmented control', () => {
     await page.keyboard.press('Tab')
     await selected.focus()
 
-    const colors = await selected.evaluate((element) => {
-      const root = getComputedStyle(document.documentElement)
-      return {
-        outline: getComputedStyle(element).outlineColor,
-        outlineStyle: getComputedStyle(element).outlineStyle,
-        selectedForeground: root.getPropertyValue('--primary-foreground').trim(),
-      }
-    })
+    const colors = await selected.evaluate(element => ({
+      outline: getComputedStyle(element).outlineColor,
+      outlineStyle: getComputedStyle(element).outlineStyle,
+    }))
     expect(colors.outlineStyle).toBe('solid')
-    expect(colors.outline).toBe(await resolvedColor(page, colors.selectedForeground))
+    expect(colors.outline).toBe(await resolvedColor(page, 'var(--primary-foreground)'))
   })
 
   test('keeps the selected segment distinct in forced colors', async ({ page, leapmuxServer }) => {

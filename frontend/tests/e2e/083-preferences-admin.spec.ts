@@ -1,12 +1,11 @@
 import { expect, test } from './fixtures'
 import { freshAdminSessionViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
-import { answerElevationPrompt, elevationPrompt, loginViaToken, openSettingsAt } from './helpers/ui'
+import { openPreferencesAs } from './helpers/preferences'
+import { answerElevationPrompt, elevationPrompt, openSettingsAt } from './helpers/ui'
 
 test.describe('Preferences administration groups', () => {
   test('admin sees the administration groups and can change session duration', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page)
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken)
 
     await expect(dialog.getByText('ADMINISTRATION')).toBeVisible()
     await expect(dialog.getByTestId('preferences-nav-admin-general')).toBeVisible()
@@ -38,9 +37,7 @@ test.describe('Preferences administration groups', () => {
    * vocabulary -- "On", never the JSON literal `true` the wire carries.
    */
   test('states an enforced toggle in the words of its switch', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'admin-signup')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'admin-signup')
 
     const row = dialog.locator('[data-setting-id="signup_enabled"]')
     await expect(row).toBeVisible()
@@ -58,9 +55,7 @@ test.describe('Preferences administration groups', () => {
    * space, and the unit -- and not the number.
    */
   test('states an enforced number with the unit of its control', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'admin-advanced')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'admin-advanced')
 
     const row = dialog.locator('[data-setting-id="queue_budget.relay_bytes"]')
     await expect(row).toBeVisible()
@@ -83,9 +78,7 @@ test.describe('Preferences administration groups', () => {
    * whole assertion.
    */
   test('a public URL change reaches the passkey affordance without a reload', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'account')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'account')
 
     // Scoped to the passkeys row: the verified-session banner at the top of
     // the Account section is a `role="alert"` too, so an unscoped alert
@@ -120,9 +113,7 @@ test.describe('Preferences administration groups', () => {
   })
 
   test('non-admins do not see the administration groups', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.newuserToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page)
+    const dialog = await openPreferencesAs(page, leapmuxServer.newuserToken)
 
     await expect(dialog.getByText('ADMINISTRATION')).not.toBeVisible()
     await expect(dialog.getByTestId('preferences-nav-admin-general')).not.toBeVisible()
@@ -146,9 +137,7 @@ test.describe('administration settings need a verified session', () => {
   test('prompts on the first write and applies it once the user verifies', async ({ page, leapmuxServer }) => {
     // A FRESH admin session: the fixture elevates the worker's shared
     // `adminToken`, so the gate under test would never refuse it.
-    await loginViaToken(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl))
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'admin-general')
+    const dialog = await openPreferencesAs(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl), 'admin-general')
 
     const row = dialog.locator('[data-setting-id="session_duration_seconds"]')
     await expect(row).toBeVisible()
@@ -181,9 +170,7 @@ test.describe('administration settings need a verified session', () => {
   // shared machine", and it must be reachable from the panel the operator is
   // actually on.
   test('ends the window from the administration panel', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'admin-general')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'admin-general')
 
     await expect(dialog.getByTestId('elevation-status')).toBeVisible()
     await dialog.getByTestId('elevation-drop').click()

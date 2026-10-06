@@ -1,11 +1,11 @@
 import { motion } from '../../src/styles/tokens'
 import { expect, test } from './fixtures'
-import { loginViaToken, openSettingsAt } from './helpers/ui'
+import { openPreferencesAs } from './helpers/preferences'
+import { openAppAs, openSettingsAt, PLATFORM_MOD } from './helpers/ui'
 
 test.describe('Preferences navigation', () => {
   test('opens via the menu and via Cmd/Ctrl+Comma', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // Via the app menu.
     const dialog = await openSettingsAt(page)
@@ -14,15 +14,12 @@ test.describe('Preferences navigation', () => {
     await expect(dialog).not.toBeVisible()
 
     // Via the keyboard shortcut (the platform modifier + comma).
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
-    await page.keyboard.press(`${mod}+Comma`)
+    await page.keyboard.press(`${PLATFORM_MOD}+Comma`)
     await expect(page.getByRole('dialog', { name: 'Preferences' })).toBeVisible()
   })
 
   test('walks categories through the tab list', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     await dialog.getByTestId('preferences-nav-notifications').click()
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
@@ -57,17 +54,14 @@ test.describe('Preferences navigation', () => {
   // whatever section the user walked to. It used to be a private signal, where
   // a repeat wrote the same value and notified nothing.
   test('returns to the requested section when asked for again while open', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     await dialog.getByTestId('preferences-nav-advanced').click()
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'true')
 
     // The shortcut asks for the dialog with no section, which selects the
     // first one -- Account.
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
-    await page.keyboard.press(`${mod}+Comma`)
+    await page.keyboard.press(`${PLATFORM_MOD}+Comma`)
     await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
     await expect(dialog.getByTestId('preferences-nav-advanced')).toHaveAttribute('aria-selected', 'false')
   })
@@ -75,18 +69,14 @@ test.describe('Preferences navigation', () => {
   // Every entry point asks for the dialog and nothing more, so the section it
   // selects is the dialog's own default: the first one in the list.
   test('opens on Account', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page)
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken)
 
     await expect(dialog.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
     await expect(dialog.locator('[data-setting-id="account.profile"]')).toBeVisible()
   })
 
   test('searching "volume" shows the two notifications rows with breadcrumbs', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     const search = dialog.getByTestId('preferences-search')
     await search.fill('volume')
@@ -112,9 +102,7 @@ test.describe('Preferences navigation', () => {
   // global Escape binding used to run first and close the dialog either way,
   // so the search box never got the press it claimed.
   test('clears the search on Escape, and closes the dialog only once the query is empty', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     const search = dialog.getByTestId('preferences-search')
     await search.fill('volume')
@@ -145,9 +133,7 @@ test.describe('Preferences navigation', () => {
   // POSITIVE case (the section appearing in the desktop app) is verified by
   // hand, and this covers the half that is reachable.
   test('shows no Desktop section, and no desktop rows in search, in a browser', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     await expect(dialog.getByTestId('preferences-nav-desktop')).toHaveCount(0)
 

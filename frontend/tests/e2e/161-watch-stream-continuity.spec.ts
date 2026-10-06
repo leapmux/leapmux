@@ -1,9 +1,7 @@
 import type { Page } from '@playwright/test'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
-import { bashToolCall } from './helpers/providerToolCalls'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
-import { armTurnEndSound, expectDoorbellCount } from './helpers/turnEndSound'
+import { armTurnEndSound, expectDoorbellCount, sendToolUsingTurn } from './helpers/turnEndSound'
 import {
   agentTabs,
   expectAgentTabCount,
@@ -11,7 +9,6 @@ import {
   openAgentViaUI,
   openTerminalViaUI,
   openWorkspace,
-  sendMessage,
   terminalTabs,
   waitForWorkspaceReady,
   workspaceRow,
@@ -32,8 +29,6 @@ async function installWatchOpenCounter(page: Page) {
     })
   })
 }
-
-const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
 
 test.describe('WatchEvents stream continuity', () => {
   test('tab and workspace switches revise interest without reopening the stream', async ({ page, leapmuxServer, modelScript }) => {
@@ -72,16 +67,11 @@ test.describe('WatchEvents stream continuity', () => {
     await agents.first().click()
 
     // Hidden agent still receives turn-end notify (sound). The final answer is
-    // HELD so the turn ends after the switch below: `waitForSteps` returns when
+    // HELD so the turn ends after the switch below: the helper returns when
     // the endpoint takes the step, not when it answers, so the switch happens
     // inside the hold. Without it the turn ends while this tab is still
     // selected, and the notify path this test exists for never runs.
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] },
-      { text: 'The working directory is above.', delayMs: 2_000 },
-    )
-    await sendMessage(page, modelScript.prompt(TOOL_USING_PROMPT))
-    await modelScript.waitForSteps()
+    await sendToolUsingTurn(page, modelScript, { holdAnswerMs: 2_000 })
     await agents.nth(1).click()
     await expectDoorbellCount(page, 1)
 

@@ -1,10 +1,14 @@
 import type { Page } from '@playwright/test'
 import type { AgentSettledEventDetail } from '../../../src/lib/agentSettledEvent'
+import type { MockModelStep } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
 import { expect } from '@playwright/test'
-import { AgentActivityState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { AGENT_SETTLED_EVENT } from '../../../src/lib/agentSettledEvent'
 import { isObject } from '../../../src/lib/jsonPick'
-import { setInitialBrowserPref } from './ui'
+import { selectedAgentTabId } from './nativeScenario'
+import { bashToolCall } from './providerToolCalls'
+import { sendMessage, setInitialBrowserPref } from './ui'
 
 const DOORBELL_SRC = 'benkirb-electronic-doorbell'
 
@@ -137,4 +141,42 @@ export async function expectDoorbellQuiet(page: Page, count: number, boundary?: 
   else
     await expect.poll(async () => (await soundProbeSnapshot(page)).settled.map(parseSettledReceipt).some(receipt => receipt.state === AgentActivityState.IDLE)).toBe(true)
   expect(await doorbellCount(page)).toBe(count)
+}
+
+/**
+ * A prompt that the agent cannot answer from the prompt alone, so the turn uses a tool. `useAgentSettled` suppresses
+ * the sound for a turn that used no tool, so a plain arithmetic question would make every sound assertion pass for the
+ * wrong reason.
+ */
+export const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
+
+/** Options of `sendToolUsingTurn`. */
+export interface ToolUsingTurnOptions {
+  /** The provider of the selected agent, whose tool vocabulary scripts the call. The default is Claude Code. */
+  provider?: AgentProvider
+  /**
+   * Hold the final answer open for this many milliseconds, so the caller can act inside the turn: the step wait
+   * returns when the mock takes the answer step, not when it answers.
+   */
+  holdAnswerMs?: number
+}
+
+/**
+ * Send one scripted turn that runs `pwd` through the shell tool and then answers, on the selected agent tab, and return
+ * the boundary of the sound receipts that the turn can produce. Arm the sound probe first (`armTurnEndSound`).
+ * The function returns when the agent requests both steps, not when the turn ends.
+ */
+export async function sendToolUsingTurn(page: Page, script: ModelScript, options: ToolUsingTurnOptions = {}): Promise<SoundReceiptBoundary> {
+  const { provider = AgentProvider.CLAUDE_CODE, holdAnswerMs } = options
+  if (holdAnswerMs !== undefined && (!Number.isSafeInteger(holdAnswerMs) || holdAnswerMs < 0))
+    throw new RangeError(`A held answer needs a nonnegative whole number of milliseconds, not ${holdAnswerMs}.`)
+  const agentId = await selectedAgentTabId(page)
+  const after = await soundReceiptCursor(page)
+  const answer: MockModelStep = holdAnswerMs === undefined
+    ? { text: 'The working directory is above.' }
+    : { text: 'The working directory is above.', delayMs: holdAnswerMs }
+  const start = await script.queue({ toolCalls: [bashToolCall(provider, 'pwd-call', 'pwd')] }, answer)
+  await sendMessage(page, script.prompt(TOOL_USING_PROMPT))
+  await script.waitForSteps(start + 2)
+  return { agentId, after }
 }

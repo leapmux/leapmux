@@ -1,8 +1,9 @@
 import type { Page } from '@playwright/test'
 import { accountStorageKeyPrefix, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ } from '../../src/lib/browserStorage'
 import { expect, test } from './fixtures'
+import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { storageKeys } from './helpers/storage'
-import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
+import { openAppAs, openSettingsAt } from './helpers/ui'
 
 /**
  * Two accounts sharing one browser must not share stored state.
@@ -25,28 +26,10 @@ async function leapmuxKeys(page: Page): Promise<string[]> {
   return (await storageKeys(page)).filter(key => key.startsWith('leapmux:'))
 }
 
-/** Pin the theme to a device override and set the palette, through the dialog. */
-async function overrideThemeOnThisDevice(page: Page, palette: string) {
-  const dialog = await openSettingsAt(page, 'appearance')
-
-  const chip = dialog.getByTestId('scope-chip-appearance.theme')
-  await chip.click()
-  await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-  await expect(chip).toHaveText(/This device/)
-
-  const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
-  await pickTheme(themeRow, palette)
-  await expect(page.locator('html')).toHaveAttribute('data-ui-theme', palette)
-
-  await page.keyboard.press('Escape')
-  await expect(dialog).toBeHidden()
-}
-
 test.describe('account storage isolation', () => {
   test('a second account does not inherit the first account device overrides', async ({ page, leapmuxServer }) => {
     // The admin picks a device-tier palette.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await overrideThemeOnThisDevice(page, 'nord')
 
     const adminPrefix = accountStorageKeyPrefix(leapmuxServer.adminUserId)
@@ -65,8 +48,7 @@ test.describe('account storage isolation', () => {
 
     // The second account signs in to the SAME browser, with no reload between
     // the two sessions beyond the navigation the sign-in performs.
-    await loginViaToken(page, leapmuxServer.newuserToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.newuserToken)
 
     // They get the shipped default, not the admin's palette.
     //
@@ -95,8 +77,7 @@ test.describe('account storage isolation', () => {
     expect(afterSecondSignIn).toEqual(expect.arrayContaining(adminOwned))
 
     // And the admin comes back to exactly what they left.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'nord')
   })
 })

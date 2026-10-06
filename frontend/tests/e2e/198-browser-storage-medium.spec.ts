@@ -1,8 +1,8 @@
-import type { Page } from '@playwright/test'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_CLIENT_ID } from '../../src/lib/browserStorage'
 import { expect, test } from './fixtures'
+import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { databaseStores, readEntry, webStorageKeys } from './helpers/storage'
-import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
+import { openAppAs } from './helpers/ui'
 
 /**
  * WHERE the browser keeps its state, asserted end to end.
@@ -28,27 +28,9 @@ const DECLARED = {
   'leapmux-render-cache': ['artifacts'],
 } as const
 
-/** Set the palette as a device-tier override, through the Preferences dialog. */
-async function overrideThemeOnThisDevice(page: Page, palette: string) {
-  const dialog = await openSettingsAt(page, 'appearance')
-
-  const chip = dialog.getByTestId('scope-chip-appearance.theme')
-  await chip.click()
-  await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-  await expect(chip).toHaveText(/This device/)
-
-  const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
-  await pickTheme(themeRow, palette)
-  await expect(page.locator('html')).toHaveAttribute('data-ui-theme', palette)
-
-  await page.keyboard.press('Escape')
-  await expect(dialog).toBeHidden()
-}
-
 test.describe('browser storage medium', () => {
   test('keeps the leapmux family in IndexedDB and nothing in localStorage', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     // A device-tier write, so there is certainly a row to find.
     await overrideThemeOnThisDevice(page, 'nord')
 
@@ -91,8 +73,7 @@ test.describe('browser storage medium', () => {
   })
 
   test('builds the CRDT checkpoint database with its declared stores', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // The CRDT runtime opens this on its first checkpoint write, which follows
     // the projection the shell hydrates from -- hence the poll rather than a
@@ -108,8 +89,7 @@ test.describe('browser storage medium', () => {
   // invisible when it silently falls back to re-rendering -- which is exactly
   // the shape of failure this file exists to catch.
   test('builds the render cache with its declared store', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // Opened lazily, on the first artifact a render persists, so this polls for
     // the same reason the checkpoint database above does.
@@ -120,8 +100,7 @@ test.describe('browser storage medium', () => {
   })
 
   test('carries a preference change to a second tab', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', /.+/)
 
     // A SECOND REAL TAB on the same origin, which is what makes this a test of

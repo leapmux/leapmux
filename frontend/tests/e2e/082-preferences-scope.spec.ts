@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { getBrowserPrefValue, loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
+import { openPreferencesAs, pickThemeMode, preferenceScopeChip, setPreferenceScope } from './helpers/preferences'
+import { getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme } from './helpers/ui'
 
 /**
  * Read a browser-prefs field as a JSON string, for the substring assertions
@@ -16,7 +17,7 @@ async function getBrowserPrefJson(page: Page, userId: string, field: string): Pr
  * inherit, but the shell sets this one on an inner div, so scan for the
  * closest element that carries a value rather than guessing a selector.
  */
-async function resolvedMonoFamily(page: import('@playwright/test').Page): Promise<string> {
+async function resolvedMonoFamily(page: Page): Promise<string> {
   return page.evaluate(() => {
     for (const el of Array.from(document.querySelectorAll('*'))) {
       const v = getComputedStyle(el).getPropertyValue('--mono-font-family')
@@ -29,19 +30,13 @@ async function resolvedMonoFamily(page: import('@playwright/test').Page): Promis
 
 test.describe('Preferences scope overrides', () => {
   test('overrides the theme on this device and clears back to the account default', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
-    const chip = dialog.getByTestId('scope-chip-appearance.theme')
-    await expect(chip).toHaveText(/Account default/)
-
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-    await expect(chip).toHaveText(/This device/)
+    await expect(preferenceScopeChip(page, 'appearance.theme')).toHaveText(/Account default/)
+    await setPreferenceScope(page, 'appearance.theme', 'device')
 
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Dark')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'theme')).toEqual({ name: 'default', mode: 'dark' })
 
     // The palette is the other half of the same key, so it lands on the same
@@ -49,15 +44,12 @@ test.describe('Preferences scope overrides', () => {
     await pickTheme(themeRow, 'nord')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'theme')).toEqual({ name: 'nord', mode: 'dark' })
 
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Use account default' }).click()
-    await expect(chip).toHaveText(/Account default/)
+    await setPreferenceScope(page, 'appearance.theme', 'account')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'theme')).toBeNull()
   })
 
   test('overrides the monospace font stack on this device and the UI follows', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     // The shell (which owns the font-family vars) mounts async; wait for
     // its carrier element before reading the resolved value.
     await page.waitForSelector('[style*="--mono-font-family"]')
@@ -68,9 +60,7 @@ test.describe('Preferences scope overrides', () => {
 
     // The whole {enabled, fonts} object is the override unit: switching the
     // toggle row onto the device tier overrides both halves at once.
-    const chip = dialog.getByTestId('scope-chip-appearance.monoFonts')
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
+    await setPreferenceScope(page, 'appearance.monoFonts', 'device')
 
     const toggleRow = dialog.locator('[data-setting-id="appearance.monoFonts"]')
     await toggleRow.locator('input[role="switch"]').check()
@@ -100,8 +90,7 @@ test.describe('Preferences scope overrides', () => {
     await expect.poll(() => getBrowserPrefJson(page, leapmuxServer.adminUserId, 'monoFontOverride')).toContain('E2EMonoFont')
 
     // Clearing the override restores the previous family.
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Use account default' }).click()
+    await setPreferenceScope(page, 'appearance.monoFonts', 'account')
     await expect.poll(() => resolvedMonoFamily(page)).toBe(before)
     await expect.poll(() => getBrowserPrefJson(page, leapmuxServer.adminUserId, 'monoFontOverride')).toBe('null')
   })

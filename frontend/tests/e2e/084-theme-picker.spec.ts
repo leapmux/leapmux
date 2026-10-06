@@ -3,7 +3,8 @@ import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { motion } from '../../src/styles/tokens'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
-import { getBrowserPrefValue, loginViaToken, openSettingsAt, pickTheme, resolvedColor } from './helpers/ui'
+import { openPreferencesAs, pickThemeMode, setPreferenceScope, themeModeRadio } from './helpers/preferences'
+import { getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme, resolvedColor } from './helpers/ui'
 
 /**
  * The palette actually reaches the page.
@@ -23,9 +24,7 @@ async function backgroundVar(page: import('@playwright/test').Page): Promise<str
 
 test.describe('Theme picker', () => {
   test('repaints the app and survives a reload', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
 
     const before = await backgroundVar(page)
@@ -39,7 +38,7 @@ test.describe('Theme picker', () => {
 
     // The mode is the other half of the same choice, and it selects the other
     // variant of the SAME palette.
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Dark')
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'catppuccin')
     await expect.poll(() => backgroundVar(page)).not.toBe(catppuccinLight)
@@ -55,18 +54,15 @@ test.describe('Theme picker', () => {
   test('states light positively, so the attribute is never merely absent', async ({ page, leapmuxServer }) => {
     // Light used to be "no data-theme attribute". Every palette now emits a
     // paired light and dark rule, and both halves need the positive statement.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    await openSettingsAt(page, 'appearance')
+    await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = page.locator('[data-setting-id="appearance.theme"]')
 
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Light')
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   })
 
   test('offers the picker in the no-workspace empty state and writes the same preference', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
 
     const emptyState = page.getByTestId('no-workspace-empty-state')
     await expect(emptyState).toBeVisible()
@@ -90,11 +86,10 @@ test.describe('Theme picker', () => {
   /**
    * Put a governed row back on the sentinel.
    *
-   * Every test in this file drives the same admin account, so a preference one
-   * of them writes is the state the next one starts from. These cases assert
-   * what happens FROM the following state, so they establish it rather than
-   * assume it -- which also makes them independent of the order Playwright
-   * happens to run them in.
+   * These cases assert what happens FROM the following state, so they
+   * establish it rather than assume it. The suite reset restores the account
+   * settings before each test, and the explicit pick keeps each case correct
+   * on its own.
    */
   async function resetToMatchUi(row: import('@playwright/test').Locator) {
     await pickTheme(row, 'match-ui')
@@ -107,9 +102,7 @@ test.describe('Theme picker', () => {
   // the right one -- a copy-paste between the two controls is invisible without
   // this.
   test('names the palettes Default borrows, per row', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     // Each row's own menu names the palette Default borrows for that surface.
     // The option is keyed by theme id, so this reads the LABEL the picker chose.
@@ -129,9 +122,7 @@ test.describe('Theme picker', () => {
   // -- that the colours reach the DOM and that the chip agrees with what the app
   // actually painted.
   test('previews the chosen palette in the chip beside its name', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
 
     await pickTheme(themeRow, 'gruvbox')
@@ -162,9 +153,7 @@ test.describe('Theme picker', () => {
   // The terminal is a SECOND appearance choice that defaults to following the
   // app. These cases are the requirement the split exists for.
   test('moves the terminal with the app while the terminal is left alone', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = dialog.locator('[data-setting-id="appearance.terminalTheme"]')
 
@@ -183,17 +172,15 @@ test.describe('Theme picker', () => {
   })
 
   test('lets the terminal take its own palette and mode', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = dialog.locator('[data-setting-id="appearance.terminalTheme"]')
 
     await pickTheme(themeRow, 'catppuccin')
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Light')
 
     await pickTheme(terminalRow, 'nord')
-    await terminalRow.getByRole('radiogroup', { name: 'Terminal theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await pickThemeMode(terminalRow, 'Terminal theme mode', 'Dark')
 
     // The app is unaffected by the terminal's choice.
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'catppuccin')
@@ -201,9 +188,7 @@ test.describe('Theme picker', () => {
     await expect(themeRow.getByTestId('theme-chooser-name')).toHaveAttribute('data-value', 'catppuccin')
 
     // And the terminal keeps its own, as one document under one scope chip.
-    const chip = terminalRow.getByTestId('scope-chip-appearance.terminalTheme')
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
+    await setPreferenceScope(page, 'appearance.terminalTheme', 'device')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'terminalTheme'))
       .toEqual({ name: 'nord', mode: 'dark' })
   })
@@ -212,13 +197,11 @@ test.describe('Theme picker', () => {
     // The two halves are ONE decision, so leaving "Match UI" has to answer for
     // both. It seeds the mode from the app, which is what makes detaching
     // change nothing on screen until the user adjusts it.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    await openSettingsAt(page, 'appearance')
+    await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = page.locator('[data-setting-id="appearance.theme"]')
     const terminalRow = page.locator('[data-setting-id="appearance.terminalTheme"]')
 
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Dark')
     await resetToMatchUi(terminalRow)
 
     await pickTheme(terminalRow, 'gruvbox')
@@ -226,9 +209,7 @@ test.describe('Theme picker', () => {
     await expect(terminalModes.getByRole('radio', { name: 'Dark' })).toBeEnabled()
     await expect(terminalModes.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
 
-    const chip = terminalRow.getByTestId('scope-chip-appearance.terminalTheme')
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
+    await setPreferenceScope(page, 'appearance.terminalTheme', 'device')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'terminalTheme'))
       .toEqual({ name: 'gruvbox', mode: 'dark' })
   })
@@ -237,37 +218,30 @@ test.describe('Theme picker', () => {
   // CSS -- Shiki bakes the colour into every token -- so this checks the row
   // exists, writes the ordinary preference, and actually repaints code.
   test('offers a syntax theme row that writes its own preference', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const syntaxRow = dialog.locator('[data-setting-id="appearance.syntaxTheme"]')
 
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     await expect(syntaxRow.getByTestId('theme-chooser-name')).toBeVisible()
 
-    // Pin the app's mode, so the seeded value below is a known one rather than
-    // whatever an earlier case in this file left on the shared account.
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()
+    // Pin the app's mode, so the seeded value below is a known one.
+    await pickThemeMode(themeRow, 'Theme mode', 'Light')
 
     // The syntax row is governed by the same one control the terminal row uses.
     await resetToMatchUi(syntaxRow)
     await expect(
-      syntaxRow.getByRole('radiogroup', { name: 'Syntax theme mode' }).getByRole('radio', { name: 'Light' }),
+      themeModeRadio(syntaxRow, 'Syntax theme mode', 'Light'),
     ).toBeDisabled()
 
     await pickTheme(syntaxRow, 'nord')
 
-    const chip = syntaxRow.getByTestId('scope-chip-appearance.syntaxTheme')
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
+    await setPreferenceScope(page, 'appearance.syntaxTheme', 'device')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'syntaxTheme'))
       .toEqual({ name: 'nord', mode: 'light' })
   })
 
   test('leaves the app and terminal alone when only the syntax theme changes', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const syntaxRow = dialog.locator('[data-setting-id="appearance.syntaxTheme"]')
 
@@ -282,21 +256,17 @@ test.describe('Theme picker', () => {
 
   test('keeps the palette when only the mode changes', async ({ page, leapmuxServer }) => {
     // The two halves are one key, so a partial write must not reset the other.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
 
     await pickTheme(themeRow, 'solarized')
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Dark')
 
     await expect(themeRow.getByTestId('theme-chooser-name')).toHaveAttribute('data-value', 'solarized')
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'solarized')
 
     // Whichever tier it landed on, the stored document carries both halves.
-    const chip = dialog.getByTestId('scope-chip-appearance.theme')
-    await chip.click()
-    await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
+    await setPreferenceScope(page, 'appearance.theme', 'device')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'theme'))
       .toEqual({ name: 'solarized', mode: 'dark' })
   })
@@ -317,9 +287,7 @@ test.describe('Theme picker', () => {
     // The SYNTAX row is what owns the code palette. Earlier cases in this file
     // pin it away from the UI theme, so driving the app's row here would assert
     // against a palette the syntax preference is no longer following.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    await openSettingsAt(page, 'appearance')
+    await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const syntaxRow = page.locator('[data-setting-id="appearance.syntaxTheme"]')
 
     await pickTheme(syntaxRow, 'gruvbox')
@@ -339,9 +307,7 @@ test.describe('Theme picker', () => {
    * and syntax -- and they share the testid.
    */
   async function openThemeMenu(page: Page, token: string) {
-    await loginViaToken(page, token)
-    await page.goto('/')
-    await openSettingsAt(page, 'appearance')
+    await openPreferencesAs(page, token, 'appearance')
     const panel = page.locator('#preferences-panel')
     const trigger = panel.getByRole('button', { name: 'Theme', exact: true })
     const menu = panel.locator('[data-testid="theme-chooser-name-menu"][aria-label="Theme"]')
@@ -480,26 +446,23 @@ test.describe('Theme picker', () => {
     // over a light page stays a light field, which put those tokens at a median
     // 1.97:1. The field has to carry them across the flip instead.
     //
-    // Both halves are established here rather than assumed, because every case
-    // in this file drives the same admin account.
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'appearance')
+    // Both halves are established here rather than assumed.
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
     const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
     const syntaxRow = dialog.locator('[data-setting-id="appearance.syntaxTheme"]')
 
-    await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()
+    await pickThemeMode(themeRow, 'Theme mode', 'Light')
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 
     // Agreeing first, so the flip below is a transition this case caused.
     await pickTheme(syntaxRow, 'nord')
-    await syntaxRow.getByRole('radiogroup', { name: 'Syntax theme mode' }).getByRole('radio', { name: 'Light' }).click()
+    await pickThemeMode(syntaxRow, 'Syntax theme mode', 'Light')
     await expect(page.locator('html')).toHaveAttribute('data-code-polarity', 'light')
     await expect
       .poll(() => resolvedColor(page, 'var(--code-block-background)').then(colorAlpha), { message: 'an agreeing syntax theme composites on its host' })
       .toBeCloseTo(CODE_BLOCK_TINT_PERCENT / 100, 4)
 
-    await syntaxRow.getByRole('radiogroup', { name: 'Syntax theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+    await pickThemeMode(syntaxRow, 'Syntax theme mode', 'Dark')
     await expect(page.locator('html')).toHaveAttribute('data-code-polarity', 'dark')
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
     await expect
@@ -540,12 +503,10 @@ test.describe('color-scheme follows the app', () => {
     test.use({ colorScheme: 'light' })
 
     test('resolves light-dark() to the dark branch once the app is dark', async ({ page, leapmuxServer }) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await page.goto('/')
-      await openSettingsAt(page, 'appearance')
+      await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
       const themeRow = page.locator('[data-setting-id="appearance.theme"]')
 
-      await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Dark' }).click()
+      await pickThemeMode(themeRow, 'Theme mode', 'Dark')
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
 
       await expect.poll(() => page.evaluate(() =>
@@ -558,12 +519,10 @@ test.describe('color-scheme follows the app', () => {
     test.use({ colorScheme: 'dark' })
 
     test('resolves light-dark() to the light branch once the app is light', async ({ page, leapmuxServer }) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await page.goto('/')
-      await openSettingsAt(page, 'appearance')
+      await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
       const themeRow = page.locator('[data-setting-id="appearance.theme"]')
 
-      await themeRow.getByRole('radiogroup', { name: 'Theme mode' }).getByRole('radio', { name: 'Light' }).click()
+      await pickThemeMode(themeRow, 'Theme mode', 'Light')
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 
       await expect.poll(() => page.evaluate(() =>
