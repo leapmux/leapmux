@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { solveCaptchaViaUI } from './captcha'
 
 // Run the real poll and matcher with a short unit-test deadline.
@@ -10,14 +11,17 @@ vi.mock('@playwright/test', async (importOriginal) => {
 
 function form(options: { widget?: boolean, enabled?: boolean, checked?: boolean, submit?: boolean } = {}) {
   let checked = options.checked ?? false
-  const checkbox = {
-    _apiName: 'Locator',
+  const checks: string[] = []
+  const checkbox = fakeLocator((check) => {
+    checks.push(check.expression)
+    return checked
+  }, {
     waitFor: vi.fn(async () => {}),
     isChecked: vi.fn(async () => checked),
     click: vi.fn(async () => { checked = true }),
-    _expect: vi.fn(async () => ({ matches: checked })),
     toString: () => 'captcha checkbox',
-  }
+    checks,
+  })
   const widget = {
     count: vi.fn(async () => options.widget ? 1 : 0),
     locator: vi.fn(() => checkbox),
@@ -45,7 +49,7 @@ describe('captcha form readiness', () => {
     expect(widget.count.mock.calls.length).toBeGreaterThan(1)
     expect(checkbox.waitFor).toHaveBeenCalledWith({ state: 'visible' })
     expect(checkbox.click).toHaveBeenCalledExactlyOnceWith({ force: true })
-    expect(checkbox._expect).toHaveBeenCalledWith('to.be.checked', expect.any(Object))
+    expect(checkbox.checks).toContain('to.be.checked')
   })
 
   it('keeps an already solved captcha checked', async () => {

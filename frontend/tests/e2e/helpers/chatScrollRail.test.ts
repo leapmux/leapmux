@@ -1,25 +1,13 @@
-import type { Locator, Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import type { ModelScript } from './modelScriptFixture'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { recordingLocator } from '~/test-support/fakeLocator'
 import { RAIL, RAIL_FILLER_MESSAGE, RAIL_FILLER_PREVIEW, seedOverflowingConversation } from './chatScrollRail'
 import { sendScriptedTurn } from './scriptedTurn'
 import { userBubbles, waitForAgentStarted } from './ui'
 
 vi.mock('./scriptedTurn', () => ({ sendScriptedTurn: vi.fn(async () => 0) }))
 vi.mock('./ui', () => ({ userBubbles: vi.fn(), waitForAgentStarted: vi.fn(async () => {}) }))
-
-/** A locator whose assertions append `<name>:<expression>[=<count>]` to `log` and pass when `passes` says so. */
-function assertingLocator(name: string, log: string[], passes: () => boolean = () => true): Locator {
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string, options: { expectedNumber?: number }) {
-      log.push(`${name}:${expression}${options.expectedNumber === undefined ? '' : `=${options.expectedNumber}`}`)
-      const matches = passes()
-      return { matches, received: matches, log: [], timedOut: false }
-    }
-  }
-  return new FakeLocator() as unknown as Locator
-}
 
 const script = {} as ModelScript
 
@@ -32,11 +20,11 @@ function seedingPage(log: string[], railShows = true): Page {
     log.push(`turn ${turn?.answer}`)
     return 0
   })
-  vi.mocked(userBubbles).mockReturnValue(assertingLocator('users', log))
+  vi.mocked(userBubbles).mockReturnValue(recordingLocator('users', log))
   return {
     locator: (selector: string) => {
       expect(selector).toBe(RAIL)
-      return assertingLocator('rail', log, () => railShows)
+      return recordingLocator('rail', log, () => railShows)
     },
   } as unknown as Page
 }

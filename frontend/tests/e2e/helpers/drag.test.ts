@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { boxCenter, dragSidebarLeafTo, mouseDragOnto } from './drag'
 
 vi.mock('./ui', () => ({
@@ -33,15 +34,11 @@ function recordingPage(log: string[]): Page {
 
 /** A row whose class assertions append to `log` and answer from `dragging`. */
 function draggedRow(log: string[], dragging: () => boolean): Locator {
-  // Playwright's `expect` takes an object as a locator when its `_apiName` is `Locator`.
-  class FakeRow {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string, options: { isNot: boolean }) {
-      log.push(`${options.isNot ? 'not ' : ''}${expression}`)
-      return { matches: dragging(), received: dragging() ? 'dragging' : 'still', log: [], timedOut: false }
-    }
-  }
-  return new FakeRow() as unknown as Locator
+  return fakeLocator((check) => {
+    log.push(`${check.isNot ? 'not ' : ''}${check.expression}`)
+    const matches = dragging()
+    return { matches, received: matches ? 'dragging' : 'still' }
+  })
 }
 
 describe('boxCenter', () => {

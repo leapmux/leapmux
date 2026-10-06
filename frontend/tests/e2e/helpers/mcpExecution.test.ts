@@ -9,6 +9,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { exerciseMcpEcho, invokeNativeMcpTool, nativeMcpAnswer, withNativeMcpFormAgent } from './mcpExecution'
 import { MCP_FORM_SERVER_NAME } from './mcpFormServer'
 
@@ -57,14 +58,10 @@ vi.mock('./runDirectory', () => ({ createTestDirectory: (prefix: string) => mkdt
 
 /** A fake locator whose Playwright checks pass and leave a record. */
 function passingLocator(name: string): Locator {
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string) {
-      run.events.push(`${name} ${expression}`)
-      return { matches: true, received: true, log: [], timedOut: false }
-    }
-  }
-  return new FakeLocator() as unknown as Locator
+  return fakeLocator((check) => {
+    run.events.push(`${name} ${check.expression}`)
+    return true
+  })
 }
 
 function context(provider = AgentProvider.CLAUDE_CODE): ManagedNativeScenarioContext {

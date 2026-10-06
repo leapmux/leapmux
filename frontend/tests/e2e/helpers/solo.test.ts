@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { SoloServerHandle } from './devServer'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocatorTree } from '~/test-support/fakeLocator'
 import { startSoloServer, stopSoloServer } from './devServer'
 import { completeSoloPasswordSetup, signInToSoloViaUI, SOLO_PASSWORD, soloServerFixtures } from './solo'
 
@@ -11,46 +12,18 @@ vi.mock('./devServer', () => ({ startSoloServer: vi.fn(), stopSoloServer: vi.fn(
  * and `answer` decides it from the path.
  */
 function fakePage(log: string[], answer: (expression: string, path: string) => boolean = () => true): Page {
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    constructor(readonly path: string) {}
-    getByTestId(id: string) {
-      return new FakeLocator(`${this.path} >> testid=${id}`)
-    }
-
-    getByLabel(label: string) {
-      return new FakeLocator(`${this.path} >> label=${label}`)
-    }
-
-    getByRole(role: string, options: { name: string }) {
-      return new FakeLocator(`${this.path} >> role=${role}[${options.name}]`)
-    }
-
-    async fill(value: string) {
-      log.push(`fill ${this.path} with ${value}`)
-    }
-
-    async click() {
-      log.push(`click ${this.path}`)
-    }
-
-    async reload() {
-      log.push('reload')
-    }
-
-    context() {
-      return { clearCookies: async () => {
+  return fakeLocatorTree({
+    log,
+    answer,
+    page: {
+      reload: async () => {
+        log.push('reload')
+      },
+      context: () => ({ clearCookies: async () => {
         log.push('clear cookies')
-      } }
-    }
-
-    async _expect(expression: string, options: { isNot: boolean, expectedValue?: unknown, expressionArg?: unknown }) {
-      log.push(`${options.isNot ? 'not ' : ''}${expression} ${this.path}`)
-      const matches = answer(expression, this.path)
-      return { matches, received: matches, log: [], timedOut: false }
-    }
-  }
-  return new FakeLocator('page') as unknown as Page
+      } }),
+    },
+  }).page
 }
 
 beforeEach(() => {
@@ -68,7 +41,7 @@ describe('completeSoloPasswordSetup', () => {
       `to.be.visible ${gate}`,
       `fill ${gate} >> label=New Password with ${SOLO_PASSWORD}`,
       `fill ${gate} >> label=Confirm Password with ${SOLO_PASSWORD}`,
-      `click ${gate} >> role=button[Set Password]`,
+      `click ${gate} >> role=button[name=Set Password]`,
       `to.be.hidden ${gate}`,
     ])
   })
@@ -81,7 +54,7 @@ describe('completeSoloPasswordSetup', () => {
 })
 
 describe('signInToSoloViaUI', () => {
-  const signIn = 'page >> role=button[Sign in]'
+  const signIn = 'page >> role=button[name=Sign in]'
 
   it('drops the session, reloads, checks the fixed username, and signs in with the password', async () => {
     const log: string[] = []

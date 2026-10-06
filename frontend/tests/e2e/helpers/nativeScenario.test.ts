@@ -1,7 +1,8 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { AgentInfoSchema, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   currentNativeAgent,
@@ -362,21 +363,11 @@ describe('selectedAgentTab', () => {
 
 /** A page whose selected agent tab is visible and holds `tabId`. Its `toBeVisible` checks read the fake locator. */
 function pageWithSelectedTab(tabId: string | null): Page {
-  class Locator {
-    readonly _apiName = 'Locator'
-    async _expect() {
-      return { matches: true, received: true, log: [], timedOut: false }
-    }
-
-    first() {
-      return this
-    }
-
-    async getAttribute(name: string) {
-      return name === 'data-tab-id' ? tabId : null
-    }
-  }
-  return Object.assign({} as Page, { locator: () => new Locator() })
+  const tab: Locator = fakeLocator(undefined, {
+    first: (): Locator => tab,
+    getAttribute: async (name: string) => name === 'data-tab-id' ? tabId : null,
+  })
+  return Object.assign({} as Page, { locator: () => tab })
 }
 
 describe('selectedAgentTabId', () => {

@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { COPILOT_PERMISSION_JUDGE_RULE, exerciseCopilotPresetSwitch } from './permissionScenario'
 
@@ -23,15 +24,10 @@ vi.mock('../helpers/ui', async importOriginal => ({
 
 /** A fake row of the session mode menu. Its visibility check passes when the test lists the row as shown. */
 function modeRow(testId: string): Locator {
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string) {
-      settings.events.push(`${testId} ${expression}`)
-      const shown = settings.shownModes.includes(testId)
-      return { matches: shown, received: shown, log: [], timedOut: false }
-    }
-  }
-  return new FakeLocator() as unknown as Locator
+  return fakeLocator((check) => {
+    settings.events.push(`${testId} ${check.expression}`)
+    return settings.shownModes.includes(testId)
+  })
 }
 
 describe('COPILOT_PERMISSION_JUDGE_RULE', () => {

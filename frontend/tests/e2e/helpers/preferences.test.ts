@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocatorTree } from '~/test-support/fakeLocator'
 import { openPreferencesAs, overrideThemeOnThisDevice, pickThemeMode, setPreferenceScope, themeModeRadio } from './preferences'
 import { openAppAs, openSettingsAt, pickTheme } from './ui'
 
@@ -17,38 +18,16 @@ interface FakeTree {
  */
 function fakeTree(answer: (expression: string, path: string) => boolean = () => true): FakeTree {
   const log: string[] = []
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    constructor(readonly path: string) {}
-    getByTestId(id: string) {
-      return new FakeLocator(`${this.path} >> testid=${id}`)
-    }
-
-    getByRole(role: string, options: { name: string }) {
-      return new FakeLocator(`${this.path} >> ${role}[${options.name}]`)
-    }
-
-    locator(selector: string) {
-      return new FakeLocator(`${this.path} >> ${selector}`)
-    }
-
-    async click() {
-      log.push(`click ${this.path}`)
-    }
-
-    get keyboard() {
-      return { press: async (key: string) => {
+  const tree = fakeLocatorTree({
+    log,
+    answer,
+    page: {
+      keyboard: { press: async (key: string) => {
         log.push(`press ${key}`)
-      } }
-    }
-
-    async _expect(expression: string, options: { isNot: boolean }) {
-      log.push(`${options.isNot ? 'not ' : ''}${expression} ${this.path}`)
-      const matches = answer(expression, this.path)
-      return { matches, received: matches ? 'expected' : 'other', log: [], timedOut: false }
-    }
-  }
-  return { page: new FakeLocator('page') as unknown as Page, log, node: path => new FakeLocator(path) as unknown as Locator }
+      } },
+    },
+  })
+  return { page: tree.page, log, node: tree.node }
 }
 
 beforeEach(() => {
@@ -78,7 +57,7 @@ describe('setPreferenceScope', () => {
   ])('selects the $scope tier through the chip and requires the chip to show it', async ({ scope, item }) => {
     const { page, log } = fakeTree()
     await setPreferenceScope(page, 'appearance.theme', scope)
-    expect(log).toEqual([`click ${chip}`, `click page >> menuitemradio[${item}]`, `to.have.text ${chip}`])
+    expect(log).toEqual([`click ${chip}`, `click page >> role=menuitemradio[name=${item}]`, `to.have.text ${chip}`])
   })
 
   it('fails with the setting and the tier when the chip does not follow', async () => {
@@ -92,9 +71,9 @@ describe('pickThemeMode', () => {
     const { node, log } = fakeTree()
     const row = node('row')
     expect((themeModeRadio(row, 'Terminal theme mode', 'Dark') as unknown as { path: string }).path)
-      .toBe('row >> radiogroup[Terminal theme mode] >> radio[Dark]')
+      .toBe('row >> role=radiogroup[name=Terminal theme mode] >> role=radio[name=Dark]')
     await pickThemeMode(row, 'Theme mode', 'Light')
-    expect(log).toEqual(['click row >> radiogroup[Theme mode] >> radio[Light]'])
+    expect(log).toEqual(['click row >> role=radiogroup[name=Theme mode] >> role=radio[name=Light]'])
   })
 })
 
@@ -110,7 +89,7 @@ describe('overrideThemeOnThisDevice', () => {
     expect(openSettingsAt).toHaveBeenCalledWith(page, 'appearance')
     expect(log).toEqual([
       'click page >> testid=scope-chip-appearance.theme',
-      'click page >> menuitemradio[Override on this device]',
+      'click page >> role=menuitemradio[name=Override on this device]',
       'to.have.text page >> testid=scope-chip-appearance.theme',
       'pick nord in dialog >> [data-setting-id="appearance.theme"]',
       'to.have.attribute.value page >> html',

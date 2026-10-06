@@ -1,10 +1,10 @@
-import type { Locator } from '@playwright/test'
 import type { MockModelMatcher, MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { NativeChildProfile, NativeChildScript, NativeChildScriptContext, NativeChildTask, ProfiledNativeChild, RunningChildOptions } from './runningChildProof'
 import type { RunningNativeChild } from './unsupportedSubagent'
 import { describe, expect, it } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from './mockModelScenario'
@@ -440,27 +440,14 @@ describe('heldChildOptions', () => {
   })
 })
 
-/**
- * A row that Playwright's `expect` reads through `_expect`, as it reads a real locator. Every check passes, and the row
- * logs each check, each reload of its page, and the finish of its child.
- */
-class LoggingRow {
-  readonly _apiName = 'Locator'
-  constructor(private readonly log: string[]) {}
-
-  async _expect(expression: string, options: { expressionArg?: string, expectedText?: Array<{ string?: string }> }) {
-    this.log.push(`${expression}${options.expressionArg ? ` ${options.expressionArg}` : ''}=${options.expectedText?.[0]?.string ?? ''}`)
-    return { matches: true, received: '', log: [], timedOut: false }
-  }
-
-  page() {
-    return { reload: async () => this.log.push('reload') }
-  }
-}
-
 describe('expectRunningChildCompletes', () => {
+  /** A child whose row passes each check and logs it, with each reload of its page and the finish of the child. */
   function child(log: string[], ids: { childId: string, parentId: string } = { childId: 'child', parentId: 'parent' }): RunningNativeChild {
-    return { row: new LoggingRow(log) as unknown as Locator, ...ids, finish: async () => {
+    const row = fakeLocator((check) => {
+      log.push(`${check.expression}${check.expressionArg ? ` ${String(check.expressionArg)}` : ''}=${check.expectedText?.[0]?.string ?? ''}`)
+      return true
+    }, { page: () => ({ reload: async () => log.push('reload') }) })
+    return { row, ...ids, finish: async () => {
       log.push('finish')
     } }
   }

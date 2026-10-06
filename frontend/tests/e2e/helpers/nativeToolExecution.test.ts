@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { stepRequest } from './mockModelScript'
@@ -299,14 +300,10 @@ describe('approveNativeToolsUntil', () => {
 /** A page whose diff locator records its filters, and whose first match reports `visible`. */
 function diffPage(visible: boolean) {
   const log: string[] = []
-  class FirstDiff {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string) {
-      log.push(expression)
-      return { matches: visible, received: visible, log: [], timedOut: false }
-    }
-  }
-  const first = new FirstDiff() as unknown as Locator
+  const first = fakeLocator((check) => {
+    log.push(check.expression)
+    return visible
+  })
   const diff: Locator = guardedBrowserHandle<Locator>({
     locator: (selector: string) => {
       log.push(selector)

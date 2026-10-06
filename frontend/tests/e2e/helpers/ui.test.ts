@@ -4,6 +4,7 @@ import type { PermissionShortcutState } from './ui'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
+import { fakeLocator, fakeLocatorTree, recordingLocator } from '~/test-support/fakeLocator'
 import { ampControls } from '../../../src/components/chat/providers/amp/pluginControls'
 import { permissionPresetAvailable } from '../../../src/components/chat/providerSettings'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
@@ -159,24 +160,21 @@ interface PendingSettingsRequest {
 }
 
 function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?: boolean, pendingSettings?: PendingSettingsRequest, pageUrl?: string } = {}): Page {
-  class Locator {
-    readonly _apiName = 'Locator'
-    constructor(private readonly matches = true, private readonly pendingSettings?: PendingSettingsRequest) {}
-    async _expect() {
-      if (this.pendingSettings) {
-        this.pendingSettings.onWait()
-        await this.pendingSettings.completion
-      }
-      return { matches: this.matches, received: true, log: [], timedOut: false }
+  /** A locator whose checks answer `matches`, after the pending settings request, when one is given, completes. */
+  const catalogLocator = (matches = true, pendingSettings?: PendingSettingsRequest) => fakeLocator(async () => {
+    if (pendingSettings) {
+      pendingSettings.onWait()
+      await pendingSettings.completion
     }
-  }
+    return matches
+  })
   const activeTab: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
     first: () => activeTab,
     filter: () => activeTab,
     getAttribute: async attribute => attribute === 'data-tab-id' ? 'selected-native-agent' : attribute === 'data-tab-type' ? 'agent' : null,
-  }, new Locator())
-  const spinner = opaqueHandle<PlaywrightLocator>({}, new Locator(false, options.pendingSettings))
-  const presetAction: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({ getByTestId: () => presetAction }, new Locator())
+  }, catalogLocator())
+  const spinner = opaqueHandle<PlaywrightLocator>({}, catalogLocator(false, options.pendingSettings))
+  const presetAction: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({ getByTestId: () => presetAction }, catalogLocator())
   const context = opaqueHandle<BrowserContext>({ cookies: async () => [{ name: 'leapmux-session', value: 'unit-native-session', domain: 'localhost', path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Lax' }] })
   native.agent.mockReset().mockResolvedValue(options.agent ?? settingsAgent())
   vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
@@ -347,19 +345,12 @@ describe('waitForNativeSettingsHydrated', () => {
 
   /** A page whose plus menu offers the `offered` group triggers. It records each group that the helper reads. */
   function pageWithSettingsMenu(offered: readonly string[]): { page: Page, read: string[] } {
-    class Locator {
-      readonly _apiName = 'Locator'
-      constructor(private readonly matches: boolean) {}
-      async _expect() {
-        return { matches: this.matches, received: true, log: [], timedOut: false }
-      }
-    }
     const read: string[] = []
     const activeTab: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
       first: () => activeTab,
       getAttribute: async attribute => attribute === 'data-tab-id' ? 'selected-native-agent' : null,
-    }, new Locator(true))
-    const plus = opaqueHandle<PlaywrightLocator>({ getAttribute: async () => 'true' }, new Locator(true))
+    }, fakeLocator(() => true))
+    const plus = opaqueHandle<PlaywrightLocator>({ getAttribute: async () => 'true' }, fakeLocator(() => true))
     const context = opaqueHandle<BrowserContext>({ cookies: async () => [{ name: 'leapmux-session', value: 'unit-native-session', domain: 'localhost', path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Lax' }] })
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
     const page = opaqueHandle<Page>({
@@ -370,11 +361,11 @@ describe('waitForNativeSettingsHydrated', () => {
         if (selector.includes('aria-selected="true"'))
           return activeTab
         if (selector === '[data-testid="settings-loading-spinner"]')
-          return opaqueHandle<PlaywrightLocator>({}, new Locator(false))
+          return opaqueHandle<PlaywrightLocator>({}, fakeLocator(() => false))
         if (selector === '[data-testid="composer-plus-trigger"]')
           return plus
         if (selector === '[data-testid="composer-plus-popover"]')
-          return opaqueHandle<PlaywrightLocator>({}, new Locator(true))
+          return opaqueHandle<PlaywrightLocator>({}, fakeLocator(() => true))
         const group = /^\[data-testid="composer-group-([^"]+)"\]$/.exec(selector)?.[1]
         if (group !== undefined) {
           return opaqueHandle<PlaywrightLocator>({ isVisible: async () => {
@@ -455,21 +446,18 @@ describe('waitForAgentIdle', () => {
   function idlePage(): { page: Page, timeouts: number[], selectors: string[] } {
     const timeouts: number[] = []
     const selectors: string[] = []
-    class Locator {
-      readonly _apiName = 'Locator'
-      async waitFor() {
-        throw new Error('The thinking indicator never appeared.')
-      }
-
-      async _expect(_expression: string, options: { timeout: number }) {
-        timeouts.push(options.timeout)
-        return { matches: false, received: false, log: [], timedOut: false }
-      }
-    }
     const page = opaqueHandle<Page>({
       locator: (selector: string) => {
         selectors.push(selector)
-        return new Locator() as unknown as PlaywrightLocator
+        return fakeLocator((check) => {
+          if (check.timeout !== undefined)
+            timeouts.push(check.timeout)
+          return false
+        }, {
+          waitFor: async () => {
+            throw new Error('The thinking indicator never appeared.')
+          },
+        })
       },
     })
     return { page, timeouts, selectors }
@@ -623,14 +611,7 @@ describe('chat and tab locators', () => {
 
 /** A locator whose assertions record their expression and answer from `answer`. */
 function assertingLocator(name: string, log: string[], answer: (expression: string, options: { expectedNumber?: number }) => boolean, methods: Partial<PlaywrightLocator> = {}): PlaywrightLocator {
-  class Locator {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string, options: { expectedNumber?: number }) {
-      log.push(`${name}:${expression}${options.expectedNumber === undefined ? '' : `=${options.expectedNumber}`}`)
-      return { matches: answer(expression, options), received: true, log: [], timedOut: false }
-    }
-  }
-  return opaqueHandle<PlaywrightLocator>(methods, new Locator())
+  return opaqueHandle<PlaywrightLocator>(methods, recordingLocator(name, log, check => answer(check.expression, check)))
 }
 
 /**
@@ -933,12 +914,7 @@ describe('expectPermissionShortcuts', () => {
       if (kind !== 'smart' && kind !== 'bypass')
         throw new Error(`The menu has no shortcut ${String(testId)}.`)
       return shortcut(kind)
-    } }, new (class {
-      readonly _apiName = 'Locator'
-      async _expect() {
-        return { matches: true, received: true, log: [], timedOut: false }
-      }
-    })())
+    } }, fakeLocator())
     return { page: plusMenuPage({ popover, log }), log }
   }
 
@@ -1157,89 +1133,20 @@ interface FakeTree {
 
 function fakeTree(answer: (expression: string, path: string) => boolean = () => true): FakeTree {
   const log: string[] = []
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    constructor(readonly path: string) {}
-    locator(selector: string) {
-      return new FakeLocator(`${this.path} >> ${selector}`)
-    }
-
-    first() {
-      return new FakeLocator(`${this.path}.first`)
-    }
-
-    nth(index: number) {
-      return new FakeLocator(`${this.path}.nth(${index})`)
-    }
-
-    filter(options: { hasText?: string | RegExp, has?: FakeLocator, visible?: boolean }) {
-      const parts = [
-        options.hasText === undefined ? '' : `hasText=${String(options.hasText)}`,
-        options.has === undefined ? '' : `has=(${options.has.path})`,
-        options.visible === undefined ? '' : `visible=${options.visible}`,
-      ].filter(Boolean)
-      return new FakeLocator(`${this.path}[${parts.join(' ')}]`)
-    }
-
-    getByRole(role: string, options?: { name?: string, exact?: boolean }) {
-      return new FakeLocator(`${this.path} >> role=${role}${options?.name === undefined ? '' : `[name=${options.name}${options.exact ? ' exact' : ''}]`}`)
-    }
-
-    getByTestId(testId: string) {
-      return new FakeLocator(`${this.path} >> testid=${testId}`)
-    }
-
-    getByText(text: string, options?: { exact?: boolean }) {
-      return new FakeLocator(`${this.path} >> text=${text}${options?.exact ? ' exact' : ''}`)
-    }
-
-    getByLabel(label: string) {
-      return new FakeLocator(`${this.path} >> label=${label}`)
-    }
-
-    or(other: FakeLocator) {
-      return new FakeLocator(`(${this.path} | ${other.path})`)
-    }
-
-    async hover() {
-      log.push(`hover ${this.path}`)
-    }
-
-    async fill(value: string) {
-      log.push(`fill ${this.path} with ${value}`)
-    }
-
-    async goto(url: string) {
-      log.push(`goto ${url}`)
-    }
-
-    context() {
-      return { addCookies: async (cookies: Array<{ name: string, value: string }>) => {
+  const { page } = fakeLocatorTree({
+    log,
+    answer,
+    attribute: (name, path) => answer(`attribute ${name}`, path) ? 'workspace-item-ws-active' : 'not-a-workspace-row',
+    page: {
+      goto: async (url: string) => {
+        log.push(`goto ${url}`)
+      },
+      context: () => ({ addCookies: async (cookies: Array<{ name: string, value: string }>) => {
         log.push(`cookies ${cookies.map(cookie => `${cookie.name}=${cookie.value}`).join(', ')}`)
-      } }
-    }
-
-    async click() {
-      log.push(`click ${this.path}`)
-    }
-
-    async isVisible() {
-      return answer('isVisible', this.path)
-    }
-
-    async getAttribute(name: string) {
-      log.push(`read ${name} ${this.path}`)
-      return answer(`attribute ${name}`, this.path) ? 'workspace-item-ws-active' : 'not-a-workspace-row'
-    }
-
-    async _expect(expression: string, options: { isNot: boolean }) {
-      log.push(`${options.isNot ? 'not ' : ''}${expression} ${this.path}`)
-      const matches = answer(expression, this.path)
-      return { matches, received: matches, log: [], timedOut: false }
-    }
-  }
-  const root = new FakeLocator('page') as unknown as Page
-  return { log, root }
+      } }),
+    },
+  })
+  return { log, root: page }
 }
 
 describe('sidebarSectionHeader', () => {
@@ -1251,27 +1158,20 @@ describe('sidebarSectionHeader', () => {
 })
 
 describe('expandSidebarSection', () => {
-  function section(closed: { value: boolean }, log: string[]) {
-    class Section {
-      readonly _apiName = 'Locator'
-      async evaluate() {
-        return !closed.value
-      }
-
-      locator(selector: string) {
+  function section(closed: { value: boolean }, log: string[]): PlaywrightLocator {
+    return fakeLocator((check) => {
+      log.push(`${check.isNot ? 'not ' : ''}${check.expression}`)
+      return closed.value
+    }, {
+      evaluate: async () => !closed.value,
+      locator: (selector: string) => {
         expect(selector).toBe('> [role="button"]')
         return { click: async () => {
           log.push('click header')
           closed.value = false
         } }
-      }
-
-      async _expect(expression: string, options: { isNot: boolean, expressionArg?: string }) {
-        log.push(`${options.isNot ? 'not ' : ''}${expression}`)
-        return { matches: closed.value, received: closed.value, log: [], timedOut: false }
-      }
-    }
-    return new Section() as unknown as PlaywrightLocator
+      },
+    }) as unknown as PlaywrightLocator
   }
 
   it('opens a closed section and requires that it is open', async () => {

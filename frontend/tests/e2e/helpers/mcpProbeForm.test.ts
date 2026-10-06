@@ -14,6 +14,7 @@ import { requestInstanceId } from '~/stores/control.store'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 import { exerciseMcpProbeFormRoundTrip, mcpProbeFormDraftSaved } from './mcpProbeForm'
@@ -250,20 +251,16 @@ describe('the saved answers of the probe form', () => {
 
 /** A fake locator that records each Playwright check and each click, and passes each check. */
 function assertingLocator(name: string, children: Record<string, Locator> = {}): Locator {
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string) {
-      trip.events.push(`${name} ${expression}`)
-      return { matches: true, received: true, log: [], timedOut: false }
-    }
-  }
-  return Object.assign(new FakeLocator(), {
+  return fakeLocator((check) => {
+    trip.events.push(`${name} ${check.expression}`)
+    return true
+  }, {
     getByLabel: (label: string) => children[label] ?? assertingLocator(`${name} > ${label}`),
     getByRole: (_role: string, options: { name: string }) => children[options.name] ?? assertingLocator(`${name} > ${options.name}`),
     filter: () => assertingLocator(name, children),
     fill: async (value: string) => { trip.events.push(`${name} fill ${value}`) },
     click: async () => { trip.events.push(`${name} click`) },
-  }) as unknown as Locator
+  })
 }
 
 /** The saved answers of `fillMcpProbeForm`: the count 0, the boolean false, and the color constant "b" (Blue). */

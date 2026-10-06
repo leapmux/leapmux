@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBypassPermissions, exerciseSmartPermissions } from './nativeBypassPermissions'
 
@@ -43,14 +44,10 @@ vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider,
 
 /** A fake locator whose Playwright checks pass and leave a record. */
 function passingLocator(name: string): Locator {
-  class FakeLocator {
-    readonly _apiName = 'Locator'
-    async _expect(expression: string) {
-      fake.events.push(`${name} ${expression}`)
-      return { matches: true, received: true, log: [], timedOut: false }
-    }
-  }
-  return new FakeLocator() as unknown as Locator
+  return fakeLocator((check) => {
+    fake.events.push(`${name} ${check.expression}`)
+    return true
+  })
 }
 
 const scratchRoot = resolve(process.cwd(), '../.tmp')
