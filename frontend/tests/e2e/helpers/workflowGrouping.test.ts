@@ -7,6 +7,7 @@ import type { RunningNativeChild } from './unsupportedSubagent'
 import type { UngroupedChildSlot, UngroupedChildTask } from './workflowGrouping'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WORKFLOW_TOOL_NAMES } from './providerToolCalls'
 import {
   exerciseUngroupedNativeChildren,
   expectNoWorkflowToolOffered,
@@ -184,7 +185,7 @@ describe('expectNoWorkflowToolOffered', () => {
     await expectNoWorkflowToolOffered(script([request(['Workflow'], undefined), request(['Agent', 'Read'], 0)]))
   })
 
-  it.each(['Workflow', 'SubagentWorkflow', 'workflow'])('refuses a parent request that offers %s', async (tool) => {
+  it.each(WORKFLOW_TOOL_NAMES)('refuses a parent request that offers %s', async (tool) => {
     await expect(expectNoWorkflowToolOffered(script([request(['Agent', tool], 0)]))).rejects.toThrow('the parent request offers no workflow tool')
   })
 

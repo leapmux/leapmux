@@ -9,6 +9,7 @@ import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated
 import { withCleanup } from './cleanup'
 import { nativeModelToolNames } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
+import { WORKFLOW_TOOL_NAMES } from './providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from './subagentRegistry'
 
 /** Find the group heading before a row, past other rows in that group. */
@@ -111,18 +112,16 @@ export async function expectOpaqueNativeWorkflowResult(
   await proveRegistry()
 }
 
-/** The names of the tools that run a native workflow. A provider that offers one of them can group its children. */
-export const NATIVE_WORKFLOW_TOOL_NAMES: readonly string[] = ['Workflow', 'SubagentWorkflow', 'workflow']
-
 /**
- * Require that the first ordered request of the scenario offers no workflow tool.
+ * Require that the first ordered request of the scenario offers no workflow tool of any provider
+ * (`WORKFLOW_TOOL_NAMES` of `./providerToolCalls.ts`).
  * In a scenario that starts by spawning a child, that request is the spawn request of the parent.
  */
 export async function expectNoWorkflowToolOffered(modelScript: Pick<ModelScript, 'status'>): Promise<void> {
   const parentRequest = (await modelScript.status()).requests.find(record => record.stepIndex !== undefined)
   if (!parentRequest)
     throw new Error('The native child sequence contains no parent model request.')
-  const offered = nativeModelToolNames(parentRequest).filter(name => NATIVE_WORKFLOW_TOOL_NAMES.includes(name))
+  const offered = nativeModelToolNames(parentRequest).filter(name => WORKFLOW_TOOL_NAMES.includes(name))
   expect(offered, 'the parent request offers no workflow tool').toEqual([])
 }
 
