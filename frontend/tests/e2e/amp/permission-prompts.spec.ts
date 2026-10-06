@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampTest } from '../amp-fixtures'
 import { bashToolCall, editToolCall } from '../helpers/providerToolCalls'
-import { chatText, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { chatText, controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
  * The test answers real native permission requests. Allow executes the tool. Deny must reach the next native model request as a refusal.
@@ -25,13 +25,13 @@ ampTest.describe('Amp permissions', () => {
     // The call waits on the banner, so the second step waits too.
     await modelScript.waitForSteps(1)
 
-    await expect(visibleControlBanner(page)).toContainText('echo "amp-$((40 + 2))"')
-    await expect(visibleControlBanner(page)).toContainText('shell_command')
+    await expect(controlBanner(page)).toContainText('echo "amp-$((40 + 2))"')
+    await expect(controlBanner(page)).toContainText('shell_command')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('amp-42')
   })
 
@@ -43,7 +43,7 @@ ampTest.describe('Amp permissions', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the other arithmetic command.'))
     await modelScript.waitForSteps(1)
-    await expect(visibleControlBanner(page)).toContainText('echo "amp-$((50 + 5))"')
+    await expect(controlBanner(page)).toContainText('echo "amp-$((50 + 5))"')
 
     // Text in the composer turns Deny into Send feedback, which refuses with it.
     await page.getByTestId('composer-editor').locator('.ProseMirror').fill('Use the clean target instead.')
@@ -53,7 +53,7 @@ ampTest.describe('Amp permissions', () => {
 
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     // The helper refused with the reason, and Amp handed it to the model as the
     // call's result. The command never ran.
     const followUp = status.requests.find(request => request.stepIndex === 1)
@@ -73,7 +73,7 @@ ampTest.describe('Amp permissions', () => {
     await expect(failed).toContainText('Allow All')
     // The agent refused before Amp started, so no model call happened.
     expect((await modelScript.status()).requests).toHaveLength(0)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
   })
 
   ampTest('asks before an edit of a file that Amp guards', async ({ askingAmpWorkspace, page, modelScript }) => {
@@ -88,7 +88,7 @@ ampTest.describe('Amp permissions', () => {
 
     // Amp's own guard would ask through a dialog that stream-JSON mode cannot
     // answer, and the session would end. The banner asks instead.
-    await expect(visibleControlBanner(page)).toContainText('apply_patch')
+    await expect(controlBanner(page)).toContainText('apply_patch')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)

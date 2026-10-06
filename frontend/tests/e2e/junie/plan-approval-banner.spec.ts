@@ -8,7 +8,7 @@ import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helper
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { junieSubmitPlanToolCall } from '../helpers/providerToolCalls'
-import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { chooseSettingsOption, controlBanner, expectSettingsChip, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { expect, junieTest } from '../junie-fixtures'
 import { exerciseNativePlanReview } from './planScenarios'
 
@@ -49,7 +49,7 @@ junieTest.describe('Junie plan review', () => {
       })
       await sendMessage(page, modelScript.prompt('Plan the change.'))
       await modelScript.waitForSteps(1)
-      const banner = visibleControlBanner(page)
+      const banner = controlBanner(page)
       await expect(banner).toContainText('Implement this plan?')
       await expect(banner).toContainText('Keep this plan unimplemented')
       await expect.poll(() => watch.controls().length).toBeGreaterThan(0)

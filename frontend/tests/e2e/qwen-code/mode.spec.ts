@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, chooseSettingsOption, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code settings and goal', () => {
@@ -75,7 +75,7 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the scripted protected write under Bypass permissions.'))
     await modelScript.waitForSteps(6)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     expect(readFileSync(protectedFile, 'utf8')).toBe('{"proof":"QWEN_BYPASS_42"}\n')
@@ -92,7 +92,7 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     await sendMessage(page, modelScript.prompt('Write the new protected file value under the restored permissions.'))
     const restoredStatus = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(readFileSync(protectedFile, 'utf8')).toBe('{"proof":"QWEN_RESTORED_43"}\n')
     const restored = restoredStatus.requests.find(request => request.stepIndex === 8)
     if (!restored)

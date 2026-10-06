@@ -15,7 +15,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { assistantBubbles, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as feedback', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
@@ -124,7 +124,7 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
     )
     await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Approval probe".'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
     await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
     const observed = onlyObservedNativeControl(watch.controls())
@@ -187,7 +187,7 @@ zcodeTest('approves a native ZCode plan into a chosen mode applied after the nat
   )
   await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Bypass probe".'))
   await modelScript.waitForSteps(1)
-  const banner = visibleControlBanner(page)
+  const banner = controlBanner(page)
   await expect(banner).toContainText('Plan Ready for Review')
   // The banner's permission pill states the mode the approval continues in.
   await page.getByRole('radiogroup', { name: 'Permissions' }).getByRole('radio', { name: 'Bypass' }).check()

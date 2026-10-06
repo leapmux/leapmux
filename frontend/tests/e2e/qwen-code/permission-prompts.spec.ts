@@ -6,7 +6,7 @@ import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
 import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
@@ -28,7 +28,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Create the two scripted files.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText(`touch ${approved}`)
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
@@ -43,7 +43,7 @@ kiroTest.describe('Kiro control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Create the two scripted files.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText(`printf approved > ${approved}`)
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
@@ -85,7 +85,7 @@ kiroTest.describe('Kiro control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the scripted command twice.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText(command)
     // The scope pills sit in the control actions of the composer, not in the banner.
     await page.getByTestId('control-actions').filter({ visible: true }).getByRole('radio', { name: 'Workspace', exact: true }).click()

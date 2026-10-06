@@ -6,7 +6,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { expectSettingsChip, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { expectNoControlBanner, expectSettingsChip, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 /** Prove a native permission decision through a real removal in the private workspace. */
 export async function exerciseZCodeRemovalPermission(context: ManagedNativeScenarioContext, options: { bypass: boolean }): Promise<void> {
@@ -53,5 +53,5 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
     await waitForAgentIdle(context.page)
     expect(readFileSync(path, 'utf8')).toBe(content)
   }
-  await expect(banner).toHaveCount(0)
+  await expectNoControlBanner(context.page)
 }

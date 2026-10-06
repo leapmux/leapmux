@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { chatText, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { chatText, controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
@@ -25,12 +25,12 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await modelScript.waitForSteps(1)
 
     // The banner states the command that omp asks about.
-    await expect(visibleControlBanner(page)).toContainText('echo "omp-$((40 + 2))"')
+    await expect(controlBanner(page)).toContainText('echo "omp-$((40 + 2))"')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     // The command text states no `omp-42`, so only the command's own output can
     // put it on the page.
     await expect.poll(() => chatText(page)).toContain('omp-42')
@@ -45,12 +45,12 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await sendMessage(page, modelScript.prompt('Run the other arithmetic command.'))
     await modelScript.waitForSteps(1)
 
-    await expect(visibleControlBanner(page)).toContainText('echo "omp-$((50 + 5))"')
+    await expect(controlBanner(page)).toContainText('echo "omp-$((50 + 5))"')
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     // omp fails the call with its own words, and the command never runs.
     await expect.poll(() => chatText(page)).toContain('Tool call denied by user')
     expect(await chatText(page)).not.toContain('omp-55')

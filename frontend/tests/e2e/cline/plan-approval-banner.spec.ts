@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest, offeredTools } from '../cline-fixtures'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, expectSettingsChip, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
  * The native plan exit opens the plan review controls. The approval must change the native mode and continue the plan.
@@ -35,9 +35,9 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Looks good, go ahead.'))
     await modelScript.waitForSteps(2)
-    await expect(visibleControlBanner(page)).toBeVisible()
+    await expect(controlBanner(page)).toBeVisible()
     await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
@@ -65,10 +65,10 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('The plan is fine, switch to act mode.'))
     await modelScript.waitForSteps(1)
-    await expect(visibleControlBanner(page)).toBeVisible()
+    await expect(controlBanner(page)).toBeVisible()
     await page.getByTestId('composer-editor').locator('.ProseMirror').fill('Split the plan into two steps first.')
     await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)

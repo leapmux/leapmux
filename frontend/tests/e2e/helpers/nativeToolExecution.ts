@@ -12,7 +12,7 @@ import { nativeToolResult } from './nativeToolResult'
 import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './providerToolCalls'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, controlButton, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
 
 interface ToolPreparation {
   prepare?: () => Promise<void>
@@ -54,7 +54,8 @@ export async function processNativeToolApproval(control: NativeToolApprovalOpera
 
 /** Allow only actual native tool approval requests until the script completes. */
 export async function waitForNativeToolSteps(context: NativeScenarioContext, target: number, options: { beforeIdle?: () => Promise<void> } = {}): Promise<void> {
-  const allow = context.page.locator('[data-testid="control-allow-btn"]:visible').first()
+  // `clickNativeToolApproval` checks and clicks one button in one browser operation, so the loop reads the first visible Allow button.
+  const allow = controlButton(context.page, 'allow').first()
   let approvals = 0
   while ((await context.modelScript.status()).nextStep < target) {
     await expect.poll(async () => {

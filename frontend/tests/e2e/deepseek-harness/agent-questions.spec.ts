@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { deepseekHarnessToolResultText } from './nativeToolResultText'
 
 deepseekHarnessTest('returns the exact chosen native answer and keeps the saved answer after reload', async ({ deepseekHarnessWorkspace, page, modelScript }) => {
@@ -14,7 +14,7 @@ deepseekHarnessTest('returns the exact chosen native answer and keeps the saved 
   )
   await sendMessage(page, modelScript.prompt('Ask the scripted native route question.'))
   await modelScript.waitForSteps(1)
-  const banner = visibleControlBanner(page)
+  const banner = controlBanner(page)
   await expect(banner).toContainText('Choose a route')
   await banner.getByTestId('question-option-Second').click()
   const submit = page.locator('[data-testid="control-submit-btn"]:visible')

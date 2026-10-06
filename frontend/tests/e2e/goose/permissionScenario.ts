@@ -7,7 +7,7 @@ import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, goosePermissionJudgmentToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { applyPermissionPreset, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 /** Deny a real removal through Smart, then execute that removal through Auto. */
 export async function exerciseGoosePermissionRemoval(context: ManagedNativeScenarioContext): Promise<void> {
@@ -46,7 +46,7 @@ export async function exerciseGoosePermissionRemoval(context: ManagedNativeScena
     await sendMessage(page, modelScript.prompt('Run the scripted removal under Auto.'))
     const status = await modelScript.waitForSteps(start + 4)
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(existsSync(marker)).toBe(false)
     const result = nativeToolResult(status.requests.find(request => request.stepIndex === start + 3), 'goose-auto-remove')
     expect(result).toContain('goose-mode-42')

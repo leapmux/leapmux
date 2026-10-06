@@ -5,7 +5,7 @@ import { AgentActivityState } from '../../../src/generated/proto/leapmux/v1/agen
 import { getUserId } from './api'
 import { currentNativeAgent, nativeAgentById, nativeTextStep } from './nativeScenario'
 import { armTurnEndSound, doorbellCount, soundReceiptCursor, waitForIdleSoundReceipt } from './turnEndSound'
-import { sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
 export interface NativeTurnEndSoundCase {
   toolActivity: boolean
@@ -46,7 +46,7 @@ export async function exerciseTurnEndSound(context: ManagedNativeScenarioContext
     await armTurnEndSound(context.page, userId, sound)
     await waitForControlBanner(context.page)
     after = await soundReceiptCursor(context.page)
-    await context.page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await answerControl(context.page, 'allow')
   }
   await context.modelScript.waitForSteps(start + steps.length)
   const receipt = await waitForIdleSoundReceipt(context.page, { agentId: agent.id, after })

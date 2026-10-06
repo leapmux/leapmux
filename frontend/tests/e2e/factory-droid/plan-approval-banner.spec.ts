@@ -11,7 +11,7 @@ import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, savedControlAnswer, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, controlBanner, expectNoControlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid Spec mode', () => {
   droidTest('shows the native plan review and returns to Default after approval', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
@@ -33,7 +33,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await page.getByTestId('plan-approve-btn').click()
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The plan was approved.' }).first()).toBeVisible()
     // The saved row reads Droid's own `proceed_once` reply as the plan button's word.
     await expect(savedControlAnswer(page)).toHaveText('Approve')
@@ -62,7 +62,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
       })
       await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
       await modelScript.waitForSteps(1)
-      const banner = visibleControlBanner(page)
+      const banner = controlBanner(page)
       await expect(banner).toContainText('Proposed Plan')
       await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
       const observed = onlyObservedNativeControl(watch.controls())
@@ -131,7 +131,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await page.keyboard.type('Keep the spec read-only.', { delay: 20 })
     await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
 
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     await expect(savedControlAnswer(page)).toHaveText('Reject')
     // The reason is the reader's own next message, and the model answered it.
     await expect(userBubbles(page).filter({ hasText: 'Keep the spec read-only.' }).first()).toBeVisible()

@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
  * A real native question tool opens the shared question controls. The selected answer must reach the native model.
@@ -40,14 +40,14 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Ask me for a database.'))
     await modelScript.waitForSteps(1)
-    await expect(visibleControlBanner(page)).toContainText('Which database?')
+    await expect(controlBanner(page)).toContainText('Which database?')
     // The SECOND option: a result that states the first option, or no option at
     // all, fails the check below.
     await page.locator('[data-testid="question-option-Redis"]:visible').click()
     const submit = page.locator('[data-testid="control-submit-btn"]:visible')
     await expect(submit).toBeEnabled()
     await submit.click()
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
 
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)

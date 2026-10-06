@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code modes', () => {
@@ -48,13 +48,13 @@ lettaTest.describe('Letta Code modes', () => {
     )
     await sendMessage(page, modelScript.prompt('Try the requested write in Standard mode.'))
     await modelScript.waitForSteps(1)
-    const banner = await waitForControlBanner(page)
+    await waitForControlBanner(page)
     expect(existsSync(file)).toBe(false)
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
     await modelScript.waitForSteps(2)
     await waitForAgentIdle(page)
     expect(existsSync(file)).toBe(false)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
 
     await chooseSettingsOption(page, 'permissionMode-unrestricted')
     await waitForSettingsIdle(page)
@@ -66,7 +66,7 @@ lettaTest.describe('Letta Code modes', () => {
     await sendMessage(page, modelScript.prompt('Write the proof file without asking.'))
     const status = await modelScript.waitForSteps(4)
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(readFileSync(file, 'utf8')).toBe('unrestricted\n')
     expect(nativeToolResult(status.requests.find(request => request.stepIndex === 3), 'unrestricted-mode-write'))
       .toContain('letta-mode-proof.txt')

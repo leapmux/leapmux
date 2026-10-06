@@ -8,7 +8,7 @@ import { validateGateName } from './mockModelScript'
 import { currentNativeAgent } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { expandBackgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal } from './subagentRegistry'
-import { sendMessage, tabById, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, sendMessage, tabById, waitForAgentIdle, waitForControlBanner } from './ui'
 
 export interface RunningChildOptions {
   spawn: MockModelToolCall
@@ -104,7 +104,7 @@ export async function openRunningNativeChild(
     if (options.approveSpawn) {
       await context.modelScript.waitForSteps(start + 1)
       await waitForControlBanner(context.page)
-      await context.page.getByTestId('control-allow-btn').filter({ visible: true }).first().click()
+      await answerControl(context.page, 'allow')
     }
     await context.modelScript.waitForGate(options.gate)
     await options.beforeRelease?.()

@@ -11,7 +11,7 @@ import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helper
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
@@ -29,7 +29,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     // The request carries the plan itself, so the banner draws it.
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Change no files.')
@@ -68,7 +68,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     })
     await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
     const clearContext = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
     await clearContext.check()
@@ -100,7 +100,7 @@ qwenTest.describe('Qwen Code control requests', () => {
       })
       await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
       await modelScript.waitForSteps(1)
-      const banner = visibleControlBanner(page)
+      const banner = controlBanner(page)
       await expect(banner).toContainText('Proposed Plan')
       await expect(banner).toContainText('Keep this plan unapproved.')
       await expect.poll(() => watch.controls().length).toBeGreaterThan(0)

@@ -5,7 +5,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
@@ -68,7 +68,7 @@ kiroTest.describe('Kiro control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Call the probe form tool.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     const form = page.getByTestId('elicitation-form').filter({ visible: true })
     await expect(form).toBeVisible()
     await expect(banner).toContainText('Name the probe.')

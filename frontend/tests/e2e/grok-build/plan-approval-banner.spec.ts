@@ -10,7 +10,7 @@ import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 
@@ -28,7 +28,7 @@ grokTest.describe('Grok Build control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Finish planning and ask for approval.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
     await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
     await expect(banner).toHaveCount(0)
@@ -56,7 +56,7 @@ grokTest.describe('Grok Build control requests', () => {
       )
       await sendMessage(page, modelScript.prompt('Finish planning and ask for approval.'))
       await modelScript.waitForSteps(1)
-      const banner = visibleControlBanner(page)
+      const banner = controlBanner(page)
       await expect(banner).toContainText('Plan Ready for Review')
       await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
       const observed = onlyObservedNativeControl(watch.controls())

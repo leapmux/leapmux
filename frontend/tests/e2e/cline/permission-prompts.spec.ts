@@ -7,7 +7,7 @@ import { CLINE_DECLINE_REASON } from '../../../src/generated/contracts/cline-pro
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { bashToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { chatText, expectSettingsChip, messageBubbles, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { chatText, controlBanner, expectSettingsChip, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
  * The test answers real native permission requests. Allow executes the tool. Deny must reach the next native model request as a refusal.
@@ -28,13 +28,13 @@ clineTest.describe('Cline control requests', () => {
     // The call waits on the banner, so the second step waits too.
     await modelScript.waitForSteps(1)
 
-    await expect(visibleControlBanner(page)).toContainText('echo "cline-$((40 + 2))"')
-    await expect(visibleControlBanner(page)).toContainText('run_commands')
+    await expect(controlBanner(page)).toContainText('echo "cline-$((40 + 2))"')
+    await expect(controlBanner(page)).toContainText('run_commands')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('cline-42')
   })
 
@@ -46,7 +46,7 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Run the refused command.'))
     await modelScript.waitForSteps(1)
-    await expect(visibleControlBanner(page)).toContainText(`printf refused > ${marker}`)
+    await expect(controlBanner(page)).toContainText(`printf refused > ${marker}`)
 
     // Text in the composer turns Deny into Send feedback, which refuses with it.
     await page.getByTestId('composer-editor').locator('.ProseMirror').fill('Use the clean target instead.')
@@ -56,7 +56,7 @@ clineTest.describe('Cline control requests', () => {
 
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     // Cline hands the reason to the model as the call's error. The command never ran.
     const followUp = status.requests.find(request => request.stepIndex === 1)
     expect(JSON.stringify(followUp?.body)).toContain('Use the clean target instead.')
@@ -75,7 +75,7 @@ clineTest.describe('Cline control requests', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('cline-safe-read')
   })
 
@@ -92,13 +92,13 @@ clineTest.describe('Cline control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Start a helper subagent.'))
     await modelScript.waitForSteps(1)
-    await expect(visibleControlBanner(page)).toContainText('spawn_agent')
-    await expect(visibleControlBanner(page)).toContainText(CLINE_SPAWN_WARNING)
+    await expect(controlBanner(page)).toContainText('spawn_agent')
+    await expect(controlBanner(page)).toContainText(CLINE_SPAWN_WARNING)
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
 
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     // A refusal with no words of the reader's gives the model LeapMux's own reason.
     const followUp = status.requests.find(request => request.stepIndex === 1)
     expect(JSON.stringify(followUp?.body)).toContain(CLINE_DECLINE_REASON.Tool)

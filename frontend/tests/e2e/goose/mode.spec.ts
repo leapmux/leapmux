@@ -7,7 +7,7 @@ import { gooseTest } from '../goose-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
 gooseTest('smart mode asks before a removal and auto mode runs it', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   const workingDir = authenticatedGooseWorkspace.workingDir
@@ -51,7 +51,7 @@ gooseTest('smart mode asks before a removal and auto mode runs it', async ({ aut
     await sendMessage(page, modelScript.prompt('Run the scripted removal under Auto.'))
     const status = await modelScript.waitForSteps(start + 4)
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(existsSync(marker)).toBe(false)
     const result = nativeToolResult(status.requests.find(request => request.stepIndex === start + 3), autoCall)
     expect(result).toContain('goose-mode-42')

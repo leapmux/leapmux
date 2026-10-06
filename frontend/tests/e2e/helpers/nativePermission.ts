@@ -16,7 +16,7 @@ import { waitForNativeToolSteps } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
 export interface NativePermissionOperationPlan {
@@ -80,7 +80,7 @@ export async function exerciseNativePermissionDecision(
   const banner = await waitForControlBanner(context.page)
   await options.beforeDecision?.(banner)
   await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
-  await context.page.locator(`[data-testid="control-${options.decision}-btn"]:visible`).first().click()
+  await answerControl(context.page, options.decision)
   await runWithGatedOutput(options.outputGate, async () => {
     await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
@@ -130,9 +130,9 @@ export async function exerciseNativePermissionRefusal(context: ManagedNativeScen
     await expect(banner).toContainText(options.bannerText)
   options.expectUnchanged()
   await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
-  await context.page.locator('[data-testid="control-deny-btn"]:visible').first().click()
+  await answerControl(context.page, 'deny')
   await waitForAgentIdle(context.page)
-  await expect(banner.filter({ visible: true })).toHaveCount(0)
+  await expect(banner).toHaveCount(0)
   for (const reload of [false, true]) {
     if (reload) {
       await context.page.reload()

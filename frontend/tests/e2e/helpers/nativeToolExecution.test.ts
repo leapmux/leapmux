@@ -57,13 +57,24 @@ function guardedBrowserHandle<T extends object>(methods: Partial<T>): T {
   })
 }
 
+/** A page whose visible Allow buttons are `allow`. Any other button or scope fails the test. */
+function allowButtonPage(allow: Locator): Page {
+  return guardedBrowserHandle<Page>({ getByTestId: (testId: string | RegExp) => {
+    expect(testId).toBe('control-allow-btn')
+    return guardedBrowserHandle<Locator>({ filter: (options?: Parameters<Locator['filter']>[0]) => {
+      expect(options).toEqual({ visible: true })
+      return allow
+    } })
+  } })
+}
+
 describe('waitForNativeToolSteps', () => {
   function fixture() {
     const events: string[] = []
     const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
     const first = guardedBrowserHandle<Locator>({})
     const locator = guardedBrowserHandle<Locator>({ first: () => first })
-    const page = guardedBrowserHandle<Page>({ locator: () => locator })
+    const page = allowButtonPage(locator)
     const context: NativeScenarioContext = {
       page,
       provider: AgentProvider.QODER,
@@ -139,7 +150,7 @@ describe('runNativeToolTurn', () => {
     servers.push(server)
     const lifecycle = await startModelScript(server.url)
     const allow = guardedBrowserHandle<Locator>({ evaluateAll: (async () => false) as unknown as Locator['evaluateAll'] })
-    const page = guardedBrowserHandle<Page>({ locator: () => guardedBrowserHandle<Locator>({ first: () => allow }) })
+    const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => allow }))
     const context: NativeScenarioContext = { page, provider: AgentProvider.CODEX, modelScript: lifecycle.script, ...options }
     /** Answer one native turn: each request repeats the marked prompt, as a native client does. */
     const nativeTurn = async (text: string, requests = 2) => {
@@ -205,7 +216,7 @@ describe('runNativeToolTurn', () => {
 
   it('fails with the step of a request that the script does not hold', async () => {
     const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, ruleMatches: {}, pendingGates: [], unexpectedRequests: [], requests: [{ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 0, body: {} }] }
-    const page = guardedBrowserHandle<Page>({ locator: () => guardedBrowserHandle<Locator>({ first: () => guardedBrowserHandle<Locator>({}) }) })
+    const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => guardedBrowserHandle<Locator>({}) }))
     const context: NativeScenarioContext = {
       page,
       provider: AgentProvider.CODEX,

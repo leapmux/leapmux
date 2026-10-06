@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
@@ -25,7 +25,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Ask me for a color.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Which color do you want?')
     await page.locator('[data-testid="question-option-Blue"]:visible').click()
     const submit = page.locator('[data-testid="control-submit-btn"]:visible')

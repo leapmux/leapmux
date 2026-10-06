@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
+import { applyPermissionPreset, expectNoControlBanner, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('applies Kimi Code permission presets', () => {
@@ -49,7 +49,7 @@ kimiTest.describe('applies Kimi Code permission presets', () => {
     await sendMessage(page, modelScript.prompt('Run the scripted delete under Bypass permissions.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(existsSync(directory)).toBe(false)
 
     // The kap-server holds the mode, and the worker reads it back on reload.

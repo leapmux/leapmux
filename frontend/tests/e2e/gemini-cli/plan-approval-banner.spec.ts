@@ -4,7 +4,7 @@ import { geminiTest } from '../gemini-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiPlanApprovalToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, sendMessage, visibleControlBanner, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, controlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { geminiNativeProject } from './nativeStore'
 import { nativeContext } from './scenarios'
 
@@ -24,7 +24,7 @@ for (const decision of ['approve', 'reject'] as const) {
     )
     await sendMessage(page, modelScript.prompt('Write the native plan, then request its approval.'))
     await modelScript.waitForSteps(2)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Read the actual source.')
     await expect(banner).toContainText('Apply only the approved change.')

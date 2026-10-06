@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, expectSettingsChip, openPlusMenu, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { applyPermissionPreset, controlBanner, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
  * The Bypass shortcut selects the provider's native permission preset. A real tool must execute without a permission banner.
@@ -35,7 +35,7 @@ clineTest.describe('Cline control requests', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     expect(readFileSync(marker, 'utf8')).toBe('bypass')
   })
 })

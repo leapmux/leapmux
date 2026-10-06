@@ -7,7 +7,7 @@ import { expect } from '@playwright/test'
 import { readMcpServerReceipt } from './mcpServerReceipt'
 import { nativeToolOutcome } from './nativeScenario'
 import { mcpToolCall } from './providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from './ui'
+import { answerControl, assistantBubbles, controlBanner, sendMessage, waitForAgentIdle } from './ui'
 
 /** Run one native MCP call and check the server's echoed value. */
 export async function exerciseMcpEcho(page: Page, modelScript: ModelScript, provider: AgentProvider, value: string, options: { receiptLog?: string, readToolResult?: NativeToolResultReader } = {}): Promise<void> {
@@ -23,10 +23,10 @@ export async function exerciseMcpEcho(page: Page, modelScript: ModelScript, prov
     await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'echo'))).toBe(true)
   }
   await modelScript.waitForSteps(start + 1)
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
+  const banner = controlBanner(page)
   await expect.poll(async () => (await banner.isVisible()) || (await modelScript.status()).nextStep >= start + 2).toBe(true)
   if (await banner.isVisible()) {
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await answerControl(page, 'allow')
     await expect(banner).toHaveCount(0)
   }
 

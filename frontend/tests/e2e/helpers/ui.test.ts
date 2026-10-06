@@ -15,6 +15,8 @@ import { cssAttributeValue } from './cssAttribute'
 import { startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 import {
   agentTabs,
+  answerControl,
+  answerPlanReview,
   applyPermissionPreset,
   ARITHMETIC_ANSWER,
   ARITHMETIC_ANSWER_TEXT,
@@ -22,8 +24,12 @@ import {
   chatScrollContainer,
   chooseSettingsOption,
   composerEditor,
+  controlBanner,
+  controlButton,
+  enterControlFeedback,
   enterMessageText,
   expectAgentTabCount,
+  expectNoControlBanner,
   expectPermissionShortcuts,
   expectRowsInOrder,
   focusComposer,
@@ -40,6 +46,7 @@ import {
   toolCallRow,
   toolRows,
   waitForAgentIdle,
+  waitForControlBanner,
   waitForLayoutSave,
   waitForNativeSettingsHydrated,
 } from './ui'
@@ -916,6 +923,126 @@ describe('expectPermissionShortcuts', () => {
 
   it('refuses a check that states no shortcut', async () => {
     await expect(expectPermissionShortcuts(opaqueHandle<Page>({}), {})).rejects.toThrow('at least one shortcut')
+  })
+})
+
+/**
+ * A page whose `getByTestId(testId).filter({ visible: true })` returns `visible(testId)`.
+ * Any other filter fails, so a test proves that a helper reads only the visible copy.
+ */
+function visibleTestIdPage(visible: (testId: string) => PlaywrightLocator): Page {
+  return opaqueHandle<Page>({
+    getByTestId: (testId: string | RegExp) => opaqueHandle<PlaywrightLocator>({ filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
+      expect(options).toEqual({ visible: true })
+      return visible(String(testId))
+    } }),
+  })
+}
+
+describe('controlBanner', () => {
+  it('selects every visible control request banner', () => {
+    const banner = opaqueHandle<PlaywrightLocator>({})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe('control-banner')
+      return banner
+    })
+    expect(controlBanner(page)).toBe(banner)
+  })
+})
+
+describe('controlButton', () => {
+  it.each(['allow', 'deny', 'submit', 'stop', 'yolo'] as const)('selects every visible %s button', (action) => {
+    const button = opaqueHandle<PlaywrightLocator>({})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe(`control-${action}-btn`)
+      return button
+    })
+    expect(controlButton(page, action)).toBe(button)
+  })
+})
+
+describe('waitForControlBanner', () => {
+  it('waits for the visible banner and returns that locator', async () => {
+    const log: string[] = []
+    const banner = assertingLocator('banner', log, () => true)
+    expect(await waitForControlBanner(visibleTestIdPage(() => banner))).toBe(banner)
+    expect(log).toEqual(['banner:to.be.visible'])
+  })
+
+  it('fails while the page shows no banner', async () => {
+    const banner = assertingLocator('banner', [], () => false)
+    await expect(waitForControlBanner(visibleTestIdPage(() => banner))).rejects.toThrow(/toBeVisible/)
+  })
+})
+
+describe('expectNoControlBanner', () => {
+  // The fake banner has no `filter`, so a scoped read fails the test.
+  function bannerPage(present: boolean, log: string[]): Page {
+    return opaqueHandle<Page>({ getByTestId: (testId: string | RegExp) => {
+      expect(testId).toBe('control-banner')
+      return assertingLocator('banner', log, (_expression, options) => present ? options.expectedNumber !== 0 : options.expectedNumber === 0)
+    } })
+  }
+
+  it('reads the count of every banner, hidden ones included', async () => {
+    const log: string[] = []
+    await expectNoControlBanner(bannerPage(false, log))
+    expect(log).toEqual(['banner:to.have.count=0'])
+  })
+
+  it('fails while the page holds a banner', async () => {
+    await expect(expectNoControlBanner(bannerPage(true, []))).rejects.toThrow('the page holds no control request banner')
+  })
+})
+
+describe('answerControl', () => {
+  // The fake button has no `first`, so a click that is not strict fails the test.
+  it.each(['allow', 'deny'] as const)('clicks the one visible %s button', async (decision) => {
+    const click = vi.fn(async () => {})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe(`control-${decision}-btn`)
+      return opaqueHandle<PlaywrightLocator>({ click })
+    })
+    await answerControl(page, decision)
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(click).toHaveBeenCalledWith()
+  })
+})
+
+describe('answerPlanReview', () => {
+  it.each(['approve', 'reject'] as const)('clicks the one visible %s button of the plan review', async (decision) => {
+    const click = vi.fn(async () => {})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe(`plan-${decision}-btn`)
+      return opaqueHandle<PlaywrightLocator>({ click })
+    })
+    await answerPlanReview(page, decision)
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(click).toHaveBeenCalledWith()
+  })
+})
+
+describe('enterControlFeedback', () => {
+  it('focuses the visible composer and types the reason into it', async () => {
+    const log: string[] = []
+    const editor = assertingLocator('editor', log, () => true, { click: async () => {
+      log.push('editor:click')
+    } })
+    const page = opaqueHandle<Page>({
+      locator: (selector: string) => {
+        expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
+        return editor
+      },
+      keyboard: opaqueHandle<Page['keyboard']>({ type: async (text: string) => {
+        log.push(`type:${text}`)
+      } }),
+    })
+    await enterControlFeedback(page, 'Keep the spec read-only.')
+    expect(log).toEqual(['editor:to.be.visible', 'editor:click', 'type:Keep the spec read-only.'])
+  })
+
+  it.each(['', '  \n'])('refuses the reason %j before it touches the page', async (reason) => {
+    await expect(enterControlFeedback(opaqueHandle<Page>({}), reason)).rejects.toThrow('A control feedback needs text')
   })
 })
 

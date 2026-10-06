@@ -12,7 +12,7 @@ import { currentNativeAgent, nativeAgentById, nativeModelInstructionText } from 
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { controlBanner, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
 piTest('plan-approval-banner: tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
@@ -77,7 +77,7 @@ piTest('rejects the native Pi plan review and keeps planning in the same session
     })
     await sendMessage(page, modelScript.prompt('Finish the plan.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
     await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
     const observed = onlyObservedNativeControl(watch.controls())

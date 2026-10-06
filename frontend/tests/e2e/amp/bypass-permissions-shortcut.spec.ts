@@ -6,7 +6,7 @@ import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, chatText, expectSettingsChip, openPlusMenu, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { applyPermissionPreset, chatText, controlBanner, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
  * The Bypass shortcut selects the provider's native permission preset. A real tool must execute without a permission banner.
@@ -36,7 +36,7 @@ ampTest.describe('Amp permissions', () => {
     if (!request)
       throw new Error('The native preset test contains no actual command result request.')
     expect((await ampToolResultReader(context)(request, 'active-bypass-call')).text).toContain('ACTIVEBYPASS42')
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('ACTIVEBYPASS42')
   })
 
@@ -61,7 +61,7 @@ ampTest.describe('Amp permissions', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     await expect.poll(() => chatText(page)).toContain('amp-66')
   })
 })

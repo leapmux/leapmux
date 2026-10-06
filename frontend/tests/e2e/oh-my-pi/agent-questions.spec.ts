@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
@@ -46,14 +46,14 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await sendMessage(page, modelScript.prompt('Ask me which style to use.'))
     await modelScript.waitForSteps(1)
 
-    await expect(visibleControlBanner(page)).toContainText('Choose a style')
-    await expect(visibleControlBanner(page).getByText('Use the second style.', { exact: true })).toBeVisible()
-    await visibleControlBanner(page).getByTestId('question-option-Beta').click()
+    await expect(controlBanner(page)).toContainText('Choose a style')
+    await expect(controlBanner(page).getByText('Use the second style.', { exact: true })).toBeVisible()
+    await controlBanner(page).getByTestId('question-option-Beta').click()
     await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(visibleControlBanner(page)).toHaveCount(0)
+    await expect(controlBanner(page)).toHaveCount(0)
     // The dialog reply reaches Oh My Pi, which sends the selected label to the model.
     // Read that label from the second request's tool result. The request also contains the call arguments, which include every option.
     // Only the tool result proves the selected answer.

@@ -25,7 +25,7 @@ import { bashToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, composerEditor, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
 interface LifecyclePreparation {
@@ -139,7 +139,7 @@ export async function exerciseInterruptTurn(
     context.modelScript.allowUnconsumed('The native interruption ends the held turn before its answer completes.')
     await sendMessage(context.page, context.modelScript.prompt(options.prompt ?? 'Run the held native interruption probe.'))
     if (options.kind === 'tool') {
-      const allow = context.page.locator('[data-testid="control-allow-btn"]:visible').first()
+      const allow = controlButton(context.page, 'allow').first()
       await context.modelScript.waitForSteps(stepIndex + 1)
       await expect.poll(async () => existsSync(toolStarted) || await allow.isVisible()).toBe(true)
       if (!existsSync(toolStarted))
@@ -210,7 +210,7 @@ export async function exerciseCloseAgent(
   let toolPid = 0
   try {
     await context.modelScript.waitForSteps(stepIndex + 1)
-    const allow = context.page.locator('[data-testid="control-allow-btn"]:visible').first()
+    const allow = controlButton(context.page, 'allow').first()
     await expect.poll(async () => existsSync(pidFile) || await allow.isVisible()).toBe(true)
     if (!existsSync(pidFile))
       await allow.click()

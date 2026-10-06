@@ -5,10 +5,10 @@ import { junieAnswerToolCall, junieSubmitPlanToolCall } from '../helpers/provide
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import {
   chooseSettingsOption,
+  controlBanner,
   expectSettingsChip,
   savedControlAnswer,
   sendMessage,
-  visibleControlBanner,
   waitForAgentIdle,
   waitForControlBanner,
   waitForSettingsHydrated,
@@ -150,7 +150,7 @@ export async function exerciseNativePlanRevision(
   await modelScript.rule(JUNIE_PLAN_REPLY_RULE)
   const start = await sendPlanPrompt(context, { ...options, selectMode: false }, [submitPlanStep(options.callPrefix ?? 'junie')])
   await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-  await expect(visibleControlBanner(page)).toHaveCount(0)
+  await expect(controlBanner(page)).toHaveCount(0)
   // The browser draws the saved answer from the Worker row alone, so the Worker took the answer.
   await expect(savedControlAnswer(page)).toHaveCount(1)
   await waitForAgentIdle(page)

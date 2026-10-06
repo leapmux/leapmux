@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -73,7 +73,7 @@ ohMyPiTest('applies Oh My Pi settings, keeps them over a restart and a reload, a
   )
   await sendMessage(page, modelScript.prompt('Run the scripted command after Bypass.'))
   await modelScript.waitForSteps(4)
-  await expect(banner).toHaveCount(0)
+  await expectNoControlBanner(page)
   const bypassStatus = await modelScript.waitForSteps()
   await waitForAgentIdle(page)
   const bypassMessages = (bypassStatus.requests.find(record => record.stepIndex === 4)?.body as { messages?: { role?: string, content?: unknown }[] } | undefined)?.messages ?? []

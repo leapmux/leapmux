@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 
@@ -26,7 +26,7 @@ grokTest.describe('Grok Build control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Ask me for a database.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Which database?')
     await page.locator('[data-testid="question-option-Postgres"]:visible').click()
     await page.getByTestId('composer-editor').locator('.ProseMirror').fill('Use version 16')

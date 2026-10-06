@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
 import { exerciseReasonixSessionSettings } from './settingsScenario'
 
@@ -40,7 +40,7 @@ reasonixTest('refuses a native write in Plan mode and asks in Normal mode', asyn
     const exitBanner = await waitForControlBanner(page)
     await expect(exitBanner).toContainText('exit_plan_mode')
     await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-    await expect(exitBanner).toHaveCount(0)
+    await expectNoControlBanner(page)
     await chooseSettingsOption(page, 'permissionMode-normal')
     await chooseSettingsOption(page, 'tool_approval-ask')
     await waitForSettingsIdle(page)

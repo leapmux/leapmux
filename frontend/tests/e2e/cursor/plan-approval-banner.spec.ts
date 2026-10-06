@@ -7,7 +7,7 @@ import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { cursorCreatePlanToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, controlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 cursorTest('approves a native create-plan request', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   void authenticatedCursorWorkspace
@@ -52,7 +52,7 @@ cursorTest('rejects a native create-plan request and keeps the saved decision af
     )] })
     await sendMessage(page, modelScript.prompt('Write a plan and ask for approval.'))
     await modelScript.waitForSteps()
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Keep planning')
     await expect(banner).toContainText('Review the change')
     await expect.poll(() => watch.controls().length).toBeGreaterThan(0)

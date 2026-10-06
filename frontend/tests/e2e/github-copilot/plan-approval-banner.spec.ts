@@ -11,7 +11,7 @@ import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeM
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, messageBubbles, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, controlBanner, expectNoControlBanner, expectSettingsChip, expectSettingsOptionChosen, messageBubbles, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
 copilotTest('plan-approval-banner: uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
   void authenticatedCopilotWorkspace
@@ -41,7 +41,7 @@ copilotTest('plan-approval-banner: uses the native exit tool and resumes after p
 
   await modelScript.waitForSteps(3)
   await waitForAgentIdle(page)
-  await expect(banner).toHaveCount(0)
+  await expectNoControlBanner(page)
   await expect(assistantBubbles(page).filter({ hasText: 'The Copilot plan was approved.' }).first()).toBeVisible()
   await page.reload()
   await expect(messageBubbles(page).filter({ hasText: 'Approved' }).first()).toBeVisible()
@@ -91,7 +91,7 @@ copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, 
     await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
     await modelScript.waitForSteps(1)
     await attachCopilotNativeLogs(leapmuxServer.agentEnv.COPILOT_HOME, testInfo)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Keep the Copilot plan unapproved.')
     await expect.poll(() => watch.controls().length).toBeGreaterThan(0)

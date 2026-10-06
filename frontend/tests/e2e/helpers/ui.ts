@@ -150,13 +150,6 @@ export async function sendMessage(page: Page, text: string, entry: MessageEntry 
   await expect(editor).toHaveText('')
 }
 
-/** Wait for the control request banner to appear and return a scoped locator. */
-export async function waitForControlBanner(page: Page) {
-  const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible()
-  return banner
-}
-
 /**
  * ChatView mounts hidden copies of rows whose heights remain unknown.
  * ChatHiddenPremeasure retains the same IDs, text, and classes. A visible-list row can also stay hidden until measurement completes.
@@ -255,9 +248,70 @@ export async function expectRowsInOrder(rows: Locator, texts: readonly string[])
   }).toBe('')
 }
 
-/** Locate every visible native control banner without narrowing its count. */
-export function visibleControlBanner(page: Page) {
+/** Locate every visible control request banner without narrowing its count. */
+export function controlBanner(page: Page): Locator {
   return page.getByTestId('control-banner').filter({ visible: true })
+}
+
+/**
+ * Wait for the visible control request banner and return it.
+ * The wait is strict, so a second visible banner fails it.
+ */
+export async function waitForControlBanner(page: Page): Promise<Locator> {
+  const banner = controlBanner(page)
+  await expect(banner).toBeVisible()
+  return banner
+}
+
+/**
+ * Require that the page holds no control request banner, visible or hidden.
+ * The locator has no `:visible` scope on purpose. A zero count of `controlBanner` accepts a hidden banner,
+ * and this check refuses one.
+ */
+export async function expectNoControlBanner(page: Page): Promise<void> {
+  await expect(page.getByTestId('control-banner'), 'the page holds no control request banner').toHaveCount(0)
+}
+
+/**
+ * The action of a control request button:
+ * - `allow` and `deny`: the decision buttons of a permission or plan request. With text in the composer, `deny` sends
+ *   that text as feedback.
+ * - `submit`: the button that sends the answers of a question.
+ * - `stop`: the question button that refuses the question.
+ * - `yolo`: the question button that fills each unanswered question with the recommended option and sends the answers.
+ */
+export type ControlAction = 'allow' | 'deny' | 'submit' | 'stop' | 'yolo'
+
+/** Locate every visible button of one control request action. */
+export function controlButton(page: Page, action: ControlAction): Locator {
+  return page.getByTestId(`control-${action}-btn`).filter({ visible: true })
+}
+
+/**
+ * Click the visible Allow or Deny button of the control request.
+ * The click is strict, so a second visible button, as from a duplicate banner, fails it.
+ */
+export async function answerControl(page: Page, decision: 'allow' | 'deny'): Promise<void> {
+  await controlButton(page, decision).click()
+}
+
+/**
+ * Click the visible Approve or Reject button of a plan review.
+ * The click is strict, as the click of `answerControl` is.
+ */
+export async function answerPlanReview(page: Page, decision: 'approve' | 'reject'): Promise<void> {
+  await page.getByTestId(`plan-${decision}-btn`).filter({ visible: true }).click()
+}
+
+/**
+ * Type `reason` into the composer, which holds the feedback of an open control request.
+ * Most requests then relabel the Deny button "Send feedback". The caller checks the label, because it differs by request.
+ */
+export async function enterControlFeedback(page: Page, reason: string): Promise<void> {
+  if (reason.trim() === '')
+    throw new Error('A control feedback needs text, because an empty composer sends no feedback.')
+  await focusComposer(page)
+  await enterMessageText(page, reason, 'type')
 }
 
 /** Join all visible chat content with the original single-space separator. */

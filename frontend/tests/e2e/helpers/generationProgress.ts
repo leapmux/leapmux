@@ -8,7 +8,7 @@ import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
 import { createToolOutputControl } from './toolOutputControl'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
-import { assistantBubbles, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** The state of the controlled output command when one of its segments holds. */
 export interface OutputBoundary {
@@ -169,7 +169,7 @@ export async function exerciseGenerationProgress(context: ManagedNativeScenarioC
       if (options.approveTool) {
         await context.modelScript.waitForSteps(start + 1)
         await waitForControlBanner(context.page)
-        await context.page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+        await answerControl(context.page, 'allow')
       }
       if (options.waitForToolStart) {
         await options.waitForToolStart()

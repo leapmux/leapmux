@@ -4,7 +4,7 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { kiroUserText } from '../helpers/kiroSurface'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, controlBanner, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
@@ -31,7 +31,7 @@ kiroTest.describe('Kiro control requests', () => {
     )
     await sendMessage(page, modelScript.prompt('Ask me for a database.'))
     await modelScript.waitForSteps(1)
-    const banner = visibleControlBanner(page)
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Which database?')
     await page.locator('[data-testid="question-option-SQLite"]:visible').click()
     const submit = page.locator('[data-testid="control-submit-btn"]:visible')

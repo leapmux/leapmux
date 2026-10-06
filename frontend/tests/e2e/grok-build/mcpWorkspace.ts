@@ -9,7 +9,7 @@ import { createGrokWorkingDir } from '../grok-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
-import { openWorkspace, waitForControlBanner } from '../helpers/ui'
+import { expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
 
 /** Open an actual project MCP server through Grok's native trust decision. */
 export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext, decision: 'allow' | 'deny'): Promise<{ workingDir: string, receiptLog: string }> {
@@ -29,7 +29,7 @@ export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext
   await expect(banner).toContainText('mcp')
   expect(existsSync(receiptLog)).toBe(false)
   await context.page.locator(`[data-testid="control-${decision}-btn"]:visible`).first().click()
-  await expect(banner).toHaveCount(0)
+  await expectNoControlBanner(context.page)
   if (decision === 'allow') {
     await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'echo'))).toBe(true)
   }

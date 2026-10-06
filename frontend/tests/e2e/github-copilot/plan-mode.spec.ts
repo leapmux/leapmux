@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { copilotTest } from '../copilot-fixtures'
 import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, expectSettingsChip, messageBubbles, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, expectNoControlBanner, expectSettingsChip, messageBubbles, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
 copilotTest('uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
   void authenticatedCopilotWorkspace
@@ -34,7 +34,7 @@ copilotTest('uses the native exit tool and resumes after plan approval', async (
 
   await modelScript.waitForSteps(3)
   await waitForAgentIdle(page)
-  await expect(banner).toHaveCount(0)
+  await expectNoControlBanner(page)
   await expect(assistantBubbles(page).filter({ hasText: 'The Copilot plan was approved.' }).first()).toBeVisible()
   await page.reload()
   await expect(messageBubbles(page).filter({ hasText: 'Approved' }).first()).toBeVisible()

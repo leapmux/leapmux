@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { exerciseNativeReadOnlyPlan } from '../helpers/nativeReadOnlyPlan'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
-import { chooseSettingsOption, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, expectNoControlBanner, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
 
 reasonixTest('uses the native exit permission without a dedicated plan approval banner', async ({ authenticatedReasonixWorkspace, page, modelScript, leapmuxServer }) => {
@@ -21,7 +21,7 @@ reasonixTest('uses the native exit permission without a dedicated plan approval 
         await expect(banner).toContainText('exit_plan_mode')
         await expect(page.locator('[data-testid="plan-approve-btn"]:visible')).toHaveCount(0)
         await page.getByTestId('control-deny-btn').filter({ visible: true }).first().click()
-        await expect(banner).toHaveCount(0)
+        await expectNoControlBanner(page)
       },
     }),
   })
