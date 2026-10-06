@@ -119,12 +119,22 @@ export function parseGenerationCounters(text: string): GenerationCounters {
   return counters
 }
 
-/** Observe displayed counters before a native turn starts. The browser owns this state. */
+/**
+ * Observe displayed counters before a native turn starts. The browser owns this state.
+ *
+ * An indicator counts as shown by the rule of `installThinkingIndicatorWatch` (`./thinkingIndicatorWatch.ts`): its
+ * inline style states a `display` other than `none` and `grid-template-rows: 1fr`. A collapsed indicator stays in the
+ * DOM with `0fr`, so its counters are not shown. The probe also skips an indicator that the page renders nowhere, such
+ * as a hidden premeasure copy. The page runs this function, so the rule is written here again: the body cannot use a
+ * name from outside itself.
+ */
 export function installGenerationObservation(): void {
   window.__nativeGenerationProbe?.stop()
   const samples: string[] = []
   const inspect = () => {
     for (const element of document.querySelectorAll<HTMLElement>('[data-testid="thinking-indicator"]')) {
+      if (element.style.display === 'none' || element.style.gridTemplateRows !== '1fr')
+        continue
       const style = getComputedStyle(element)
       if (element.getClientRects().length === 0 || style.display === 'none' || style.visibility === 'hidden')
         continue

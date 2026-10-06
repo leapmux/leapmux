@@ -156,9 +156,17 @@ describe('parseGenerationCounters', () => {
 })
 
 describe('installGenerationObservation', () => {
-  function indicator(markup: string): void {
+  afterEach(() => {
+    window.__nativeGenerationProbe?.stop()
+    document.body.replaceChildren()
+  })
+
+  /** Add an indicator with the inline style that ThinkingIndicator sets, and start the probe. */
+  function indicator(markup: string, style: { display: 'grid' | 'none', rows: '0fr' | '1fr' } = { display: 'grid', rows: '1fr' }): void {
     const element = document.createElement('div')
     element.dataset.testid = 'thinking-indicator'
+    element.style.display = style.display
+    element.style.gridTemplateRows = style.rows
     element.innerHTML = markup
     const rectangle = new DOMRect(0, 0, 100, 20)
     const rectangles = Object.assign([rectangle], { item: (index: number) => index === 0 ? rectangle : null })
@@ -174,6 +182,14 @@ describe('installGenerationObservation', () => {
       <span data-animated-count><span>1 KB</span><span aria-hidden="true">012345678901234567890123456789</span> KB</span>
     `)
     expect(window.__nativeGenerationProbe?.samples).toEqual(['5 tokens · 1 KB'])
+  })
+
+  it.each([
+    { display: 'grid', rows: '0fr' },
+    { display: 'none', rows: '1fr' },
+  ] as const)('records no counter of an indicator with display $display and rows $rows, which the page does not show', (style) => {
+    indicator('<span data-animated-count><span>5 tokens</span></span>', style)
+    expect(window.__nativeGenerationProbe?.samples).toEqual([])
   })
 
   it('ignores token text when the native turn exposes no counter element', () => {

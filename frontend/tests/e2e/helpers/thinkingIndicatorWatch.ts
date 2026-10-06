@@ -14,7 +14,8 @@ declare global {
  * A hidden indicator has the inline style `display: none`, and a collapsed one has `grid-template-rows: 0fr`. So the
  * presence of the element proves nothing. The watch counts an indicator as shown only while its inline style states
  * a `display` other than `none` and `grid-template-rows: 1fr`. It checks at install, and again at each change of the
- * tree or of a `style` attribute.
+ * tree or of a `style` attribute. `installGenerationObservation` (`./generationProgress.ts`) applies the same rule, and
+ * a change of the rule changes both.
  *
  * The page runs this function, so its body must not use a name from outside itself.
  */
