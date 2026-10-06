@@ -1,10 +1,11 @@
 import { expect } from '@playwright/test'
 
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
-import { ACP_PERMISSION_OUTCOME, ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
+import { ACP_PERMISSION_OUTCOME } from '../../../src/generated/contracts/acp-protocol'
 import { QWEN_MODE, QWEN_PERMISSION_OPTION, QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { withCleanup } from '../helpers/cleanup'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -126,7 +127,7 @@ qwenTest.describe('Qwen Code control requests', () => {
       const refusal = readNativeToolOutputRecord(snapshot, {
         callId: toolCallId,
         spanId: toolCallId,
-        accepts: frame => frame.sessionUpdate === ACP_UPDATE.ToolCallUpdate && frame.toolCallId === toolCallId && frame.status === 'failed',
+        accepts: frame => acpClosedToolCall(frame, toolCallId, ['failed']),
       })
       expect(refusal.frame.content).toEqual([{ type: 'content', content: { type: 'text', text: `Tool "${QWEN_TOOL.ExitPlanMode}" was canceled by the user.` } }])
 

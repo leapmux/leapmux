@@ -1,8 +1,8 @@
 import type { ComputedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { QWEN_OUTPUT_FILES, QWEN_SHELL_RESULT } from '../../../src/components/chat/providers/qwen/protocol'
-import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { nativeOutputFileCommand } from '../helpers/nativeToolOutputScenario'
 
@@ -41,10 +41,8 @@ function nativeTextBlocks(value: unknown): string[] {
 
 /** Read paths and the original inline preview from one exact native result. */
 export function qwenOutputPathReceipt(value: unknown): QwenOutputPathReceipt {
-  if (!isObject(value) || value.sessionUpdate !== ACP_UPDATE.ToolCallUpdate || typeof value.toolCallId !== 'string' || value.toolCallId === ''
-    || (value.status !== 'completed' && value.status !== 'failed')) {
+  if (!isObject(value) || typeof value.toolCallId !== 'string' || typeof value.status !== 'string' || !acpClosedToolCall(value, value.toolCallId))
     throw new Error('The native Qwen receipt requires a completed or failed tool call.')
-  }
   const content = nativeTextBlocks(value.content)
   const raw = value.rawOutput
   let paths: string[]

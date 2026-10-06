@@ -1,7 +1,7 @@
 import type { MockModelRule, MockModelToolCall } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expect } from '@playwright/test'
-import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** The system prompt of the classifier request of Qwen's Auto mode starts with this text. */
@@ -29,7 +29,7 @@ export function expectQwenCanceledTool(snapshot: NativeMessageSnapshot, toolCall
   const refusal = readNativeToolOutputRecord(snapshot, {
     callId: toolCall.id,
     spanId: toolCall.id,
-    accepts: frame => frame.sessionUpdate === ACP_UPDATE.ToolCallUpdate && frame.toolCallId === toolCall.id && frame.status === 'failed',
+    accepts: frame => acpClosedToolCall(frame, toolCall.id, ['failed']),
   })
   expect(refusal.frame.content).toEqual([{ type: 'content', content: { type: 'text', text: `Tool "${toolCall.name}" was canceled by the user.` } }])
 }

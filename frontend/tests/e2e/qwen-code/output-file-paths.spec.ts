@@ -9,6 +9,7 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { parseMessageContent } from '../../../src/lib/messageParser'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -45,9 +46,7 @@ function resultReceipt(messages: readonly AgentChatMessage[], callId: string, se
   const results = messages.filter(message => message.spanId === callId && message.agentSessionId === sessionId).flatMap((message) => {
     const parsed = parseMessageContent(message)
     const frame = resolveMessageForRendering(parsed, AgentProvider.QWEN_CODE).parentObject
-    return frame?.sessionUpdate === 'tool_call_update' && frame.toolCallId === callId && (frame.status === 'completed' || frame.status === 'failed')
-      ? [{ message, parsed, frame }]
-      : []
+    return frame && acpClosedToolCall(frame, callId) ? [{ message, parsed, frame }] : []
   })
   expect(results).toHaveLength(1)
   const result = results[0]

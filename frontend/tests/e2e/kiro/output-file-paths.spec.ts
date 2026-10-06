@@ -2,6 +2,7 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { basename, dirname } from 'node:path'
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
@@ -18,7 +19,7 @@ import { kiroToolResult } from './toolResult'
 function nativeKiroResult(snapshot: NativeMessageSnapshot, callId: string) {
   const records = snapshot.messages.filter(message => message.agentSessionId === snapshot.agentSessionId && message.spanId === callId)
     .map(message => ({ original: nativeMessageBody(message), supplement: readKiroToolSupplement(message) }))
-    .filter(record => isObject(record.original) && record.original.sessionUpdate === 'tool_call_update' && record.original.toolCallId === callId && record.original.status === 'completed')
+    .filter(record => isObject(record.original) && acpClosedToolCall(record.original, callId, ['completed']))
   const record = records[0]
   if (records.length !== 1 || !record || !isObject(record.original))
     throw new Error('The Kiro output path proof requires one exact native completed result.')
