@@ -1,7 +1,8 @@
 import { expect } from '@playwright/test'
-import { clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { expectSettingsChip, toggleModeWithShortcut, waitForSettingsHydrated } from '../helpers/ui'
+import { offeredTools } from './offeredTools'
 import { nativeContext } from './scenarios'
 
 /**

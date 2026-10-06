@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
-import { clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { offeredTools } from './offeredTools'
 
 /**
  * The mode choice must reach the actual native session. The browser must follow native changes and refusal limits.

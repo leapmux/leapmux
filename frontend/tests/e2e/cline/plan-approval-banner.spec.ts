@@ -3,9 +3,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { answerPlanReview, assistantBubbles, controlBanner, enterControlFeedback, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { offeredTools } from './offeredTools'
 
 /**
  * The native plan exit opens the plan review controls. The approval must change the native mode and continue the plan.

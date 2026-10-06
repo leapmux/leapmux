@@ -61,15 +61,3 @@ export const clineTest = base.extend<CliSkipFixture & NativeFixture & {
 })
 
 export { expect }
-
-/**
- * The tool names that one recorded model call OFFERED, read from its `tools`.
- *
- * A tool name can also appear in the conversation that the call carries, as an
- * earlier call of the tool, so a search of the whole body cannot tell what the
- * session offers now.
- */
-export function offeredTools(body: unknown): string[] {
-  const tools = (body as { tools?: { function?: { name?: string } }[] } | undefined)?.tools ?? []
-  return tools.map(tool => tool.function?.name ?? '')
-}
