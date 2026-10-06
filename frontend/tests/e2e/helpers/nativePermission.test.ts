@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { allowNativeOperation, createNativePermissionFileWrite, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, expectDeclinedToolRow } from './nativePermission'
+import { allowNativeOperation, createNativePermissionFileWrite, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, exerciseNativeToolWrite, expectDeclinedToolRow } from './nativePermission'
 import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
@@ -59,6 +59,15 @@ vi.mock('@playwright/test', async (importOriginal) => {
   }
 })
 vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-native-shell', arguments: { command } }) }))
+const toolTurn = vi.hoisted(() => ({ run: vi.fn(), noControl: vi.fn() }))
+vi.mock('./nativeToolExecution', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeToolExecution')>(),
+  runNativeToolTurn: toolTurn.run,
+}))
+vi.mock('./nativeControlObservation', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeControlObservation')>(),
+  expectNoNativeControl: toolTurn.noControl,
+}))
 
 const scratchRoot = resolve(process.cwd(), '../.tmp')
 const context: ManagedNativeScenarioContext = {
@@ -377,6 +386,56 @@ describe('exerciseAllowThenFeedbackRejection', () => {
 
   it.each(['relative/dir', '/path with space', '/path/$(touch marker)', '/path/\'quote\''])('refuses the working directory %j before it touches the model', async (workingDir) => {
     await expect(exerciseAllowThenFeedbackRejection(context, { workingDir })).rejects.toThrow('needs no shell quoting')
+  })
+})
+
+describe('exerciseNativeToolWrite', () => {
+  /** A context whose page the turn reaches only through the mocked browser helpers. */
+  const writeContext = (): ManagedNativeScenarioContext => ({
+    provider: context.provider,
+    providerAgent: context.providerAgent,
+    workspaceId: context.workspaceId,
+    leapmuxServer: context.leapmuxServer,
+    page: {} as Page,
+    modelScript: {} as ModelScript,
+  })
+
+  /** Run the write command as the native tool does, and answer with the output that the model reads. */
+  function runToolTurn(options: { runsCommand: boolean }) {
+    toolTurn.run.mockImplementation(async (_context: unknown, turn: { toolCalls: Array<{ id: string, arguments: { command: string } }> }) => {
+      const call = turn.toolCalls[0]
+      if (!call)
+        throw new Error('The native write turn holds no tool call.')
+      const output = options.runsCommand ? execFileSync('/bin/sh', ['-c', call.arguments.command], { encoding: 'utf8' }) : ''
+      const request = result(call.id, output)
+      return { start: 0, toolRequest: request, resultRequest: request }
+    })
+  }
+
+  it.runIf(existsSync('/bin/sh'))('runs the write as one native tool turn that allows each native request, and proves the native result', async () => {
+    runToolTurn({ runsCommand: true })
+    await exerciseNativeToolWrite(writeContext(), { permission: 'native' })
+    expect(toolTurn.run).toHaveBeenCalledOnce()
+    expect(toolTurn.run.mock.calls[0]?.[1]).toMatchObject({ prompt: 'Run the scripted native preset write.', answer: 'The native preset write ended.', permissions: 'allow' })
+    expect(toolTurn.noControl).not.toHaveBeenCalled()
+    expect(declinedRow.assertions).toEqual(['visible'])
+  })
+
+  it.runIf(existsSync('/bin/sh'))('runs the turn with no native request inside the proof that no control appears', async () => {
+    runToolTurn({ runsCommand: true })
+    toolTurn.noControl.mockImplementation(async (_context: unknown, options: { testId: string, relatedProof: () => Promise<unknown> }) => {
+      flow.events.push(`no-control:${options.testId}`)
+      await options.relatedProof()
+    })
+    await exerciseNativeToolWrite(writeContext(), { permission: 'absent' })
+    expect(flow.events).toEqual(['no-control:control-banner'])
+    expect(toolTurn.run.mock.calls[0]?.[1]).toMatchObject({ permissions: 'none' })
+  })
+
+  it('fails when the native tool did not write the file', async () => {
+    runToolTurn({ runsCommand: false })
+    await expect(exerciseNativeToolWrite(writeContext(), { permission: 'native' })).rejects.toThrow()
+    expect(declinedRow.assertions).toEqual([])
   })
 })
 

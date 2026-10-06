@@ -12,7 +12,7 @@ import { expectTurnEndedAfter } from './modelScriptFixture'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
-import { waitForNativeToolSteps } from './nativeToolExecution'
+import { runNativeToolTurn } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
@@ -268,16 +268,16 @@ export async function exerciseNativeToolWrite(
 ): Promise<void> {
   await options.prepare?.()
   const scenario = await nativeWriteScenario(context)
+  const answer = 'The native preset write ended.'
   const run = async () => {
-    const start = await context.modelScript.queue({ toolCalls: [scenario.toolCall] }, nativeTextStep(context, 'The native preset write ended.'))
-    await sendMessage(context.page, context.modelScript.prompt('Run the scripted native preset write.'))
-    if (options.permission === 'native')
-      await waitForNativeToolSteps(context, start + 2)
-    else
-      await context.modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(context.page)
-    await scenario.prove(await context.modelScript.requestAt(start + 1))
-    await expect(assistantBubbles(context.page).filter({ hasText: 'The native preset write ended.' }).first()).toBeVisible()
+    const { resultRequest } = await runNativeToolTurn(context, {
+      toolCalls: [scenario.toolCall],
+      prompt: 'Run the scripted native preset write.',
+      answer,
+      permissions: options.permission === 'native' ? 'allow' : 'none',
+    })
+    await scenario.prove(resultRequest)
+    await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
   }
   if (options.permission === 'absent')
     await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: run })
