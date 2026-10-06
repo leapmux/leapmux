@@ -1,3 +1,4 @@
+import type { NativeChildScript, RunningChildOptions } from '../helpers/runningChildProof'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from '../helpers/mockAgentEnvironment'
@@ -9,6 +10,22 @@ describe('runningChildOptions', () => {
   function options(id: string) {
     return runningChildOptions({ provider: AgentProvider.FAST_AGENT, prompt: text => mockScenarioPrompt(id, text), textStep: text => ({ text }) })
   }
+
+  /** The script of the child's turns. Every Fast Agent child has one, so its absence fails the test. */
+  function scriptOf(child: RunningChildOptions): NativeChildScript {
+    if (!child.child)
+      throw new Error('The Fast Agent child options contain no child script.')
+    return child.child
+  }
+
+  /** The text of the held final answer of the child. */
+  function reportOf(child: RunningChildOptions): string {
+    const text = scriptOf(child).finalStep?.text
+    if (!text)
+      throw new Error('The Fast Agent child script contains no final report.')
+    return text
+  }
+
   it('generates a source-valid native label and distinct call ID for every actual child', () => {
     const first = options('native-fast-first')
     const second = options('native-fast-second')
@@ -25,18 +42,16 @@ describe('runningChildOptions', () => {
   it('gives two actual children distinct final reports for native archive correlation', () => {
     const first = options('native-fast-report-first')
     const second = options('native-fast-report-second')
-    expect(first.childFinalStep.text).toBeTruthy()
-    expect(second.childFinalStep.text).toBeTruthy()
-    expect(first.childFinalStep.text).not.toBe(second.childFinalStep.text)
-    expect(first.spawn.arguments?.message).toContain(first.childFinalStep.text)
-    expect(second.spawn.arguments?.message).toContain(second.childFinalStep.text)
+    expect(reportOf(first)).not.toBe(reportOf(second))
+    expect(first.spawn.arguments?.message).toContain(reportOf(first))
+    expect(second.spawn.arguments?.message).toContain(reportOf(second))
   })
   it('does not consume the child rule for actual parent tool history and native label rejection over HTTP', async () => {
     const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
     const id = 'native-fast-parent-error'
     const child = options(id)
     try {
-      await registerMockModelScenario(server.url, id, { housekeeping: [], steps: [{ text: 'ACTUAL_PARENT_REPLY' }], rules: [{ name: 'actual child matcher', when: child.childMatcher, respond: { text: 'INCORRECT_CHILD_REPLY' }, once: true }] })
+      await registerMockModelScenario(server.url, id, { housekeeping: [], steps: [{ text: 'ACTUAL_PARENT_REPLY' }], rules: [{ name: 'actual child matcher', when: scriptOf(child).matcher, respond: { text: 'INCORRECT_CHILD_REPLY' }, once: true }] })
       const response = await fetch(`${server.url}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -61,7 +76,7 @@ describe('runningChildOptions', () => {
     const id = 'native-fast-current-child'
     const child = options(id)
     try {
-      await registerMockModelScenario(server.url, id, { housekeeping: [], steps: [], rules: [{ name: 'actual child matcher', when: child.childMatcher, respond: { text: 'ACTUAL_CHILD_REPLY' }, once: true }] })
+      await registerMockModelScenario(server.url, id, { housekeeping: [], steps: [], rules: [{ name: 'actual child matcher', when: scriptOf(child).matcher, respond: { text: 'ACTUAL_CHILD_REPLY' }, once: true }] })
       const response = await fetch(`${server.url}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

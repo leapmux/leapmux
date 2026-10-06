@@ -8,7 +8,7 @@ import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeM
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiCompleteTaskToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { nativeChildRuleId, openRunningNativeChild } from '../helpers/runningChildProof'
+import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { chooseSettingsOption, messageContents, waitForSettingsIdle } from '../helpers/ui'
@@ -40,19 +40,17 @@ export async function openGeminiRunningChild(context: ManagedNativeScenarioConte
   const path = join(parent.workingDir, `gemini-child-${index}.txt`)
   writeFileSync(path, `${fileMarker}\n`)
   const gate = `gemini-child-${index}-${marker}`
-  const finalRule = nativeChildRuleId(gate, 'the native child holds its final reply')
   const child = await openRunningNativeChild(context, {
     spawn: spawnSubagentToolCall(context.provider, `gemini-child-spawn-${index}-${marker}`, { description: 'Read the native child file', prompt }),
     gate,
-    childMatcher: { system: CHILD_SYSTEM, user: prompt },
-    childFinalStep: { toolCalls: [geminiCompleteTaskToolCall(`gemini-child-complete-${marker}`, finalReply)] },
+    child: {
+      matcher: { system: CHILD_SYSTEM, user: prompt },
+      finalStep: { toolCalls: [geminiCompleteTaskToolCall(`gemini-child-complete-${marker}`, finalReply)] },
+    },
     rules: [{ name: 'the native child reads its actual file', when: { system: CHILD_SYSTEM, user: prompt }, respond: { reasoning: thought, text: progress, toolCalls: [readToolCall(context.provider, `gemini-child-read-${marker}`, path)] }, once: true }],
     allowExistingRows: index > 0,
   })
-  const request = (await context.modelScript.status()).requests.find(row => row.rule === finalRule)
-  if (!request)
-    throw new Error('The held native child has no actual final model request.')
-  expect(nativeToolResult(request, `gemini-child-read-${marker}`)).toContain(fileMarker)
+  expect(nativeToolResult(await child.heldRequest(), `gemini-child-read-${marker}`)).toContain(fileMarker)
   const info = await nativeAgentById(context, child.childId)
   if (!info || !info.providerChildKey)
     throw new Error('The native child has no durable provider UUID.')

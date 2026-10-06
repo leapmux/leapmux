@@ -14,7 +14,7 @@ gooseTest('refuses native child interrupt while the actual child task runs', asy
     openChild: () => openRunningNativeChild(context, {
       spawn: spawnSubagentToolCall(AgentProvider.GOOSE, 'native-child-control', { description: 'Hold the native child', prompt: modelScript.prompt(childPrompt) }),
       gate,
-      childMatcher: { user: '^(?:Subagent ID: [^\\n]*\\n+)?Reply with exactly NATIVE_CHILD_CAPABILITY' },
+      child: { matcher: { user: '^(?:Subagent ID: [^\\n]*\\n+)?Reply with exactly NATIVE_CHILD_CAPABILITY' } },
       prepare: () => applyPermissionPreset(page, 'bypass'),
     }),
   })

@@ -1,6 +1,7 @@
 import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { HeldNativeChild } from '../helpers/runningChildProof'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeTextStep } from '../helpers/nativeScenario'
@@ -24,16 +25,16 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 }
 
 /** Open this provider's actual child task and hold its native final answer. */
-export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean, childTool?: MockModelToolCall } = {}) {
+export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean, childTool?: MockModelToolCall } = {}): Promise<HeldNativeChild> {
   const taskMarker = uniqueMarker('NATIVECHILDTASK')
   const task = `${taskMarker} report one word.`
   const description = `Native held child ${randomUUID()}`
   const spawn = spawnSubagentToolCall(context.provider, 'native-held-child', { description, prompt: context.modelScript.prompt(task) })
+  const matcher = { body: task }
+  const finalStep = nativeTextStep(context, 'NATIVECHILDCOMPLETE')
   return openRunningNativeChild(context, {
     gate: `native-child-${randomUUID()}`,
-    childMatcher: { body: task },
-    ...(options.childTool ? { childTool: options.childTool } : {}),
-    childFinalStep: nativeTextStep(context, 'NATIVECHILDCOMPLETE'),
+    child: options.childTool ? { matcher, tool: options.childTool, finalStep } : { matcher, finalStep },
     spawn,
     allowExistingRows: options.allowExistingRows ?? false,
     rowText: description,

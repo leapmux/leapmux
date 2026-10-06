@@ -1,5 +1,6 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { HeldNativeChild } from '../helpers/runningChildProof'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeTextStep } from '../helpers/nativeScenario'
@@ -28,15 +29,17 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 }
 
 /** Open this provider's actual child task and hold its native final answer. */
-export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}) {
+export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}): Promise<HeldNativeChild> {
   const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
   const description = `Native held child ${randomUUID()}`
   const agentType = 'leapmux-e2e-child'
   const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.modelScript.prompt(task), agentType })
   return openRunningNativeChild(context, {
     gate: `native-child-${randomUUID()}`,
-    childMatcher: { system: 'You are the LeapMux test subagent', body: task },
-    childFinalStep: { toolCalls: [junieSubagentSubmitToolCall(`native-child-submit-${randomUUID()}`, '### Summary\n- NATIVECHILDCOMPLETE\n### Changes\n- No files changed.\n### Verification\n- Answered the scripted task.')] },
+    child: {
+      matcher: { system: 'You are the LeapMux test subagent', body: task },
+      finalStep: { toolCalls: [junieSubagentSubmitToolCall(`native-child-submit-${randomUUID()}`, '### Summary\n- NATIVECHILDCOMPLETE\n### Changes\n- No files changed.\n### Verification\n- Answered the scripted task.')] },
+    },
     spawn,
     allowExistingRows: options.allowExistingRows ?? false,
     rowText: agentType,

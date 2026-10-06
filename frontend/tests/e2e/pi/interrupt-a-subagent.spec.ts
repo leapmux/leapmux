@@ -1,6 +1,6 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { NATIVE_CHILD_FINAL_REPLY, openRunningNativeChild } from '../helpers/runningChildProof'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
 import { piTest } from '../pi-fixtures'
 import { registerPiChildNoticeRule } from './childNoticeRule'
@@ -14,9 +14,9 @@ piTest('refuses native child interrupt while the actual child task runs', async 
     openChild: () => openRunningNativeChild(context, {
       spawn: spawnSubagentToolCall(AgentProvider.PI, 'native-child-control', { description: 'Hold the native child', prompt: modelScript.prompt(childPrompt) }),
       gate,
-      childMatcher: { user: '^Reply with exactly NATIVE_CHILD_CAPABILITY' },
+      child: { matcher: { user: '^Reply with exactly NATIVE_CHILD_CAPABILITY' } },
       beforeRelease: async () => {
-        await registerPiChildNoticeRule(modelScript, { name: 'the actual Pi capability child completed', spawnCallId: 'native-child-control', description: 'Hold the native child', report: 'NATIVE_CHILD_FINAL_REPLY', reply: 'The native child notification arrived.' })
+        await registerPiChildNoticeRule(modelScript, { name: 'the actual Pi capability child completed', spawnCallId: 'native-child-control', description: 'Hold the native child', report: NATIVE_CHILD_FINAL_REPLY, reply: 'The native child notification arrived.' })
       },
     }),
   })

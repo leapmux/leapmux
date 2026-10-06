@@ -1,38 +1,153 @@
 import type { BackgroundTaskItem } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { MockModelMatcher, MockModelRule, MockModelStep, MockModelToolCall } from './mockModelScript'
-import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { MockModelMatcher, MockModelRequestRecord, MockModelRule, MockModelStep, MockModelToolCall } from './mockModelScript'
+import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
+import type { SubagentRequest } from './providerToolCalls'
 import type { RunningNativeChild } from './unsupportedSubagent'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { cssAttributeValue } from './cssAttribute'
 import { validateGateName } from './mockModelScript'
-import { currentNativeAgent } from './nativeScenario'
+import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
+import { spawnSubagentToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 import { expandBackgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal } from './subagentRegistry'
 import { sendMessage, tabById, waitForAgentIdle } from './ui'
 
+/** The text of a held child's final answer when its script states no final step. */
+export const NATIVE_CHILD_FINAL_REPLY = 'NATIVE_CHILD_FINAL_REPLY'
+
+/** The rule ID of the tool turn of a scripted child, before the gate prefix. */
+const NATIVE_CHILD_TOOL_RULE = 'the native child runs its actual tool'
+
+/** The rule ID of the held final answer of a scripted child, before the gate prefix. */
+const NATIVE_CHILD_FINAL_RULE = 'the native child holds its final reply'
+
+/**
+ * The script of the model turns of a native child.
+ *
+ * - Without `tool`, the first turn of the child is its final answer.
+ * - With `tool`, the first turn of the child calls that tool, and the next turn is its final answer.
+ *   `finalMatcher` selects that next turn when `matcher` cannot, for example when the tool result replaces the
+ *   text that `matcher` reads. A `finalMatcher` without `tool` is a type error, because no second turn exists.
+ *
+ * The gate of the child holds the final answer, so the child keeps its running state until the caller releases it.
+ */
+export type NativeChildScript =
+  | { matcher: MockModelMatcher, finalStep?: MockModelStep, tool?: never, finalMatcher?: never }
+  | { matcher: MockModelMatcher, tool: MockModelToolCall, finalMatcher?: MockModelMatcher, finalStep?: MockModelStep }
+
 export interface RunningChildOptions {
+  /** The spawn call of the parent. */
   spawn: MockModelToolCall
+  /** The gate that holds the final answer of the child. It also scopes the rule names of this child. */
   gate: string
-  childMatcher?: MockModelMatcher
-  /** Match the actual result after the child tool runs. */
-  childFinalMatcher?: MockModelMatcher
-  childTool?: MockModelToolCall
-  childFinalStep?: MockModelStep
+  /**
+   * The model turns of the child. Leave it out only when `rules` answer each turn of the child and hold its final
+   * answer at `gate`, as the Cursor child does with a gated stream.
+   */
+  child?: NativeChildScript
+  /**
+   * The ordered turns of the parent. The default is the spawn call, then a text answer after the child reports.
+   * A provider whose parent answers in the same turn as the spawn passes one step that holds both.
+   */
   parentSteps?: readonly MockModelStep[]
+  /** Rules that the provider owns, such as the notice of a completed child. Each rule name gets the gate prefix. */
   rules?: readonly MockModelRule[]
-  singleRequest?: boolean
+  /** Accept the rows of earlier children. Without it, the registry must be empty before the spawn. */
   allowExistingRows?: boolean
+  /** Select the running task whose title holds this text. */
   rowText?: string
+  /** Prepare the parent before the spawn, such as with a permission preset. */
   prepare?: () => Promise<void>
-  /** Register provider-owned report handling before the held response can complete. */
+  /** Register report handling that the provider owns, before the held response can complete. */
   beforeRelease?: () => Promise<void>
+  /** Resolve the exact native task ID from the native frames of the parent. */
   resolveTaskId?: (parentId: string) => Promise<string>
+}
+
+/** A running native child whose final answer the mock holds at the gate of the child. */
+export interface HeldNativeChild extends RunningNativeChild {
+  /**
+   * Return the record of the held final request of the child. The record shows what the child sent to its model,
+   * such as the result of its tool. Only a child with a `child` script has this request.
+   */
+  heldRequest: () => Promise<MockModelRequestRecord>
 }
 
 export interface NativeChildScriptContext {
   provider: ManagedNativeScenarioContext['provider']
   prompt: (text: string) => string
   textStep: (text: string) => MockModelStep
+}
+
+/** Build the script context of a scenario context, so a child script can be built without a browser. */
+export function nativeChildScriptContext(context: NativeScenarioContext): NativeChildScriptContext {
+  return {
+    provider: context.provider,
+    prompt: text => context.modelScript.prompt(text),
+    textStep: text => nativeTextStep(context, text),
+  }
+}
+
+/** The generated identity of one held child. Each call gives a new task, description, spawn call ID, and gate. */
+export interface HeldChildIdentity {
+  /** The task of the child, which starts with a unique marker unless the caller supplies the task. */
+  task: string
+  /** The task with the scenario marker, which the spawn call carries. */
+  prompt: string
+  /** The description of the spawn call. It is short enough for a provider label of 32 characters. */
+  description: string
+  spawn: MockModelToolCall
+  gate: string
+}
+
+/**
+ * Generate the identity of one held child.
+ * `task` replaces the default task, and `spawn` adds the provider fields of the spawn call, such as `background`.
+ */
+export function heldChildIdentity(
+  context: NativeChildScriptContext,
+  options: { task?: string, spawn?: Omit<SubagentRequest, 'description' | 'prompt'> } = {},
+): HeldChildIdentity {
+  const suffix = uniqueMarker()
+  const task = options.task ?? `NATIVECHILDTASK${suffix} report one word.`
+  if (task.trim() === '')
+    throw new Error('A held child needs a task that is not empty.')
+  const description = `Native held child ${suffix.slice(0, 8)}`
+  const prompt = context.prompt(task)
+  return {
+    task,
+    prompt,
+    description,
+    spawn: spawnSubagentToolCall(context.provider, `native-held-child-${suffix}`, { ...options.spawn, description, prompt }),
+    gate: `native-child-${suffix}`,
+  }
+}
+
+/**
+ * The default options of a held child with `identity`:
+ *
+ * - The child answers its task at once, and the gate holds that answer.
+ * - The parent calls the spawn tool, then answers once after the child reports.
+ * - The registry must be empty before the spawn, and the helper selects the child by its description.
+ *
+ * A provider passes `overrides` for each fact that differs.
+ */
+export function heldChildOptions(
+  context: NativeChildScriptContext,
+  identity: HeldChildIdentity,
+  overrides: Partial<Omit<RunningChildOptions, 'spawn' | 'gate'>> = {},
+): RunningChildOptions {
+  return {
+    spawn: identity.spawn,
+    gate: identity.gate,
+    child: { matcher: { user: identity.task }, finalStep: context.textStep('NATIVECHILDCOMPLETE') },
+    parentSteps: [{ toolCalls: [identity.spawn] }, context.textStep('The native parent completed.')],
+    allowExistingRows: false,
+    rowText: identity.description,
+    ...overrides,
+  }
 }
 
 export type NativeChildTask = Pick<BackgroundTaskItem, 'id' | 'kind' | 'status' | 'childAgentId' | 'parentAgentId' | 'title'>
@@ -67,43 +182,59 @@ export function nativeChildRuleId(gate: string, ruleId: string): string {
 }
 
 /** Build the native rules without changing their provider-owned matchers or answers. */
-export function runningNativeChildRules(options: RunningChildOptions): MockModelRule[] {
-  if (options.childFinalMatcher && (!options.childMatcher || !options.childTool))
-    throw new Error('A distinct child completion matcher requires a task matcher and an initial tool call.')
+export function runningNativeChildRules(options: Pick<RunningChildOptions, 'gate' | 'child' | 'rules'>): MockModelRule[] {
   const scopedId = (ruleId: string) => nativeChildRuleId(options.gate, ruleId)
   const rules = (options.rules ?? []).map(rule => ({ ...rule, name: scopedId(rule.name) }))
-  if (options.childMatcher) {
-    if (options.childTool)
-      rules.push({ name: scopedId('the native child runs its actual tool'), when: options.childMatcher, respond: { toolCalls: [options.childTool] }, once: true })
-    rules.push({ name: scopedId('the native child holds its final reply'), when: options.childFinalMatcher ?? options.childMatcher, respond: { ...(options.childFinalStep ?? { text: 'NATIVE_CHILD_FINAL_REPLY' }), gate: options.gate }, once: true })
+  const child = options.child
+  if (child) {
+    if (child.tool)
+      rules.push({ name: scopedId(NATIVE_CHILD_TOOL_RULE), when: child.matcher, respond: { toolCalls: [child.tool] }, once: true })
+    rules.push({
+      name: scopedId(NATIVE_CHILD_FINAL_RULE),
+      when: child.finalMatcher ?? child.matcher,
+      respond: { ...(child.finalStep ?? { text: NATIVE_CHILD_FINAL_REPLY }), gate: options.gate },
+      once: true,
+    })
   }
   return rules
+}
+
+/**
+ * Return the recorded request that the final rule of the scripted child with `gate` answered.
+ * Each child scopes its rule names to its gate, so the final request of another child never matches.
+ */
+export function heldChildFinalRequest(requests: readonly MockModelRequestRecord[], gate: string): MockModelRequestRecord {
+  const finalRule = nativeChildRuleId(gate, NATIVE_CHILD_FINAL_RULE)
+  const [request, ...others] = requests.filter(record => record.rule === finalRule)
+  if (!request)
+    throw new Error(`The held native child of gate ${gate} has no recorded final model request.`)
+  if (others.length > 0)
+    throw new Error(`The held native child of gate ${gate} has ${others.length + 1} final model requests, but its final rule answers once.`)
+  return request
 }
 
 /** Open a real child and hold its native completion until the caller finishes its proof. */
 export async function openRunningNativeChild(
   context: ManagedNativeScenarioContext,
   options: RunningChildOptions,
-): Promise<RunningNativeChild> {
+): Promise<HeldNativeChild> {
+  if (options.parentSteps?.length === 0)
+    throw new Error('The native child proof requires a parent step.')
+  const rules = runningNativeChildRules(options)
   await options.prepare?.()
   const parent = await currentNativeAgent(context)
   if (!options.allowExistingRows)
     await expectNoRegistryRows(context.page, context.leapmuxServer)
   const previousChildIds = new Set((await readNativeSidebarSnapshot(context, parent.id)).backgroundTasks.map(task => task.childAgentId))
-  if (options.parentSteps?.length === 0)
-    throw new Error('The native child proof requires a parent step.')
   try {
-    await context.modelScript.rule(...runningNativeChildRules(options))
-    const parentSteps = options.parentSteps
-      ?? (options.singleRequest
-        ? [{ toolCalls: [options.spawn], text: 'The native parent received its child report.' }]
-        : [{ toolCalls: [options.spawn] }, { text: 'The native parent received its child report.' }])
+    await context.modelScript.rule(...rules)
+    const parentSteps = options.parentSteps ?? [{ toolCalls: [options.spawn] }, { text: 'The native parent received its child report.' }]
     const start = await context.modelScript.queue(...parentSteps)
     await sendMessage(context.page, context.modelScript.prompt('Create the scripted native child for its capability proof.'))
     await context.modelScript.waitForGate(options.gate)
     await options.beforeRelease?.()
     const taskId = await options.resolveTaskId?.(parent.id)
-    let selectedChildId = ''
+    let childId = ''
     await expect.poll(async () => {
       const snapshot = await readNativeSidebarSnapshot(context, parent.id)
       const selected = selectRunningChildTask(snapshot.backgroundTasks, {
@@ -113,22 +244,22 @@ export async function openRunningNativeChild(
         ...(options.rowText !== undefined ? { rowText: options.rowText } : {}),
         ...(taskId !== undefined ? { taskId } : {}),
       })
-      selectedChildId = selected?.childAgentId ?? ''
-      return selectedChildId
-    }).not.toBe('')
+      childId = selected?.childAgentId ?? ''
+      return childId
+    }, { message: 'the Worker holds the running task of the scripted native child' }).not.toBe('')
     await expandBackgroundTasksSection(context.page)
-    const row = context.page.locator(`[data-testid="bg-task-row"]:visible[data-kind="subagent"][data-child-agent-id="${selectedChildId}"]`).first()
+    const row = context.page.locator(`[data-testid="bg-task-row"]:visible[data-kind="subagent"][data-child-agent-id="${cssAttributeValue(childId)}"]`).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-status', 'running')
-    let childId = ''
-    await expect.poll(async () => {
-      childId = await row.getAttribute('data-child-agent-id') ?? ''
-      return childId
-    }).not.toBe('')
     return {
       row,
       childId,
       parentId: parent.id,
+      heldRequest: async () => {
+        if (!options.child)
+          throw new Error('The rules of the provider script this child, so the helper holds no final request of its own.')
+        return heldChildFinalRequest((await context.modelScript.status()).requests, options.gate)
+      },
       finish: async () => {
         await context.modelScript.releaseGateIfHeld(options.gate)
         await context.modelScript.waitForSteps(start + parentSteps.length)

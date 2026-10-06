@@ -36,10 +36,13 @@ export async function runningChild(context: ManagedNativeScenarioContext) {
   const readCallId = `child-read-${marker}`
   const child = await openRunningNativeChild(context, {
     gate: `native-child-${marker}`,
-    childMatcher: { user: task },
-    childFinalMatcher: { user: `NATIVE_CHILD_FILE${marker}` },
-    childTool: readToolCall(context.provider, readCallId, path),
-    childFinalStep: { text: `NATIVE_CHILD_REPORT${marker}` },
+    // The final turn of the child carries the file marker of its Read result, and the final matcher selects that turn.
+    child: {
+      matcher: { user: task },
+      tool: readToolCall(context.provider, readCallId, path),
+      finalMatcher: { user: `NATIVE_CHILD_FILE${marker}` },
+      finalStep: { text: `NATIVE_CHILD_REPORT${marker}` },
+    },
     spawn,
     parentSteps: [{ toolCalls: [spawn] }, { text: 'The native parent completed.' }],
     beforeRelease: () => registerChildReports(context),

@@ -14,7 +14,7 @@ zcodeTest('refuses native child send while the actual child task runs', async ({
     openChild: () => openRunningNativeChild(context, {
       spawn: spawnSubagentToolCall(AgentProvider.ZCODE, 'native-child-control', { description: 'Hold the native child', prompt: modelScript.prompt(childPrompt) }),
       gate,
-      childMatcher: { user: 'Reply with exactly NATIVE_CHILD_CAPABILITY' },
+      child: { matcher: { user: 'Reply with exactly NATIVE_CHILD_CAPABILITY' } },
       prepare: () => applyPermissionPreset(page, 'bypass'),
     }),
   })

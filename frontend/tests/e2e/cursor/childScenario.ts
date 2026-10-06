@@ -30,14 +30,16 @@ export async function openCursorRunningChild(
   const filePath = join(parent.workingDir, `native-child-${suffix}.txt`)
   writeFileSync(filePath, `${marker}\n`)
   const description = options.description ?? `Read the actual child file ${suffix}`
+  const spawn = spawnSubagentToolCall(context.provider, `cursor-native-task-${suffix}`, {
+    description,
+    prompt: context.modelScript.prompt(prompt),
+    nativeExecution: { modelId: 'mock-grok' },
+  })
   const child = await openRunningNativeChild(context, {
-    spawn: spawnSubagentToolCall(context.provider, `cursor-native-task-${suffix}`, {
-      description,
-      prompt: context.modelScript.prompt(prompt),
-      nativeExecution: { modelId: 'mock-grok' },
-    }),
+    spawn,
     gate,
-    singleRequest: true,
+    // The Cursor parent states its Task call and its answer in one model turn.
+    parentSteps: [{ toolCalls: [spawn], text: 'The native parent received its child report.' }],
     ...(options.allowExistingRows === undefined ? {} : { allowExistingRows: options.allowExistingRows }),
     rowText: description,
     rules: [{

@@ -5,7 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { nativeChildRuleId, openRunningNativeChild } from '../helpers/runningChildProof'
+import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { messageContents } from '../helpers/ui'
 import { kiloTest } from '../kilo-fixtures'
@@ -21,12 +21,11 @@ kiloTest('keeps actual child tool output out of the child tab before native comp
   const gate = `native-child-live-${crypto.randomUUID()}`
   const child = await openRunningNativeChild(context, {
     spawn: spawnSubagentToolCall(AgentProvider.KILO, 'native-live-child', { description: 'Read the native child file', prompt: modelScript.prompt('Read the private native child transcript probe, then report your result.') }),
-    childMatcher: { user: '^Read the private native child transcript probe' },
-    childTool: readToolCall(AgentProvider.KILO, 'native-child-read', path),
+    child: { matcher: { user: '^Read the private native child transcript probe' }, tool: readToolCall(AgentProvider.KILO, 'native-child-read', path) },
     gate,
   })
   await withCleanup(async () => {
-    const request = (await modelScript.status()).requests.find(record => record.rule === nativeChildRuleId(gate, 'the native child holds its final reply'))
+    const request = await child.heldRequest()
     expect(nativeToolResult(request, 'native-child-read')).toContain(marker)
     await openChildTabFromRow(page, child.row)
     await expect(messageContents(page).filter({ hasText: marker })).toHaveCount(0)

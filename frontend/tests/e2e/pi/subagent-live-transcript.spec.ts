@@ -5,7 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { nativeChildRuleId, openRunningNativeChild } from '../helpers/runningChildProof'
+import { NATIVE_CHILD_FINAL_REPLY, openRunningNativeChild } from '../helpers/runningChildProof'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { messageContents } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
@@ -22,15 +22,14 @@ piTest('keeps actual child tool output out of the child tab before native comple
   const gate = `native-child-live-${crypto.randomUUID()}`
   const child = await openRunningNativeChild(context, {
     spawn: spawnSubagentToolCall(AgentProvider.PI, 'native-live-child', { description: 'Read the native child file', prompt: modelScript.prompt('Read the private native child transcript probe, then report your result.') }),
-    childMatcher: { user: '^Read the private native child transcript probe' },
-    childTool: readToolCall(AgentProvider.PI, 'native-child-read', path),
+    child: { matcher: { user: '^Read the private native child transcript probe' }, tool: readToolCall(AgentProvider.PI, 'native-child-read', path) },
     gate,
     beforeRelease: async () => {
-      await registerPiChildNoticeRule(modelScript, { name: 'the actual Pi file child completed', spawnCallId: 'native-live-child', description: 'Read the native child file', report: 'NATIVE_CHILD_FINAL_REPLY', reply: 'The native child notification arrived.' })
+      await registerPiChildNoticeRule(modelScript, { name: 'the actual Pi file child completed', spawnCallId: 'native-live-child', description: 'Read the native child file', report: NATIVE_CHILD_FINAL_REPLY, reply: 'The native child notification arrived.' })
     },
   })
   await withCleanup(async () => {
-    const request = (await modelScript.status()).requests.find(record => record.rule === nativeChildRuleId(gate, 'the native child holds its final reply'))
+    const request = await child.heldRequest()
     expect(nativeToolResult(request, 'native-child-read')).toContain(marker)
     await openChildTabFromRow(page, child.row)
     await expect(messageContents(page).filter({ hasText: marker })).toHaveCount(0)

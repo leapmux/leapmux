@@ -1,12 +1,9 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { randomUUID } from 'node:crypto'
+import type { HeldNativeChild } from '../helpers/runningChildProof'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { nativeChildRuleId, openRunningNativeChild } from '../helpers/runningChildProof'
-import { uniqueMarker } from '../helpers/shellArguments'
+import { heldChildIdentity, heldChildOptions, nativeChildRuleId, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 /**
@@ -22,22 +19,18 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
   return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'letta', holdWhen: ['server'] })
 }
 
-/** Open this provider's actual child task and hold its native final answer. */
-export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}) {
-  const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
-  const description = `Native held child ${randomUUID()}`
-  const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.modelScript.prompt(task) })
-  const gate = `native-child-${randomUUID()}`
-  return openRunningNativeChild(context, {
-    gate,
-    childMatcher: { user: task },
-    childFinalStep: nativeTextStep(context, 'NATIVECHILDCOMPLETE'),
-    spawn,
+/**
+ * Open this provider's actual child task and hold its native final answer.
+ * Letta Code reports a completed child to the root in a notice that names the spawn call, so the child registers the
+ * rule that answers that notice before its answer can complete.
+ */
+export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}): Promise<HeldNativeChild> {
+  const script = nativeChildScriptContext(context)
+  const child = heldChildIdentity(script)
+  return openRunningNativeChild(context, heldChildOptions(script, child, {
     allowExistingRows: options.allowExistingRows ?? false,
-    rowText: description,
-    parentSteps: [{ toolCalls: [spawn] }, nativeTextStep(context, 'The native parent completed.')],
     beforeRelease: async () => {
-      await registerLettaChildNoticeRule(context, { name: nativeChildRuleId(gate, 'letta-native-child-notice'), spawnCallId: spawn.id, description, report: 'NATIVECHILDCOMPLETE', reply: 'The native child completed.' })
+      await registerLettaChildNoticeRule(context, { name: nativeChildRuleId(child.gate, 'letta-native-child-notice'), spawnCallId: child.spawn.id, description: child.description, report: 'NATIVECHILDCOMPLETE', reply: 'The native child completed.' })
     },
-  })
+  }))
 }

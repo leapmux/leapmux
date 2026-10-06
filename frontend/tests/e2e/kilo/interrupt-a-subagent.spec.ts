@@ -13,7 +13,7 @@ kiloTest('refuses native child interrupt while the actual child task runs', asyn
     openChild: () => openRunningNativeChild(context, {
       spawn: spawnSubagentToolCall(AgentProvider.KILO, 'native-child-control', { description: 'Hold the native child', prompt: modelScript.prompt(childPrompt) }),
       gate,
-      childMatcher: { user: '^Reply with exactly NATIVE_CHILD_CAPABILITY' },
+      child: { matcher: { user: '^Reply with exactly NATIVE_CHILD_CAPABILITY' } },
     }),
   })
 })

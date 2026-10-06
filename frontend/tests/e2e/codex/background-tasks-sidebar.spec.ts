@@ -9,7 +9,7 @@ codexTest('shows and restores the actual running child row and its completed sta
   const context = { page, modelScript, leapmuxServer, provider: AgentProvider.CODEX, workspaceId: authenticatedCodexWorkspace.workspaceId }
   const child = await openRunningNativeChild(context, {
     gate: 'codex-sidebar-child',
-    childMatcher: { body: ['NEW_TASK', 'codex_sidebar_child'] },
+    child: { matcher: { body: ['NEW_TASK', 'codex_sidebar_child'] } },
     spawn: spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-sidebar-child', { description: 'codex sidebar child', prompt: modelScript.prompt('Complete the sidebar child task.') }),
   })
   try {

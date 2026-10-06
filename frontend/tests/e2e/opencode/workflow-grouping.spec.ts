@@ -17,8 +17,7 @@ opencodeTest('keeps two actual native children outside workflow groups after rel
       return openRunningNativeChild(context, {
         spawn: spawnSubagentToolCall(AgentProvider.OPENCODE, `native-group-child-${index}`, { description, prompt: modelScript.prompt(`NATIVE_GROUP_CHILD_${index}_${suffix}: reply once.`) }),
         gate,
-        childMatcher: { user: `^NATIVE_GROUP_CHILD_${index}_${suffix}` },
-        childFinalStep: { text: `ACTUAL_CHILD_REPORT_${index}_${suffix}` },
+        child: { matcher: { user: `^NATIVE_GROUP_CHILD_${index}_${suffix}` }, finalStep: { text: `ACTUAL_CHILD_REPORT_${index}_${suffix}` } },
         allowExistingRows: index > 0,
         rowText: description,
       })

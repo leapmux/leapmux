@@ -1,12 +1,9 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { randomUUID } from 'node:crypto'
+import type { HeldNativeChild } from '../helpers/runningChildProof'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
-import { uniqueMarker } from '../helpers/shellArguments'
+import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 
 /** Build the scenario context of CodeBuddy Code. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
@@ -18,16 +15,8 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
   return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'codebuddy', holdWhen: ['-p'] })
 }
 
-/** Open this provider's actual child task and hold its native final answer. */
-export async function runningChild(context: ManagedNativeScenarioContext) {
-  const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
-  const spawn = spawnSubagentToolCall(context.provider, 'native-held-child', { description: 'Native held child', prompt: context.modelScript.prompt(task) })
-  return openRunningNativeChild(context, {
-    gate: `native-child-${randomUUID()}`,
-    childMatcher: { user: task },
-    childFinalStep: nativeTextStep(context, 'NATIVECHILDCOMPLETE'),
-    spawn,
-    parentSteps: [{ toolCalls: [spawn] }, nativeTextStep(context, 'The native parent completed.')],
-    rules: [],
-  })
+/** Open this provider's actual child task and hold its native final answer. CodeBuddy Code needs only the defaults. */
+export async function runningChild(context: ManagedNativeScenarioContext): Promise<HeldNativeChild> {
+  const script = nativeChildScriptContext(context)
+  return openRunningNativeChild(context, heldChildOptions(script, heldChildIdentity(script)))
 }

@@ -14,7 +14,7 @@ reasonixTest('refuses native child interrupt while the actual child task runs', 
     openChild: () => openRunningNativeChild(context, {
       spawn: spawnSubagentToolCall(AgentProvider.REASONIX, 'native-child-control', { description: 'Hold the native child', prompt: modelScript.prompt(childPrompt) }),
       gate,
-      childMatcher: { user: 'Reply with exactly NATIVE_CHILD_CAPABILITY' },
+      child: { matcher: { user: 'Reply with exactly NATIVE_CHILD_CAPABILITY' } },
       prepare: () => applyPermissionPreset(page, 'bypass'),
     }),
   })

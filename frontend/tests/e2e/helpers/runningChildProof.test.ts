@@ -1,4 +1,7 @@
-import type { NativeChildTask } from './runningChildProof'
+import type { MockModelRequestRecord } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
+import type { NativeScenarioContext } from './nativeScenario'
+import type { NativeChildScript, NativeChildScriptContext, NativeChildTask, RunningChildOptions } from './runningChildProof'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
@@ -6,7 +9,16 @@ import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } fro
 import { parseScenarioSpec } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { nativeChildRuleId, runningNativeChildRules, selectRunningChildTask } from './runningChildProof'
+import {
+  heldChildFinalRequest,
+  heldChildIdentity,
+  heldChildOptions,
+  NATIVE_CHILD_FINAL_REPLY,
+  nativeChildRuleId,
+  nativeChildScriptContext,
+  runningNativeChildRules,
+  selectRunningChildTask,
+} from './runningChildProof'
 
 describe('selectRunningChildTask', () => {
   const old: NativeChildTask = { id: 'old-native-task', kind: BackgroundTaskKind.SUBAGENT, childAgentId: 'old-worker-child', parentAgentId: 'actual-parent', title: 'leapmux-e2e-child', status: BackgroundTaskStatus.COMPLETED }
@@ -37,49 +49,61 @@ describe('selectRunningChildTask', () => {
 function rules(gate: string) {
   return runningNativeChildRules({
     gate,
-    spawn: spawnSubagentToolCall(AgentProvider.PI, `spawn-${gate}`, { description: gate, prompt: `Native child ${gate}.` }),
-    childMatcher: { user: `Native child ${gate}` },
-    childTool: readToolCall(AgentProvider.PI, `read-${gate}`, `/project/${gate}.txt`),
+    child: {
+      matcher: { user: `Native child ${gate}` },
+      tool: readToolCall(AgentProvider.PI, `read-${gate}`, `/project/${gate}.txt`),
+    },
   })
 }
 
-describe('runningNativeChildRules', () => {
-  it.each([
-    {},
-    { childMatcher: { user: 'The native task' } },
-  ])('rejects an unused child completion matcher: %j', (fields) => {
-    const options = {
-      gate: 'unused-final-matcher',
-      spawn: spawnSubagentToolCall(AgentProvider.PI, 'spawn', { description: 'The native task', prompt: 'Perform the task.' }),
-      childFinalMatcher: { user: 'The actual tool result' },
-      ...fields,
-    }
-    expect(() => runningNativeChildRules(options)).toThrow('task matcher and an initial tool call')
+describe('NativeChildScript', () => {
+  it('refuses a final matcher without the tool turn that it would follow', () => {
+    // @ts-expect-error A final matcher selects the turn after the tool turn, so a script without a tool cannot state one.
+    const script: NativeChildScript = { matcher: { user: 'The native task' }, finalMatcher: { user: 'The actual tool result' } }
+    expect(script.matcher).toEqual({ user: 'The native task' })
   })
 
-  it('matches the final child reply against the actual tool result', () => {
-    const options = {
-      gate: 'after-native-read',
-      spawn: spawnSubagentToolCall(AgentProvider.DEEPSEEK_HARNESS, 'native-spawn', { description: 'Read the file', prompt: 'Perform the native file task.' }),
-      childMatcher: { user: 'The actual child task.' },
-      childTool: readToolCall(AgentProvider.DEEPSEEK_HARNESS, 'native-read', '/project/native.txt'),
-      childFinalMatcher: { user: 'NATIVE_CHILD_FILE77' },
+  it('accepts a final matcher together with the tool turn', () => {
+    const script: NativeChildScript = {
+      matcher: { user: 'The native task' },
+      tool: readToolCall(AgentProvider.PI, 'native-read', '/project/native.txt'),
+      finalMatcher: { user: 'The actual tool result' },
     }
-    const childRules = runningNativeChildRules(options)
-    expect(childRules[0]?.when).toBe(options.childMatcher)
-    expect(childRules[1]?.when).toBe(options.childFinalMatcher)
-    expect(childRules[1]?.respond.gate).toBe(options.gate)
+    expect(script.finalMatcher).toEqual({ user: 'The actual tool result' })
+  })
+})
+
+describe('runningNativeChildRules', () => {
+  it('matches the final child reply against the actual tool result', () => {
+    const child: NativeChildScript = {
+      matcher: { user: 'The actual child task.' },
+      tool: readToolCall(AgentProvider.DEEPSEEK_HARNESS, 'native-read', '/project/native.txt'),
+      finalMatcher: { user: 'NATIVE_CHILD_FILE77' },
+    }
+    const childRules = runningNativeChildRules({ gate: 'after-native-read', child })
+    expect(childRules[0]?.when).toBe(child.matcher)
+    expect(childRules[0]?.respond.toolCalls).toEqual([child.tool])
+    expect(childRules[1]?.when).toBe(child.finalMatcher)
+    expect(childRules[1]?.respond.gate).toBe('after-native-read')
     expect(childRules[1]?.once).toBe(true)
+  })
+
+  it('holds the default final reply when the script states no final step', () => {
+    const [final] = runningNativeChildRules({ gate: 'default-final', child: { matcher: { user: 'The actual child task.' } } })
+    expect(final?.respond).toEqual({ text: NATIVE_CHILD_FINAL_REPLY, gate: 'default-final' })
+  })
+
+  it('applies the gate to a scripted final step, so a step cannot drop the hold', () => {
+    const [final] = runningNativeChildRules({ gate: 'scripted-final', child: { matcher: { user: 'The actual child task.' }, finalStep: { text: 'The report.', gate: 'another-gate' } } })
+    expect(final?.respond).toEqual({ text: 'The report.', gate: 'scripted-final' })
   })
 
   it('rejects an unrelated last-user turn that quotes the native notification tag over HTTP', async () => {
     const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
     const id = 'native-child-notice-ownership'
     try {
-      const childRules = runningNativeChildRules({
-        gate: 'native-notice-ownership',
-        spawn: spawnSubagentToolCall(AgentProvider.PI, 'native-notice-spawn', { description: 'The actual child', prompt: 'Perform the actual child task.' }),
-      })
+      const childRules = runningNativeChildRules({ gate: 'native-notice-ownership' })
+      expect(childRules).toEqual([])
       await registerMockModelScenario(server.url, id, { steps: [{ text: 'The scripted content turn completed.' }], rules: childRules })
       const send = (content: string) => fetch(`${server.url}/v1/chat/completions`, {
         method: 'POST',
@@ -124,7 +148,7 @@ describe('runningNativeChildRules', () => {
 
   it('keeps repeated provider rule IDs distinct for sequential native children', () => {
     const original = { name: 'provider notification', when: { user: '^Actual provider notification' }, respond: { text: 'The native notification completed.' }, once: true }
-    const build = (gate: string) => runningNativeChildRules({ gate, spawn: spawnSubagentToolCall(AgentProvider.PI, gate, { description: gate, prompt: gate }), rules: [original] })
+    const build = (gate: string) => runningNativeChildRules({ gate, rules: [original] })
     const combined = [...build('first-provider-child'), ...build('second-provider-child')]
     expect(() => parseScenarioSpec({ steps: [], rules: combined })).not.toThrow()
     expect(combined.filter(rule => rule.when === original.when).map(rule => rule.name)).toHaveLength(2)
@@ -141,7 +165,7 @@ describe('runningNativeChildRules', () => {
     expect(original).toHaveLength(2)
     expect(original.some(rule => rule.when.user === '<task-notification>')).toBe(false)
     const notice = { name: 'provider-owned completion', when: { user: '^The actual provider completion$' }, respond: { text: 'The actual completion arrived.' } }
-    const explicit = runningNativeChildRules({ gate: 'explicit-provider-notice', spawn: spawnSubagentToolCall(AgentProvider.PI, 'explicit-spawn', { description: 'The actual child', prompt: 'The actual child task.' }), rules: [notice] })
+    const explicit = runningNativeChildRules({ gate: 'explicit-provider-notice', rules: [notice] })
     expect(explicit).toHaveLength(1)
     expect(explicit[0]?.when).toBe(notice.when)
     expect(explicit[0]?.respond).toBe(notice.respond)
@@ -156,5 +180,129 @@ describe('nativeChildRuleId', () => {
 
   it.each(['', 'invalid gate', '[ambiguous]', 'a'.repeat(65)])('rejects an invalid completion control ID: %s', (gate) => {
     expect(() => nativeChildRuleId(gate, 'native rule')).toThrow('Model gate must use')
+  })
+})
+
+describe('heldChildFinalRequest', () => {
+  /** One recorded request that the rule `rule` answered. */
+  function record(rule: string | undefined, text: string): MockModelRequestRecord {
+    return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', ...(rule === undefined ? {} : { rule }), body: { text } }
+  }
+  const [toolRule, finalRule] = rules('held-request').map(rule => rule.name)
+  const [, otherFinalRule] = rules('other-child').map(rule => rule.name)
+
+  it('returns the request of the final rule of the child with the gate', () => {
+    if (!toolRule || !finalRule || !otherFinalRule)
+      throw new Error('The child script built no tool rule and final rule.')
+    const final = record(finalRule, 'the final request')
+    const requests = [record(toolRule, 'the tool request'), record(otherFinalRule, 'another child'), record(undefined, 'a step'), final]
+    expect(heldChildFinalRequest(requests, 'held-request')).toBe(final)
+  })
+
+  it('refuses a child whose final request is absent', () => {
+    if (!toolRule)
+      throw new Error('The child script built no tool rule.')
+    expect(() => heldChildFinalRequest([record(toolRule, 'the tool request')], 'held-request')).toThrow('has no recorded final model request')
+  })
+
+  it('refuses a final rule that answered twice, because the rule answers once', () => {
+    if (!finalRule)
+      throw new Error('The child script built no final rule.')
+    expect(() => heldChildFinalRequest([record(finalRule, 'first'), record(finalRule, 'second')], 'held-request')).toThrow('has 2 final model requests')
+  })
+})
+
+/** A script context that marks each prompt, as a model script does. */
+const SCRIPT: NativeChildScriptContext = {
+  provider: AgentProvider.LETTA,
+  prompt: text => `${text}\nSCENARIO_MARK`,
+  textStep: text => ({ text: `answer: ${text}` }),
+}
+
+describe('nativeChildScriptContext', () => {
+  function context(textStep?: NativeScenarioContext['textStep']): NativeScenarioContext {
+    return {
+      provider: AgentProvider.DIRAC,
+      // The script context reads only `prompt`. Any other model access fails the test.
+      modelScript: Object.assign({} as ModelScript, { prompt: (text: string) => `${text}\nMARKED` }),
+      ...(textStep ? { textStep } : {}),
+      get page(): never {
+        throw new Error('The script context must not read the page.')
+      },
+    }
+  }
+
+  it('marks a prompt through the model script and keeps the provider', () => {
+    const script = nativeChildScriptContext(context())
+    expect(script.provider).toBe(AgentProvider.DIRAC)
+    expect(script.prompt('The task.')).toBe('The task.\nMARKED')
+  })
+
+  it('answers through the text step of the provider, or with plain text without one', () => {
+    expect(nativeChildScriptContext(context(text => ({ toolCalls: [{ id: 'respond', name: 'respond', arguments: { text } }] }))).textStep('Done.'))
+      .toEqual({ toolCalls: [{ id: 'respond', name: 'respond', arguments: { text: 'Done.' } }] })
+    expect(nativeChildScriptContext(context()).textStep('Done.')).toEqual({ text: 'Done.' })
+  })
+})
+
+describe('heldChildIdentity', () => {
+  it('gives each child a new task, spawn call ID, gate, and description', () => {
+    const first = heldChildIdentity(SCRIPT)
+    const second = heldChildIdentity(SCRIPT)
+    expect(first.task).toMatch(/^NATIVECHILDTASK[0-9a-f]{32} report one word\.$/)
+    expect(first.task).not.toBe(second.task)
+    expect(first.spawn.id).not.toBe(second.spawn.id)
+    expect(first.gate).not.toBe(second.gate)
+    expect(first.description).not.toBe(second.description)
+  })
+
+  it('keeps the description within a provider label of 32 characters', () => {
+    const { description } = heldChildIdentity(SCRIPT)
+    expect(description).toMatch(/^Native held child [0-9a-f]{8}$/)
+    expect(description.length).toBeLessThanOrEqual(32)
+  })
+
+  it('builds the spawn call of the provider with the marked prompt and a valid gate', () => {
+    const child = heldChildIdentity(SCRIPT)
+    expect(child.prompt).toBe(`${child.task}\nSCENARIO_MARK`)
+    expect(child.spawn).toEqual(spawnSubagentToolCall(AgentProvider.LETTA, child.spawn.id, { description: child.description, prompt: child.prompt }))
+    expect(() => nativeChildRuleId(child.gate, 'a rule')).not.toThrow()
+  })
+
+  it('uses the task and the spawn fields that the provider supplies', () => {
+    const child = heldChildIdentity({ ...SCRIPT, provider: AgentProvider.DROID }, { task: 'The provider task.', spawn: { background: true } })
+    expect(child.task).toBe('The provider task.')
+    expect(child.spawn).toEqual(spawnSubagentToolCall(AgentProvider.DROID, child.spawn.id, { description: child.description, prompt: child.prompt, background: true }))
+  })
+
+  it.each(['', '   '])('refuses an empty task: %j', (task) => {
+    expect(() => heldChildIdentity(SCRIPT, { task })).toThrow('task that is not empty')
+  })
+})
+
+describe('heldChildOptions', () => {
+  it('holds the child answer, answers the parent once, and selects the child by its description', () => {
+    const child = heldChildIdentity(SCRIPT)
+    const options: RunningChildOptions = heldChildOptions(SCRIPT, child)
+    expect(options).toEqual({
+      spawn: child.spawn,
+      gate: child.gate,
+      child: { matcher: { user: child.task }, finalStep: { text: 'answer: NATIVECHILDCOMPLETE' } },
+      parentSteps: [{ toolCalls: [child.spawn] }, { text: 'answer: The native parent completed.' }],
+      allowExistingRows: false,
+      rowText: child.description,
+    })
+  })
+
+  it('replaces each default that the provider overrides and keeps the identity', () => {
+    const child = heldChildIdentity(SCRIPT)
+    const script: NativeChildScript = { matcher: { system: 'The child system prompt', body: child.task } }
+    const options = heldChildOptions(SCRIPT, child, { child: script, allowExistingRows: true, rules: [] })
+    expect(options.child).toBe(script)
+    expect(options.allowExistingRows).toBe(true)
+    expect(options.rules).toEqual([])
+    expect(options.spawn).toBe(child.spawn)
+    expect(options.gate).toBe(child.gate)
+    expect(options.rowText).toBe(child.description)
   })
 })

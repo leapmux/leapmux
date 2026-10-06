@@ -1,13 +1,9 @@
-import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import type { NativeChildScriptContext } from '../helpers/runningChildProof'
-import { randomUUID } from 'node:crypto'
+import type { HeldNativeChild, NativeChildScriptContext, RunningChildOptions } from '../helpers/runningChildProof'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 
 /** Build the scenario context of Fast Agent. Its native protocol needs no field beyond the provider. */
@@ -21,25 +17,20 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 }
 
 /** Open this provider's actual child task and hold its native final answer. */
-export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean, childTool?: MockModelToolCall } = {}) {
-  return openRunningNativeChild(context, runningChildOptions({ provider: context.provider, prompt: text => context.modelScript.prompt(text), textStep: text => nativeTextStep(context, text) }, options))
+export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}): Promise<HeldNativeChild> {
+  return openRunningNativeChild(context, runningChildOptions(nativeChildScriptContext(context), options))
 }
 
-/** Build the actual native child script without browser operations. */
-export function runningChildOptions(context: NativeChildScriptContext, options: { allowExistingRows?: boolean, childTool?: MockModelToolCall } = {}) {
+/**
+ * Build the actual native child script without browser operations.
+ * Fast Agent stores each child archive by its final report, so every child answers with a report of its own, and the
+ * task states that report. The matcher reads the last user turn, which only the child's own turn holds.
+ */
+export function runningChildOptions(context: NativeChildScriptContext, options: { allowExistingRows?: boolean } = {}): RunningChildOptions {
   const report = uniqueMarker('NATIVECHILDCOMPLETE')
-  const task = `${uniqueMarker('NATIVECHILDTASK')} report exactly ${report}.`
-  const description = `Native held child ${randomUUID().slice(0, 8)}`
-  const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.prompt(task) })
-  return {
-    gate: `native-child-${randomUUID()}`,
-    childMatcher: { lastMessage: { role: 'user' as const, text: task } },
-    ...(options.childTool ? { childTool: options.childTool } : {}),
-    childFinalStep: context.textStep(report),
-    spawn,
+  const child = heldChildIdentity(context, { task: `${uniqueMarker('NATIVECHILDTASK')} report exactly ${report}.` })
+  return heldChildOptions(context, child, {
+    child: { matcher: { lastMessage: { role: 'user', text: child.task } }, finalStep: context.textStep(report) },
     allowExistingRows: options.allowExistingRows ?? false,
-    rowText: description,
-    parentSteps: [{ toolCalls: [spawn] }, context.textStep('The native parent completed.')],
-    rules: [],
-  }
+  })
 }
