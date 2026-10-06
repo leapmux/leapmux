@@ -13,13 +13,7 @@ import { throwingPollReads } from '~/test-support/throwingPollReads'
  * The polls that the guard accepts for now, by file and enclosing function, each with its reason. An entry that
  * matches no poll fails the guard, so a converted poll takes its entry with it.
  */
-const ACCEPTED: ReadonlyMap<string, string> = new Map([
-  [
-    'amp/nativeCatalog.ts closeAmpCatalogAgent',
-    'This poll needs the same conversion. A change to this file on a parallel branch is not merged yet, so this branch '
-    + 'leaves the file unchanged. Convert the poll to `retryUntilPass` and delete this entry.',
-  ],
-])
+const ACCEPTED: ReadonlyMap<string, string> = new Map()
 
 /** Analyze sources keyed by a path below a fixed root. */
 function analyze(files: Record<string, string>) {
