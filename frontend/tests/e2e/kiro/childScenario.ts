@@ -1,8 +1,6 @@
 import type { MockModelMatcher, MockModelPattern } from '../helpers/mockModelScript'
+import { KIRO_CHILD_AGENT } from '../helpers/providerToolCalls'
 import { HELD_CHILD_TASK } from '../helpers/subagentRegistry'
-
-/** The name of the context gatherer, the subagent that Kiro starts for a spawn, which its row and report state. */
-export const KIRO_CHILD_AGENT = 'context-gatherer'
 
 /**
  * Match the own turn of a Kiro child whose last user text matches `user`.

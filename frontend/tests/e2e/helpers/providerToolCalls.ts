@@ -60,6 +60,12 @@ export const GEMINI_E2E_PLAN_FILENAME = 'leapmux-e2e-plan.md'
 /** The installed Claude child tool that delivers its completed report to its caller. */
 export const CLAUDE_SUBAGENT_HANDBACK_TOOL = 'SubagentHandback'
 
+/**
+ * The agent that the Kiro spawn call starts: the context gatherer, which Kiro bundles and its default mode offers.
+ * The registry row and the report of the child state this name, and the request of the child states it as its mode.
+ */
+export const KIRO_CHILD_AGENT = 'context-gatherer'
+
 /** Build the native Claude report call without changing any report text. */
 export function claudeSubagentHandbackToolCall(id: string, message: string): MockModelToolCall {
   return { id, name: CLAUDE_SUBAGENT_HANDBACK_TOOL, arguments: { message } }
@@ -966,9 +972,9 @@ const TOOL_VOCABULARY = {
         arguments: { question: question.question, options: question.options.map(({ label, description }) => ({ title: label, description })), reason: 'general-question' },
       }
     },
-    // `name` states an agent that Kiro bundles. `context-gatherer` is the one the
-    // default mode offers, and `explanation` is the reason the row states.
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'invoke_sub_agent', arguments: { name: 'context-gatherer', prompt, explanation: description } }),
+    // `name` states an agent that Kiro bundles, and `explanation` is the reason the
+    // row states.
+    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'invoke_sub_agent', arguments: { name: KIRO_CHILD_AGENT, prompt, explanation: description } }),
     // Kiro's Control Process tool starts a background process.
     // No native probe identified its model-facing name.
     // This table supplies no builder because no verified call shape exists here.

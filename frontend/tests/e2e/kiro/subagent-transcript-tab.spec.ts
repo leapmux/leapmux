@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { KIRO_CHILD_AGENT, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { kiroTest } from '../kiro-fixtures'
-import { KIRO_CHILD_AGENT, kiroChildTurn } from './childScenario'
+import { kiroChildTurn } from './childScenario'
 import { KIRO_AGENT } from './scenarios'
 
 /**
