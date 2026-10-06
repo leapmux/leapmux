@@ -8,7 +8,7 @@
  * model from the mock endpoint under an isolated `--config-dir`. No test reaches
  * a Qoder account, a real model, or the developer's own Qoder configuration.
  */
-import type { Page, TestInfo } from '@playwright/test'
+import type { TestInfo } from '@playwright/test'
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { existsSync, readdirSync } from 'node:fs'
@@ -72,8 +72,3 @@ export const qoderTest = base.extend<CliSkipFixture & NativeFixture & {
 })
 
 export { expect }
-
-/** Assert the Qoder mode chip, without matching the separate effort chip. */
-export async function expectQoderModeChip(page: Page, mode: string): Promise<void> {
-  await expect(page.locator('[data-testid="composer-mode-trigger"]:visible')).toContainText(mode)
-}

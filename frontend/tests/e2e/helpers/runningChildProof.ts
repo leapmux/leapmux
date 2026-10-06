@@ -1,8 +1,8 @@
+import type { Locator } from '@playwright/test'
 import type { BackgroundTaskItem } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelMatcher, MockModelRequestRecord, MockModelRule, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { SubagentRequest } from './providerToolCalls'
-import type { RunningNativeChild } from './unsupportedSubagent'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
@@ -67,6 +67,14 @@ export interface RunningChildOptions {
   beforeRelease?: () => Promise<void>
   /** Resolve the exact native task ID from the native frames of the parent. */
   resolveTaskId?: (parentId: string) => Promise<string>
+}
+
+/** A native child that runs: its registry row, its identity, and the step that lets it finish. */
+export interface RunningNativeChild {
+  row: Locator
+  childId: string
+  parentId: string
+  finish: () => Promise<void>
 }
 
 /** A running native child whose final answer the mock holds at the gate of the child. */

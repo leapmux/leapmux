@@ -4,7 +4,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelBodiesAfter } from '../helpers/nativeScenario'
 import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_PLAN_FILE_CAPTURE, kimiTest, occurrences } from '../kimi-fixtures'
+import { kimiTest } from '../kimi-fixtures'
+import { KIMI_PLAN_FILE_CAPTURE, occurrences } from './planScenario'
 
 const KIMI = AgentProvider.KIMI_CODE
 

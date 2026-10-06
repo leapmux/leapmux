@@ -7,8 +7,8 @@ import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, controlButton, enterControlFeedback, expectNoControlBanner, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
-import { nativeContext } from './scenarios'
+import { expect, qoderTest } from '../qoder-fixtures'
+import { expectQoderModeChip, nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI control requests', () => {
   qoderTest('raises a banner for a tool call and runs it once allowed', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {

@@ -3,7 +3,7 @@ import type { BackgroundTaskItem } from '../../../src/generated/proto/leapmux/v1
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
-import type { RunningNativeChild } from './unsupportedSubagent'
+import type { RunningNativeChild } from './runningChildProof'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from './cleanup'

@@ -1,7 +1,8 @@
-import type { Locator, Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { RunningNativeChild } from './runningChildProof'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
 import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, InterruptAgentRequestSchema, InterruptAgentResponseSchema, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -11,13 +12,6 @@ import { nativeAgentsByIds } from './nativeScenario'
 import { uniqueMarker } from './shellArguments'
 import { openChildTabFromRow } from './subagentRegistry'
 import { composerEditor, interruptButton } from './ui'
-
-export interface RunningNativeChild {
-  row: Locator
-  childId: string
-  parentId: string
-  finish: () => Promise<void>
-}
 
 /** The reason that the composer of a read-only subagent tab states. */
 export const READ_ONLY_SUBAGENT_REASON = 'This subagent doesn\'t accept messages.'

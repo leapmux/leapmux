@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expectCodewhalePosture } from '../codewhale-fixtures'
 import { chooseSettingsOption, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { expectCodewhalePosture } from './scenarios'
 
 /** Select native Full Access and wait for its confirmed posture. */
 export async function runWithoutApprovals(page: Page): Promise<void> {

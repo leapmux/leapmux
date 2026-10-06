@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codewhaleTest, expectCodewhalePosture } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, expectNoControlBanner, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { expectCodewhalePosture } from './scenarios'
 
 const CODEWHALE = AgentProvider.CODEWHALE
 

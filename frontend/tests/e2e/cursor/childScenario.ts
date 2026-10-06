@@ -1,5 +1,5 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import type { RunningNativeChild } from '../helpers/unsupportedSubagent'
+import type { RunningNativeChild } from '../helpers/runningChildProof'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'

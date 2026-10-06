@@ -7,14 +7,12 @@
  * binary behind the `codewhale` npm wrapper when the wrapper downloaded it, and
  * the wrapper otherwise, so the wrapper on PATH is what the skip check asks for.
  */
-import type { Page } from '@playwright/test'
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeContext } from './codewhale/scenarios'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
-import { closeComposerMenus, openSettingsMenu } from './helpers/ui'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
 
@@ -58,18 +56,6 @@ export const CODEWHALE_E2E_SKIP_REASON: string | null = CODEWHALE.path === null
  * alone, so the worker cannot close the job's row until something else states it.
  */
 export const CODEWHALE_SERVES_JOB_ROUTES: boolean = INSTALL.version !== null && (INSTALL.version[0] > 0 || INSTALL.version[1] >= 10)
-
-/**
- * Assert the permission posture the agent reports.
- *
- * The status bar draws one mode chip, and Codewhale's is its agent/plan mode, so
- * the posture is read off the checked radio of its own settings group instead.
- */
-export async function expectCodewhalePosture(page: Page, posture: string): Promise<void> {
-  const group = await openSettingsMenu(page, 'permissionMode')
-  await expect(group.locator(`[data-testid="permissionMode-${posture}"] input[type="radio"]`)).toBeChecked()
-  await closeComposerMenus(page)
-}
 
 /** How a Codewhale agent opens. */
 export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-e2e' }

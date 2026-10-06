@@ -1,7 +1,8 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { answerControl, answerPlanReview, enterControlFeedback, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
+import { expectQoderModeChip } from './scenarios'
 
 qoderTest.describe('Qoder CLI plan approval', () => {
   const PROVIDER = AgentProvider.QODER

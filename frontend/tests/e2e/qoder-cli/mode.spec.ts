@@ -8,8 +8,8 @@ import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectNoControlBanner, expectSettingsOptionChosen, openPlusMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
-import { nativeContext } from './scenarios'
+import { expect, qoderTest } from '../qoder-fixtures'
+import { expectQoderModeChip, nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI settings', () => {
   qoderTest('the mode menu lists the five modes, and a switch survives a reload', async ({ authenticatedQoderWorkspace, page }) => {

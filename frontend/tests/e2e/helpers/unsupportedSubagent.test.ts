@@ -3,7 +3,7 @@ import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb
 import type { MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import type { RunningNativeChild } from './unsupportedSubagent'
+import type { RunningNativeChild } from './runningChildProof'
 import { Code } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'

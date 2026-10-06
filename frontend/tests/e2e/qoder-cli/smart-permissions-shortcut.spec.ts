@@ -1,6 +1,7 @@
 import { QODER_MODE } from '../../../src/generated/contracts/qoder-protocol'
 import { applyPermissionPreset, expectPermissionShortcuts, expectSettingsOptionChosen, waitForSettingsHydrated } from '../helpers/ui'
-import { expectQoderModeChip, qoderTest } from '../qoder-fixtures'
+import { qoderTest } from '../qoder-fixtures'
+import { expectQoderModeChip } from './scenarios'
 
 qoderTest.describe('Qoder CLI settings', () => {
   // Smart selects Qoder's Auto mode, whose own classifier judges each risky call through a model request. The suite
