@@ -19,7 +19,7 @@ function destination(name = 'history.json'): string {
   return join(root, name)
 }
 
-/** Build the selected coverage of the given files, with `casesPerFile` native cases in each. */
+/** Build the selected coverage of the given files, with `casesPerFile` Playwright cases in each. */
 function coverage(files: readonly string[], casesPerFile = 1): E2ETestCoverage {
   return {
     files: [...files].sort(),
@@ -247,7 +247,7 @@ describe('testListContent', () => {
     expect(() => testListContent([])).toThrow('at least one file')
   })
 
-  it('rejects a file that a native test list cannot select exactly', () => {
+  it('rejects a file that a Playwright test list cannot select exactly', () => {
     expect(() => testListContent(['a.spec.ts:12'])).toThrow('cannot select the file "a.spec.ts:12" exactly')
   })
 })
@@ -279,13 +279,13 @@ describe('planShards', () => {
     { label: 'no history exists', input: { history: { status: 'absent' as const } }, reason: 'no duration history exists' },
     { label: 'the history is unreadable', input: { history: { status: 'unreadable' as const, reason: 'invalid JSON' } }, reason: 'the duration history is unreadable: invalid JSON' },
     { label: 'the history holds no selected file', input: { history: { status: 'present' as const, files: new Map([['other.spec.ts', { durationMs: 1, cases: 1 }]]) } }, reason: 'no selected file' },
-  ])('keeps the native split when $label', ({ input, reason }) => {
+  ])('keeps Playwright\'s own split when $label', ({ input, reason }) => {
     const plan = planShards({ coverage: coverage(['a.spec.ts', 'b.spec.ts']), workers: 2, balance: 'history', history, callerTestList: false, ...input })
 
     expect(plan).toEqual({ kind: 'static', total: 2, reason: expect.stringContaining(reason) })
   })
 
-  it('keeps the native split when a selected file cannot be listed exactly', () => {
+  it('keeps Playwright\'s own split when a test list cannot select a selected file exactly', () => {
     const plan = planShards({ coverage: coverage(['a.spec.ts:12', 'b.spec.ts']), workers: 2, balance: 'history', history, callerTestList: false })
 
     expect(plan).toEqual({ kind: 'static', total: 2, reason: expect.stringContaining('cannot select the file') })
@@ -305,7 +305,7 @@ describe('formatShardPlan', () => {
 
   it('states the reason and the history path of a static plan', () => {
     expect(formatShardPlan({ kind: 'static', total: 3, reason: 'no duration history exists' }, historyPath))
-      .toBe(`E2E shard plan: the native --shard=i/3 split. Reason: no duration history exists. Duration history: ${historyPath}\n`)
+      .toBe(`E2E shard plan: Playwright's own --shard=i/3 split. Reason: no duration history exists. Duration history: ${historyPath}\n`)
   })
 
   it('lists each balanced shard with its files and their estimates', () => {

@@ -22,7 +22,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const playwrightCli = require.resolve('@playwright/test/cli')
 const lastRunReporter = fileURLToPath(new URL('./e2eLastRunReporter.ts', import.meta.url))
 
-function nativeRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.ProcessEnv {
+/** Build the environment of a Playwright test run that owns the private run directory. */
+function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.ProcessEnv {
   const noncePath = join(runDir, 'nonce')
   const nonce = crypto.randomUUID()
   // Global setup verifies this nonce before it starts any fixture.
@@ -41,7 +42,7 @@ function nativeRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.Pr
   return result
 }
 
-/** Retain failure groups while removing repeated copies of the same underlying error. */
+/** Keep each failure group, and remove each repeated copy of one underlying error. */
 function distinctFailures(errors: readonly unknown[]): unknown[] {
   const seen = new Set<unknown>()
   const groups = new Set<AggregateError>()
@@ -69,7 +70,7 @@ function distinctFailures(errors: readonly unknown[]): unknown[] {
 /**
  * Finish a run that selects no test.
  * No test ran, so the run leaves the saved last-run state as it is. A mistyped filter then cannot erase the saved failures.
- * Native Playwright replaces the state with an empty one, and a serial run keeps that native behavior.
+ * Playwright itself replaces the state with an empty one. A serial run keeps that behavior, because it leaves the selection to Playwright.
  */
 function finishWithoutTests(passWithNoTests: boolean, reason: string): number {
   if (passWithNoTests) {
@@ -90,7 +91,7 @@ function recordDurationHistory(path: string, report: unknown): void {
     writeDurationHistory(path, mergeDurationHistory(readDurationHistory(path), reportedFileDurations(report)))
   }
   catch (error) {
-    process.stderr.write(`Warning: the E2E duration history at ${path} was not saved. A later run can use the native shard split.\n${inspect(error)}\n`)
+    process.stderr.write(`Warning: the E2E duration history at ${path} was not saved. A later run can use Playwright's own shard split.\n${inspect(error)}\n`)
   }
 }
 
@@ -108,7 +109,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
   const historyPath = join(outputRoot, DURATION_HISTORY_FILE)
   // Read each saved selection before the build, so an absent, malformed, or empty selection costs no build.
   const lastFailed = options.lastFailed ? readLastFailedState(lastRunState) : undefined
-  // A serial run keeps the native result for an empty selection: native Playwright writes its own reports.
+  // A serial run keeps Playwright's own result for an empty selection, because Playwright writes the reports of that run.
   if (lastFailed?.failedTests.length === 0 && !options.serial)
     return finishWithoutTests(options.passWithNoTests, `The last-run state at ${lastRunState} lists no failed tests.`)
   let failedFiles: { report: string, files: string[], testList: string } | undefined
@@ -154,7 +155,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     pending.set(result, owner)
     void result.then(() => pending.delete(result), () => pending.delete(result))
     const completion = Promise.race([result, signalStopped])
-    // Partial launch can fail before its caller reaches the command wait.
+    // A partial launch can fail before its caller reaches the command wait.
     void completion.catch(() => {})
     return completion
   }
@@ -199,16 +200,16 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     if (options.serial) {
       runDirs.push(runDir)
       const serialEnv: NodeJS.ProcessEnv = {
-        ...nativeRunEnvironment(env, runDir),
+        ...privateRunEnvironment(env, runDir),
         LEAPMUX_E2E_OUTPUT_FILE_DIR: outputFileDir,
-        // The native CLI gives --last-failed-file precedence over this environment value.
+        // The Playwright CLI gives --last-failed-file precedence over this environment value.
         PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE || parentLastRun,
       }
       const code = await command('node', [playwrightCli, 'test', '--workers=1', '--retries=0', ...serialRunArgs(options.playwrightArgs, join(outputFileDir, 'test-results'), failedFilesList)], { cwd, env: serialEnv }, { logPath: join(outputFileDir, 'console.log') })
       process.stdout.write(`E2E artifacts: ${outputFileDir}\n`)
       return interrupted || code
     }
-    // Native Playwright writes its last-run result back to the file that it reads.
+    // Playwright writes its last-run result back to the file that it reads.
     // Each child therefore reads a private copy of one snapshot, and only the merge writes the caller's state.
     let lastFailedSnapshot: string | undefined
     if (lastFailed) {
@@ -254,18 +255,18 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       artifacts.push(shardArtifacts)
       let shardSelection: ChildSelection = { filters, ...(failedFilesList === undefined ? {} : { testList: failedFilesList }) }
       if (plan.kind === 'balanced') {
-        // The shard's own list replaces the failed-file list: native Playwright accepts one test list, and the shard's files are a subset.
+        // The shard's own list replaces the failed-file list: Playwright accepts one test list, and the shard's files are a subset.
         const testList = join(shardArtifacts, 'test-list.txt')
         writeFileSync(testList, testListContent(plan.shards[index - 1]!.files.map(file => file.file)), { flag: 'wx' })
         shardSelection = { filters, testList }
       }
       if (lastFailedSnapshot !== undefined) {
-        // Native Playwright replaces this copy with the shard's own result when the shard ends.
+        // Playwright replaces this copy with the shard's own result when the shard ends.
         const lastFailedFile = join(shardArtifacts, 'last-run.json')
         copyFileSync(lastFailedSnapshot, lastFailedFile, constants.COPYFILE_EXCL)
         shardSelection = { ...shardSelection, lastFailedFile }
       }
-      const testEnv = shardReporterEnvironment(nativeRunEnvironment(env, shardDir), shardArtifacts)
+      const testEnv = shardReporterEnvironment(privateRunEnvironment(env, shardDir), shardArtifacts)
       const shardArgs = shardRunArgs(shardSelection, plan.kind === 'static' ? { index, total } : undefined)
       commands.push(command('node', [playwrightCli, 'test', ...shardArgs], { cwd, env: testEnv }, { logPath: join(shardArtifacts, 'console.log'), label: `shard ${index}/${total}` }))
     }
@@ -325,8 +326,8 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     }))
     // A recorded descendant can retain stdout after the command root exits.
     // Stop those descendants before waiting for the command's stream-close event.
-    const native = await Promise.allSettled(runDirs.map(directory => stopTrackedProcesses(directory)))
-    for (const [index, result] of native.entries()) {
+    const descendantStops = await Promise.allSettled(runDirs.map(directory => stopTrackedProcesses(directory)))
+    for (const [index, result] of descendantStops.entries()) {
       if (result.status === 'rejected') {
         failures.push(result.reason)
         retained.add(runDirs[index]!)

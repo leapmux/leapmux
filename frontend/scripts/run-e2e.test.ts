@@ -61,7 +61,7 @@ it('keeps serial runtime roots short and preserves their full tool output run la
   expect(await runE2E(['--workers=1'], projectRoot)).toBe(0)
   const child = calls.find(call => call.command === 'node' && call.args.includes('test') && !call.args.includes('--list'))
   if (!child?.env.LEAPMUX_E2E_NONCE_PATH || !child.env.LEAPMUX_E2E_OUTPUT_FILE_DIR)
-    throw new Error('The serial native fixture has no owned runtime or full tool output directory.')
+    throw new Error('The serial Playwright fixture has no owned runtime or full tool output directory.')
   const runtime = dirname(child.env.LEAPMUX_E2E_NONCE_PATH)
   expect(basename(runtime)).toMatch(/^e-[A-Za-z0-9]{6}$/)
   expect(basename(child.env.LEAPMUX_E2E_OUTPUT_FILE_DIR)).toMatch(/^e2e-[A-Za-z0-9]{6}$/)
@@ -127,7 +127,7 @@ function processes(exitCodes = [0, 0], inspect?: (env: NodeJS.ProcessEnv) => voi
     if (args.includes('--reporter=list,blob,json') && env.PLAYWRIGHT_BLOB_OUTPUT_DIR && env.LEAPMUX_E2E_OUTPUT_FILE_DIR) {
       const shard = args.find(argument => argument.startsWith('--shard='))?.replaceAll('/', '-') ?? basename(env.LEAPMUX_E2E_OUTPUT_FILE_DIR)
       mkdirSync(env.PLAYWRIGHT_BLOB_OUTPUT_DIR, { recursive: true })
-      writeFileSync(join(env.PLAYWRIGHT_BLOB_OUTPUT_DIR, `report-${shard}.zip`), 'native blob fixture')
+      writeFileSync(join(env.PLAYWRIGHT_BLOB_OUTPUT_DIR, `report-${shard}.zip`), 'Playwright blob fixture')
     }
     const noncePath = env.LEAPMUX_E2E_NONCE_PATH
     if (noncePath && command !== 'task') {
@@ -149,13 +149,13 @@ function processes(exitCodes = [0, 0], inspect?: (env: NodeJS.ProcessEnv) => voi
   }) as typeof spawn)
 }
 
-function partialLaunchFailure(options: { stopFailure?: Error, signal?: boolean, nativeRecord?: boolean, inheritedPipe?: boolean } = {}) {
+function partialLaunchFailure(options: { stopFailure?: Error, signal?: boolean, trackedRecord?: boolean, inheritedPipe?: boolean } = {}) {
   processes()
   const completed = vi.mocked(spawn).getMockImplementation()
   const copy = vi.mocked(copyRunBinary).getMockImplementation()
   if (!completed || !copy)
     throw new Error('The controlled launcher fixture is absent.')
-  const state = { stopped: false, directory: '', nativeRecord: '', setupFailure: new Error('The second shard copy failed.') }
+  const state = { stopped: false, directory: '', trackedRecord: '', setupFailure: new Error('The second shard copy failed.') }
   const exited = deferred<void>()
   let child: ChildProcess | undefined
   vi.mocked(copyRunBinary).mockImplementationOnce(copy).mockImplementationOnce(copy).mockImplementationOnce(() => {
@@ -171,11 +171,11 @@ function partialLaunchFailure(options: { stopFailure?: Error, signal?: boolean, 
       throw new Error('The controlled shard has no private nonce.')
     state.directory = dirname(nonce)
     runDirs.add(state.directory)
-    if (options.nativeRecord) {
+    if (options.trackedRecord) {
       const directory = join(state.directory, 'processes')
       mkdirSync(directory)
-      state.nativeRecord = join(directory, '123')
-      writeFileSync(state.nativeRecord, '')
+      state.trackedRecord = join(directory, '123')
+      writeFileSync(state.trackedRecord, '')
     }
     const started = Object.assign(new ChildProcess(), {
       pid: 1234,
@@ -219,7 +219,7 @@ function heldSerialCommand(options: { stopFailure?: Error, inheritedPipe?: boole
     throw new Error('The controlled completed command fixture is absent.')
   const launched = deferred<void>()
   const stopAttempted = deferred<void>()
-  const state = { directory: '', nativeRecord: '' }
+  const state = { directory: '', trackedRecord: '' }
   let child: ChildProcess | undefined
   vi.mocked(spawn).mockImplementation((command, args, spawnOptions) => {
     if (!args?.includes('test'))
@@ -230,8 +230,8 @@ function heldSerialCommand(options: { stopFailure?: Error, inheritedPipe?: boole
     state.directory = dirname(nonce)
     runDirs.add(state.directory)
     mkdirSync(join(state.directory, 'processes'))
-    state.nativeRecord = join(state.directory, 'processes', '123')
-    writeFileSync(state.nativeRecord, '')
+    state.trackedRecord = join(state.directory, 'processes', '123')
+    writeFileSync(state.trackedRecord, '')
     const started = Object.assign(new ChildProcess(), {
       pid: 1234,
       exitCode: null,
@@ -278,15 +278,15 @@ describe('end-to-end launcher', () => {
     expect(existsSync(fixture.state.directory)).toBe(false)
   })
 
-  it('cleans independent native process records after a command refuses to stop', async () => {
+  it('cleans independent tracked process records after a command refuses to stop', async () => {
     const stopFailure = new Error('The controlled shard refuses its stop signal.')
-    const fixture = partialLaunchFailure({ stopFailure, nativeRecord: true })
+    const fixture = partialLaunchFailure({ stopFailure, trackedRecord: true })
     try {
       const result: unknown = await runE2E(['--workers=2'], projectRoot).then(() => null, (error: unknown) => error)
       expect(failureLeaves(result)).toContain(fixture.state.setupFailure)
       expect(failureLeaves(result)).toContain(stopFailure)
       expect(process.kill).toHaveBeenCalledWith(123, 'SIGTERM')
-      expect(existsSync(fixture.state.nativeRecord)).toBe(false)
+      expect(existsSync(fixture.state.trackedRecord)).toBe(false)
       expect(existsSync(fixture.state.directory)).toBe(true)
     }
     finally {
@@ -295,7 +295,7 @@ describe('end-to-end launcher', () => {
   })
 
   it('closes a recorded inherited pipe before waiting for the stopped command close event', async () => {
-    const fixture = partialLaunchFailure({ nativeRecord: true, inheritedPipe: true })
+    const fixture = partialLaunchFailure({ trackedRecord: true, inheritedPipe: true })
     vi.mocked(process.kill).mockImplementation((pid, signal) => {
       if (pid === 123 && signal === 'SIGTERM')
         fixture.finish()
@@ -350,11 +350,11 @@ describe('end-to-end launcher', () => {
     expect(existsSync(join(outputFileDir, 'console.log'))).toBe(true)
   })
 
-  it.each(['', 'caller-last-run.json'])('preserves native last-failed environment precedence: %j', async (destination) => {
+  it.each(['', 'caller-last-run.json'])('preserves Playwright\'s last-failed environment precedence: %j', async (destination) => {
     vi.stubEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', destination)
     const state = join(projectRoot, 'frontend', destination || join('public-output', '.last-run.json'))
     mkdirSync(dirname(state), { recursive: true })
-    writeFileSync(state, JSON.stringify({ status: 'failed', failedTests: ['native-id'] }))
+    writeFileSync(state, JSON.stringify({ status: 'failed', failedTests: ['test-id'] }))
     processes()
     expect(await runE2E(['--workers=1', '--last-failed', '--output=public-output'], projectRoot)).toBe(0)
     const child = calls.find(call => call.args.includes('test'))
@@ -373,7 +373,7 @@ describe('end-to-end launcher', () => {
     await fixture.stopAttempted
     const result = await fixture.completion
     expect(failureLeaves(result)).toContain(stopFailure)
-    expect(existsSync(fixture.state.nativeRecord)).toBe(false)
+    expect(existsSync(fixture.state.trackedRecord)).toBe(false)
     expect(existsSync(fixture.state.directory)).toBe(true)
   }, 30_000)
 
@@ -389,7 +389,7 @@ describe('end-to-end launcher', () => {
     await fixture.stopAttempted
     expect(await fixture.completion).toBe(143)
     expect(process.kill).toHaveBeenCalledWith(123, 'SIGTERM')
-    expect(existsSync(fixture.state.nativeRecord)).toBe(false)
+    expect(existsSync(fixture.state.trackedRecord)).toBe(false)
     expect(existsSync(fixture.state.directory)).toBe(false)
   }, 30_000)
 
@@ -529,7 +529,7 @@ describe('end-to-end launcher', () => {
   }
 
   it('shares the last-failed state with every parallel shard through private copies', async () => {
-    const content = JSON.stringify({ status: 'failed', failedTests: ['native-id'] })
+    const content = JSON.stringify({ status: 'failed', failedTests: ['test-id'] })
     writeLastRunState(JSON.parse(content))
     processes()
     expect(await runE2E(['--workers=2', '--last-failed'], projectRoot)).toBe(0)
@@ -613,7 +613,7 @@ describe('end-to-end launcher', () => {
     expect(history).toEqual({ version: 1, files: { 'first.spec.ts': { durationMs: 125, cases: 1 }, 'second.spec.ts': { durationMs: 125, cases: 1 } } })
   })
 
-  it('keeps the native shard split when the caller turns balancing off', async () => {
+  it('keeps Playwright\'s own shard split when the caller turns balancing off', async () => {
     writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'second.spec.ts': { durationMs: 5000, cases: 1 } })
     processes()
     expect(await runE2E(['--workers=2', '--balance=off'], projectRoot)).toBe(0)
@@ -700,7 +700,7 @@ describe('end-to-end launcher', () => {
 
   it('writes the combined report after the merge replaced the state, so the next --failed-files run accepts it', async () => {
     mergedReport = () => {
-      // The native merge reporter replaces the last-run state before the launcher saves the report.
+      // Playwright's merge reporter replaces the last-run state before the launcher saves the report.
       writeLastRunState({ status: 'failed', failedTests: ['second-id'] })
       return combinedReport(['second.spec.ts'])
     }
@@ -743,7 +743,7 @@ describe('end-to-end launcher', () => {
     const output = captureOutput()
     expect(await runE2E(['--workers=1', '--failed-files'], projectRoot)).toBe(0)
     expect(output.stdout()).toContain(`E2E --failed-files: 1 file from ${combinedReportFile()}`)
-    // A serial run starts no discovery run and no shard: one native process runs the complete files.
+    // A serial run starts no discovery run and no shard: one Playwright process runs the complete files.
     const children = calls.filter(call => call.command === 'node')
     expect(children).toHaveLength(1)
     const [child] = children

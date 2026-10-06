@@ -50,7 +50,7 @@ export function mergedJsonDestination(env: NodeJS.ProcessEnv, cwd: string, outpu
   return join(outputFileDir, 'report.json')
 }
 
-interface NativeReportSpec {
+interface PlaywrightReportSpec {
   file: string
   tests: unknown[]
   source: Record<string, unknown>
@@ -58,10 +58,10 @@ interface NativeReportSpec {
 }
 
 /**
- * Visit native specifications while preserving their complete suite ancestry.
+ * Visit the specifications of a Playwright JSON report, and keep the complete suite ancestry of each one.
  * Coverage requires a report without a global error. A failed or stopped run still reports each test outcome.
  */
-function visitReportSpecs(report: unknown, visitSpec: (spec: NativeReportSpec) => void, globalErrors: 'reject' | 'accept' = 'reject'): void {
+function visitReportSpecs(report: unknown, visitSpec: (spec: PlaywrightReportSpec) => void, globalErrors: 'reject' | 'accept' = 'reject'): void {
   if (!isObject(report) || !Array.isArray(report.suites) || !Array.isArray(report.errors) || (globalErrors === 'reject' && report.errors.length !== 0))
     throw new Error('The Playwright report is absent, malformed, or contains a global error.')
   const visit = (suite: unknown, ancestors: Record<string, unknown>[]): void => {
@@ -107,7 +107,7 @@ function sourcePosition(value: unknown, field: string): number {
   return value
 }
 
-/** Read each selected specification, project, and repeat from the native JSON report. */
+/** Read each selected specification, project, and repeat from the Playwright JSON report. */
 export function discoveredTestCoverage(report: unknown): E2ETestCoverage {
   const files = new Set<string>()
   const cases: E2ECaseIdentity[] = []
@@ -124,10 +124,10 @@ export function discoveredTestCoverage(report: unknown): E2ETestCoverage {
       if (!isObject(test))
         throw new Error('The Playwright report contains an incomplete test identity.')
       const projectName = stringIdentity(test.projectName, 'project name')
-      // Native blob merge drops __projectId while preserving the project name.
+      // Playwright's blob merge drops __projectId and keeps the project name.
       // Preserve a present ID. Exact coverage rejects ambiguous merged project names.
       const projectId = test.projectId === undefined ? projectName : stringIdentity(test.projectId, 'project ID')
-      // Native JSON omits repeatEachIndex and merges repeats into this array.
+      // The Playwright JSON report omits repeatEachIndex and merges repeats into this array.
       // Count each specification and project separately to retain every repeat.
       const identity = JSON.stringify([spec.file, titlePath, line, column, projectId, projectName])
       const repeatIndex = repeats.get(identity) ?? 0
@@ -142,18 +142,18 @@ export function readDiscoveredTestCoverage(path: string): E2ETestCoverage {
   return discoveredTestCoverage(JSON.parse(readFileSync(path, 'utf8')))
 }
 
-/** Collect one complete native blob from each finished shard without replacing another shard's file. */
+/** Collect one complete Playwright blob report from each finished shard without replacing another shard's file. */
 export function collectShardBlobs(artifactDirs: readonly string[], destination: string): void {
   mkdirSync(destination, { recursive: true })
   for (const [index, outputFileDir] of artifactDirs.entries()) {
     const directory = join(outputFileDir, 'blob-report')
     const files = readdirSync(directory, { withFileTypes: true }).filter(entry => entry.name.endsWith('.zip'))
     if (files.length !== 1 || !files[0]!.isFile())
-      throw new Error(`E2E shard ${index + 1} produced no unique native blob report.`)
+      throw new Error(`E2E shard ${index + 1} produced no unique Playwright blob report.`)
     const file = join(directory, files[0]!.name)
     const stat = lstatSync(file)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0)
-      throw new Error(`E2E shard ${index + 1} produced an incomplete native blob report.`)
+      throw new Error(`E2E shard ${index + 1} produced an incomplete Playwright blob report.`)
     copyFileSync(file, join(destination, `shard-${index + 1}-${basename(file)}`), constants.COPYFILE_EXCL)
   }
 }
@@ -175,8 +175,8 @@ export interface FileDuration {
 }
 
 /**
- * Sum the native result durations of each file.
- * A case without a result, or with an unfinished result (native duration -1), adds nothing.
+ * Sum the Playwright result durations of each file.
+ * A case without a result, or with an unfinished result (Playwright reports the duration -1), adds nothing.
  */
 export function reportedFileDurations(report: unknown): Map<string, FileDuration> {
   const totals = new Map<string, FileDuration>()
@@ -206,7 +206,7 @@ const TEST_OUTCOMES = new Set(['expected', 'unexpected', 'flaky', 'skipped'])
 const TEST_STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted'])
 
 /**
- * Decide whether one native test leaves its file without a complete clean result.
+ * Decide whether one Playwright test leaves its file without a complete clean result.
  * - `unexpected` covers a failure and a timeout. A `test.fail()` case that fails is `expected`.
  * - `flaky` passed only on a retry. A complete-file result requires zero retries.
  * - A `skipped` outcome for a test that does not skip on purpose shows an interruption, a run deadline,

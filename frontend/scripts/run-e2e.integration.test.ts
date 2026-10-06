@@ -241,7 +241,7 @@ function retainedArtifactFiles(root: string): Map<string, Buffer> {
 }
 
 describe('stopPrivateRunner', () => {
-  it.each(['stop', 'completion'])('preserves the %s failure beside a native descendant cleanup failure', async (stage) => {
+  it.each(['stop', 'completion'])('preserves the %s failure beside a fixture descendant cleanup failure', async (stage) => {
     const root = createFixture()
     const original = new Error(`The controlled runner ${stage} fails.`)
     const cleanup = new Error('The controlled fixture descendant cleanup fails.')
@@ -265,7 +265,7 @@ describe('stopPrivateRunner', () => {
   })
 })
 
-describe('runE2E native integration', () => {
+describe('runE2E Playwright integration', () => {
   it.each(CANCELLATION_CASES)('stops Task and its build command after $signal before Playwright starts', async ({ signal, code }) => {
     const root = createFixture({ holdBuild: true })
     const records = join(root, 'records')
@@ -286,7 +286,7 @@ describe('runE2E native integration', () => {
     }, () => stopPrivateRunner(root, records, runner))
   }, CANCELLATION_TEST_DEADLINE_MS)
 
-  it.each(CANCELLATION_CASES)('stops every native descendant and retains logs after $signal', async ({ signal, code }) => {
+  it.each(CANCELLATION_CASES)('stops every fixture descendant and retains logs after $signal', async ({ signal, code }) => {
     const root = createFixture({ cancellation: true })
     const records = join(root, 'records')
     const runner = startPrivateRunner(root)
@@ -373,7 +373,7 @@ describe('runE2E native integration', () => {
     requireAllRunDirsRemoved(root)
   }, INTEGRATION_DEADLINE_MS)
 
-  it('runs isolated native shards in parallel and merges every case once', async () => {
+  it('runs isolated Playwright shards in parallel and merges every case once', async () => {
     const run = await executeFixture(2)
     expect(run.code, launcherFixtureDiagnostics(run)).toBe(0)
     expect(run.parallelRelease).toBe(true)
@@ -384,7 +384,7 @@ describe('runE2E native integration', () => {
     expect(new Set(entries.map(entry => entry.workerProcessId)).size).toBe(2)
   }, INTEGRATION_DEADLINE_MS)
 
-  it('runs one native worker serially when the caller selects one worker', async () => {
+  it('runs one Playwright worker serially when the caller selects one worker', async () => {
     const run = await executeFixture(1)
     expect(run.code, launcherFixtureDiagnostics(run)).toBe(0)
     expect(run.parallelRelease).toBe(false)
@@ -397,7 +397,7 @@ describe('runE2E native integration', () => {
     expect(BigInt(fixtureStringField(beta, 'started'))).toBeGreaterThanOrEqual(BigInt(fixtureStringField(alphaExit, 'finished')))
   }, INTEGRATION_DEADLINE_MS)
 
-  it('retains a failed native case and cleans both shards before returning failure', async () => {
+  it('retains a failed fixture case and cleans both shards before returning failure', async () => {
     const run = await executeFixture(2, ['beta'])
     expect(run.code).not.toBe(0)
     expect(run.parallelRelease).toBe(true)
@@ -429,7 +429,7 @@ describe('runE2E native integration', () => {
 
     const staticSplit = await executeFixture(2, undefined, { root, args: ['--balance=off'], reportPath: join(root, 'third-report.json') })
     expect(staticSplit.code, launcherFixtureDiagnostics(staticSplit)).toBe(0)
-    expect(readFileSync(staticSplit.consolePath, 'utf8')).toContain('the native --shard=i/2 split. Reason: --balance=off selects it')
+    expect(readFileSync(staticSplit.consolePath, 'utf8')).toContain('Playwright\'s own --shard=i/2 split. Reason: --balance=off selects it')
     expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('3')
     requireAllRunDirsRemoved(root)
   }, INTEGRATION_DEADLINE_MS)

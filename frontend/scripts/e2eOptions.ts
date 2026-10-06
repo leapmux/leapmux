@@ -1,7 +1,7 @@
 import { availableParallelism } from 'node:os'
 import process from 'node:process'
 
-/** `history` assigns files to shards from recorded durations. `off` keeps the native `--shard=i/N` split. */
+/** `history` assigns files to shards from recorded durations. `off` keeps Playwright's own `--shard=i/N` split. */
 export type BalanceMode = 'history' | 'off'
 const BALANCE_MODES = ['history', 'off'] as const satisfies readonly BalanceMode[]
 
@@ -63,17 +63,17 @@ const VALUE_OPTIONS = new Set([
   '--ui-port',
   '--update-source-method',
 ])
-/** Native options with an optional value. Commander takes the next argument as the value when it is not an option. */
+/** Playwright options with an optional value. Commander takes the next argument as the value when it is not an option. */
 const OPTIONAL_VALUE_OPTIONS = new Set(['--debug', '--only-changed', '--update-snapshots', '-u'])
-/** Native options that take a list. Commander adds every following argument that is not an option to the list. */
+/** Playwright options that take a list. Commander adds every following argument that is not an option to the list. */
 const VARIADIC_OPTIONS = new Set(['--project'])
 /**
  * Options that select fewer tests of the selected files. They conflict with --failed-files, which reruns every test of its files.
  * --project is absent on purpose: playwright.config.ts defines one project, so a project filter keeps every test of a file,
- * and an unknown project name fails natively.
+ * and Playwright itself refuses an unknown project name.
  */
 const NARROWING_OPTIONS = new Set(['--grep', '-g', '--grep-invert', '-G', '--test-list-invert', '--shard'])
-/** Flags that the launcher reads. A value would change nothing natively, so the launcher refuses one. */
+/** Flags that the launcher reads. A value would change nothing in Playwright, so the launcher refuses one. */
 const INSPECTED_FLAGS = new Set(['--last-failed', '--pass-with-no-tests', '--failed-files'])
 
 /** Decide whether commander reads this argument as a value of the option before it. An option starts with a dash. */
@@ -81,7 +81,7 @@ function isValueArgument(argument: string | undefined): argument is string {
   return argument !== undefined && !argument.startsWith('-')
 }
 
-/** Expand native short options without interpreting their attached value as another option. */
+/** Expand the short Playwright options, and never read an attached value as another option. */
 function shortArguments(argument: string): string[] {
   if (!argument.startsWith('-') || argument.startsWith('--') || argument.length < 3)
     return [argument]
@@ -107,13 +107,13 @@ function shortArguments(argument: string): string[] {
   return result
 }
 
-/** Match native environment precedence. Console mode keeps the browser headless. */
+/** Match Playwright's environment precedence. Console mode keeps the browser headless. */
 function environmentInspector(): boolean {
   const mode = process.env.PWDEBUG ?? process.env.npm_config_pwdebug ?? process.env.npm_package_config_pwdebug ?? ''
   return !['', '0', 'false', 'console'].includes(mode)
 }
 
-/** Parse a positive native worker count or percentage without numeric coercion. */
+/** Parse a positive worker count or percentage in Playwright's syntax, without numeric coercion. */
 function workerCount(value: string, capacity: number): number {
   if (/^[1-9]\d*%$/u.test(value)) {
     const percentage = Number(value.slice(0, -1))
@@ -140,7 +140,7 @@ function requireCompleteFailedFiles(positionals: readonly string[], conflicts: {
     throw new Error(`The E2E --failed-files option reruns every test of the failed files. Remove ${conflicts.narrowing}, which selects fewer tests.`)
 }
 
-/** Consume the public worker count and the launcher options. Every child retains one native Playwright worker. */
+/** Consume the public worker count and the launcher options. Every child keeps one Playwright worker. */
 export function parseE2EOptions(args: readonly string[], capacity = availableParallelism()): E2EOptions {
   if (!Number.isSafeInteger(capacity) || capacity < 1)
     throw new Error('The E2E CPU capacity must be a positive integer.')
@@ -193,7 +193,7 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
         passWithNoTests = true
       else
         failedFiles = true
-      // The launcher selects the failed files itself. Native Playwright has no such option.
+      // The launcher selects the failed files itself. Playwright has no such option.
       if (option !== '--failed-files')
         playwrightArgs.push(argument)
       continue
@@ -381,7 +381,7 @@ export interface StaticShard {
 }
 
 /**
- * Run one shard. A static shard uses the native `--shard=i/N` split of the selection.
+ * Run one shard. A static shard uses Playwright's own `--shard=i/N` split of the selection.
  * A balanced shard gives its exact files in `selection.testList` instead.
  */
 export function shardRunArgs(selection: ChildSelection, shard?: StaticShard): string[] {

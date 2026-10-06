@@ -353,7 +353,8 @@ Each process owns these resources:
 - A LeapMux server and a mock model server.
 - A browser context and a shared tab.
 - Private provider configuration and databases.
-- Private native process records and binary copies.
+- Private records of the processes that its tests start.
+- A private copy of the binary.
 - Private reports and test artifacts.
 
 The launcher builds the backend once before any shard starts.
@@ -380,9 +381,9 @@ Snapshot updates and source updates use serial execution also.
 Serial and parallel runs retain artifacts under `frontend/test-results/runs/<run-id>/`.
 An explicit `--output=<directory>` changes the root to `<directory>/runs/<run-id>/`.
 Each run retains its complete console log and test artifacts.
-The default configuration retains native reports also.
+The default configuration retains Playwright's own reports also.
 Serial runs preserve the caller's reporter options and explicit report destinations.
-For parallel runs, the launcher merges native blob reports and verifies every selected test case.
+For parallel runs, the launcher merges the Playwright blob reports and verifies every selected test case.
 The parallel merge preserves each case's project and repeat count also.
 Use `--reporter` to select reporters for the combined parallel result.
 Each parallel shard retains its internal list, blob, and JSON reports.
@@ -391,7 +392,7 @@ For parallel runs, the launcher prints the combined JSON report path.
 Set `PLAYWRIGHT_JSON_OUTPUT_FILE` to select that report's destination.
 Alternatively, set `PLAYWRIGHT_JSON_OUTPUT_DIR` and `PLAYWRIGHT_JSON_OUTPUT_NAME`.
 The explicit file value takes precedence.
-Failed runs retain reports and attachments after native process cleanup.
+Failed runs retain reports and attachments after the launcher stops the test processes.
 Later serial or parallel runs preserve these artifacts.
 
 Use `--last-failed` to run the failed cases from the combined result:
@@ -401,7 +402,7 @@ task test-e2e -- --workers=2 tests/e2e/pi/
 task test-e2e -- --last-failed
 ```
 
-The launcher stores the combined native selection at the output root's `.last-run.json`.
+The launcher stores the combined selection, in Playwright's own format, at the output root's `.last-run.json`.
 A complete passing run clears the prior failed selection.
 A parallel run that selects no test leaves the saved selection unchanged.
 The last-failed run uses parallel execution.
@@ -434,8 +435,8 @@ The launcher refuses an absent or malformed report.
 The launcher balances the shards by the measured duration of each file.
 Each parallel run records the duration of every file in `.file-durations.json` under the output root.
 The next run assigns the files to the shards longest first, from that history.
-Without a usable history, the launcher uses the native `--shard=i/N` split.
-Use `--balance=off` to select the native split.
+Without a usable history, the launcher uses Playwright's own `--shard=i/N` split.
+Use `--balance=off` to select Playwright's own split.
 
 Use `--pass-with-no-tests` to accept an empty selection.
 Without it, a rerun fails before the build when the failed selection lists no test.

@@ -34,7 +34,7 @@ describe('parseE2EOptions', () => {
     expect(parseE2EOptions(['--workers=1'], 10)).toMatchObject({ workers: 1, serial: true })
   })
 
-  it.each([['50%', 5], ['1%', 1], ['100%', 10]])('accepts the native percentage syntax %s', (value, expected) => {
+  it.each([['50%', 5], ['1%', 1], ['100%', 10]])('accepts Playwright\'s percentage syntax %s', (value, expected) => {
     expect(parseE2EOptions([`--workers=${value}`], 10).workers).toBe(expected)
   })
 
@@ -75,7 +75,7 @@ describe('parseE2EOptions', () => {
     expect(parseE2EOptions(['--workers=3'], 10)).toMatchObject({ workers: 3, serial: false })
   })
 
-  it.each(['npm_config_pwdebug', 'npm_package_config_pwdebug'])('uses the native fallback inspector setting: %s', (key) => {
+  it.each(['npm_config_pwdebug', 'npm_package_config_pwdebug'])('uses Playwright\'s fallback inspector setting: %s', (key) => {
     vi.stubEnv('PWDEBUG', undefined)
     vi.stubEnv('npm_config_pwdebug', undefined)
     vi.stubEnv(key, '1')
@@ -88,7 +88,7 @@ describe('parseE2EOptions', () => {
     expect(parseE2EOptions(['-xj2'], 10)).toMatchObject({ workers: 1, serial: true, playwrightArgs: ['-x'] })
   })
 
-  it('preserves an empty native regular expression', () => {
+  it('preserves an empty Playwright regular expression', () => {
     expect(parseE2EOptions(['--grep', ''], 10).playwrightArgs).toEqual(['--grep', ''])
   })
 
@@ -100,7 +100,7 @@ describe('parseE2EOptions', () => {
     expect(parseE2EOptions([flag], 10)).toMatchObject({ workers: 1, serial: true })
   })
 
-  it.each([{ args: ['--update-snapshots', 'all'] }, { args: ['-u', 'all'] }, { args: ['--debug', 'cli'] }, { args: ['--only-changed', 'main'] }])('keeps an optional native value with its option: %j', ({ args }) => {
+  it.each([{ args: ['--update-snapshots', 'all'] }, { args: ['-u', 'all'] }, { args: ['--debug', 'cli'] }, { args: ['--only-changed', 'main'] }])('keeps an optional Playwright value with its option: %j', ({ args }) => {
     expect(parseE2EOptions(args, 10).playwrightArgs).toEqual(args)
   })
 
@@ -141,7 +141,7 @@ describe('parseE2EOptions last-failed selection', () => {
     expect(parseE2EOptions(['--workers=3'], 10)).toMatchObject({ workers: 3, serial: false })
   })
 
-  it('accepts a last-failed file without --last-failed, which changes only the state destination natively', () => {
+  it('accepts a last-failed file without --last-failed, which changes only the state destination in Playwright', () => {
     expect(parseE2EOptions(['--last-failed-file=state.json'], 10)).toMatchObject({ lastFailed: false, lastFailedFile: 'state.json' })
   })
 
@@ -243,7 +243,7 @@ describe('parseE2EOptions failed files', () => {
     { args: ['--failed-files', '--project', 'one', 'two'] },
     { args: ['--failed-files', '--project=one', 'two', 'three'] },
     { args: ['--failed-files', '--project', 'one', 'two', '--browser', 'chromium'] },
-  ])('reads every value of a native option as a value, not as a file argument: $args', ({ args }) => {
+  ])('reads every value of a Playwright option as a value, not as a file argument: $args', ({ args }) => {
     expect(parseE2EOptions(args, 10)).toMatchObject({ failedFiles: true, playwrightArgs: args.slice(1) })
   })
 
@@ -270,21 +270,21 @@ describe('parseE2EOptions failed files', () => {
   })
 })
 
-describe('parseE2EOptions native option classification', () => {
-  interface NativeOption {
+describe('parseE2EOptions Playwright option classification', () => {
+  interface PlaywrightOption {
     readonly name: string
     readonly kind: 'flag' | 'value' | 'optional' | 'variadic'
   }
 
   /** Read the options of the installed `playwright test` command, which commander classifies by its own rules. */
-  function nativeTestOptions(): NativeOption[] {
+  function playwrightTestOptions(): PlaywrightOption[] {
     const loaded: unknown = createRequire(import.meta.url)('playwright/lib/program')
     const program = isObject(loaded) ? loaded.program : undefined
     const commands = isObject(program) && Array.isArray(program.commands) ? program.commands : []
     const test = commands.find(command => isObject(command) && typeof command.name === 'function' && command.name() === 'test')
     if (!isObject(test) || !Array.isArray(test.options))
       throw new Error('The installed Playwright has no test command with an option list.')
-    return test.options.map((option: unknown): NativeOption => {
+    return test.options.map((option: unknown): PlaywrightOption => {
       if (!isObject(option))
         throw new Error('The installed Playwright holds an option that is not an object.')
       const name = typeof option.long === 'string' ? option.long : option.short
@@ -305,13 +305,13 @@ describe('parseE2EOptions native option classification', () => {
   /** The launcher validates the value of these options. */
   const VALID_VALUE: Readonly<Record<string, string>> = { '--workers': '2', '--retries': '0' }
 
-  const classified = nativeTestOptions().filter(option => !REFUSED_WITH_FAILED_FILES.has(option.name) && !REFUSED_ALWAYS.has(option.name))
+  const classified = playwrightTestOptions().filter(option => !REFUSED_WITH_FAILED_FILES.has(option.name) && !REFUSED_ALWAYS.has(option.name))
 
   it('reads the option list of the installed Playwright', () => {
-    const names = nativeTestOptions().map(option => option.name)
+    const names = playwrightTestOptions().map(option => option.name)
     expect(names).toEqual(expect.arrayContaining(['--grep', '--project', '--only-changed', '--browser', '--headed']))
     for (const name of [...REFUSED_WITH_FAILED_FILES, ...REFUSED_ALWAYS])
-      expect(names, `${name} must stay a native option`).toContain(name)
+      expect(names, `${name} must stay a Playwright option`).toContain(name)
   })
 
   it.each(classified)('reads $name with the arity that Playwright gives it', (option) => {
@@ -437,12 +437,12 @@ describe('discoveryRunArgs', () => {
 })
 
 describe('shardRunArgs', () => {
-  it('selects a static shard with the native split', () => {
+  it('selects a static shard with Playwright\'s own split', () => {
     expect(shardRunArgs({ filters: ['provider/'] }, { index: 2, total: 3 }))
       .toEqual(['--shard=2/3', '--workers=1', '--retries=0', '--reporter=list,blob,json', '--pass-with-no-tests', 'provider/'])
   })
 
-  it('selects a balanced shard with its exact test list and no native split', () => {
+  it('selects a balanced shard with its exact test list and without Playwright\'s own split', () => {
     const args = shardRunArgs({ filters: ['-g', 'title'], testList: '/run/shard-1/test-list.txt', lastFailedFile: '/run/shard-1/last-run.json' })
     expect(args).toEqual(['--workers=1', '--retries=0', '--reporter=list,blob,json', '--pass-with-no-tests', '--test-list=/run/shard-1/test-list.txt', '--last-failed', '--last-failed-file=/run/shard-1/last-run.json', '-g', 'title'])
     expect(args.some(argument => argument.startsWith('--shard'))).toBe(false)

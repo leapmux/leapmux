@@ -1,8 +1,8 @@
-import type { NativeLastRunState } from './e2eLastRunReporter'
+import type { PlaywrightLastRunState } from './e2eLastRunReporter'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import E2ELastRunReporter, { lastRunStatePath, readLastFailedState, writeNativeLastRunState } from './e2eLastRunReporter'
+import E2ELastRunReporter, { lastRunStatePath, readLastFailedState, writePlaywrightLastRunState } from './e2eLastRunReporter'
 
 const roots: string[] = []
 afterEach(() => {
@@ -29,40 +29,40 @@ const statuses = {
   failed: 'failed',
   timedout: 'timedout',
   interrupted: 'interrupted',
-} satisfies { [Status in NativeLastRunState['status']]: Status }
+} satisfies { [Status in PlaywrightLastRunState['status']]: Status }
 
 describe('E2ELastRunReporter', () => {
-  it.each(Object.values(statuses))('preserves the native overall %s status', (status) => {
+  it.each(Object.values(statuses))('preserves Playwright\'s overall %s status', (status) => {
     const path = destination()
     const instance = reporter(path)
     const accepted = vi.fn(() => true)
     const rejected = vi.fn(() => false)
-    instance.onBegin(undefined, { allTests: () => [{ id: 'accepted-native-id', ok: accepted }, { id: 'rejected-native-id', ok: rejected }] })
+    instance.onBegin(undefined, { allTests: () => [{ id: 'accepted-test-id', ok: accepted }, { id: 'rejected-test-id', ok: rejected }] })
 
     instance.onEnd({ status })
 
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status, failedTests: ['rejected-native-id'] })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status, failedTests: ['rejected-test-id'] })
     expect(accepted).toHaveBeenCalledTimes(1)
     expect(rejected).toHaveBeenCalledTimes(1)
     expect(instance.printsToStdio()).toBe(false)
   })
 
-  it('reads native outcomes at run end instead of capturing the begin state', () => {
+  it('reads the Playwright outcomes at run end instead of capturing the begin state', () => {
     const path = destination()
     const instance = reporter(path)
     const outcome = { accepted: true }
-    instance.onBegin(undefined, { allTests: () => [{ id: 'settled-native-id', ok: () => outcome.accepted }] })
+    instance.onBegin(undefined, { allTests: () => [{ id: 'settled-test-id', ok: () => outcome.accepted }] })
     outcome.accepted = false
 
     instance.onEnd({ status: 'failed' })
 
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ['settled-native-id'] })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ['settled-test-id'] })
   })
 
-  it('preserves distinct native project and repeat IDs in their native order', () => {
+  it('preserves distinct Playwright project and repeat IDs in Playwright\'s order', () => {
     const path = destination()
     const instance = reporter(path)
-    const ids = ['native-project-two-repeat-one', 'native-project-one-repeat-zero', 'native-project-two-repeat-zero']
+    const ids = ['project-two-repeat-one', 'project-one-repeat-zero', 'project-two-repeat-zero']
     instance.onBegin(undefined, { allTests: () => ids.map(id => ({ id, ok: () => false })) })
 
     instance.onEnd({ status: 'failed' })
@@ -70,17 +70,17 @@ describe('E2ELastRunReporter', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ids })
   })
 
-  it('preserves duplicate IDs just as the native last-run reporter does', () => {
+  it('preserves duplicate IDs just as Playwright\'s own last-run reporter does', () => {
     const path = destination()
     const instance = reporter(path)
-    instance.onBegin(undefined, { allTests: () => [{ id: 'repeated-native-id', ok: () => false }, { id: 'repeated-native-id', ok: () => false }] })
+    instance.onBegin(undefined, { allTests: () => [{ id: 'repeated-test-id', ok: () => false }, { id: 'repeated-test-id', ok: () => false }] })
 
     instance.onEnd({ status: 'failed' })
 
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ['repeated-native-id', 'repeated-native-id'] })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ['repeated-test-id', 'repeated-test-id'] })
   })
 
-  it('stores an empty failed selection when the native suite is empty', () => {
+  it('stores an empty failed selection when the Playwright suite is empty', () => {
     const path = destination()
     const instance = reporter(path)
     instance.onBegin(undefined, { allTests: () => [] })
@@ -90,7 +90,7 @@ describe('E2ELastRunReporter', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'passed', failedTests: [] })
   })
 
-  it('stores an empty failed selection when the native begin event is absent', () => {
+  it('stores an empty failed selection when the Playwright begin event is absent', () => {
     const path = destination()
     const instance = reporter(path)
 
@@ -99,25 +99,25 @@ describe('E2ELastRunReporter', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: [] })
   })
 
-  it('uses the most recent native suite when a reporter instance receives another begin event', () => {
+  it('uses the most recent Playwright suite when a reporter instance receives another begin event', () => {
     const path = destination()
     const instance = reporter(path)
-    instance.onBegin(undefined, { allTests: () => [{ id: 'older-native-id', ok: () => false }] })
+    instance.onBegin(undefined, { allTests: () => [{ id: 'older-test-id', ok: () => false }] })
     instance.onEnd({ status: 'failed' })
-    instance.onBegin(undefined, { allTests: () => [{ id: 'newer-native-id', ok: () => true }] })
+    instance.onBegin(undefined, { allTests: () => [{ id: 'newer-test-id', ok: () => true }] })
 
     instance.onEnd({ status: 'passed' })
 
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'passed', failedTests: [] })
   })
 
-  it('propagates a native failure-predicate error before it replaces older state', () => {
+  it('propagates a Playwright failure-predicate error before it replaces older state', () => {
     const path = destination()
-    const prior: NativeLastRunState = { status: 'passed', failedTests: [] }
-    writeNativeLastRunState(path, prior)
+    const prior: PlaywrightLastRunState = { status: 'passed', failedTests: [] }
+    writePlaywrightLastRunState(path, prior)
     const instance = reporter(path)
-    const failure = new Error('The native outcome cannot be read.')
-    instance.onBegin(undefined, { allTests: () => [{ id: 'native-id', ok: () => {
+    const failure = new Error('The Playwright outcome cannot be read.')
+    instance.onBegin(undefined, { allTests: () => [{ id: 'test-id', ok: () => {
       throw failure
     } }] })
 
@@ -125,7 +125,7 @@ describe('E2ELastRunReporter', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prior)
   })
 
-  it('propagates the state write error to the native merge process', () => {
+  it('propagates the state write error to Playwright\'s merge process', () => {
     const path = destination()
     mkdirSync(path, { recursive: true })
     const instance = reporter(path)
@@ -135,19 +135,19 @@ describe('E2ELastRunReporter', () => {
     expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
   })
 
-  it.each([undefined, '', 'relative-last-run.json', `${resolve('native-last-run')}\0suffix`])('rejects an invalid native output destination: %j', (path) => {
+  it.each([undefined, '', 'relative-last-run.json', `${resolve('last-run')}\0suffix`])('rejects an invalid Playwright output destination: %j', (path) => {
     vi.stubEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', path)
 
     expect(() => new E2ELastRunReporter()).toThrow('absolute path without NUL')
   })
 })
 
-describe('writeNativeLastRunState', () => {
-  it('replaces the state with formatted native JSON and leaves no draft', () => {
+describe('writePlaywrightLastRunState', () => {
+  it('replaces the state with formatted Playwright JSON and leaves no draft', () => {
     const path = destination()
-    writeNativeLastRunState(path, { status: 'failed', failedTests: ['previous-native-id'] })
+    writePlaywrightLastRunState(path, { status: 'failed', failedTests: ['previous-test-id'] })
 
-    writeNativeLastRunState(path, { status: 'passed', failedTests: [] })
+    writePlaywrightLastRunState(path, { status: 'passed', failedTests: [] })
 
     expect(readFileSync(path, 'utf8')).toBe(JSON.stringify({ status: 'passed', failedTests: [] }, null, 2))
     expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
@@ -156,12 +156,12 @@ describe('writeNativeLastRunState', () => {
   it('rejects a relative destination before accessing the filesystem', () => {
     const mkdir = vi.fn<typeof mkdirSync>()
 
-    expect(() => writeNativeLastRunState('relative-last-run.json', { status: 'passed', failedTests: [] }, {
+    expect(() => writePlaywrightLastRunState('relative-last-run.json', { status: 'passed', failedTests: [] }, {
       mkdirSync: mkdir,
       writeFileSync,
       renameSync,
       rmSync,
-    })).toThrow('native last-run destination must be an absolute path without NUL')
+    })).toThrow('Playwright last-run destination must be an absolute path without NUL')
     expect(mkdir).not.toHaveBeenCalled()
   })
 })
@@ -174,11 +174,11 @@ describe('lastRunStatePath', () => {
     expect(lastRunStatePath(undefined, {}, cwd, parent)).toBe(parent)
   })
 
-  it('treats an empty environment value as absent, as native Playwright does', () => {
+  it('treats an empty environment value as absent, as Playwright does', () => {
     expect(lastRunStatePath(undefined, { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: '' }, cwd, parent)).toBe(parent)
   })
 
-  it('resolves a relative environment destination against the native working directory', () => {
+  it('resolves a relative environment destination against Playwright\'s working directory', () => {
     expect(lastRunStatePath(undefined, { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: 'state/last.json' }, cwd, parent)).toBe(join(cwd, 'state', 'last.json'))
   })
 
@@ -201,7 +201,7 @@ describe('readLastFailedState', () => {
 
   it('accepts a state that lists no failed test', () => {
     const path = destination()
-    writeNativeLastRunState(path, { status: 'passed', failedTests: [] })
+    writePlaywrightLastRunState(path, { status: 'passed', failedTests: [] })
 
     expect(readLastFailedState(path).failedTests).toEqual([])
   })

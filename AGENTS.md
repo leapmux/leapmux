@@ -379,7 +379,7 @@ Rerun selection and shard balancing:
 - **The duration history balances the shards.** Each parallel run records the
   measured duration of every file in `.file-durations.json` under the output
   root, and the next run assigns files to shards longest-first from that
-  history. Without a usable history the launcher keeps the native
+  history. Without a usable history the launcher keeps Playwright's own
   `--shard=i/N` split, as `--balance=off` does by choice.
 - **`--pass-with-no-tests` accepts an empty selection.** Without it, a rerun
   whose state lists no failure fails before the build starts. A parallel run

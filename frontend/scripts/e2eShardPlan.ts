@@ -37,7 +37,7 @@ export function parseDurationHistory(value: unknown): DurationHistory {
   return files
 }
 
-/** Read the history. An unreadable history is a plan input, not a run failure: the plan uses the native split. */
+/** Read the history. An unreadable history is a plan input, not a run failure: the plan uses Playwright's own split. */
 export function readDurationHistory(path: string): DurationHistoryRead {
   try {
     const content = readOptionalStateFile(path)
@@ -138,18 +138,22 @@ export function assignLongestFirst(estimates: readonly FileEstimate[], count: nu
   return shards.map(shard => ({ files: shard.files.sort((left, right) => compareText(left.file, right.file)), estimateMs: shard.estimateMs }))
 }
 
-// Native loadTestList (playwright/lib/runner/index.js) trims each line, skips a line that starts with "#",
-// splits a line on "›" or ">", reads a leading "[project]", and parses a trailing ":line:column" location.
-const NATIVE_LOCATION_SUFFIX = /:\d+(?::\d+)?$/u
+// Playwright's loadTestList (playwright/lib/runner/index.js) does these things to each line:
+// - It trims the line.
+// - It skips a line that starts with "#".
+// - It splits the line on "›" or ">".
+// - It reads a leading "[project]".
+// - It parses a trailing ":line:column" location.
+const TEST_LIST_LOCATION_SUFFIX = /:\d+(?::\d+)?$/u
 const TEST_LIST_SYNTAX = /[\0\n\r>›]/u
 
-/** Decide whether a native test list line selects exactly this file, as a path relative to the root directory. */
+/** Decide whether a Playwright test list line selects exactly this file, as a path relative to the root directory. */
 export function isTestListPath(file: string): boolean {
-  return file !== '' && file === file.trim() && !TEST_LIST_SYNTAX.test(file) && !file.startsWith('#') && !file.startsWith('[') && !NATIVE_LOCATION_SUFFIX.test(file)
+  return file !== '' && file === file.trim() && !TEST_LIST_SYNTAX.test(file) && !file.startsWith('#') && !file.startsWith('[') && !TEST_LIST_LOCATION_SUFFIX.test(file)
 }
 
 /**
- * Write a native test list that selects exactly these files.
+ * Write a Playwright test list that selects exactly these files.
  * A positional filter is a regular expression, so `a.spec.ts` also selects `ba.spec.ts` and `sub/a.spec.ts`.
  * A test list compares each whole relative path instead.
  */
@@ -171,11 +175,11 @@ export interface ShardPlanInput {
   readonly workers: number
   readonly balance: BalanceMode
   readonly history: DurationHistoryRead
-  /** The caller selected tests with --test-list. Native Playwright accepts one test list only. */
+  /** The caller selected tests with --test-list. Playwright accepts one test list only. */
   readonly callerTestList: boolean
 }
 
-/** Choose a balanced plan when the history allows one. Otherwise keep the native `--shard=i/N` split. */
+/** Choose a balanced plan when the history allows one. Otherwise keep Playwright's own `--shard=i/N` split. */
 export function planShards(input: ShardPlanInput): ShardPlan {
   const { coverage, workers } = input
   if (coverage.files.length === 0)
@@ -183,21 +187,21 @@ export function planShards(input: ShardPlanInput): ShardPlan {
   if (!Number.isSafeInteger(workers) || workers < 1)
     throw new Error('The E2E shard count must be a positive integer.')
   const total = Math.min(workers, coverage.files.length)
-  const nativeSplit = (reason: string): ShardPlan => ({ kind: 'static', total, reason })
+  const staticPlan = (reason: string): ShardPlan => ({ kind: 'static', total, reason })
   if (input.balance === 'off')
-    return nativeSplit('--balance=off selects it')
+    return staticPlan('--balance=off selects it')
   if (input.callerTestList)
-    return nativeSplit('the run gives its own --test-list, and Playwright accepts one test list only')
+    return staticPlan('the run gives its own --test-list, and Playwright accepts one test list only')
   if (input.history.status === 'absent')
-    return nativeSplit('no duration history exists')
+    return staticPlan('no duration history exists')
   if (input.history.status === 'unreadable')
-    return nativeSplit(`the duration history is unreadable: ${input.history.reason}`)
+    return staticPlan(`the duration history is unreadable: ${input.history.reason}`)
   const unlisted = coverage.files.find(file => !isTestListPath(file))
   if (unlisted !== undefined)
-    return nativeSplit(`a Playwright test list cannot select the file ${JSON.stringify(unlisted)} exactly`)
+    return staticPlan(`a Playwright test list cannot select the file ${JSON.stringify(unlisted)} exactly`)
   const estimates = estimateFileDurations(coverage, input.history.files)
   if (estimates === undefined)
-    return nativeSplit('the duration history holds no selected file')
+    return staticPlan('the duration history holds no selected file')
   return { kind: 'balanced', shards: assignLongestFirst(estimates, total) }
 }
 
@@ -208,7 +212,7 @@ function seconds(milliseconds: number): string {
 /** Describe the plan before the shards start. */
 export function formatShardPlan(plan: ShardPlan, historyPath: string): string {
   if (plan.kind === 'static')
-    return `E2E shard plan: the native --shard=i/${plan.total} split. Reason: ${plan.reason}. Duration history: ${historyPath}\n`
+    return `E2E shard plan: Playwright's own --shard=i/${plan.total} split. Reason: ${plan.reason}. Duration history: ${historyPath}\n`
   const lines = [`E2E shard plan: ${plan.shards.length} shards, balanced by the duration history at ${historyPath}`]
   for (const [index, shard] of plan.shards.entries()) {
     lines.push(`  Shard ${index + 1}/${plan.shards.length}: ${shard.files.length} ${shard.files.length === 1 ? 'file' : 'files'}, estimated ${seconds(shard.estimateMs)}`)

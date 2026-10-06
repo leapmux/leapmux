@@ -18,9 +18,9 @@ function directory(): string {
 }
 
 function report(files: string[]) {
-  const specifications = new Map<string, ReturnType<typeof nativeSpec>>()
+  const specifications = new Map<string, ReturnType<typeof playwrightSpec>>()
   for (const [index, file] of files.entries()) {
-    const spec = nativeSpec('selected case', { projectId: `project-${index}` })
+    const spec = playwrightSpec('selected case', { projectId: `project-${index}` })
     spec.file = file
     const existing = specifications.get(file)
     if (existing)
@@ -34,10 +34,10 @@ function report(files: string[]) {
   }
 }
 
-function nativeSpec(title: string, options: { projectId?: string, projectName?: string, omitProjectId?: boolean, repeats?: number, line?: number } = {}) {
+function playwrightSpec(title: string, options: { projectId?: string, projectName?: string, omitProjectId?: boolean, repeats?: number, line?: number } = {}) {
   const projectId = options.projectId ?? 'mock-chromium'
   return {
-    id: `native-${title}`,
+    id: `spec-${title}`,
     title,
     file: 'selected.spec.ts',
     line: options.line ?? 1,
@@ -51,7 +51,7 @@ function nativeSpec(title: string, options: { projectId?: string, projectName?: 
   }
 }
 
-function nativeReport(specs: ReturnType<typeof nativeSpec>[], parentTitle = 'selected suite') {
+function playwrightReport(specs: ReturnType<typeof playwrightSpec>[], parentTitle = 'selected suite') {
   return {
     errors: [],
     suites: [{
@@ -64,7 +64,7 @@ function nativeReport(specs: ReturnType<typeof nativeSpec>[], parentTitle = 'sel
 }
 
 describe('shardReporterEnvironment', () => {
-  it('isolates inherited native last-run state inside the owning shard', () => {
+  it('isolates the inherited Playwright last-run state inside the owning shard', () => {
     const env = { PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: resolve('shared-last-run.json') }
     const outputFileDir = resolve('shard-two')
     const value = shardReporterEnvironment(env, outputFileDir)
@@ -91,14 +91,14 @@ describe('shardReporterEnvironment', () => {
 })
 
 describe('mergedJsonDestination', () => {
-  it('preserves the native explicit-file precedence', () => {
+  it('preserves Playwright\'s explicit-file precedence', () => {
     expect(mergedJsonDestination({ PLAYWRIGHT_JSON_OUTPUT_FILE: 'explicit.json', PLAYWRIGHT_JSON_OUTPUT_NAME: 'ignored.json' }, resolve('cwd'), resolve('artifacts')))
       .toBe(resolve('cwd', 'explicit.json'))
   })
 
-  it('preserves the native output directory and name combination', () => {
-    expect(mergedJsonDestination({ PLAYWRIGHT_JSON_OUTPUT_DIR: '../reports', PLAYWRIGHT_JSON_OUTPUT_NAME: 'native.json' }, resolve('cwd'), resolve('artifacts')))
-      .toBe(resolve('cwd', '../reports/native.json'))
+  it('preserves Playwright\'s combination of output directory and name', () => {
+    expect(mergedJsonDestination({ PLAYWRIGHT_JSON_OUTPUT_DIR: '../reports', PLAYWRIGHT_JSON_OUTPUT_NAME: 'named.json' }, resolve('cwd'), resolve('artifacts')))
+      .toBe(resolve('cwd', '../reports/named.json'))
   })
 
   it('keeps the default combined report in its retained full tool output directory', () => {
@@ -113,18 +113,18 @@ describe('discoveredTestCoverage files', () => {
       .toEqual(['b.spec.ts', 'file with spaces.spec.ts'])
   })
 
-  it('accepts an explicitly empty native discovery result', () => {
+  it('accepts an explicitly empty Playwright discovery result', () => {
     expect(discoveredTestCoverage(report([])).files).toEqual([])
   })
 
-  it('accepts native leaf suites that omit their child suite array', () => {
-    expect(discoveredTestCoverage(nativeReport([nativeSpec('selected case')])).files).toEqual(['selected.spec.ts'])
+  it('accepts Playwright leaf suites that omit their child suite array', () => {
+    expect(discoveredTestCoverage(playwrightReport([playwrightSpec('selected case')])).files).toEqual(['selected.spec.ts'])
   })
 
   it.each([null, 'not a suite array', {}])('rejects a malformed present child suite value: %j', (suites) => {
     expect(() => discoveredTestCoverage({
       errors: [],
-      suites: [{ title: 'selected.spec.ts', specs: [nativeSpec('selected case')], suites }],
+      suites: [{ title: 'selected.spec.ts', specs: [playwrightSpec('selected case')], suites }],
     })).toThrow('Playwright report')
   })
 
@@ -137,78 +137,78 @@ describe('assertMergedTestCoverage', () => {
   it.each([
     {
       label: 'missing case inside one selected file',
-      discovery: nativeReport([nativeSpec('first'), nativeSpec('second')]),
-      merged: nativeReport([nativeSpec('first')]),
+      discovery: playwrightReport([playwrightSpec('first'), playwrightSpec('second')]),
+      merged: playwrightReport([playwrightSpec('first')]),
     },
     {
       label: 'additional case inside one selected file',
-      discovery: nativeReport([nativeSpec('first')]),
-      merged: nativeReport([nativeSpec('first'), nativeSpec('second')]),
+      discovery: playwrightReport([playwrightSpec('first')]),
+      merged: playwrightReport([playwrightSpec('first'), playwrightSpec('second')]),
     },
     {
       label: 'changed selected project',
-      discovery: nativeReport([nativeSpec('first', { projectId: 'one' })]),
-      merged: nativeReport([nativeSpec('first', { projectId: 'two' })]),
+      discovery: playwrightReport([playwrightSpec('first', { projectId: 'one' })]),
+      merged: playwrightReport([playwrightSpec('first', { projectId: 'two' })]),
     },
     {
       label: 'changed enclosing suite',
-      discovery: nativeReport([nativeSpec('first')], 'one'),
-      merged: nativeReport([nativeSpec('first')], 'two'),
+      discovery: playwrightReport([playwrightSpec('first')], 'one'),
+      merged: playwrightReport([playwrightSpec('first')], 'two'),
     },
     {
       label: 'missing selected repeat',
-      discovery: nativeReport([nativeSpec('first', { repeats: 2 })]),
-      merged: nativeReport([nativeSpec('first')]),
+      discovery: playwrightReport([playwrightSpec('first', { repeats: 2 })]),
+      merged: playwrightReport([playwrightSpec('first')]),
     },
     {
       label: 'additional selected repeat',
-      discovery: nativeReport([nativeSpec('first')]),
-      merged: nativeReport([nativeSpec('first', { repeats: 2 })]),
+      discovery: playwrightReport([playwrightSpec('first')]),
+      merged: playwrightReport([playwrightSpec('first', { repeats: 2 })]),
     },
     {
       label: 'changed source location',
-      discovery: nativeReport([nativeSpec('first', { line: 10 })]),
-      merged: nativeReport([nativeSpec('first', { line: 20 })]),
+      discovery: playwrightReport([playwrightSpec('first', { line: 10 })]),
+      merged: playwrightReport([playwrightSpec('first', { line: 20 })]),
     },
   ])('rejects a $label even when the file set matches', ({ discovery, merged }) => {
     expect(() => assertMergedTestCoverage(merged, discoveredTestCoverage(discovery).cases)).toThrow('selected test')
   })
 
-  it('accepts every selected project and repeat despite a different native record order', () => {
-    const first = nativeSpec('first', { projectId: 'one', repeats: 2 })
-    first.tests.push(...nativeSpec('first', { projectId: 'two', repeats: 3 }).tests)
-    const second = nativeSpec('second', { projectId: 'one' })
-    const discovery = nativeReport([first, second])
+  it('accepts every selected project and repeat despite a different record order in the report', () => {
+    const first = playwrightSpec('first', { projectId: 'one', repeats: 2 })
+    first.tests.push(...playwrightSpec('first', { projectId: 'two', repeats: 3 }).tests)
+    const second = playwrightSpec('second', { projectId: 'one' })
+    const discovery = playwrightReport([first, second])
     const mergedFirst = structuredClone(first)
     mergedFirst.tests.reverse()
 
-    expect(() => assertMergedTestCoverage(nativeReport([second, mergedFirst]), discoveredTestCoverage(discovery).cases)).not.toThrow()
+    expect(() => assertMergedTestCoverage(playwrightReport([second, mergedFirst]), discoveredTestCoverage(discovery).cases)).not.toThrow()
   })
 
-  it('accepts an empty native selection without inventing a case', () => {
+  it('accepts an empty Playwright selection without inventing a case', () => {
     expect(() => assertMergedTestCoverage({ errors: [], suites: [] }, [])).not.toThrow()
   })
 
-  it('accepts native merged projects without IDs while preserving each project and repeat', () => {
-    const discovery = nativeReport([
-      nativeSpec('selected', { projectId: 'one', repeats: 2 }),
-      nativeSpec('selected', { projectId: 'two', repeats: 3 }),
+  it('accepts merged Playwright projects without IDs while preserving each project and repeat', () => {
+    const discovery = playwrightReport([
+      playwrightSpec('selected', { projectId: 'one', repeats: 2 }),
+      playwrightSpec('selected', { projectId: 'two', repeats: 3 }),
     ])
-    const merged = nativeReport([
-      nativeSpec('selected', { projectId: 'two', repeats: 3, omitProjectId: true }),
-      nativeSpec('selected', { projectId: 'one', repeats: 2, omitProjectId: true }),
+    const merged = playwrightReport([
+      playwrightSpec('selected', { projectId: 'two', repeats: 3, omitProjectId: true }),
+      playwrightSpec('selected', { projectId: 'one', repeats: 2, omitProjectId: true }),
     ])
 
     expect(() => assertMergedTestCoverage(merged, discoveredTestCoverage(discovery).cases)).not.toThrow()
   })
 
   it('rejects ambiguous merged names for different selected project IDs', () => {
-    const discovery = nativeReport([
-      nativeSpec('selected', { projectId: 'shared', projectName: 'shared' }),
-      nativeSpec('selected', { projectId: 'shared1', projectName: 'shared' }),
+    const discovery = playwrightReport([
+      playwrightSpec('selected', { projectId: 'shared', projectName: 'shared' }),
+      playwrightSpec('selected', { projectId: 'shared1', projectName: 'shared' }),
     ])
-    const merged = nativeReport([
-      nativeSpec('selected', { projectName: 'shared', repeats: 2, omitProjectId: true }),
+    const merged = playwrightReport([
+      playwrightSpec('selected', { projectName: 'shared', repeats: 2, omitProjectId: true }),
     ])
 
     expect(() => assertMergedTestCoverage(merged, discoveredTestCoverage(discovery).cases)).toThrow('selected test')
@@ -216,10 +216,10 @@ describe('assertMergedTestCoverage', () => {
 })
 
 describe('discoveredTestCoverage', () => {
-  it('counts repeats separately for each native specification and project', () => {
-    const first = nativeSpec('first', { repeats: 2 })
-    first.tests.push(...nativeSpec('first', { projectId: 'second-project', repeats: 2 }).tests)
-    const value = discoveredTestCoverage(nativeReport([first, nativeSpec('second')]))
+  it('counts repeats separately for each Playwright specification and project', () => {
+    const first = playwrightSpec('first', { repeats: 2 })
+    first.tests.push(...playwrightSpec('first', { projectId: 'second-project', repeats: 2 }).tests)
+    const value = discoveredTestCoverage(playwrightReport([first, playwrightSpec('second')]))
 
     expect(value.files).toEqual(['selected.spec.ts'])
     expect(value.cases).toEqual([
@@ -231,61 +231,61 @@ describe('discoveredTestCoverage', () => {
     ])
   })
 
-  it('preserves empty native project names and zero source positions', () => {
-    const spec = nativeSpec('', { projectId: '', line: 0 })
+  it('preserves empty Playwright project names and zero source positions', () => {
+    const spec = playwrightSpec('', { projectId: '', line: 0 })
     spec.column = 0
-    const value = discoveredTestCoverage(nativeReport([spec], ''))
+    const value = discoveredTestCoverage(playwrightReport([spec], ''))
 
     expect(value.cases[0]).toEqual({ file: 'selected.spec.ts', titlePath: ['selected.spec.ts', '', ''], line: 0, column: 0, projectId: '', projectName: '', repeatIndex: 0 })
   })
 
-  it('uses the native project name only when the merged project ID is absent', () => {
-    const value = discoveredTestCoverage(nativeReport([nativeSpec('selected', { projectId: 'one', omitProjectId: true })]))
+  it('uses the Playwright project name only when the merged project ID is absent', () => {
+    const value = discoveredTestCoverage(playwrightReport([playwrightSpec('selected', { projectId: 'one', omitProjectId: true })]))
 
     expect(value.cases[0]?.projectId).toBe('one')
     expect(value.cases[0]?.projectName).toBe('one')
   })
 
-  it('preserves a present native project ID that differs from its display name', () => {
-    const value = discoveredTestCoverage(nativeReport([nativeSpec('selected', { projectId: 'one-native', projectName: 'one-display' })]))
+  it('preserves a present Playwright project ID that differs from its display name', () => {
+    const value = discoveredTestCoverage(playwrightReport([playwrightSpec('selected', { projectId: 'one-id', projectName: 'one-display' })]))
 
-    expect(value.cases[0]?.projectId).toBe('one-native')
+    expect(value.cases[0]?.projectId).toBe('one-id')
     expect(value.cases[0]?.projectName).toBe('one-display')
   })
 
-  it('counts native repeats across separate specification records', () => {
-    const value = discoveredTestCoverage(nativeReport([nativeSpec('selected'), nativeSpec('selected')]))
+  it('counts Playwright repeats across separate specification records', () => {
+    const value = discoveredTestCoverage(playwrightReport([playwrightSpec('selected'), playwrightSpec('selected')]))
 
     expect(value.cases.map(test => test.repeatIndex)).toEqual([0, 1])
   })
 
   it.each([
-    { label: 'absent test title', spec: { ...nativeSpec('first'), title: undefined } },
-    { label: 'non-string test title', spec: { ...nativeSpec('first'), title: false } },
-    { label: 'absent source line', spec: { ...nativeSpec('first'), line: undefined } },
-    { label: 'negative source line', spec: { ...nativeSpec('first'), line: -1 } },
-    { label: 'noninteger source line', spec: { ...nativeSpec('first'), line: 1.5 } },
-    { label: 'infinite source line', spec: { ...nativeSpec('first'), line: Number.POSITIVE_INFINITY } },
-    { label: 'unsafe source line', spec: { ...nativeSpec('first'), line: Number.MAX_SAFE_INTEGER + 1 } },
-    { label: 'absent source column', spec: { ...nativeSpec('first'), column: undefined } },
-    { label: 'negative source column', spec: { ...nativeSpec('first'), column: -1 } },
-    { label: 'non-object project record', spec: { ...nativeSpec('first'), tests: [null] } },
-    { label: 'non-string project ID', spec: { ...nativeSpec('first'), tests: [{ projectId: false, projectName: 'one' }] } },
-    { label: 'null project ID', spec: { ...nativeSpec('first'), tests: [{ projectId: null, projectName: 'one' }] } },
-    { label: 'absent project name', spec: { ...nativeSpec('first'), tests: [{ projectId: 'one' }] } },
-  ])('rejects invalid identities instead of dropping the native case: $label', ({ spec }) => {
+    { label: 'absent test title', spec: { ...playwrightSpec('first'), title: undefined } },
+    { label: 'non-string test title', spec: { ...playwrightSpec('first'), title: false } },
+    { label: 'absent source line', spec: { ...playwrightSpec('first'), line: undefined } },
+    { label: 'negative source line', spec: { ...playwrightSpec('first'), line: -1 } },
+    { label: 'noninteger source line', spec: { ...playwrightSpec('first'), line: 1.5 } },
+    { label: 'infinite source line', spec: { ...playwrightSpec('first'), line: Number.POSITIVE_INFINITY } },
+    { label: 'unsafe source line', spec: { ...playwrightSpec('first'), line: Number.MAX_SAFE_INTEGER + 1 } },
+    { label: 'absent source column', spec: { ...playwrightSpec('first'), column: undefined } },
+    { label: 'negative source column', spec: { ...playwrightSpec('first'), column: -1 } },
+    { label: 'non-object project record', spec: { ...playwrightSpec('first'), tests: [null] } },
+    { label: 'non-string project ID', spec: { ...playwrightSpec('first'), tests: [{ projectId: false, projectName: 'one' }] } },
+    { label: 'null project ID', spec: { ...playwrightSpec('first'), tests: [{ projectId: null, projectName: 'one' }] } },
+    { label: 'absent project name', spec: { ...playwrightSpec('first'), tests: [{ projectId: 'one' }] } },
+  ])('rejects invalid identities instead of dropping the Playwright case: $label', ({ spec }) => {
     expect(() => discoveredTestCoverage({ errors: [], suites: [{ title: 'selected.spec.ts', specs: [spec] }] })).toThrow('Playwright report')
   })
 
   it('rejects a missing suite title instead of changing the case identity', () => {
-    expect(() => discoveredTestCoverage({ errors: [], suites: [{ specs: [nativeSpec('first')] }] })).toThrow('suite title')
+    expect(() => discoveredTestCoverage({ errors: [], suites: [{ specs: [playwrightSpec('first')] }] })).toThrow('suite title')
   })
 })
 
 describe('readDiscoveredTestCoverage', () => {
-  it('reads the complete native selected case records from disk', () => {
+  it('reads the complete selected case records of a Playwright report from disk', () => {
     const path = join(directory(), 'discovery.json')
-    const source = nativeReport([nativeSpec('selected', { repeats: 2 })])
+    const source = playwrightReport([playwrightSpec('selected', { repeats: 2 })])
     writeFileSync(path, JSON.stringify(source))
 
     expect(readDiscoveredTestCoverage(path)).toEqual(discoveredTestCoverage(source))
@@ -304,7 +304,7 @@ describe('readDiscoveredTestCoverage', () => {
 })
 
 describe('collectShardBlobs', () => {
-  it('preserves both shard blobs even when native filenames match', () => {
+  it('preserves both shard blobs even when Playwright gives them the same filename', () => {
     const root = directory()
     const shards = [join(root, 'one'), join(root, 'two')]
     for (const [index, shard] of shards.entries()) {
@@ -317,7 +317,7 @@ describe('collectShardBlobs', () => {
     expect(readFileSync(join(destination, 'shard-2-report.zip'), 'utf8')).toBe('shard 1')
   })
 
-  it('rejects an absent or empty native report', () => {
+  it('rejects an absent or empty Playwright blob report', () => {
     const root = directory()
     mkdirSync(join(root, 'blob-report'))
     expect(() => collectShardBlobs([root], join(root, 'combined'))).toThrow('no unique')
@@ -334,10 +334,10 @@ describe('collectShardBlobs', () => {
   })
 })
 
-/** Build one native specification whose single test carries the given outcome and results. */
+/** Build one Playwright specification whose single test carries the given outcome and results. */
 function outcomeSpec(file: string, outcome: { status: string, expectedStatus: string }, results: unknown[]): Record<string, unknown> {
   return {
-    id: `native-${file}`,
+    id: `spec-${file}`,
     title: 'a case',
     file,
     line: 1,
@@ -346,7 +346,7 @@ function outcomeSpec(file: string, outcome: { status: string, expectedStatus: st
   }
 }
 
-/** Wrap specifications in one native report. Global errors keep a stopped run readable. */
+/** Wrap specifications in one Playwright report. Global errors keep a stopped run readable. */
 function outcomeReport(specs: Record<string, unknown>[], errors: unknown[] = []): Record<string, unknown> {
   return { errors, suites: [{ title: 'root', file: 'root', specs, suites: [] }] }
 }
@@ -475,7 +475,7 @@ describe('readFailedReportFiles', () => {
 
   it.each([
     { label: 'invalid JSON', content: '{"suites": [', message: 'is not a valid Playwright JSON report' },
-    { label: 'a report without the native shape', content: '{"suites": "none", "errors": []}', message: 'is not a valid Playwright JSON report' },
+    { label: 'a report without the Playwright shape', content: '{"suites": "none", "errors": []}', message: 'is not a valid Playwright JSON report' },
   ])('refuses $label and keeps the cause', ({ content, message }) => {
     const path = join(directory(), 'combined.json')
     writeFileSync(path, content)
