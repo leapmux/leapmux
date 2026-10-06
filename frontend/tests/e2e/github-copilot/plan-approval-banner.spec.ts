@@ -1,44 +1,21 @@
-import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expect } from '@playwright/test'
-import { COPILOT_EVENT, COPILOT_METHOD, COPILOT_MODE, COPILOT_OPTION, COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
+import { COPILOT_EVENT, COPILOT_MODE, COPILOT_OPTION } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
+import { pickObject, pickString } from '../../../src/lib/jsonPick'
 import { copilotTest } from '../copilot-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { nativeMessageBody } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { answerPlanReview, chooseSettingsOption, controlBanner, expectSettingsChip, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { copilotToolCompletion } from './permissionRefusal'
 import { exerciseCopilotPlanApproval } from './planScenario'
 
 copilotTest('plan-approval-banner: uses the native exit tool and resumes after plan approval', async ({ native }) => {
   await exerciseCopilotPlanApproval(native)
 })
-
-/** One session event of the root agent, as the Worker stored the native frame. */
-interface CopilotRootEvent {
-  type: string
-  data: Record<string, unknown>
-}
-
-/** Read the root agent's native session events of one session, in Worker order. */
-function copilotRootEvents(snapshot: NativeMessageSnapshot): CopilotRootEvent[] {
-  return snapshot.messages.flatMap((message) => {
-    const frame = nativeMessageBody(message)
-    if (!isObject(frame) || pickString(frame, 'method') !== COPILOT_METHOD.SessionEvent)
-      return []
-    const params = pickObject(frame, 'params')
-    const event = pickObject(params, 'event')
-    const data = pickObject(event, 'data')
-    // A subagent's event states its own agentId. The root agent's event states none.
-    if (pickString(params, 'sessionId') !== snapshot.agentSessionId || !event || !data || pickString(event, 'agentId') !== '')
-      return []
-    return [{ type: pickString(event, 'type'), data }]
-  })
-}
 
 // A Reject that carries no feedback answers `{ approved: false }`. The runtime then
 // fails the exit_plan_mode call with the code `rejected` and ends the turn with no
@@ -54,8 +31,9 @@ copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, 
   const agent = await waitForNativeOptionApplied(native, COPILOT_OPTION.SessionMode, COPILOT_MODE.Plan)
   const watch = await watchNativeControls(leapmuxServer, agent.id)
   await withCleanup(async () => {
+    const callId = 'copilot-rejected-plan'
     const start = await modelScript.queue({
-      toolCalls: [exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-rejected-plan', 'Keep the Copilot plan unapproved.')],
+      toolCalls: [exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, callId, 'Keep the Copilot plan unapproved.')],
     })
     await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
     await modelScript.waitForSteps(start + 1)
@@ -81,16 +59,10 @@ copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, 
       response: { subtype: 'success', request_id: observed.requestId, response: { approved: false } },
     })
 
-    const events = copilotRootEvents(snapshot)
-    const starts = events.filter(event => event.type === COPILOT_EVENT.ToolStarted && event.data.toolName === COPILOT_TOOL.ExitPlanMode)
-    expect(starts).toHaveLength(1)
-    const callId = pickString(starts[0]?.data, 'toolCallId')
-    expect(callId).not.toBe('')
-    const results = events.filter(event => event.type === COPILOT_EVENT.ToolCompleted && event.data.toolCallId === callId)
-    expect(results).toHaveLength(1)
-    const result = results[0]?.data
-    expect(result).toMatchObject({ success: false, error: { code: 'rejected' } })
-    expect(pickString(pickObject(result, 'error'), 'message')).toContain('User requested changes but did not provide specific feedback.')
+    // Copilot keeps the call ID of the model, and the root session holds exactly one completion of that call.
+    const completion = copilotToolCompletion(snapshot, callId)
+    expect(completion, 'Copilot failed the exit tool call of the rejected plan').toMatchObject({ success: false, error: { code: 'rejected' } })
+    expect(completion.error?.message).toContain('User requested changes but did not provide specific feedback.')
 
     await page.reload()
     await expect(savedControlAnswer(page)).toHaveText('Reject')
