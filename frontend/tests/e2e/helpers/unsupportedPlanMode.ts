@@ -1,11 +1,41 @@
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
+import { expectNoNativeControl } from './nativeControlObservation'
 import { sendNativeAnswer } from './nativeConversation'
 import { currentNativeAgent, nativeModelContextText, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { bashToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
-import { messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
+import { closeComposerMenus, messageContents, openPlusMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
+
+/** The test IDs of the two buttons of a plan review. */
+export const PLAN_REVIEW_BUTTON_TEST_IDS = ['plan-approve-btn', 'plan-reject-btn'] as const
+
+/** What {@link expectNoPlanReview} runs around its observation. */
+export interface NoPlanReviewOptions {
+  /** The real native operation that shows the agent works while no plan review appears. */
+  relatedProof: () => Promise<void>
+  /**
+   * Wait for the restored view after the reload. The default waits until the settings menu offers the live native
+   * catalog. A provider that also proves a restored mode chip passes its own wait.
+   */
+  afterReload?: () => Promise<void>
+}
+
+/**
+ * Prove that a real native operation raises no plan review, and that the reloaded page shows none.
+ *
+ * One observation watches both plan review buttons for the whole operation, so a stray Reject button fails it as a
+ * stray Approve button does. After the reload, the page must hold neither button, visible or hidden.
+ */
+export async function expectNoPlanReview(context: ManagedNativeScenarioContext, options: NoPlanReviewOptions): Promise<void> {
+  const [testId, ...additionalTestIds] = PLAN_REVIEW_BUTTON_TEST_IDS
+  await expectNoNativeControl(context, { testId, additionalTestIds, relatedProof: options.relatedProof })
+  await context.page.reload()
+  await (options.afterReload ?? (() => waitForNativeSettingsHydrated(context.page)))()
+  for (const button of PLAN_REVIEW_BUTTON_TEST_IDS)
+    await expect(context.page.getByTestId(button), `the reloaded page holds no ${button}`).toHaveCount(0)
+}
 
 /** Prove that the launched protocol carries /plan as text and offers no Plan setting. */
 export async function exerciseMissingNativePlanMode(context: ManagedNativeScenarioContext, options: { reload?: boolean } = {}): Promise<void> {
@@ -37,6 +67,7 @@ export async function exerciseMissingNativePlanMode(context: ManagedNativeScenar
     expect(choices.some(option => /^plan$/i.test(option.id) || /^plan$/i.test(option.name))).toBe(false)
     const menu = await openPlusMenu(context.page)
     await expect(menu.locator('[data-testid$="-plan"]:visible')).toHaveCount(0)
-    await context.page.keyboard.press('Escape')
+    // Escape closes only the popover that holds the focus, so close every composer menu.
+    await closeComposerMenus(context.page)
   }
 }

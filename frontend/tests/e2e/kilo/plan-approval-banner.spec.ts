@@ -1,9 +1,8 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { exerciseNativeReadOnlyPlan } from '../helpers/nativeReadOnlyPlan'
-import { currentNativeAgent, nativeModelContextText, nativeModelToolNames } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeModelContextText, nativeModelToolNames, nativeOptionValue } from '../helpers/nativeScenario'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
+import { expectNoPlanReview } from '../helpers/unsupportedPlanMode'
 import { kiloTest } from '../kilo-fixtures'
 
 /**
@@ -14,13 +13,12 @@ import { kiloTest } from '../kilo-fixtures'
  */
 const KILO_DEFAULT_PRIMARY_AGENT = 'code'
 
-kiloTest('completes a native read-only plan without a dedicated approval banner', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }
-  const primaryAgent = async () => (await currentNativeAgent(context)).optionGroups.find(group => group.id === 'primaryAgent')?.currentValue
+kiloTest('completes a native read-only plan without a dedicated approval banner', async ({ native }) => {
+  const { page } = native
+  const primaryAgent = async () => nativeOptionValue(await currentNativeAgent(native), 'primaryAgent')
   await expect.poll(primaryAgent).toBe(KILO_DEFAULT_PRIMARY_AGENT)
-  await expectNoNativeControl(context, {
-    testId: 'plan-approve-btn',
-    relatedProof: () => exerciseNativeReadOnlyPlan(context, {
+  await expectNoPlanReview(native, {
+    relatedProof: () => exerciseNativeReadOnlyPlan(native, {
       preparePlan: async () => {
         await chooseSettingsOption(page, 'primaryAgent-plan')
         await waitForSettingsIdle(page)
@@ -32,11 +30,9 @@ kiloTest('completes a native read-only plan without a dedicated approval banner'
         expect(tools.some(tool => /(?:enter|exit)[_-]?plan/i.test(tool))).toBe(false)
       },
     }),
+    afterReload: () => expectSettingsChip(page, 'Plan'),
   })
   expect(await primaryAgent()).toBe('plan')
-  await page.reload()
-  await expectSettingsChip(page, 'Plan')
-  await expect(page.locator('[data-testid="plan-approve-btn"]:visible')).toHaveCount(0)
   await chooseSettingsOption(page, `primaryAgent-${KILO_DEFAULT_PRIMARY_AGENT}`)
   await waitForSettingsIdle(page)
   expect(await primaryAgent()).toBe(KILO_DEFAULT_PRIMARY_AGENT)
