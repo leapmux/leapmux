@@ -9,7 +9,7 @@ import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall, codexEscalatedCommandToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { answerControl, chatText, chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsOptionChosen, isMaybeVisible, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { answerControl, chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsOptionChosen, isMaybeVisible, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { readCodexExecResult } from './execResult'
 
 function writeCommand(path: string, content: string): string {
@@ -93,8 +93,15 @@ codexTest.describe('codex permission requests', () => {
   })
 })
 
-/** The command that the approval test scripts. It removes a directory that does not exist, so a run changes nothing. */
-const APPROVAL_COMMAND = `rm -${'rf'} /tmp/codex-approval-test-dir-nonexistent`
+/**
+ * The command that the approval test scripts. It removes a directory that does not exist, so a run changes nothing,
+ * and then prints a number that only the shell computes. The command text holds `$((40 + 2))`, not
+ * {@link APPROVAL_OUTPUT}, so only a run of the command can put that output in its result.
+ */
+const APPROVAL_COMMAND = `rm -${'rf'} /tmp/codex-approval-test-dir-nonexistent && echo "codex-approved-$((40 + 2))"`
+
+/** The output of {@link APPROVAL_COMMAND}. */
+const APPROVAL_OUTPUT = 'codex-approved-42'
 
 codexTest.describe('codex approval UI', () => {
   codexTest('approval flow works with on-request policy', async ({ native }) => {
@@ -107,9 +114,12 @@ codexTest.describe('codex approval UI', () => {
     await expectSettingsOptionChosen(page, 'permissionMode-on-request')
 
     // `rm` always requires approval in on-request mode, so the command raises an approval request.
-    // What the test does with the banner decides how many turns follow.
+    // The answer step reads the result of the approved command; the fallback answers any request that Codex adds.
     await modelScript.fallback({ text: 'The command finished.' })
-    const start = await modelScript.queue({ toolCalls: [bashToolCall(native.provider, 'approval-call', APPROVAL_COMMAND)] })
+    const start = await modelScript.queue(
+      { toolCalls: [bashToolCall(native.provider, 'approval-call', APPROVAL_COMMAND)] },
+      { text: 'The approved command finished.' },
+    )
     await sendMessage(page, modelScript.prompt('Run this exact command.'))
     await modelScript.waitForSteps(start + 1)
 
@@ -134,9 +144,15 @@ codexTest.describe('codex approval UI', () => {
 
     await answerControl(page, 'allow')
 
-    // Wait for the agent to finish. The chat then shows the approved command.
+    // The approved command ran: the next model request holds its computed output as the result of the call.
+    await modelScript.waitForSteps(start + 2)
+    const result = readCodexExecResult(await modelScript.requestAt(start + 1), 'approval-call')
+    expect(result.text, 'the result of the approved command holds the output that only its run computes').toContain(APPROVAL_OUTPUT)
+    expect(result.failed).not.toBe(true)
+
+    // Wait for the agent to finish. The chat then shows the output of the approved command.
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
-    await expect.poll(() => chatText(page)).toContain('codex-approval-test-dir-nonexistent')
+    await expect(toolRows(page).filter({ hasText: APPROVAL_OUTPUT }).first()).toBeVisible()
   })
 })
