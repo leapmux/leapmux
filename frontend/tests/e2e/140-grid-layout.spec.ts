@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, openAgentViaUI, tiles } from './helpers/ui'
 
 /**
  * Grid layout end-to-end tests. Each test starts from an authenticated
@@ -24,8 +24,7 @@ test.describe('Grid layout', () => {
     void authenticatedWorkspace
     await makeGrid(page, 2, 2)
 
-    const tiles = page.locator('[data-testid="tile"]')
-    await expect(tiles).toHaveCount(4)
+    await expect(tiles(page)).toHaveCount(4)
 
     const topRightCell = page.locator('[data-grid-row="0"][data-grid-col="1"]')
     await expect(topRightCell.locator('[data-testid="close-grid"]')).toBeVisible()
@@ -38,10 +37,9 @@ test.describe('Grid layout', () => {
     void authenticatedWorkspace
     // The fixture pre-seeds an agent tab; capture the count and use it as the
     // baseline so we don't depend on it being exactly 1.
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    const baseline = await agentTabs.count()
+    const baseline = await agentTabs(page).count()
     await openAgentViaUI(page)
-    await expect(agentTabs).toHaveCount(baseline + 1)
+    await expectAgentTabCount(page, baseline + 1)
 
     await makeGrid(page, 2, 2)
 
@@ -51,8 +49,8 @@ test.describe('Grid layout', () => {
 
     // Grid is gone, exactly one tile, agent tabs preserved.
     await expect(page.locator('[data-testid="tile-grid"]')).toHaveCount(0)
-    await expect(page.locator('[data-testid="tile"]')).toHaveCount(1)
-    await expect(agentTabs).toHaveCount(baseline + 1)
+    await expect(tiles(page)).toHaveCount(1)
+    await expectAgentTabCount(page, baseline + 1)
   })
 
   test('Make-grid popover Create button is disabled for out-of-range manual values', async ({ page, authenticatedWorkspace }) => {
@@ -68,7 +66,7 @@ test.describe('Grid layout', () => {
     await page.locator('[data-testid="grid-size-cols-input"]').fill('5')
     await expect(create).not.toBeDisabled()
     await create.click()
-    await expect(page.locator('[data-testid="tile"]')).toHaveCount(40)
+    await expect(tiles(page)).toHaveCount(40)
   })
 
   // Drag-resize and no-tab close-grid paths are covered by the unit tests

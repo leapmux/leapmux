@@ -11,7 +11,7 @@ import { test as base, expect } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from './helpers/timingFixture'
-import { agentTabs, expectAgentTabCount, loginViaToken, openAgentViaUI, openWorkspace } from './helpers/ui'
+import { AGENT_TAB_SELECTOR, agentTabs, expectAgentTabCount, loginViaToken, openAgentViaUI, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
@@ -34,16 +34,16 @@ interface TimingWindow {
 
 async function installObservers(page: Page): Promise<void> {
   await installRpcListeners(page)
-  await page.evaluate(() => {
+  await page.evaluate((agentTabSelector) => {
     const w: Window & TimingWindow = window
     w.__tabRemovedAt = null
     w.__dialogVisibleAt = null
     w.__dialogRemovedAt = null
-    w.__tabBaseline = document.querySelectorAll('[data-testid="tab"][data-tab-type="agent"]').length
+    w.__tabBaseline = document.querySelectorAll(agentTabSelector).length
     w.__observer?.disconnect()
     w.__observer = new MutationObserver(() => {
       if (w.__tabRemovedAt == null) {
-        const tabs = document.querySelectorAll('[data-testid="tab"][data-tab-type="agent"]').length
+        const tabs = document.querySelectorAll(agentTabSelector).length
         if (tabs < (w.__tabBaseline ?? 0))
           w.__tabRemovedAt = performance.now()
       }
@@ -60,7 +60,7 @@ async function installObservers(page: Page): Promise<void> {
       }
     })
     w.__observer.observe(document.body, { childList: true, subtree: true })
-  })
+  }, AGENT_TAB_SELECTOR)
 }
 
 interface RawMarks {

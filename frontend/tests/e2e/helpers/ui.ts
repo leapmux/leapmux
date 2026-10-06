@@ -2018,9 +2018,12 @@ export function tabById(page: Page, tabId: string): Locator {
   return page.locator(`[data-testid="tab"][data-tab-id="${tabId}"]`)
 }
 
+/** The CSS selector of an agent tab. A `page.evaluate` body, which cannot take a locator, takes it as an argument. */
+export const AGENT_TAB_SELECTOR = '[data-testid="tab"][data-tab-type="agent"]'
+
 /** Locate every agent tab of every tile's tab bar. */
 export function agentTabs(page: Page): Locator {
-  return page.locator('[data-testid="tab"][data-tab-type="agent"]')
+  return page.locator(AGENT_TAB_SELECTOR)
 }
 
 /** Locate every terminal tab of every tile's tab bar. */
