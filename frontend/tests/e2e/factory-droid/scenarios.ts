@@ -5,6 +5,7 @@ import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { DROID_CHILD_SYSTEM } from './childIdentity'
@@ -12,7 +13,7 @@ import { droidChildNoticeRule } from './childNotice'
 import { readDroidToolResult } from './toolResult'
 
 /** How a Factory Droid agent opens. */
-export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefix: 'droid-e2e' }
+export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefix: 'droid-e2e', workingDir: gitRepositoryWorkingDir }
 
 /**
  * Build the scenario context of Factory Droid, with every field that its native protocol needs.
