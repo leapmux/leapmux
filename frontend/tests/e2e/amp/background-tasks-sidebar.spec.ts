@@ -24,10 +24,10 @@ import { openOpaqueAmpTask } from './opaqueTask'
 const REPORT = 'Apple, banana, cherry. One, two, three. Done.'
 
 ampTest.describe('Amp subagent registry', () => {
-  ampTest('follows a subagent from its call to its report', async ({ authenticatedAmpWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
+  ampTest('follows a subagent from its call to its report', async ({ native }) => {
+    const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
-    const child = await openOpaqueAmpTask(context, {
+    const child = await openOpaqueAmpTask(native, {
       report: REPORT,
       ruleName: 'the subagent reports',
       callId: 'spawn-amp',
@@ -50,10 +50,10 @@ ampTest.describe('Amp subagent registry', () => {
     }
   })
 
-  ampTest('follows a background command until the Amp process exits', async ({ authenticatedAmpWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
+  ampTest('follows a background command until the Amp process exits', async ({ native }) => {
+    const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
-    const agent = await currentNativeAgent(context)
+    const agent = await currentNativeAgent(native)
     const control = createToolOutputControl(agent.workingDir)
     const pidFileName = 'amp-background-command.pid'
     const pidFile = join(agent.workingDir, pidFileName)

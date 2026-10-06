@@ -1,30 +1,26 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
 import { gooseTest } from '../goose-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
-import { openWorkspace } from '../helpers/ui'
+import { toolCallRow } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 
 gooseTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const config = join(leapmuxServer.agentEnv.GOOSE_PATH_ROOT!, 'config', 'config.yaml')
   const content = readFileSync(config, 'utf8').replace('extensions:\n', 'extensions:\n  code_execution:\n    enabled: true\n    type: platform\n    name: code_execution\n')
   await withNativeConfigurationFile({ path: config, content, runDir: getGlobalState().tmpDir }, async () => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.GOOSE }
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(context.provider))
-    await openWorkspace(page, context.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {
         nativeCodeExecutionSchema(request, 'execute_typescript', { code: 'string' })
       },
       prepareResultView: async (callId) => {
-        const bubble = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${callId}"][data-tool-row-role="result"]:visible`)
-        await expandNativeResultView(bubble)
+        await expandNativeResultView(toolCallRow(page, callId))
       },
       scripts: marker => [
         { label: 'output', source: `async function run() { return ${JSON.stringify(marker)} + (40 + 2); }`, expected: `${marker}42`, failed: false },

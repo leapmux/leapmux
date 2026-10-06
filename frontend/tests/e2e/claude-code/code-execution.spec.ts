@@ -1,30 +1,26 @@
 import type { ClaudeWorkflowLaunch } from './codeExecution'
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
+import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, expect } from '../claude-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
-import { openWorkspace, sendMessage } from '../helpers/ui'
+import { sendMessage } from '../helpers/ui'
 import { claudeWorkflowLaunch, claudeWorkflowModelOutcome, claudeWorkflowOutput, claudeWorkflowOutputFile, claudeWorkflowSnapshot } from './codeExecution'
+import { nativeContext } from './scenarios'
 
 claudeTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CLAUDE_CODE }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-workflow-code-'), agentOpenOptions(context.provider))
-  await openWorkspace(page, context.workspaceId)
-  const catalogRequest = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const catalogRequest = await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-' })
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')
   await testInfo.attach('claude-workflow-catalog', { body: JSON.stringify(catalogRequest, null, 2), contentType: 'application/json' })
   const agent = await currentNativeAgent(context)
@@ -41,8 +37,7 @@ claudeTest('executes native Workflow code and preserves the computed result and 
     ].join('\n')
     const expected = `${marker}${failed ? 77 : 42}`
     expect(source).not.toContain(expected)
-    const start = (await modelScript.status()).stepCount
-    await modelScript.queue({ toolCalls: [claudeWorkflowToolCall(callId, source)] }, { text: 'The native Workflow launch turn ended.' })
+    const start = await modelScript.queue({ toolCalls: [claudeWorkflowToolCall(callId, source)] }, { text: 'The native Workflow launch turn ended.' })
     const evidence: Record<string, unknown> = { callId, source, agentId: agent.id, agentSessionId: agent.agentSessionId }
     await withCleanup(async () => {
       await sendMessage(page, modelScript.prompt(`Run the native Workflow ${failed ? 'error' : 'output'} script.`))

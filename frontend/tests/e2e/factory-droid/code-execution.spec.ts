@@ -1,14 +1,9 @@
 import { cpSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
 import { droidTest, expect } from '../droid-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
-import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { exerciseNativeCodeExecution, nativeCodeExecutionSchema, openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 import { droidScriptConfiguration } from './scriptSettings'
 import { DROID_SCRIPT_ARGUMENTS, droidCompleteToolCatalog, droidScriptExecutors } from './toolCatalog'
@@ -34,9 +29,7 @@ droidTest('runs native code and retains computed output and script errors after 
     env: { FACTORY_HOME_OVERRIDE: home, FACTORY_FEATURE_FLAGS_SNAPSHOT_PATH: snapshot },
   }, async ({ server }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(AgentProvider.DROID))
-    await openWorkspace(page, context.workspaceId)
-    const request = await sendNativeAnswer(context, 'Reply once while the native Script catalog remains available.', 'The actual native Script catalog turn completed.')
+    const request = await openNativeCatalogTurn(context, { directoryPrefix: 'native-code-execution-' })
     expect(request.mockCredential?.accepted).toBe(true)
     expect(droidScriptExecutors(droidCompleteToolCatalog(request).current).map(tool => tool.name)).toContain('Script')
     const schema = nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)

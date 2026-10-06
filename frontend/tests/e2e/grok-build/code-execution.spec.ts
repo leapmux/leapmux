@@ -1,25 +1,26 @@
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'
-import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
-import { assistantBubbles, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, messageContents, openWorkspace, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { grokWorkflowCompletion, grokWorkflowLaunch, grokWorkflowManifestPath, grokWorkflowName, grokWorkflowReportLabel, readGrokWorkflowManifest } from './codeExecution'
+import { nativeContext } from './scenarios'
 
 grokTest('runs native Rhai scripts and retains computed output and errors after reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
   const opened = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   expect(agent.id).toBe(opened.agentId)
   const home = leapmuxServer.agentEnv.GROK_HOME
@@ -33,17 +34,13 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
     const expected = `${marker}${failed ? 77 : 42}`
     const source = `let meta = #{ name: ${JSON.stringify(name)}, description: "Compute one native value." };\n${failed ? `throw ${JSON.stringify(marker)} + (70 + 7).to_string();` : `${JSON.stringify(marker)} + (40 + 2).to_string()`}`
     expect(source).not.toContain(expected)
-    const start = (await modelScript.status()).stepCount
     const callId = `native-code-${label}`
     const answer = `The native ${label} launch returned.`
-    await modelScript.queue({ toolCalls: [grokWorkflowToolCall(callId, source)] }, { text: answer })
-    await sendMessage(page, modelScript.prompt(`Run the native ${label} script.`))
-    await waitForNativeToolSteps(context, start + 2)
-    const status = await modelScript.waitForSteps(start + 2)
-    const catalog = status.requests.find(item => item.stepIndex === start)
-    const result = status.requests.find(item => item.stepIndex === start + 1)
-    if (!catalog || !result)
-      throw new Error('The native Grok script has no exact launch request and result.')
+    const { toolRequest: catalog, resultRequest: result } = await runNativeToolTurn(context, {
+      toolCalls: [grokWorkflowToolCall(callId, source)],
+      prompt: `Run the native ${label} script.`,
+      answer,
+    })
     expect(nativeModelToolNames(catalog)).toContain('workflow')
     const launchSnapshot = await readNativeMessageSnapshot(context, agent.id)
     expect(launchSnapshot.agentSessionId).toBe(agent.agentSessionId)

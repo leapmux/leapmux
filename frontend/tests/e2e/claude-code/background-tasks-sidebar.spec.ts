@@ -15,16 +15,15 @@ claudeTest.describe('Claude subagent background tasks', () => {
   claudeTest('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
     // A long command lets the test measure title clipping at the section edge.
-    await modelScript.queue({
+    const start = await modelScript.queue({
       toolCalls: [backgroundBashToolCall(
         AgentProvider.CLAUDE_CODE,
         'bg-shell',
         'sleep 3 && echo BG-MARKER-A-DELIBERATELY-LONG-COMMAND-THAT-REACHES-THE-EDGE-OF-THE-SECTION',
       )],
-    })
-    await modelScript.queue({ text: 'The command runs in the background.' })
+    }, { text: 'The command runs in the background.' })
     await sendMessage(page, modelScript.prompt('Start the background shell probe.'))
-    await modelScript.waitForSteps(2)
+    await modelScript.waitForSteps(start + 2)
 
     // A running background task keeps the agent busy. Wait for its row instead of idle.
     const shellRow = await requireRegistryRow(page, 'shell')
@@ -43,8 +42,7 @@ claudeTest.describe('Claude subagent background tasks', () => {
 })
 
 /** The Worker registry must govern an empty-state assertion before browser hydration. */
-claudeTest('refuses an early empty DOM while an actual native task remains in the Worker registry', async ({ page, modelScript, leapmuxServer, authenticatedClaudeWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClaudeWorkspace.workspaceId, provider: AgentProvider.CLAUDE_CODE }
+claudeTest('refuses an early empty DOM while an actual native task remains in the Worker registry', async ({ page, modelScript, leapmuxServer, native: context }) => {
   const child = await openHeldChildTab(context, { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The real child completed after registry hydration.' }] })
   const forwards: Array<() => void> = []
   let held = true

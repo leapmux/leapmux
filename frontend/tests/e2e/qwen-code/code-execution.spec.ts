@@ -1,23 +1,19 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
+import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
-import { openWorkspace } from '../helpers/ui'
 import { qwenTest } from '../qwen-fixtures'
+import { nativeContext } from './scenarios'
 
 qwenTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const config = join(leapmuxServer.agentEnv.QWEN_HOME!, 'settings.json')
   const settings = JSON.parse(readFileSync(config, 'utf8'))
   const content = JSON.stringify({ ...settings, tools: { ...settings.tools, codeModeOnly: true } })
   await withNativeConfigurationFile({ path: config, content, runDir: getGlobalState().tmpDir }, async () => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(context.provider))
-    await openWorkspace(page, context.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {
         nativeCodeExecutionSchema(request, 'exec', { source: 'string' })

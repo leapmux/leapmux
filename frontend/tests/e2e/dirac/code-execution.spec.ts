@@ -1,26 +1,20 @@
 import { Buffer } from 'node:buffer'
 import { expect } from '@playwright/test'
-import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
-import { nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { nativeCodeExecutionSchema, openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codeExecutionToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { openWorkspace, sendMessage } from '../helpers/ui'
+import { openWorkspace, toolCallRow } from '../helpers/ui'
 import { diracScriptReceipt } from './codeExecution'
 import { nativeContext } from './scenarios'
 
 diracTest('executes native scripts with computed, failed, and empty output after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('dirac-native-script-'), agentOpenOptions(context.provider))
-  await openWorkspace(page, context.workspaceId)
-  const catalog = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
+  const catalog = await openNativeCatalogTurn(context, { directoryPrefix: 'dirac-native-script-' })
   nativeCodeExecutionSchema(catalog, 'execute_command', { script: 'string', language: 'string' })
   const agent = await currentNativeAgent(context)
   const marker = uniqueMarker('DIRACSCRIPT')
@@ -32,12 +26,12 @@ diracTest('executes native scripts with computed, failed, and empty output after
   for (const item of scripts) {
     if (item.expected)
       expect(item.source).not.toContain(item.expected.trim())
-    const start = (await modelScript.status()).stepCount
     const call = codeExecutionToolCall(context.provider, `native-dirac-${item.label}`, item.source)
-    await modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, `The native ${item.label} script ended.`))
-    await sendMessage(page, modelScript.prompt(`Run the native ${item.label} script.`))
-    await waitForNativeToolSteps(context, start + 2)
-    const request = (await modelScript.waitForSteps(start + 2)).requests.find(record => record.stepIndex === start + 1)
+    const { resultRequest: request } = await runNativeToolTurn(context, {
+      toolCalls: [call],
+      prompt: `Run the native ${item.label} script.`,
+      answer: `The native ${item.label} script ended.`,
+    })
     if (item.expected)
       expect(nativeToolResult(request, call.id)).toContain(item.expected.trim())
     const readReceipt = async () => {
@@ -54,7 +48,7 @@ diracTest('executes native scripts with computed, failed, and empty output after
     expect(receipt.output).toBe(`${expectedOutput}${item.expected ? `\nOutput:\n${item.expected.trimEnd()}` : ''}`)
     expect(receipt.exitCode).toBe(item.exitCode)
     expect(receipt.failed).toBe(item.exitCode !== 0)
-    const result = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${receipt.callId}"][data-tool-row-role="result"]:visible`)
+    const result = toolCallRow(page, receipt.callId)
     await expect(result).toHaveCount(1)
     await expect(result).toHaveAttribute('data-tool-status', item.exitCode === 0 ? 'completed' : 'failed')
     if (item.expected)

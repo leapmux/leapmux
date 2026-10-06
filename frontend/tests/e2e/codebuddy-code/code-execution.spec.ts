@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { expect } from '../fixtures'
@@ -12,15 +11,16 @@ import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { codebuddyReplToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 import { codebuddyReplSchema } from './toolCatalog'
 
 codebuddyTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const initial = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEBUDDY }
+  const initial = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const launch = resolveNativeStartupLaunch(leapmuxServer.agentEnv, { binaryName: 'codebuddy', args: ['--agent', 'ptc'] })
   // The native PTC mode selects REPL as its sole direct tool.
   await withNativeStartupWorker(initial, launch, {}, async (workerId, wrapper) => {
     const server = { ...leapmuxServer, workerId }
-    const context = { page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEBUDDY }
+    const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     const opening = openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(context.provider))
     const entered = await Promise.race([wrapper.entry, opening.then(() => wrapper.entry)])
     expect(entered.argv).toContain('--input-format')

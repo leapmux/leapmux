@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { backgroundBashToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
-import { nativeContext, runningChild } from './scenarios'
+import { runningChild } from './scenarios'
 
 junieTest.describe('Junie subagents and background tasks', () => {
   const PROVIDER = AgentProvider.JUNIE
@@ -39,14 +39,14 @@ finish()
     const done = join(workingDir, 'junie-background-done.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [backgroundBashToolCall(PROVIDER, 'junie-bg', nativeBackgroundCommand(release, done))] },
       { toolCalls: [junieAnswerToolCall('junie-bg-answer', 'I started the command in the background.')] },
     )
     await sendMessage(page, modelScript.prompt('Run the command in the background.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     await waitForControlBanner(page)
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await answerControl(page, 'allow')
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     expect(existsSync(done)).toBe(false)
@@ -58,9 +58,8 @@ finish()
   })
 })
 
-junieTest('follows a native child from running to completed in the Background tasks sidebar', async ({ authenticatedJunieWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId })
-  const child = await runningChild(context)
+junieTest('follows a native child from running to completed in the Background tasks sidebar', async ({ native }) => {
+  const child = await runningChild(native)
   await withCleanup(async () => {
     await expect(child.row).toContainText('leapmux-e2e-child')
     await expect(child.row).toHaveAttribute('data-kind', 'subagent')
