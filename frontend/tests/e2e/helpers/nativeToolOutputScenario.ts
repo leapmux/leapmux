@@ -35,9 +35,13 @@ export interface NativeToolOutputCaptureOperations<Context = ManagedNativeScenar
   proof: (capture: NativeToolOutputCapture<Context>) => Promise<void>
 }
 
-/** Build the real Node command for a computed large result. */
-export function nativeOutputFileCommand(output: NativeToolOutput): string {
-  return `node -e ${quotePosixShellArgument(`${output.source} process.stdout.write(completeOutput)`)}`
+/** Build the real Node command for a computed large result. `exitCode` sets the exit status of the process. */
+export function nativeOutputFileCommand(output: NativeToolOutput, options: { exitCode?: number } = {}): string {
+  const { exitCode } = options
+  if (exitCode !== undefined && (!Number.isSafeInteger(exitCode) || exitCode < 0 || exitCode > 255))
+    throw new Error('A native output command requires an exit code from 0 through 255.')
+  const exit = exitCode === undefined ? '' : `; process.exitCode = ${exitCode}`
+  return `node -e ${quotePosixShellArgument(`${output.source} process.stdout.write(completeOutput)${exit}`)}`
 }
 
 /** Keep native completion and evidence before provider assertions, with explicit test operations. */

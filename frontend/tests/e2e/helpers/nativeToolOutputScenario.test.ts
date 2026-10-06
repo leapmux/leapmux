@@ -1,5 +1,7 @@
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { NativeMessageSnapshot } from './nativeMessages'
+import { spawnSync } from 'node:child_process'
+import process from 'node:process'
 import { runInNewContext } from 'node:vm'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
@@ -33,6 +35,25 @@ describe('nativeOutputFileCommand', () => {
       },
     }, { timeout: 1000 })
     expect(actual).toBe(expected.text)
+  })
+
+  it.each([0, 7, 255])('sets the exit code %s of the process after it writes the output', (exitCode) => {
+    const expected = computedNativeToolOutput({ prefix: 'CommandProbe', lineCount: 5 })
+    const command = nativeOutputFileCommand(expected, { exitCode })
+    const actual = spawnSync(process.execPath, ['-e', command.slice('node -e \''.length, -1)], { encoding: 'utf8' })
+    expect(actual.error).toBeUndefined()
+    expect(actual.status).toBe(exitCode)
+    expect(actual.stdout).toBe(expected.text)
+  })
+
+  it('leaves the command without an exit statement when no exit code is given', () => {
+    const expected = computedNativeToolOutput({ prefix: 'CommandProbe', lineCount: 5 })
+    expect(nativeOutputFileCommand(expected)).not.toContain('process.exitCode')
+  })
+
+  it.each([-1, 256, 1.5, Number.NaN])('refuses the invalid exit code %s', (exitCode) => {
+    const expected = computedNativeToolOutput({ prefix: 'CommandProbe', lineCount: 5 })
+    expect(() => nativeOutputFileCommand(expected, { exitCode })).toThrow('A native output command requires an exit code from 0 through 255.')
   })
 })
 

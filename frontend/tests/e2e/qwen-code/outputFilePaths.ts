@@ -1,8 +1,10 @@
+import type { ComputedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { QWEN_OUTPUT_FILES, QWEN_SHELL_RESULT } from '../../../src/components/chat/providers/qwen/protocol'
 import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
-import { quotePosixShellArgument } from '../helpers/shellArguments'
+import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
+import { nativeOutputFileCommand } from '../helpers/nativeToolOutputScenario'
 
 export interface QwenOutputPathReceipt {
   callId: string
@@ -98,10 +100,11 @@ export function qwenModelOutputPath(text: string): string {
   return path
 }
 
-/** Keep the native large-output trigger unchanged without reading its output file. */
-export function qwenOutputPathCommand(prefix: string, exitCode = 0): { source: string, command: string, omittedMarker: string, lastMarker: string } {
-  if (!/^[A-Z][A-Z0-9]{0,79}$/i.test(prefix) || !Number.isSafeInteger(exitCode) || exitCode < 0 || exitCode > 255)
-    throw new Error('The controlled Qwen command requires an ASCII prefix and a valid exit code.')
-  const source = `const lines = Array.from({length:8000}, (_, index) => ${JSON.stringify(prefix)} + "-line-" + index + ":" + "x".repeat(30)); lines[4000] += "-middle-" + (70 + 7); lines.push(${JSON.stringify(prefix)} + "-complete-" + (40 + 2)); process.stdout.write(lines.join("\\n")); process.exitCode = ${exitCode};`
-  return { source, command: `node -e ${quotePosixShellArgument(source)}`, omittedMarker: `${prefix}-line-4000:${'x'.repeat(30)}-middle-77`, lastMarker: `${prefix}-complete-42` }
+/**
+ * The large-output command that makes Qwen save a shell result to a file, from the shared generator. Eight thousand
+ * lines of thirty padding characters keep the native large-output trigger, so the proof needs no read of the file.
+ */
+export function qwenOutputPathCommand(prefix: string, exitCode = 0): ComputedNativeToolOutput & { command: string } {
+  const output = computedNativeToolOutput({ prefix, lineCount: 8000, padding: 30 })
+  return { ...output, command: nativeOutputFileCommand(output, { exitCode }) }
 }

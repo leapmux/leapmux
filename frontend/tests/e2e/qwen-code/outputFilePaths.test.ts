@@ -133,7 +133,9 @@ describe('qwenModelOutputPath', () => {
 describe('qwenOutputPathCommand', () => {
   it('keeps the original line count and padding for the native path trigger', () => {
     const output = qwenOutputPathCommand('NATIVEOUTPUTPATH', 7)
-    const actual = spawnSync(process.execPath, ['-e', output.source], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 })
+    expect(output.command).toMatch(/^node -e '[^']*'$/u)
+    const program = output.command.slice('node -e \''.length, -1)
+    const actual = spawnSync(process.execPath, ['-e', program], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 })
     expect(actual.error).toBeUndefined()
     expect(actual.status).toBe(7)
     const lines = actual.stdout.split('\n')
@@ -147,8 +149,12 @@ describe('qwenOutputPathCommand', () => {
     expect(output.omittedMarker).toBe(`NATIVEOUTPUTPATH-line-4000:${'x'.repeat(30)}-middle-77`)
   })
 
-  it.each([['', 0], ['invalid prefix', 0], ['PREFIX', -1], ['PREFIX', 256], ['PREFIX', 1.5]])('refuses invalid generator input %j', (prefix, code) => {
-    expect(() => qwenOutputPathCommand(String(prefix), Number(code))).toThrow('The controlled Qwen command requires an ASCII prefix and a valid exit code.')
+  it.each(['', 'invalid prefix'])('refuses the invalid prefix %j', (prefix) => {
+    expect(() => qwenOutputPathCommand(prefix)).toThrow('The native tool output prefix requires at most eighty ASCII letters and digits.')
+  })
+
+  it.each([-1, 256, 1.5])('refuses the invalid exit code %j', (code) => {
+    expect(() => qwenOutputPathCommand('PREFIX', code)).toThrow('A native output command requires an exit code from 0 through 255.')
   })
 })
 
