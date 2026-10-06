@@ -1,4 +1,4 @@
-import type { MockModelPattern, MockModelRule } from './mockModelScript'
+import type { MockModelRule } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -38,13 +38,6 @@ export async function exerciseNativeGoalPauseAndResume(
     pauseTiming: NativeGoalPauseTiming
     /** Rules for the model calls of the provider's own goal machinery, such as a planner. They precede the round rules. */
     supportRules?: (scenario: NativeGoalScenario) => MockModelRule[]
-    /**
-     * A pattern that the system prompt of a goal round states and that a housekeeping request lacks.
-     * A housekeeping request, such as a session title, can quote the goal and so carry its marker.
-     * Without this pattern, the gated rule answers such a request. The real round then runs with no gate
-     * and can end the goal before the pause.
-     */
-    roundSystem?: MockModelPattern
     pausedProof: () => Promise<void>
   },
 ): Promise<void> {
@@ -54,7 +47,10 @@ export async function exerciseNativeGoalPauseAndResume(
   const progressFile = join(agent.workingDir, 'native-goal-progress.txt')
   const gate = `native-goal-first-${marker}`
   const rule = `native-goal-following-${marker}`
-  const roundWhen = { body: marker, ...(options.roundSystem === undefined ? {} : { system: options.roundSystem }) }
+  // A housekeeping request, such as a session title, can quote the goal and so carry its marker. The housekeeping
+  // rules have high priority (`HOUSEKEEPING_RULES` in `./mockModelScenario`), so such a request never reaches the
+  // normal round rules, and the gate holds only a real round.
+  const roundWhen = { body: marker }
   await withCleanup(async () => {
     await context.modelScript.rule(...(options.supportRules?.({ marker }) ?? []), {
       name: `native-goal-first-${marker}`,

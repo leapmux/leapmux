@@ -7,6 +7,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
+import { junieCapabilityAnswer } from './housekeeping'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('native mcp tool execution', () => {
@@ -19,9 +20,7 @@ junieTest.describe('native mcp tool execution', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     // Junie asks its capability filter which listed tool the request needs. The echo tool is the second one.
-    await modelScript.rule(
-      { name: 'junie-echo-capability', when: { system: 'capability filter agent' }, respond: { text: '2' } },
-    )
+    await modelScript.rule(junieCapabilityAnswer('junie-echo-capability', '2'))
     const callId = 'junie-mcp-echo'
     // Brave mode runs the tool without a request, so the call must raise no banner.
     await expectNoNativeControl(context, {

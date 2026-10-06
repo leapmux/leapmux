@@ -53,6 +53,12 @@ const KIRO_INTENT_CLASSIFICATION = '"agentMode":"intent-classification"'
  * A provider requests a session title at a time that the test does not control.
  * Rules answer those housekeeping requests without consuming ordered steps.
  * Each ordered step then belongs to the content turn that the test sent.
+ *
+ * Each housekeeping rule has high priority. A title request repeats the prompt of its session, so a test rule that
+ * matches the prompt text matches the title request too. Within one priority, a test rule precedes a housekeeping
+ * rule (see `resolveScript` here and `extendScenario` in `./mockModelServer`). At normal priority, the test rule would
+ * take the title request as a content turn. A test that needs another housekeeping answer adds a high-priority rule:
+ * a newer rule of the same priority matches first.
  */
 export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
   {
@@ -67,18 +73,21 @@ export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
   },
   {
     name: 'title-json',
+    priority: 'high',
     when: { system: [TITLE_REQUEST, JSON_TITLE_FORM] },
     respond: { text: JSON.stringify({ title: MOCK_SESSION_TITLE }) },
   },
-  { name: 'title-system', when: { system: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
-  { name: 'title-user', when: { user: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
+  { name: 'title-system', priority: 'high', when: { system: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
+  { name: 'title-user', priority: 'high', when: { user: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
   {
     name: 'title-grok',
+    priority: 'high',
     when: { system: GROK_TITLE_REQUEST },
     respond: { toolCalls: [{ id: 'grok-session-title', name: GROK_TITLE_TOOL, arguments: { [GROK_TITLE_TOOL]: MOCK_SESSION_TITLE } }] },
   },
   {
     name: 'intent-kiro',
+    priority: 'high',
     when: { protocol: 'aws-event-stream', body: KIRO_INTENT_CLASSIFICATION },
     respond: { text: JSON.stringify({ specGeneration: 0.9, taskExecution: 0.1 }) },
   },
@@ -252,8 +261,9 @@ function resolveScript(script: ScriptInput): { steps: MockModelStep[], rules: Mo
   const housekeeping = declared.housekeeping ?? HOUSEKEEPING_RULES
   return {
     steps: declared.steps ?? [],
-    // Normal test rules precede normal housekeeping rules.
-    // Native preflight rules can require high priority to avoid broad child matchers.
+    // A test rule of a priority precedes the housekeeping rules of that priority. The housekeeping rules are high, so
+    // only a high test rule precedes them: one that overrides a housekeeping answer, or a native preflight rule that
+    // must precede a broad child matcher.
     rules: [...declared.rules ?? [], ...housekeeping],
     ...(declared.fallback ? { fallback: declared.fallback } : {}),
   }

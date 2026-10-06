@@ -8,6 +8,7 @@ import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { openProviderAgent } from '../helpers/workspace'
 import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
+import { junieCapabilityAnswer } from './housekeeping'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie MCP input form', () => {
@@ -21,9 +22,7 @@ junieTest.describe('Junie MCP input form', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     // Junie asks its capability filter which listed tool the request needs. The ask tool is the first one.
-    await modelScript.rule(
-      { name: 'junie-mcp-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },
-    )
+    await modelScript.rule(junieCapabilityAnswer('junie-mcp-capability', '1'))
     const callId = 'junie-mcp-form'
     await expectUnsupportedMcpInput(context, { receiptLog, callId, additionalTestIds: ['control-banner'], invoke: () => invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} }) })
     const receipt = readMcpServerReceipt(receiptLog)

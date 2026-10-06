@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import {
+  extendMockModelScenario,
   HOUSEKEEPING_RULES,
   MOCK_SESSION_TITLE,
   mockScenarioPrompt,
@@ -46,6 +47,30 @@ async function withScenario(server: MockModelServer, script: MockModelStep[] | M
   await registerMockModelScenario(server.url, id, script)
   await run({ id, prompt: text => mockScenarioPrompt(id, text), status: () => readScenarioStatus(server.url, id) })
   expect(await removeMockModelScenario(server.url, id)).toBeUndefined()
+}
+
+/**
+ * Send the title request of Grok for a session whose first prompt is `prompt`, and return the arguments of the
+ * `session_title` call that answers it.
+ */
+async function requestGrokTitle(server: MockModelServer, prompt: string): Promise<unknown> {
+  const response = await fetch(`${server.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      stream: false,
+      tool_choice: { type: 'function', function: { name: 'session_title' } },
+      messages: [
+        { role: 'system', content: 'You are tasked with generating the session title. The user is asking software engineering questions.' },
+        { role: 'user', content: `<user_query>\n${prompt}\n</user_query>` },
+      ],
+    }),
+  })
+  expect(response.status).toBe(200)
+  const body = await response.json() as { choices: Array<{ message: { tool_calls?: Array<{ function: { name: string, arguments: string } }> } }> }
+  const call = body.choices[0]!.message.tool_calls?.[0]
+  expect(call?.function.name, 'the title request gets a call of the title tool').toBe('session_title')
+  return JSON.parse(call!.function.arguments)
 }
 
 function complete(server: MockModelServer, messages: Array<Record<string, unknown>>): Promise<string> {
@@ -128,23 +153,7 @@ describe('HOUSEKEEPING_RULES', () => {
     const server = await startServer()
     await withScenario(server, [{ text: 'Primary answer' }], async (scenario) => {
       const marked = scenario.prompt('Inspect the parser.')
-      const response = await fetch(`${server.url}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          stream: false,
-          tool_choice: { type: 'function', function: { name: 'session_title' } },
-          messages: [
-            { role: 'system', content: 'You are tasked with generating the session title. The user is asking software engineering questions.' },
-            { role: 'user', content: `<user_query>\n${marked}\n</user_query>` },
-          ],
-        }),
-      })
-      expect(response.status).toBe(200)
-      const body = await response.json() as { choices: Array<{ message: { tool_calls: Array<{ function: { name: string, arguments: string } }> } }> }
-      const call = body.choices[0]!.message.tool_calls[0]!
-      expect(call.function.name).toBe('session_title')
-      expect(JSON.parse(call.function.arguments)).toEqual({ session_title: MOCK_SESSION_TITLE })
+      expect(await requestGrokTitle(server, marked)).toEqual({ session_title: MOCK_SESSION_TITLE })
       expect(await complete(server, [{ role: 'user', content: marked }])).toBe('Primary answer')
       expect(await scenario.status()).toMatchObject({ nextStep: 1, ruleMatches: { 'title-grok': 1 } })
     })
@@ -184,11 +193,12 @@ describe('HOUSEKEEPING_RULES', () => {
     })
   })
 
-  it('lets a test rule win over the housekeeping rule for the same turn', async () => {
+  // A normal test rule cannot override a housekeeping rule. See 'a title request that repeats the prompt of a test rule'.
+  it('lets a high-priority test rule win over the housekeeping rule for the same turn', async () => {
     const server = await startServer()
     await withScenario(server, {
       steps: [{ text: 'Primary answer' }],
-      rules: [{ name: 'own-title', when: { system: 'generate a short title' }, respond: { text: 'Chosen title' } }],
+      rules: [{ name: 'own-title', priority: 'high', when: { system: 'generate a short title' }, respond: { text: 'Chosen title' } }],
     }, async (scenario) => {
       const marked = scenario.prompt('Inspect the parser.')
       const title = await complete(server, [
@@ -340,6 +350,32 @@ describe('native rule priority selection', () => {
       expect((await scenario.status()).ruleMatches['claude-auto-harm'] ?? 0).toBe(0)
     })
   })
+  // A provider titles a session from its first prompt, so the title request repeats the text that a test rule matches.
+  // A Grok subagent showed it: the title request of the child matched the rule that holds the child's turn.
+  describe('a title request that repeats the prompt of a test rule', () => {
+    const childRule = { name: 'child-task', when: { user: 'Count slowly to one hundred' }, respond: { text: 'One, two, three.' } }
+
+    async function expectTitleThenChildTurn(server: MockModelServer, scenario: TestScenario): Promise<void> {
+      const prompt = scenario.prompt('Count slowly to one hundred.')
+      expect(await requestGrokTitle(server, prompt)).toEqual({ session_title: MOCK_SESSION_TITLE })
+      expect(await complete(server, [{ role: 'user', content: prompt }])).toBe('One, two, three.')
+      expect((await scenario.status()).ruleMatches).toEqual({ 'title-grok': 1, 'child-task': 1 })
+    }
+
+    it('goes to the housekeeping title rule, ahead of a test rule from the registration', async () => {
+      const server = await startServer()
+      await withScenario(server, { rules: [childRule] }, scenario => expectTitleThenChildTurn(server, scenario))
+    })
+
+    it('goes to the housekeeping title rule, ahead of a test rule that the test adds later', async () => {
+      const server = await startServer()
+      await withScenario(server, [], async (scenario) => {
+        await extendMockModelScenario(server.url, scenario.id, { rules: [childRule] })
+        await expectTitleThenChildTurn(server, scenario)
+      })
+    })
+  })
+
   it('keeps declaration order and once guards within each priority', async () => {
     const server = await startServer()
     await withScenario(server, {

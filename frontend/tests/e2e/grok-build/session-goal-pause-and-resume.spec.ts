@@ -31,16 +31,6 @@ const GOAL_PLAN = [
 ].join('\n')
 
 /**
- * The words that open the system prompt of Grok's own agent turn (Grok Build 1.0.46).
- *
- * The session title request quotes the goal, so it carries the goal's marker too. Only the agent's own
- * round states these words, so a rule that requires them leaves the title to the housekeeping rule.
- * Without them, the title takes the gated answer and the real round runs with no gate: the evaluator
- * then ends the goal before the pause.
- */
-const GROK_ROUND_SYSTEM = '^You are Grok released by xAI\\b'
-
-/**
  * Answer the model calls of Grok's own goal machinery (Grok Build 1.0.46).
  *
  * - `/goal` starts a Goal Plan Writer subagent first. It must write its plan to
@@ -83,7 +73,6 @@ grokTest('records the native user pause and resumes new native goal model work',
   const { page, leapmuxServer } = native
   await exerciseNativeGoalPauseAndResume(native, {
     pauseTiming: 'after-the-round',
-    roundSystem: GROK_ROUND_SYSTEM,
     supportRules: grokGoalMachineryRules,
     pausedProof: async () => {
       // Grok answers a pause of an active goal so. A pause that reached a goal

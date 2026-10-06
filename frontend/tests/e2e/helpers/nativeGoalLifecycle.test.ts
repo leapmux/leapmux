@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from './cleanup'
 import { MOCK_MODEL_IDS, MOCK_MODELS } from './mockAgentEnvironment'
-import { isRecord, lastUserText, matchesRequest, systemText } from './mockModelScript'
+import { isRecord } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { exerciseNativeGoalPauseAndResume } from './nativeGoalLifecycle'
@@ -117,7 +117,6 @@ vi.mock('@playwright/test', async (importOriginal) => {
 const SESSION_TITLE_SYSTEM = 'You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.'
 const GROK_ROUND_SYSTEM = 'You are Grok released by xAI. You are an interactive CLI tool that helps users with software engineering tasks.'
 const QWEN_ROUND_SYSTEM = 'You are Qwen Code, a CLI agent operating through an ACP host developed by Alibaba Group, specializing in software engineering tasks.'
-const GROK_ROUND_PATTERN = '^You are Grok released by xAI\\b'
 
 /** How the simulated native agent behaves. Each field states one fact of a probed provider. */
 interface AgentProfile {
@@ -303,7 +302,7 @@ async function withGoalScenario(run: (serverURL: string, script: ModelScript) =>
   }, () => server.close())
 }
 
-function startGoal(serverURL: string, script: ModelScript, profile: AgentProfile, options: { roundSystem?: string } = {}): GoalRun {
+function startGoal(serverURL: string, script: ModelScript, profile: AgentProfile): GoalRun {
   const agent = new SimulatedGoalAgent(serverURL, script, profile)
   browser.goal = 'none'
   browser.editorText = ''
@@ -321,7 +320,7 @@ function startGoal(serverURL: string, script: ModelScript, profile: AgentProfile
   }
   const helper = exerciseNativeGoalPauseAndResume(
     { page: fakePage(), modelScript: observed, provider: profile.provider, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: '' },
-    { pauseTiming: profile.pause, ...(options.roundSystem === undefined ? {} : { roundSystem: options.roundSystem }), pausedProof: async () => {} },
+    { pauseTiming: profile.pause, pausedProof: async () => {} },
   )
   return { helper, agent, script: observed, rules, releaseGate }
 }
@@ -362,9 +361,11 @@ describe('exerciseNativeGoalPauseAndResume', () => {
     })
   })
 
+  // The title request quotes the goal, so it matches the round rules too. The housekeeping title rule has high
+  // priority, so the title never takes the gate.
   it('holds the round of a Grok goal, not its session title', async () => {
     await withGoalScenario(async (serverURL, script) => {
-      const run = startGoal(serverURL, script, GROK, { roundSystem: GROK_ROUND_PATTERN })
+      const run = startGoal(serverURL, script, GROK)
       await run.helper
       await run.agent.settle()
       const [title, round, followUp] = run.agent.receipts
@@ -374,35 +375,10 @@ describe('exerciseNativeGoalPauseAndResume', () => {
       expect(followUp).toEqual({ kind: 'round', outcome: 'answered' })
       expect(existsSync(join(browser.workingDir, 'native-goal-progress.txt'))).toBe(true)
       expect(run.releaseGate).toHaveBeenCalledOnce()
-    })
-  })
-
-  it('lets the session title take the gate when no round system pattern separates it', async () => {
-    await withGoalScenario(async (serverURL, script) => {
-      const run = startGoal(serverURL, script, GROK)
-      // The title request quotes the goal, so the gated rule answers it and the real round runs with no gate.
-      await expect(run.helper).rejects.toThrow('the round before the pause finished its tool call')
-      await run.agent.settle()
-    })
-  })
-
-  it('applies the round system pattern to both rules of the goal', async () => {
-    await withGoalScenario(async (serverURL, script) => {
-      const run = startGoal(serverURL, script, GROK, { roundSystem: GROK_ROUND_PATTERN })
-      await run.helper
-      await run.agent.settle()
       expect(run.rules.map(rule => rule.name)).toEqual([
         expect.stringMatching(/^native-goal-first-NATIVEGOAL[0-9a-f]{32}$/),
         expect.stringMatching(/^native-goal-following-NATIVEGOAL[0-9a-f]{32}$/),
       ])
-      const request = (system: string) => {
-        const body = { messages: [{ role: 'system', content: system }, { role: 'user', content: browser.editorText }] }
-        return { protocol: 'openai-chat-completions' as const, systemText: systemText(body), userText: lastUserText(body), body }
-      }
-      for (const rule of run.rules) {
-        expect(matchesRequest(rule.when, request(GROK_ROUND_SYSTEM)), `${rule.name} answers a round`).toBe(true)
-        expect(matchesRequest(rule.when, request(SESSION_TITLE_SYSTEM)), `${rule.name} leaves the title to housekeeping`).toBe(false)
-      }
     })
   })
 })

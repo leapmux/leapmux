@@ -20,9 +20,13 @@ const DROID_TITLE_PROMPT_FRAGMENT = 'session titles for a session picker'
  *
  * The turn fires before the first real turn. The Droid test object registers the
  * rule for every test (`droid-fixtures.ts`), so a spec registers no copy of it.
+ * The rule has high priority, as `HOUSEKEEPING_RULES` in
+ * `helpers/mockModelScenario.ts` states, so a test rule that matches the same
+ * prompt text cannot take the title request.
  */
 export const DROID_TITLE_RULE: MockModelRule = {
   name: 'title-droid',
+  priority: 'high',
   when: { body: DROID_TITLE_PROMPT_FRAGMENT },
   respond: { text: MOCK_SESSION_TITLE },
 }

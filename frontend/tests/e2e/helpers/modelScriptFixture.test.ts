@@ -334,10 +334,11 @@ describe('startModelScript', () => {
     await finish(true)
   })
 
-  it('lets a rule the test adds win over the housekeeping rule it replaces', async () => {
+  // The housekeeping rules have high priority, so only a high-priority rule can replace one.
+  it('lets a high-priority rule the test adds win over the housekeeping rule it replaces', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
-    await script.rule({ name: 'own-title', when: { system: 'generate a short title' }, respond: { text: 'Chosen' } })
+    await script.rule({ name: 'own-title', priority: 'high', when: { system: 'generate a short title' }, respond: { text: 'Chosen' } })
 
     const title = await complete(server, [
       { role: 'system', content: 'Generate a short title for this conversation.' },

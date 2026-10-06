@@ -9,6 +9,7 @@ import { expectPngInRequest, writeToolImage } from '../helpers/toolImages'
 import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
+import { junieCapabilityAnswer } from './housekeeping'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie images in tool results', () => {
@@ -21,9 +22,7 @@ junieTest.describe('Junie images in tool results', () => {
       writeJunieMcpConfig(workingDir, 'image_probe', server.command, server.args)
     } })
     await openWorkspace(page, context.workspaceId)
-    await modelScript.rule(
-      { name: 'junie-image-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },
-    )
+    await modelScript.rule(junieCapabilityAnswer('junie-image-capability', '1'))
     const { resultRequest } = await runNativeToolTurn(context, {
       toolCalls: [mcpToolCall(context.provider, 'junie-mcp-image', { server: 'image_probe', tool: 'show', input: {} })],
       prompt: 'Call the image_probe show tool once.',

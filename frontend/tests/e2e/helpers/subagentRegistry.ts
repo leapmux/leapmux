@@ -168,9 +168,9 @@ export interface HeldChildCase {
   rowTitle?: string
   /**
    * Match only the child's model turn through {@link HELD_CHILD_TASK}.
-   * The rule holds each matched request.
-   * Test rules precede housekeeping rules.
-   * A broad matcher could hold the child's title request also and report two matches for one child.
+   * The rule holds each matched request, so a broad matcher that takes another request reports two matches for one
+   * child. The child's title request repeats the task, but the housekeeping rules have high priority and answer it
+   * first.
    */
   childTurn: MockModelMatcher
   /**
