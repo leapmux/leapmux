@@ -483,6 +483,24 @@ describe('proveNativeToolOutputFilePaths', () => {
     await proveNativeToolOutputFilePaths(base)
     expect(resultRow.events[0]).toBe('row count:1')
   })
+
+  it('runs the provider row proof on the counted row after the shared row checks, on each pass', async () => {
+    const rows: string[] = []
+    await proveNativeToolOutputFilePaths({
+      ...base,
+      rowProof: async (result) => {
+        rows.push((result as unknown as { fake: string }).fake)
+        resultRow.events.push('row proof')
+      },
+    })
+    expect(rows).toEqual(['row', 'row'])
+    const proofs = resultRow.events.flatMap((event, index) => event === 'row proof' ? [index] : [])
+    const pathChecks = resultRow.events.flatMap((event, index) => event === 'row tool-output-file-paths count:0' ? [index] : [])
+    expect(proofs).toHaveLength(2)
+    expect(pathChecks).toHaveLength(2)
+    expect(proofs[0]).toBeGreaterThan(pathChecks[0]!)
+    expect(proofs[1]).toBeGreaterThan(pathChecks[1]!)
+  })
 })
 
 describe('proveNativeOutputReceipt', () => {

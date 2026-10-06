@@ -1,4 +1,4 @@
-import type { TestInfo } from '@playwright/test'
+import type { Locator, TestInfo } from '@playwright/test'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
@@ -12,10 +12,9 @@ import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
-import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFilePaths'
+import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
-import { openWorkspace, readAttachedWithArgument, toolCallRow } from '../helpers/ui'
+import { readAttachedWithArgument } from '../helpers/ui'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
 
@@ -115,7 +114,6 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
   expect(receipt.paths.length).toBeGreaterThan(0)
   const orderMarkers = [options.firstMarker, spillNotice]
   expect(orderMarkers.map(marker => nativeDisplay.previewText.includes(marker))).toEqual([true, true])
-  const expectedOrder = JSON.stringify(nativeDisplay.display)
   const expectedContent = options.expected.map(block => block.type === 'text' ? block : { type: 'image', mimeType: 'image/png', data: readFileSync(block.path).toString('base64') })
   const expectedStructured = { nextCount: options.input.count + 1, enabled: options.input.enabled, text: options.input.text }
   const call = readMcpCallExchange(options.receiptLog)
@@ -125,70 +123,76 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
   expect(nativeDisplay.display.filter(block => block.type === 'image')).toHaveLength(options.expected.filter(block => block.type === 'image').length)
   expect(receipt.frame).not.toHaveProperty('_meta')
   await options.testInfo?.attach('deepseek-native-mcp-path-receipt', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId: options.callId, paths: receipt.paths, previewText: nativeDisplay.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })
-  for (const reloaded of [false, true]) {
-    if (reloaded) {
-      await context.page.reload()
-      await openWorkspace(context.page, context.workspaceId)
-    }
-    const snapshot = await readNativeMessageSnapshot(context, agent.id)
-    const result = readDeepseekHarnessNativeOutput(snapshot, options.callId)
-    expect(result.frame).toEqual(receipt.frame)
-    expect(result.message.content).toEqual(receipt.message.content)
-    expect(nativeMcpDisplay(snapshot, options.callId)).toEqual(nativeDisplay)
-    const bubble = toolCallRow(context.page, options.callId)
-    await expect(bubble).toHaveCount(1)
-    await expect(bubble).toHaveAttribute('data-tool-status', 'completed')
-    await expandNativeResultView(bubble)
-    const pathList = bubble.getByTestId('tool-output-file-paths')
-    await expect(pathList).toHaveCount(1)
-    expect(await pathList.textContent()).toBe(receipt.paths.map(path => `Output file:${path}`).join(''))
-    await expect(pathList.locator('a, button')).toHaveCount(0)
-    expect(await readAttachedWithArgument(bubble, 'native output property order', nativeOutputPathsPrecedePreview, orderMarkers)).toBe(true)
-    const images = bubble.locator('button[aria-label="Open image"]:visible img:visible')
-    await expect(images).toHaveCount(options.expected.filter(block => block.type === 'image').length)
-    // Compare the complete serialized occurrence list. A boolean keeps the large text out of the failure message.
-    const last: { rendered: DeepseekHarnessRenderedMcpBlock[] | null } = { rendered: null }
-    try {
-      await expect.poll(async () => {
-        last.rendered = await readAttachedWithArgument(bubble, 'the native MCP result order', deepseekHarnessRenderedMcpContent, [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE])
-        return last.rendered !== null && JSON.stringify(last.rendered) === expectedOrder
-      }).toBe(true)
-    }
-    catch (error) {
-      await options.testInfo?.attach('deepseek-native-mcp-order-mismatch', { body: JSON.stringify({ expected: nativeDisplay.display, rendered: last.rendered }), contentType: 'application/json' })
-      throw error
-    }
-    const expectedImages = options.expected.flatMap(block => block.type === 'image' ? [readFileSync(block.path).toString('base64')] : [])
-    for (let index = 0; index < expectedImages.length; index++) {
-      const bytes = expectedImages[index]
-      if (bytes === undefined)
-        throw new Error('The native MCP image proof lost its exact expected bytes.')
-      await expect.poll(() => readAttachedWithArgument(images.nth(index), 'the exact native MCP image', async (matches, expected) => {
-        const element = matches.find((match): match is HTMLImageElement => match.isConnected && match instanceof HTMLImageElement)
-        if (!element)
-          return null
-        if (!element.complete || element.naturalWidth !== 64 || element.naturalHeight !== 64)
-          return false
-        const image = new Image()
-        image.src = `data:image/png;base64,${expected}`
-        await image.decode()
-        if (!element.isConnected)
-          return null
-        const pixels = (source: HTMLImageElement) => {
-          const canvas = document.createElement('canvas')
-          canvas.width = 64
-          canvas.height = 64
-          const drawing = canvas.getContext('2d')
-          if (!drawing)
-            throw new Error('The native MCP image proof requires a canvas context.')
-          drawing.drawImage(source, 0, 0)
-          return drawing.getImageData(0, 0, 64, 64).data
-        }
-        const actual = pixels(element)
-        const wanted = pixels(image)
-        return actual.length === wanted.length && actual.every((value, offset) => value === wanted[offset])
-      }, bytes)).toBe(true)
-    }
-    await copyNativeToolOutputPreview(context.page, bubble, nativeDisplay.previewText)
+  await proveNativeToolOutputFilePaths({
+    context,
+    callId: options.callId,
+    previewText: nativeDisplay.previewText,
+    previewMarkers: orderMarkers,
+    paths: receipt.paths,
+    status: 'completed',
+    prepareView: expandNativeResultView,
+    workerProof: async () => {
+      const snapshot = await readNativeMessageSnapshot(context, agent.id)
+      const result = readDeepseekHarnessNativeOutput(snapshot, options.callId)
+      expect(result.frame).toEqual(receipt.frame)
+      expect(result.message.content).toEqual(receipt.message.content)
+      expect(nativeMcpDisplay(snapshot, options.callId)).toEqual(nativeDisplay)
+    },
+    rowProof: bubble => proveMixedMcpRow(bubble, options.expected, nativeDisplay.display, options.testInfo),
+  })
+}
+
+/** Require the native order of the text and image blocks in the result row, and the exact pixels of each image. */
+async function proveMixedMcpRow(
+  bubble: Locator,
+  expected: readonly ({ type: 'text', text: string } | { type: 'image', path: string })[],
+  display: readonly DeepseekHarnessRenderedMcpBlock[],
+  testInfo: Pick<TestInfo, 'attach'> | undefined,
+): Promise<void> {
+  const images = bubble.locator('button[aria-label="Open image"]:visible img:visible')
+  await expect(images).toHaveCount(expected.filter(block => block.type === 'image').length)
+  // Compare the complete serialized occurrence list. A boolean keeps the large text out of the failure message.
+  const expectedOrder = JSON.stringify(display)
+  const last: { rendered: DeepseekHarnessRenderedMcpBlock[] | null } = { rendered: null }
+  try {
+    await expect.poll(async () => {
+      last.rendered = await readAttachedWithArgument(bubble, 'the native MCP result order', deepseekHarnessRenderedMcpContent, [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE])
+      return last.rendered !== null && JSON.stringify(last.rendered) === expectedOrder
+    }).toBe(true)
+  }
+  catch (error) {
+    await testInfo?.attach('deepseek-native-mcp-order-mismatch', { body: JSON.stringify({ expected: display, rendered: last.rendered }), contentType: 'application/json' })
+    throw error
+  }
+  const expectedImages = expected.flatMap(block => block.type === 'image' ? [readFileSync(block.path).toString('base64')] : [])
+  for (let index = 0; index < expectedImages.length; index++) {
+    const bytes = expectedImages[index]
+    if (bytes === undefined)
+      throw new Error('The native MCP image proof lost its exact expected bytes.')
+    await expect.poll(() => readAttachedWithArgument(images.nth(index), 'the exact native MCP image', async (matches, wantedBytes) => {
+      const element = matches.find((match): match is HTMLImageElement => match.isConnected && match instanceof HTMLImageElement)
+      if (!element)
+        return null
+      if (!element.complete || element.naturalWidth !== 64 || element.naturalHeight !== 64)
+        return false
+      const image = new Image()
+      image.src = `data:image/png;base64,${wantedBytes}`
+      await image.decode()
+      if (!element.isConnected)
+        return null
+      const pixels = (source: HTMLImageElement) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 64
+        canvas.height = 64
+        const drawing = canvas.getContext('2d')
+        if (!drawing)
+          throw new Error('The native MCP image proof requires a canvas context.')
+        drawing.drawImage(source, 0, 0)
+        return drawing.getImageData(0, 0, 64, 64).data
+      }
+      const actual = pixels(element)
+      const wanted = pixels(image)
+      return actual.length === wanted.length && actual.every((value, offset) => value === wanted[offset])
+    }, bytes)).toBe(true)
   }
 }

@@ -32,6 +32,11 @@ export interface NativeToolOutputFilePathsOptions {
   revealView?: () => Promise<void>
   /** Prepare the counted result row for the marker checks, for example expand it. */
   prepareView?: (result: Locator) => Promise<void>
+  /**
+   * Prove what a provider's result row shows beyond the paths and the preview, such as images.
+   * It runs after the shared row checks on each pass.
+   */
+  rowProof?: (result: Locator) => Promise<void>
   /** Check the original native packet and its call/session owner on each pass. */
   workerProof: (reloaded: boolean) => Promise<void>
 }
@@ -120,6 +125,7 @@ export async function proveNativeToolOutputFilePaths(options: NativeToolOutputFi
         await expect(pathList.locator('a, button, input, textarea')).toHaveCount(0)
         expect(await readAttachedWithArgument(result, 'native output property order', nativeOutputPathsPrecedePreview, options.previewMarkers)).toBe(true)
       }
+      await options.rowProof?.(result)
     },
     copyProof: previewText => copyNativeToolOutputPreview(options.context.page, result, previewText),
     reload: async () => {
