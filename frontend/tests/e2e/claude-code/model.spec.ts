@@ -1,10 +1,10 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, visibleOnly, waitForSettingsIdle } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 
 /** The native model ID and beta header together prove the 1M selection. */
 function expectNativeOpus1M(request: MockModelRequestRecord): void {
@@ -25,7 +25,7 @@ test.describe('Agent Settings', () => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    await exerciseNativeOption({ page, modelScript, leapmuxServer: separateHubWorker, provider: AgentProvider.CLAUDE_CODE, workspaceId: authenticatedWorkspace.workspaceId }, {
+    await exerciseNativeOption(await nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId }), {
       groupId: 'model',
       value: 'haiku',
       nativeProof: request => expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-haiku-/) }),
@@ -53,7 +53,7 @@ test.describe('Agent Settings', () => {
     })
   })
 
-  test('model persistence across refresh', async ({ authenticatedWorkspace, page, modelScript }) => {
+  test('model persistence across refresh', async ({ authenticatedWorkspace, page, modelScript, separateHubWorker }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -71,7 +71,8 @@ test.describe('Agent Settings', () => {
     const triggerAfter = settingsBar(page)
     await expect(triggerAfter).toBeVisible()
     await expectSettingsChip(page, 'Haiku')
-    const restored = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLAUDE_CODE }, 'Reply once with the restored Haiku model.', 'The restored Haiku model answered.')
+    const context = await nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId })
+    const restored = await sendNativeAnswer(context, 'Reply once with the restored Haiku model.', 'The restored Haiku model answered.')
     expect(restored.protocol).toBe('anthropic-messages')
     expect(restored.body).toMatchObject({ model: expect.stringMatching(/^claude-haiku-/) })
   })

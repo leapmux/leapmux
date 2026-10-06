@@ -25,9 +25,9 @@ junieTest.describe('native credential isolation', () => {
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.JUNIE))
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-credential-answer', 'The isolated turn completed.')] })
+    const step = await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-credential-answer', 'The isolated turn completed.')] })
     await sendMessage(page, modelScript.prompt('Reply once through the isolated Junie process.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(step + 1)
 
     await expect.poll(count).toBeGreaterThan(before)
     expect(readFileSync(logPath, 'utf8').trim().split('\n').every(line => line === 'security')).toBe(true)

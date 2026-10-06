@@ -43,10 +43,10 @@ clineTest('offers a Cline session of the working directory and resumes the one p
   // session title is the first line of the prompt, so the marker goes on the
   // second line.
   const texts = nativeResumeTexts()
-  await modelScript.queue({ text: `The seeded answer. ${texts.originalAnswer}` }, { text: 'The other answer.' })
+  const seededStep = await modelScript.queue({ text: `The seeded answer. ${texts.originalAnswer}` }, { text: 'The other answer.' })
   await runClineOnce(subjectDir, agentEnv, modelScript.prompt(`Seeded Cline session\n${texts.originalPrompt}`))
   await runClineOnce(otherDir, agentEnv, modelScript.prompt('Other directory session'))
-  await modelScript.waitForSteps()
+  await modelScript.waitForSteps(seededStep + 2)
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Cline Picker ${crypto.randomUUID()}`)

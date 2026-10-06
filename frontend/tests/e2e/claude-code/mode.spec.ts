@@ -1,10 +1,9 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
-import { chooseSettingsOption, expectSettingsChip, openAgentViaUI, openSettingsMenu, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { agentTabs, chooseSettingsOption, composerEditor, expectSettingsChip, openAgentViaUI, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 test.describe('Agent Settings', () => {
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {
@@ -33,9 +32,7 @@ test.describe('Agent Settings', () => {
 
     // Select Auto Mode when the native startup result offers it.
     // The model and administrator settings can remove this option from the catalog.
-    await openSettingsMenu(page, 'permissionMode')
-    const autoOffered = await page.locator('[data-testid="permissionMode-auto"]').isVisible()
-    await page.keyboard.press('Escape')
+    const autoOffered = await permissionModeOffered(page, 'auto')
     if (autoOffered) {
       await chooseSettingsOption(page, 'permissionMode-auto')
       await expectSettingsChip(page, 'Auto Mode')
@@ -49,7 +46,7 @@ test.describe('Agent Settings', () => {
 
   test('permission mode persistence across refresh', async ({ authenticatedWorkspace, page }) => {
     // Wait for the editor to be ready (agent is started)
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await expect(editor).toBeVisible()
 
     const trigger = settingsBar(page)
@@ -73,7 +70,7 @@ test.describe('Agent Settings', () => {
 
   test('focus returns to editor after mode change', async ({ authenticatedWorkspace, page }) => {
     // Require the editor after agent startup.
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await expect(editor).toBeVisible()
 
     const trigger = settingsBar(page)
@@ -104,7 +101,7 @@ test.describe('Agent Settings', () => {
   })
 
   test('no thinking indicator when switching settings', async ({ authenticatedWorkspace, page, modelScript }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await expect(editor).toBeVisible()
 
     const trigger = settingsBar(page)
@@ -167,8 +164,7 @@ test.describe('Agent Settings', () => {
     await expect(visibleOnly(page.getByText(`Mode (${expectedMode} → Plan Mode)`))).toBeVisible()
 
     // Switch back to the first agent tab
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await agentTabs.first().click()
+    await agentTabs(page).first().click()
 
     // First agent should still be in Default mode
     await expectSettingsChip(page, 'Default')
