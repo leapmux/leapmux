@@ -10,7 +10,7 @@ import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { mimoWorkflowToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, messageContents, sendMessage, subagentReportBubble, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { mimoTest } from '../mimo-fixtures'
@@ -58,8 +58,8 @@ function workflowScript(prompts: readonly { label: string, prompt: string }[]): 
 
 /** The visible registry row of one kind whose title holds `title`. */
 function registryRow(page: Page, kind: 'subagent' | 'workflow', title: string): Locator {
-  // `:visible` plus `.first()`: the sidebar is mounted twice.
-  return page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).filter({ hasText: title }).first()
+  // `.first()`: the app mounts the sidebar twice.
+  return backgroundTaskRows(page, { kind }).filter({ hasText: title }).first()
 }
 
 mimoTest.describe('MiMo Code workflow', () => {

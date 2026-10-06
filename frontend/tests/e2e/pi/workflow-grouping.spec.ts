@@ -8,7 +8,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piWorkflowToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
 import { piTest } from '../pi-fixtures'
@@ -47,7 +47,7 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     expect(running?.groupKey).toBe('')
     expect(running?.childAgentId).toBe('')
     await expandBackgroundTasksSection(page)
-    const row = page.locator('[data-testid="bg-task-row"]:visible').first()
+    const row = backgroundTaskRows(page).first()
     await expect(row).toHaveAttribute('data-status', 'running')
     expect(await workflowGroupHeading(row)).toBe('')
     await modelScript.releaseGate(gate)

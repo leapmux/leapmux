@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { qoderWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { answerControl, assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly, waitForControlBanner } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { qoderTest } from '../qoder-fixtures'
@@ -63,8 +63,8 @@ qoderTest.describe('native workflow grouping', () => {
     await answerControl(page, 'allow')
     await modelScript.waitForGate(gate)
 
-    const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
-    const firstChild = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: `Read ${file}` }).first()
+    const workflow = backgroundTaskRows(page, { kind: 'workflow' }).first()
+    const firstChild = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: `Read ${file}` }).first()
     const firstChildTabId = await withCleanup(async () => {
       await expandBackgroundTasksSection(page)
       await expect(workflow).toBeVisible()
@@ -88,7 +88,7 @@ qoderTest.describe('native workflow grouping', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'The Qoder workflow result arrived.' }).first()).toBeVisible()
     await expectRowBecomesFinal(page, workflow)
     await expect(workflow).toHaveAttribute('data-status', 'completed')
-    const secondChild = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: `Reply with ${SECOND_ANSWER}` }).first()
+    const secondChild = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: `Reply with ${SECOND_ANSWER}` }).first()
     await expect(firstChild).toHaveAttribute('data-status', 'completed')
     await expect(secondChild).toHaveAttribute('data-status', 'completed')
     await expectRowsInWorkflowGroup([workflow, firstChild, secondChild], WORKFLOW_NAME)

@@ -6,6 +6,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { backgroundBashToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { expectRunningChildCompletes } from '../helpers/runningChildProof'
+import { backgroundTaskRowsIncludingHidden } from '../helpers/subagentRegistry'
 import { answerControl, assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { junieTest } from '../junie-fixtures'
@@ -51,10 +52,10 @@ finish()
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     expect(existsSync(done)).toBe(false)
-    await expect(page.locator('[data-testid="bg-task-row"][data-kind="shell"]')).toHaveCount(0)
+    await expect(backgroundTaskRowsIncludingHidden(page, { kind: 'shell' })).toHaveCount(0)
     await writeFile(release, 'continue\n')
     await expect.poll(() => existsSync(done)).toBe(true)
-    await expect(page.locator('[data-testid="bg-task-row"][data-kind="shell"]')).toHaveCount(0)
+    await expect(backgroundTaskRowsIncludingHidden(page, { kind: 'shell' })).toHaveCount(0)
     await expect(assistantBubbles(page).filter({ hasText: 'I started the command' }).first()).toBeVisible()
   })
 })

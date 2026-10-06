@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
 import { zcodeCreateWorkflowToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
+import { backgroundTaskRows } from '../helpers/subagentRegistry'
 import { answerControl, controlButton, expectNoControlBanner, sendMessage, waitForControlBanner } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
 import { zcodeTest } from '../zcode-fixtures'
@@ -31,10 +32,10 @@ zcodeTest('shows a native CreateWorkflow run without grouped work', async ({ nat
   await expect(workflowFilter).toBeVisible()
   await workflowFilter.click()
   await expect(workflowFilter).toHaveAttribute('aria-selected', 'true')
-  const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').filter({ hasText: WORKFLOW_NAME }).first()
+  const row = backgroundTaskRows(page, { kind: 'workflow' }).filter({ hasText: WORKFLOW_NAME }).first()
   await expect(row).toBeVisible()
   await expect(row).toHaveAttribute('data-status', /^(running|completed)$/)
   await page.getByTestId('bg-task-filter-all').filter({ visible: true }).first().click()
-  await expect(page.locator('[data-testid="bg-task-row"]:visible')).toHaveCount(1)
+  await expect(backgroundTaskRows(page)).toHaveCount(1)
   await expect.poll(() => workflowGroupHeading(row)).toBe('')
 })

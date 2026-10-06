@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { exerciseHeldChildRow, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+import { backgroundTaskRows, backgroundTaskRowsIncludingHidden, exerciseHeldChildRow, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
 import { startWaitLimitForTests } from './testDeadline'
 
 /** The end of the wait limit that a failure case starts, so that a wait which never passes ends inside the case. */
@@ -215,6 +215,42 @@ vi.mock('@playwright/test', async (importOriginal) => {
   }) }
 })
 
+/** A page whose locator returns its selector, so a case reads the selector that a helper builds. */
+const selectorPage = Object.assign({} as Page, { locator: (selector: string) => selector as unknown as Locator })
+
+describe('backgroundTaskRows', () => {
+  it('selects every visible row when the selection is empty', () => {
+    expect(backgroundTaskRows(selectorPage)).toBe('[data-testid="bg-task-row"]:visible')
+  })
+
+  it('selects the visible rows of the kind, the task ID, and the child agent ID of the selection', () => {
+    expect(backgroundTaskRows(selectorPage, { kind: 'workflow', taskId: 'workflow:run-1' }))
+      .toBe('[data-testid="bg-task-row"][data-kind="workflow"][data-task-id="workflow:run-1"]:visible')
+    expect(backgroundTaskRows(selectorPage, { kind: 'subagent', childAgentId: 'child-1' }))
+      .toBe('[data-testid="bg-task-row"][data-kind="subagent"][data-child-agent-id="child-1"]:visible')
+  })
+
+  it.each([
+    ['a quote', 'task"1', 'task\\"1'],
+    ['a backslash', 'task\\1', 'task\\\\1'],
+    ['a line break', 'task\n1', 'task\\a 1'],
+  ])('escapes %s in an ID, so the value stays one quoted CSS string', (_label, id, escaped) => {
+    expect(backgroundTaskRows(selectorPage, { taskId: id, childAgentId: id }))
+      .toBe(`[data-testid="bg-task-row"][data-task-id="${escaped}"][data-child-agent-id="${escaped}"]:visible`)
+  })
+
+  it('keeps an empty ID as an empty attribute value, so it matches no real row', () => {
+    expect(backgroundTaskRows(selectorPage, { taskId: '' })).toBe('[data-testid="bg-task-row"][data-task-id=""]:visible')
+  })
+})
+
+describe('backgroundTaskRowsIncludingHidden', () => {
+  it('selects the rows of the selection with no visible scope, so an absence check also sees a hidden row', () => {
+    expect(backgroundTaskRowsIncludingHidden(selectorPage)).toBe('[data-testid="bg-task-row"]')
+    expect(backgroundTaskRowsIncludingHidden(selectorPage, { kind: 'shell' })).toBe('[data-testid="bg-task-row"][data-kind="shell"]')
+  })
+})
+
 describe('requireRegistryRow', () => {
   /** A page whose every locator is one probe row. The probe also stands for the open section header. */
   function registry(isVisible: () => Promise<boolean>) {
@@ -240,7 +276,7 @@ describe('requireRegistryRow', () => {
   it('returns the first visible row of the requested kind', async () => {
     const view = registry(async () => true)
     expect(await requireRegistryRow(view.page, 'shell')).toBe(view.row)
-    expect(view.selectors).toContain('[data-testid="bg-task-row"]:visible[data-kind="shell"]')
+    expect(view.selectors).toContain('[data-testid="bg-task-row"][data-kind="shell"]:visible')
   })
 
   it('states the missing subagent row in its failure', async () => {

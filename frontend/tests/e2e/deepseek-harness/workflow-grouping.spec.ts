@@ -5,7 +5,7 @@ import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { codeExecutionToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
@@ -30,7 +30,7 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     await modelScript.waitForGate(firstGate)
     await modelScript.waitForGate(secondGate)
     await expandBackgroundTasksSection(page)
-    const children = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')
+    const children = backgroundTaskRows(page, { kind: 'subagent' })
     await expect(children).toHaveCount(2)
     // No spec states the full heading text, so the pattern requires only `native-code` inside it.
     await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)

@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { diracTest } from '../dirac-fixtures'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, openWorkspace, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { DIRAC_AGENT } from './scenarios'
@@ -41,7 +41,7 @@ diracTest.describe('Dirac subagent transcript', () => {
     await modelScript.waitForGate('dirac-child-reply')
 
     await expandBackgroundTasksSection(page)
-    const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Count files' }).first()
+    const child = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'Count files' }).first()
     await expect(child).toBeVisible()
     // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, child)
@@ -99,7 +99,7 @@ diracTest.describe('Dirac subagent transcript', () => {
       await waitForAgentIdle(page)
 
       await expandBackgroundTasksSection(page)
-      const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: run.description }).first()
+      const row = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: run.description }).first()
       await expect(row).toHaveAttribute('data-status', 'completed')
       // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
       const childID = await openChildTabFromRow(page, row)

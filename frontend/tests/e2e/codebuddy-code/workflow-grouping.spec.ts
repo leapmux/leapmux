@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { codebuddyFindWorkflowToolCall, codebuddyWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, toolCallRow, userBubbles } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
@@ -41,8 +41,8 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
     await sendMessage(page, modelScript.prompt('Use a workflow to ask one child for a reply.'))
     await modelScript.waitForSteps(start + 2)
     await expandBackgroundTasksSection(page)
-    const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
-    const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Probe child' }).first()
+    const workflow = backgroundTaskRows(page, { kind: 'workflow' }).first()
+    const child = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'Probe child' }).first()
     await expect(workflow).toBeVisible()
     await expect(child).toBeVisible()
     // The run states its own heading. Each row needs a heading that is not empty, and the child shares the heading

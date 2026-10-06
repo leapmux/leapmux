@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
 import { completeGoalToolCall } from '../helpers/providerToolCalls'
-import { expectRegistryRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expectRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
@@ -38,10 +38,7 @@ kiroTest.describe('Kiro session goal', () => {
 
     await expectGoalStatus(page, 'done')
     const step = await expectRegistryRow(page, { titleContains: 'goal · work #1' })
-    const run = page
-      .locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
-      .filter({ hasText: 'Write the release notes.' })
-      .first()
+    const run = backgroundTaskRows(page, { kind: 'workflow' }).filter({ hasText: 'Write the release notes.' }).first()
     await expect(run).toBeVisible()
     await expect(step).toHaveAttribute('data-kind', 'subagent')
     await expectRowsInWorkflowGroup([run, step], 'goal')

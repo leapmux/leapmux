@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { kimiAgentSwarmToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { kimiTest } from '../kimi-fixtures'
@@ -40,7 +40,7 @@ kimiTest.describe('Kimi Code workflow grouping', () => {
     expect(status.ruleMatches['the second swarm member answers']).toBe(1)
 
     await expandBackgroundTasksSection(page)
-    const members = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
+    const members = backgroundTaskRows(page, { kind: 'workflow' })
     await expect(members).toHaveCount(2)
     for (const member of await members.all()) {
       await expectRowBecomesFinal(page, member)

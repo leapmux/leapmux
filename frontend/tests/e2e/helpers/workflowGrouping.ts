@@ -10,7 +10,7 @@ import { withCleanup } from './cleanup'
 import { nativeModelToolNames } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { WORKFLOW_TOOL_NAMES } from './providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal } from './subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from './subagentRegistry'
 
 /** Find the group heading before a row, past other rows in that group. */
 export function workflowGroupHeadingElement(row: Element): Element | null {
@@ -72,7 +72,7 @@ export async function expectNoNativeWorkflowGroups(context: NativeSidebarContext
   const snapshot = await readNativeSidebarSnapshot(context, agentId)
   expect(snapshot.backgroundTasks.filter(task => task.kind === BackgroundTaskKind.WORKFLOW)).toEqual([])
   expect(snapshot.backgroundTasks.filter(task => task.groupKey !== '' || task.groupLabel !== '')).toEqual([])
-  await expect(context.page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')).toHaveCount(0)
+  await expect(backgroundTaskRows(context.page, { kind: 'workflow' })).toHaveCount(0)
 }
 
 /**
@@ -86,7 +86,7 @@ export async function expectOpaqueNativeWorkflowResult(
   if (options.ruleNames.length === 0 || new Set(options.ruleNames).size !== options.ruleNames.length)
     throw new Error('The native workflow proof requires one or more distinct assignment rules.')
   await expandBackgroundTasksSection(context.page)
-  const workflow = context.page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
+  const workflow = backgroundTaskRows(context.page, { kind: 'workflow' }).first()
   await expectRowBecomesFinal(context.page, workflow)
   await expect(workflow).toHaveAttribute('data-status', 'completed')
   const status = await context.modelScript.status()
@@ -98,8 +98,8 @@ export async function expectOpaqueNativeWorkflowResult(
     const snapshot = await readNativeSidebarSnapshot(context)
     expect(snapshot.backgroundTasks.filter(task => task.kind === BackgroundTaskKind.WORKFLOW)).toHaveLength(1)
     expect(snapshot.backgroundTasks.filter(task => task.kind === BackgroundTaskKind.SUBAGENT)).toEqual([])
-    await expect(context.page.locator('[data-testid="bg-task-row"]:visible')).toHaveCount(1)
-    await expect(context.page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')).toHaveCount(0)
+    await expect(backgroundTaskRows(context.page)).toHaveCount(1)
+    await expect(backgroundTaskRows(context.page, { kind: 'subagent' })).toHaveCount(0)
     if (typeof options.heading === 'string')
       await expect.poll(() => workflowGroupHeading(workflow)).toBe(options.heading)
     else
@@ -172,7 +172,7 @@ export async function expectUngroupedChildRows(
   context: NativeSidebarContext,
   options: { childAgentIds: UngroupedChildAgentIds, parentId?: string },
 ): Promise<void> {
-  const rows = context.page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')
+  const rows = backgroundTaskRows(context.page, { kind: 'subagent' })
   const inspect = async () => {
     const snapshot = await readNativeSidebarSnapshot(context, options.parentId)
     expect(ungroupedChildTaskProblem(snapshot.backgroundTasks, options.childAgentIds), 'the Worker holds two ungrouped child tasks').toBe('')
@@ -224,7 +224,7 @@ export async function exerciseUngroupedNativeChildren(
     expect(second.childId, 'the two children are distinct agents').not.toBe(first.childId)
     await expectRunningUngroupedChild(context, second)
     await expect(first.row).toHaveAttribute('data-status', 'completed')
-    await expect(context.page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')).toHaveCount(2)
+    await expect(backgroundTaskRows(context.page, { kind: 'subagent' })).toHaveCount(2)
     await expectNoNativeWorkflowGroups(context, first.parentId)
   }, second.finish)
   if (options.catalogProof)

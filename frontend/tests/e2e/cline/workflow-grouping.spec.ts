@@ -4,7 +4,7 @@ import { clineTest } from '../cline-fixtures'
 import { stepRequest } from '../helpers/mockModelScript'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { clineRunTeammateTaskToolCall, clineSpawnTeammateToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { offeredTools } from './offeredTools'
@@ -54,7 +54,7 @@ clineTest.describe('Cline workflow grouping', () => {
       await expect.poll(async () => (await modelScript.status()).ruleMatches[`the ${agentId} answers`] ?? 0).toBe(1)
 
     await expandBackgroundTasksSection(page)
-    const runs = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
+    const runs = backgroundTaskRows(page, { kind: 'workflow' })
     await expect(runs).toHaveCount(2)
     const teammateRuns = teammates.map(({ agentId }) => ({ agentId, run: runs.filter({ hasText: agentId }).first() }))
     for (const { agentId, run } of teammateRuns) {

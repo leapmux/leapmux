@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { agentTabs, answerControl, assistantBubbles, controlButton, expectAgentTabCount, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
 
@@ -48,7 +48,7 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
 
   await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
   await expandBackgroundTasksSection(page)
-  const workflowRows = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
+  const workflowRows = backgroundTaskRows(page, { kind: 'workflow' })
   const row = workflowRows.filter({ hasText: 'Run one local probe' }).first()
   await expect(row).toBeVisible()
   await expectRowBecomesFinal(page, row)
@@ -56,7 +56,7 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   await expect.poll(() => workflowGroupHeading(row)).toContain(WORKFLOW_NAME)
   expect((await modelScript.status()).ruleMatches['the workflow child answers locally']).toBe(1)
   await expect(workflowRows).toHaveCount(1)
-  await expect(page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')).toHaveCount(0)
+  await expect(backgroundTaskRows(page, { kind: 'subagent' })).toHaveCount(0)
   await expect(row).toHaveAttribute('data-child-agent-id', '')
   await expectAgentTabCount(page, tabsBefore)
 })

@@ -1,7 +1,6 @@
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { cssAttributeValue } from '../helpers/cssAttribute'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -12,7 +11,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { zcodeCreateWorkflowToolCall, zcodeGetWorkflowRunToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
 import { zcodeStoredWorkflowCompletion, zcodeWorkflowCompletion, zcodeWorkflowLaunch } from './codeExecution'
@@ -71,7 +70,7 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
       expect(tasks[0]?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
       expect(tasks.some(task => task.title.includes(name) || task.groupLabel === name)).toBe(true)
       await expandBackgroundTasksSection(page)
-      const row = page.locator(`[data-testid="bg-task-row"][data-kind="workflow"][data-task-id="${cssAttributeValue(launchCallId)}"]:visible`).first()
+      const row = backgroundTaskRows(page, { kind: 'workflow', taskId: launchCallId }).first()
       await expect(row).toHaveCount(1)
       await expect(row).toHaveAttribute('data-status', failed ? 'failed' : 'completed')
       const card = toolCallRow(page, readCallId)

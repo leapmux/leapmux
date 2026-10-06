@@ -5,7 +5,7 @@ import { claudeTest } from '../claude-fixtures'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { backgroundBashToolCall } from '../helpers/providerToolCalls'
-import { backgroundTasksSection, expectNoRegistryRows, HELD_CHILD_TASK, openHeldChildTab, requireRegistryRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRowsIncludingHidden, backgroundTasksSection, expectNoRegistryRows, HELD_CHILD_TASK, openHeldChildTab, requireRegistryRow } from '../helpers/subagentRegistry'
 import { expectClipsLongText, expectClipsToOneLine, sendMessage, tabById } from '../helpers/ui'
 import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { registerClaudeChildReportRules } from './childReportRule'
@@ -71,7 +71,7 @@ claudeTest('refuses an early empty DOM while an actual native task remains in th
     await page.reload()
     await expect.poll(() => sockets).toBeGreaterThan(0)
     await expect.poll(() => forwards.length).toBeGreaterThan(0)
-    await expect(page.locator('[data-testid="bg-task-row"]')).toHaveCount(0)
+    await expect(backgroundTaskRowsIncludingHidden(page)).toHaveCount(0)
     const actual = await readNativeSidebarSnapshot(context, child.parentId)
     expect(actual.backgroundTasks).toHaveLength(1)
     expect(actual.backgroundTasks[0]?.status).toBe(BackgroundTaskStatus.RUNNING)

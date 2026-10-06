@@ -9,7 +9,7 @@ import { reopenFromSessionPicker } from '../helpers/nativeResume'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
@@ -55,7 +55,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       await expect(assistantBubbles(page).filter({ hasText: run.root }).first()).toBeVisible()
 
       await expandBackgroundTasksSection(page)
-      const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: run.description }).first()
+      const row = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: run.description }).first()
       await expect(row).toHaveAttribute('data-status', 'completed')
       // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
       const childID = await openChildTabFromRow(page, row)
@@ -79,7 +79,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const childPrompt = modelScript.prompt(CHILD_TASK)
-    const rows = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Count files' })
+    const rows = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'Count files' })
 
     await modelScript.rule({
       name: 'the first identical Fast Agent child',

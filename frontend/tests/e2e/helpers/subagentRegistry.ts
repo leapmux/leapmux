@@ -3,7 +3,8 @@
  * ./goalsAndTodos.ts drives the Goals & To-dos section.
  * Scope locators for present chat rows to :visible because ChatView can premeasure a hidden copy.
  * Select the first visible sidebar mount for section headers because only that mount receives Worker metadata.
- * Keep zero-count registry locators unscoped so a collapsed section cannot hide a forbidden row.
+ * Locate a registry row through `backgroundTaskRows`, which scopes it to :visible. Keep a zero-count registry locator
+ * unscoped through `backgroundTaskRowsIncludingHidden`, so a collapsed section cannot hide a forbidden row.
  * Read Worker state through the encrypted test channel, independently of the browser's optimistic tab state.
  *
  * playwright.config.ts sets the shared expect timeout.
@@ -17,6 +18,7 @@ import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import type { RunningNativeChild } from './runningChildProof'
 import { expect } from '@playwright/test'
 import { cleanupOnFailure, withCleanup } from './cleanup'
+import { cssAttributeValue } from './cssAttribute'
 import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
@@ -37,6 +39,46 @@ export async function expandBackgroundTasksSection(page: Page): Promise<void> {
   await expandSidebarSection(backgroundTasksSection(page))
 }
 
+/** The kind of a background task row, as its `data-kind` attribute states it. */
+export type BackgroundTaskRowKind = 'subagent' | 'shell' | 'workflow'
+
+/** The attributes that select background task rows. An absent field selects each value of its attribute. */
+export interface BackgroundTaskRowSelection {
+  kind?: BackgroundTaskRowKind
+  /** The `data-task-id` of the row. */
+  taskId?: string
+  /** The `data-child-agent-id` of the row of a subagent. */
+  childAgentId?: string
+}
+
+/**
+ * The CSS selector of each background task row that `selection` selects, visible or hidden.
+ * The selector escapes each ID, because the Worker or a script chooses it.
+ */
+function backgroundTaskRowSelector(selection: BackgroundTaskRowSelection): string {
+  const kind = selection.kind === undefined ? '' : `[data-kind="${selection.kind}"]`
+  const taskId = selection.taskId === undefined ? '' : `[data-task-id="${cssAttributeValue(selection.taskId)}"]`
+  const childAgentId = selection.childAgentId === undefined ? '' : `[data-child-agent-id="${cssAttributeValue(selection.childAgentId)}"]`
+  return `[data-testid="bg-task-row"]${kind}${taskId}${childAgentId}`
+}
+
+/**
+ * Every visible background task row that `selection` selects.
+ * The app mounts the sidebar twice, and both mounts can be visible, so a check of one row takes `.first()`.
+ */
+export function backgroundTaskRows(page: Page, selection: BackgroundTaskRowSelection = {}): Locator {
+  return page.locator(`${backgroundTaskRowSelector(selection)}:visible`)
+}
+
+/**
+ * Every background task row that `selection` selects, the hidden rows included.
+ * Use it for a check that no such row exists: a row in a collapsed section, or in the hidden sidebar mount, must fail
+ * that check, and a visible scope would hide the row.
+ */
+export function backgroundTaskRowsIncludingHidden(page: Page, selection: BackgroundTaskRowSelection = {}): Locator {
+  return page.locator(backgroundTaskRowSelector(selection))
+}
+
 /**
  * Require a loaded, empty Worker registry before a spawn.
  * An empty DOM cannot prove that the registry has no rows before hydration.
@@ -52,7 +94,7 @@ export async function expectNoRegistryRows(page: Page, server: NativeSidebarCont
   const snapshot = await readNativeSidebarSnapshot({ page, leapmuxServer: server })
   expect(snapshot.backgroundTasks, 'the Worker registry must hold no task rows before a spawn').toHaveLength(0)
   await expect(
-    page.locator('[data-testid="bg-task-row"]'),
+    backgroundTaskRowsIncludingHidden(page),
     'the registry should hold no rows before a spawn',
   ).toHaveCount(0)
   await expect(
@@ -62,7 +104,7 @@ export async function expectNoRegistryRows(page: Page, server: NativeSidebarCont
 }
 
 export interface RowFilter {
-  kind?: 'subagent' | 'shell' | 'workflow'
+  kind?: BackgroundTaskRowKind
   status?: string
   titleContains?: string
 }
@@ -80,9 +122,9 @@ export interface RowFilter {
  */
 export async function requireRegistryRow(
   page: Page,
-  kind: 'subagent' | 'shell' = 'subagent',
+  kind: Exclude<BackgroundTaskRowKind, 'workflow'> = 'subagent',
 ): Promise<Locator> {
-  const row = page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).first()
+  const row = backgroundTaskRows(page, { kind }).first()
   const missing = kind === 'shell'
     ? 'the scripted command produced no shell row in the registry'
     : 'the scripted spawn produced no subagent row in the registry'
@@ -387,7 +429,7 @@ export async function stopChildWithInterrupt(page: Page, row: Locator, finalStat
 export async function expectRegistryRow(page: Page, filter: RowFilter): Promise<Locator> {
   await expandBackgroundTasksSection(page)
   await expect(backgroundTasksSection(page)).toBeVisible()
-  let row = page.locator('[data-testid="bg-task-row"]:visible')
+  let row = backgroundTaskRows(page)
   const withAttribute = (rows: Locator, name: 'data-kind' | 'data-status', value: string): Locator => {
     const match = page.locator(`[${name}="${value}"]:visible`)
     const onRow = rows.and(match)
@@ -433,5 +475,5 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
 /** Assert the section header and its rows remain visible after tasks finish. */
 export async function expectSectionPersists(page: Page): Promise<void> {
   await expect(backgroundTasksSection(page)).toBeVisible()
-  await expect(page.locator('[data-testid="bg-task-row"]:visible').first()).toBeVisible()
+  await expect(backgroundTaskRows(page).first()).toBeVisible()
 }

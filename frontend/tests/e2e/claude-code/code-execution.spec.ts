@@ -5,7 +5,6 @@ import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { withCleanup } from '../helpers/cleanup'
-import { cssAttributeValue } from '../helpers/cssAttribute'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -16,7 +15,7 @@ import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { claudeWorkflowLaunch, claudeWorkflowModelOutcome, claudeWorkflowOutput, claudeWorkflowOutputFile, claudeWorkflowSnapshot } from './codeExecution'
 import { nativeContext } from './scenarios'
 
@@ -152,7 +151,7 @@ claudeTest('executes native Workflow code and preserves the computed result and 
     const launch = reloaded.messages.map(nativeMessageBody).map(value => claudeWorkflowLaunch(value, run.launch.callId)).find(value => value !== undefined)
     expect(launch).toEqual(run.launch)
     expect(tasks.find(task => task.id === run.launch.taskId)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
-    const row = page.locator(`[data-testid="bg-task-row"][data-task-id="${cssAttributeValue(run.launch.taskId)}"]:visible[data-kind="workflow"]`).first()
+    const row = backgroundTaskRows(page, { kind: 'workflow', taskId: run.launch.taskId }).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-task-id', run.launch.taskId)
     await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'completed')

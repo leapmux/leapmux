@@ -7,14 +7,13 @@ import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { withCleanup } from './cleanup'
-import { cssAttributeValue } from './cssAttribute'
 import { validateGateName } from './mockModelScript'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
-import { expandBackgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal } from './subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal } from './subagentRegistry'
 import { sendMessage, tabById, waitForAgentIdle } from './ui'
 
 /** The text of a held child's final answer when its script states no final step. */
@@ -350,7 +349,7 @@ export async function openRunningNativeChild(
       return selectedId
     })
     await expandBackgroundTasksSection(context.page)
-    const row = context.page.locator(`[data-testid="bg-task-row"]:visible[data-kind="subagent"][data-child-agent-id="${cssAttributeValue(childId)}"]`).first()
+    const row = backgroundTaskRows(context.page, { kind: 'subagent', childAgentId: childId }).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-status', 'running')
     return {

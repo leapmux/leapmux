@@ -4,7 +4,6 @@ import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '../../../src/genera
 import { BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { grokTest } from '../grok-fixtures'
-import { cssAttributeValue } from '../helpers/cssAttribute'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
@@ -13,7 +12,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
+import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { grokWorkflowCompletion, grokWorkflowLaunch, grokWorkflowManifestPath, grokWorkflowName, grokWorkflowReportLabel, readGrokWorkflowManifest } from './codeExecution'
@@ -92,7 +91,7 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
       expect(reports[0]?.status).toBe(failed ? 'failed' : 'completed')
       expect(reports[0]?.text).toContain(expected)
       await expandBackgroundTasksSection(page)
-      const row = page.locator(`[data-testid="bg-task-row"][data-kind="workflow"][data-task-id="workflow:${cssAttributeValue(launch.runId)}"]:visible`).first()
+      const row = backgroundTaskRows(page, { kind: 'workflow', taskId: `workflow:${launch.runId}` }).first()
       await expect(row).toHaveCount(1)
       await expect(row).toHaveAttribute('data-status', failed ? 'failed' : 'completed')
       await expect(messageContents(page).filter({ hasText: expected }).first()).toBeVisible()
