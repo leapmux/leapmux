@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { gotoWorkspace, openWorkspace } from './helpers/ui'
+import { withCleanup } from './helpers/cleanup'
+import { countRows } from './helpers/storage'
+import { gotoWorkspace, openWorkspace, tiles } from './helpers/ui'
 
 /**
  * A new tab resumes from a sibling tab's persisted checkpoint (issue #358).
@@ -40,53 +41,32 @@ function userEventsUrls(page: Page): string[] {
  * waits for the actual precondition (a sibling row exists to seed FROM) rather
  * than for a guess at how long that takes.
  *
- * The open takes NO VERSION, which is what keeps this probe out of the app's
- * business: a versionless open attaches to whatever version exists, so it can
- * neither trigger the schema repair nor need updating when the stored version
- * changes. Dexie records the declared version times ten, so this database is at
- * native 10 -- and this probe never has to know that.
+ * `countRows` opens with NO VERSION, so the probe can neither trigger the
+ * schema repair of the app nor need updating when the stored version changes.
+ * An absent database or store counts as no row.
  */
 async function waitForCheckpointOwners(page: Page, n: number): Promise<void> {
-  await expect.poll(async () => page.evaluate(async () => {
-    return await new Promise<number>((resolve) => {
-      const open = indexedDB.open('leapmux-crdt-state')
-      open.onerror = () => resolve(-1)
-      open.onsuccess = () => {
-        const db = open.result
-        if (!db.objectStoreNames.contains('checkpoints')) {
-          db.close()
-          resolve(-1)
-          return
-        }
-        const req = db.transaction('checkpoints', 'readonly').objectStore('checkpoints').count()
-        req.onerror = () => {
-          db.close()
-          resolve(-1)
-        }
-        req.onsuccess = () => {
-          db.close()
-          resolve(req.result)
-        }
-      }
-    })
-  })).toBeGreaterThanOrEqual(n)
+  await expect.poll(
+    async () => await countRows(page, 'leapmux-crdt-state', 'checkpoints') ?? 0,
+    `the checkpoint store holds at least ${n} owner rows`,
+  ).toBeGreaterThanOrEqual(n)
 }
 
 test.describe('new-tab checkpoint seeding', () => {
-  test('a second tab in the same profile resumes from its sibling\'s checkpoint', async ({ browser, leapmuxServer }) => {
+  test('a second tab in the same profile resumes from its sibling\'s checkpoint', async ({ browser, leapmuxServer, emptyWorkspace }) => {
     const { hubUrl, adminToken } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'New Tab Seeding')
+    const wsId = emptyWorkspace.workspaceId
 
+    // One context for both tabs, so they share IndexedDB.
     const context = await browser.newContext({ baseURL: hubUrl })
-    const pageA = await context.newPage()
-
-    try {
+    await withCleanup(async () => {
+      const pageA = await context.newPage()
       await gotoWorkspace(pageA, adminToken, wsId)
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(1)
+      await expect(tiles(pageA)).toHaveCount(1)
       // A mutation, so the CRDT holds something a seeded tab can be seen to
       // have received rather than rebuilt.
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageA)).toHaveCount(2)
 
       // Tab A's checkpoint must exist before tab B can seed from it.
       await waitForCheckpointOwners(pageA, 1)
@@ -95,7 +75,7 @@ test.describe('new-tab checkpoint seeding', () => {
       const pageB = await context.newPage()
       const urlsB = userEventsUrls(pageB)
       await openWorkspace(pageB, wsId)
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageB)).toHaveCount(2)
 
       await expect.poll(() => urlsB.at(0) ?? '').toContain('resume_after_hlc=')
 
@@ -106,43 +86,34 @@ test.describe('new-tab checkpoint seeding', () => {
 
       // And A is unharmed -- it still converges with B afterwards.
       await pageB.locator('[data-testid="split-vertical"]').nth(1).click()
-      await expect(pageB.locator('[data-testid="tile"]')).toHaveCount(3)
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(3)
-    }
-    finally {
-      await context.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsId)
-    }
+      await expect(tiles(pageB)).toHaveCount(3)
+      await expect(tiles(pageA)).toHaveCount(3)
+    }, () => context.close())
   })
 
-  test('a tab opened after its sibling closed still seeds from the dead row', async ({ browser, leapmuxServer }) => {
+  test('a tab opened after its sibling closed still seeds from the dead row', async ({ browser, leapmuxServer, emptyWorkspace }) => {
     // The browser-restart case: sessionStorage died with the tab, but the
     // checkpoint rows survive in IndexedDB. The issue's trigger table listed
     // this separately from "new tab"; one mechanism covers both.
     const { hubUrl, adminToken } = leapmuxServer
-    const wsId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dead Sibling Seeding')
+    const wsId = emptyWorkspace.workspaceId
 
     const context = await browser.newContext({ baseURL: hubUrl })
-    const pageA = await context.newPage()
-
-    try {
+    await withCleanup(async () => {
+      const pageA = await context.newPage()
       await gotoWorkspace(pageA, adminToken, wsId)
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(1)
+      await expect(tiles(pageA)).toHaveCount(1)
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
-      await expect(pageA.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageA)).toHaveCount(2)
       await waitForCheckpointOwners(pageA, 1)
       await pageA.close()
 
       const pageC = await context.newPage()
       const urlsC = userEventsUrls(pageC)
       await openWorkspace(pageC, wsId)
-      await expect(pageC.locator('[data-testid="tile"]')).toHaveCount(2)
+      await expect(tiles(pageC)).toHaveCount(2)
 
       await expect.poll(() => urlsC.at(0) ?? '').toContain('resume_after_hlc=')
-    }
-    finally {
-      await context.close()
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, wsId)
-    }
+    }, () => context.close())
   })
 })

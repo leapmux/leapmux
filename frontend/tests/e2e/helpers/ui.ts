@@ -12,12 +12,13 @@ import { hasOptions } from '../../../src/components/chat/settingsGroups'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
+import { isObject } from '../../../src/lib/jsonPick'
 import { callHub, SESSION_COOKIE_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
 import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
 import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
 import { E2E_BROWSER_HOST } from './server'
-import { readEntry, storageKeys, writeEntry } from './storage'
+import { readEntry, waitForStoredEntry, writeEntry } from './storage'
 import { terminalXterm } from './terminal'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 
@@ -1564,30 +1565,22 @@ export function treeRowNames(page: Page): Locator {
 
 /**
  * Wait until the draft reaches durable browser storage before reload.
- * The debounce and write queue can both delay persistence. A fixed sleep cannot account for delayed timers on a busy host.
- * The caller lacks the agent ID, so inspect draft rows for its account.
- * Build the prefix with accountStorageKey and compare with startsWith. A regular expression would interpret metacharacters in the key.
+ * The caller lacks the agent ID, so inspect the draft rows of its account.
  */
 export async function waitForEditorDraft(page: Page, userId: string, text: string) {
-  const prefix = accountStorageKey(userId, PREFIX_EDITOR_DRAFT)
-  await expect.poll(async () => {
-    for (const key of await storageKeys(page)) {
-      if (!key.startsWith(prefix))
-        continue
-      const row = await readEntry(page, key)
-      const content = (row?.v as { content?: unknown } | undefined)?.content
-      if (typeof content === 'string' && content.includes(text))
-        return true
-    }
-    return false
-  }, `the editor draft "${text}" must be persisted before the reload`).toBe(true)
+  await waitForStoredEntry(
+    page,
+    accountStorageKey(userId, PREFIX_EDITOR_DRAFT),
+    value => isObject(value) && typeof value.content === 'string' && value.content.includes(text),
+    `the editor draft "${text}" must be persisted before the reload`,
+  )
 }
 
 /**
  * Wait until the Files sort preference reaches durable browser storage.
- * The write queue can outlive the click. pagehide flush also awaits a connection, so it does not complete synchronously.
- * Match the prefix, worker ID, and stored value. The worker can canonicalize the directory path, such as /var to /private/var on macOS.
- * One agent per test makes this lookup unambiguous.
+ * The pagehide flush also awaits a connection, so it does not complete synchronously.
+ * Match the worker ID and the stored value, not the directory: the worker can canonicalize the directory path, such
+ * as /var to /private/var on macOS. One agent per test makes this lookup unambiguous.
  */
 export async function waitForFilesSortOrder(
   page: Page,
@@ -1595,18 +1588,12 @@ export async function waitForFilesSortOrder(
   workerId: string,
   expected: FileSortOrder,
 ) {
-  const prefix = accountStorageKey(userId, `${PREFIX_FILES_SORT_ORDER}${workerId}:`)
-  await expect.poll(async () => {
-    for (const key of await storageKeys(page)) {
-      if (!key.startsWith(prefix))
-        continue
-      const row = await readEntry(page, key)
-      const stored = row?.v as { key?: unknown, direction?: unknown } | undefined
-      if (stored?.key === expected.key && stored?.direction === expected.direction)
-        return true
-    }
-    return false
-  }, `the sort order ${expected.key}/${expected.direction} must be persisted before the reload`).toBe(true)
+  await waitForStoredEntry(
+    page,
+    accountStorageKey(userId, `${PREFIX_FILES_SORT_ORDER}${workerId}:`),
+    value => isObject(value) && value.key === expected.key && value.direction === expected.direction,
+    `the sort order ${expected.key}/${expected.direction} must be persisted before the reload`,
+  )
 }
 
 /**

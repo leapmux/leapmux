@@ -1,18 +1,22 @@
 import type { Page } from '@playwright/test'
+import { expect } from '@playwright/test'
 
 /**
- * The browser-storage database, as an E2E spec reaches it.
+ * The browser-storage databases, as an E2E spec reaches them.
  *
  * The `leapmux:` key family lives in IndexedDB (see `~/lib/browserStorage`), so
  * a spec that seeds or asserts one talks to a database rather than to
- * localStorage. These three functions are the ONLY `page.evaluate` bodies in
- * the suite that name that layout, so a change to it has one place to land.
+ * localStorage. The functions here hold the ONLY `page.evaluate` bodies in the
+ * suite that open a database of the app, so a change to a layout has one place
+ * to land.
  *
  * Every helper opens with NO VERSION. A versionless open attaches to whatever
  * version exists, so the harness can never trigger the app's own schema repair
  * -- and it never has to be kept in step with what Dexie stores by hand. On a
- * database the app has not created yet it creates an empty one, which reads as
- * "nothing stored" and is the right answer for a spec that has not signed in.
+ * database the app has not created yet, the readers of `leapmux-kv` create an
+ * empty one, which reads as "nothing stored" and is the right answer for a spec
+ * that has not signed in. `databaseStores` and `countRows` probe any database,
+ * so they undo such a creation.
  *
  * The composed key comes from the app's own `accountStorageKey`, never spelled
  * out here: a literal is what went stale the moment the layout changed.
@@ -153,6 +157,75 @@ export async function databaseStores(page: Page, dbName: string): Promise<string
       resolve(stores)
     }
   }), dbName)
+}
+
+/**
+ * The number of rows in the object store `store` of `dbName`, or null when the database or the store does not exist,
+ * or when the read fails.
+ *
+ * Versionless like `databaseStores`, and it also undoes its own creation of an absent database. A spec polls it,
+ * because the app writes these rows off the interaction path.
+ */
+export async function countRows(page: Page, dbName: string, store: string): Promise<number | null> {
+  return page.evaluate(([name, storeName]) => new Promise<number | null>((resolve) => {
+    const request = indexedDB.open(name)
+    let created = false
+    request.onerror = () => resolve(null)
+    request.onupgradeneeded = () => {
+      created = true
+    }
+    request.onsuccess = () => {
+      const db = request.result
+      if (created) {
+        db.close()
+        // Undo the probe's own creation, so the app still finds no database.
+        indexedDB.deleteDatabase(name)
+        resolve(null)
+        return
+      }
+      if (!db.objectStoreNames.contains(storeName)) {
+        db.close()
+        resolve(null)
+        return
+      }
+      const count = db.transaction(storeName, 'readonly').objectStore(storeName).count()
+      count.onerror = () => {
+        db.close()
+        resolve(null)
+      }
+      count.onsuccess = () => {
+        db.close()
+        resolve(count.result)
+      }
+    }
+  }), [dbName, store] as const)
+}
+
+/**
+ * Wait until a stored row whose key starts with `prefix` holds a value that `accept` takes.
+ *
+ * The app writes a row through a debounce and a write queue, so the row can land after the interaction returns. A
+ * fixed sleep cannot account for a busy host, so poll the rows. Build `prefix` with `accountStorageKey` and match
+ * with `startsWith`: a regular expression would read the metacharacters of a key.
+ */
+export async function waitForStoredEntry(
+  page: Page,
+  prefix: string,
+  accept: (value: unknown) => boolean,
+  message: string,
+): Promise<void> {
+  if (prefix === '')
+    throw new Error('waitForStoredEntry requires a nonempty key prefix, because every stored key matches an empty one.')
+  await expect.poll(async () => {
+    for (const key of await storageKeys(page)) {
+      if (!key.startsWith(prefix))
+        continue
+      const row = await readEntry(page, key)
+      if (row !== null && accept(row.v))
+        return true
+    }
+    return false
+  }, message).toBe(true)
 }
 
 /** Every key in one Web Storage area, sorted. */
