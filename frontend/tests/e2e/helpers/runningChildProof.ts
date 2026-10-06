@@ -169,6 +169,26 @@ export function childTaskAtStart(task: string): MockModelMatcher {
 }
 
 /**
+ * Match a child turn whose last user text starts with text that the regular expression source `leading` matches, and
+ * holds `task` directly after that text.
+ * Use it for a provider that puts context of its own, such as startup reminders, before the task in the same user text.
+ * `leading` must compile alone. The matcher puts it in a group, so a `|` in it cannot reach outside the start anchor.
+ */
+export function childTaskAfter(leading: string, task: string): MockModelMatcher {
+  return { user: `^(?:${requireLeading(leading)})${escapeRegExp(requireTask(task))}` }
+}
+
+function requireLeading(leading: string): string {
+  try {
+    void new RegExp(leading, 'i')
+  }
+  catch (error) {
+    throw new Error('A child task matcher needs a leading pattern that compiles alone.', { cause: error })
+  }
+  return leading
+}
+
+/**
  * Match a child turn whose last user text holds `task` at any place.
  * Use it only for a provider that puts text of its own before the task and keeps the task out of the last user text
  * of each parent turn.

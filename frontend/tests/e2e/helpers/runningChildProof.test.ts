@@ -11,6 +11,7 @@ import { matchesRequest, parseScenarioSpec } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import {
+  childTaskAfter,
   childTaskAnywhere,
   childTaskAtStart,
   expectRunningChildCompletes,
@@ -306,6 +307,43 @@ describe('childTaskAtStart', () => {
 
   it.each(['', '  '])('refuses an empty task: %j', (task) => {
     expect(() => childTaskAtStart(task)).toThrow('task that is not empty')
+  })
+})
+
+describe('childTaskAfter', () => {
+  const leading = '(?:<context>[^<]*</context>\\n)*'
+
+  it('selects a turn that opens with the leading text and then the task', () => {
+    const matcher = childTaskAfter(leading, 'NATIVECHILDTASK3 report one word.')
+    expect(selectsTurn(matcher, '<context>One.</context>\n<context>Two.</context>\nNATIVECHILDTASK3 report one word.')).toBe(true)
+    expect(selectsTurn(matcher, 'NATIVECHILDTASK3 report one word.')).toBe(true)
+  })
+
+  it('refuses a turn with other text before the leading text, between it and the task, or instead of it', () => {
+    const matcher = childTaskAfter(leading, 'NATIVECHILDTASK3 report one word.')
+    expect(selectsTurn(matcher, 'Quote: <context>One.</context>\nNATIVECHILDTASK3 report one word.')).toBe(false)
+    expect(selectsTurn(matcher, '<context>One.</context>\nThe parent quotes NATIVECHILDTASK3 report one word.')).toBe(false)
+    expect(selectsTurn(matcher, 'The parent quotes NATIVECHILDTASK3 report one word.')).toBe(false)
+  })
+
+  it('keeps an alternation of the leading pattern inside the start anchor', () => {
+    const matcher = childTaskAfter('A|B', 'TASK')
+    expect(selectsTurn(matcher, 'BTASK')).toBe(true)
+    expect(selectsTurn(matcher, 'The parent quotes A or BTASK')).toBe(false)
+  })
+
+  it('reads regular expression syntax in the task as plain text', () => {
+    const matcher = childTaskAfter(leading, 'Read a.b (once) [now]+?')
+    expect(selectsTurn(matcher, '<context>One.</context>\nRead a.b (once) [now]+?')).toBe(true)
+    expect(selectsTurn(matcher, '<context>One.</context>\nRead aXb (once) [now]+?')).toBe(false)
+  })
+
+  it.each(['a)|(b', '(?:open', '[', 'trailing\\'])('refuses a leading pattern that does not compile alone: %j', (pattern) => {
+    expect(() => childTaskAfter(pattern, 'TASK')).toThrow('leading pattern that compiles alone')
+  })
+
+  it.each(['', '  '])('refuses an empty task: %j', (task) => {
+    expect(() => childTaskAfter(leading, task)).toThrow('task that is not empty')
   })
 })
 
