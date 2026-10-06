@@ -6,17 +6,20 @@ import { geminiTest } from '../gemini-fixtures'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readToolCall } from '../helpers/providerToolCalls'
-import { expectDecodedImageInBubble, imageInBubble, runToolImageTurn } from '../helpers/toolImages'
+import { expectDecodedImageInBubble, expectPngInRequest, imageInBubble, runToolImageTurn } from '../helpers/toolImages'
 import { readAttached, toolCallRow } from '../helpers/ui'
 import { readGeminiStoredToolRecord } from './toolRecord'
 
 geminiTest('recovers the actual native image bytes into the exact tool result after reload', async ({ native, authenticatedGeminiWorkspace }) => {
   const id = 'gemini-read-native-image'
-  const { fileName, path } = await runToolImageTurn(native, {
+  const { fileName, path, resultRequest } = await runToolImageTurn(native, {
     workingDir: authenticatedGeminiWorkspace.workingDir,
     marker: 'gemini-native',
     toolCall: image => readToolCall(native.provider, id, image.path),
   })
+  // Gemini CLI gives the binary content of a read to the model as an inline data part beside its function response, so
+  // the next model request holds the PNG.
+  expectPngInRequest(resultRequest)
   const agent = await currentNativeAgent(native)
   const bytes = readFileSync(path).toString('base64')
   // Gemini prefixes its tool name to the call ID of its stored rows.
