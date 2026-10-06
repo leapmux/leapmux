@@ -7,6 +7,7 @@ import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMessages'
 import { nativeAgentById, selectedAgentTab } from './nativeScenario'
+import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
 import { assistantBubbles, openMenu, userBubbles } from './ui'
 import { openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
@@ -212,18 +213,14 @@ export async function expectReopenedNativeAgent(
     agentId = id && !earlierAgentIds.includes(id) ? id : ''
     return agentId
   }, { message: 'The picker must select the agent tab that it opened.' }).not.toBe('')
-  // TypeScript does not see an assignment that a callback makes to a local variable, and it narrows such a variable to
-  // its initial value. A property keeps its declared type.
-  const settled: { agent?: AgentInfo } = {}
-  await expect.poll(async () => {
+  const settled = await retryUntilPass(async () => {
     const agent = await nativeAgentById(context, agentId)
-    if (agent && agent.status !== AgentStatus.STARTING)
-      settled.agent = agent
-    return settled.agent !== undefined
-  }, { message: 'The Worker must end the startup of the reopened agent.' }).toBe(true)
-  if (!settled.agent)
-    throw new Error('The Worker verdict for the reopened agent is absent.')
-  return reopenedNativeAgentVerdict(settled.agent, stored)
+    if (!agent)
+      throw new Error(`The Worker holds no reopened agent ${agentId}.`)
+    expect(agent.status, 'The Worker must end the startup of the reopened agent.').not.toBe(AgentStatus.STARTING)
+    return agent
+  })
+  return reopenedNativeAgentVerdict(settled, stored)
 }
 
 /** Count the Worker rows of the original agent that hold the original answer. The original agent must be active. */

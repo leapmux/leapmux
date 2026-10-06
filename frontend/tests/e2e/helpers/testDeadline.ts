@@ -41,6 +41,17 @@ export function startTestDeadline(startedAt: number, timeout: () => number): () 
 }
 
 /**
+ * Start a record whose waits end `limitMs` from now, for a unit test that runs a wait outside Playwright, and return
+ * the function that ends the record. Without a record, such a wait has no limit, and a wait that never passes then
+ * runs until the unit test times out.
+ */
+export function startWaitLimitForTests(limitMs: number): () => void {
+  if (!Number.isFinite(limitMs) || limitMs <= 0)
+    throw new Error(`A wait limit must be a positive number of milliseconds, not ${limitMs}.`)
+  return startTestDeadline(Date.now(), () => WAIT_REPORT_MARGIN_MS + limitMs)
+}
+
+/**
  * The whole-test deadline in epoch milliseconds.
  * Return undefined when no test runs, or when the running test has no timeout.
  * Each call reads the current timeout, so a timeout change during the test moves the deadline.

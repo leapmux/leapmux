@@ -10,6 +10,7 @@ import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { inspectLastTabCloseViaAPI } from '../helpers/worktree'
 import { cleanupDeepseekHarnessGoal } from './goalCleanup'
 
@@ -48,13 +49,16 @@ export async function withDeepseekHarnessGoalCleanup<T>(context: GoalCleanupCont
       const response = await channel.callWorker(captured.workerId, 'CloseAgent', CloseAgentRequestSchema, CloseAgentResponseSchema, { agentId: captured.agentId, worktreeAction: WorktreeAction.KEEP })
       if (!response.result || response.result.failureMessage || response.result.failureDetail)
         throw new Error('The Worker did not confirm closure of the captured native root.')
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const agent = await nativeAgentById(context, captured.agentId)
-        if (agent)
-          return agent.status === AgentStatus.INACTIVE && agent.closedAt !== ''
+        if (agent) {
+          expect({ status: agent.status, closed: agent.closedAt !== '' }, 'the Worker closed the captured native root').toEqual({ status: AgentStatus.INACTIVE, closed: true })
+          return
+        }
         const inspection = await inspectLastTabCloseViaAPI(server.hubUrl, server.adminToken, captured.workerId, TabType.AGENT, captured.agentId)
-        return inspection.target === LastTabCloseTarget.NONE && !inspection.shouldPrompt
-      }).toBe(true)
+        expect({ target: inspection.target, shouldPrompt: inspection.shouldPrompt }, 'the Worker holds no tab of the captured native root')
+          .toEqual({ target: LastTabCloseTarget.NONE, shouldPrompt: false })
+      })
     },
     releaseReplies: () => finishCleanup(gates.map(gate => context.modelScript.releaseGateIfHeld(gate))),
   }))

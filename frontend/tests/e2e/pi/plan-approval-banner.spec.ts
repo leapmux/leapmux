@@ -9,6 +9,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeAgentById, nativeModelInstructionText } from '../helpers/nativeScenario'
 import { expectTurnEndedAfter, onlyObservedNativeControl, readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { answerPlanReview, controlBanner, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
@@ -28,7 +29,9 @@ piTest('plan-approval-banner: tracks a fresh Pi implementation session after pla
 piTest('rejects the native Pi plan review and keeps planning in the same session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-plan-stay-'), agentOpenOptions(context.provider))
-  await expect.poll(async () => (await nativeAgentById(context, agentId))?.agentSessionId ?? '').not.toBe('')
+  await retryUntilPass(async () => {
+    expect((await nativeAgentById(context, agentId))?.agentSessionId ?? '', 'the Worker starts the native session of the new agent').not.toBe('')
+  })
   await openWorkspace(page, context.workspaceId)
   const agent = await currentNativeAgent(context)
   expect(agent.id).toBe(agentId)

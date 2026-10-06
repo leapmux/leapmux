@@ -9,6 +9,7 @@ import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalS
 import { SCENARIO_MARKER } from '../helpers/mockModelScript'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { controlActions, controlBanner, expectNoControlBanner, openWorkspace, tabById, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
@@ -64,9 +65,14 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
     await expectEmptyGoalCard(page)
+    // Wait until the Worker holds the goal in `status`, and return the snapshot that holds it.
+    const workerGoal = (status: AgentGoalStatus) => retryUntilPass(async () => {
+      const snapshot = await readNativeSidebarSnapshot(context, agentId)
+      expect(snapshot.goal?.status, `the Worker holds the goal as ${AgentGoalStatus[status]}`).toBe(status)
+      return snapshot
+    })
     await submitGoal(page, modelScript.prompt(objective))
-    await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).goal?.status).toBe(AgentGoalStatus.ACTIVE)
-    const startedGoal = await readNativeSidebarSnapshot(context, agentId)
+    const startedGoal = await workerGoal(AgentGoalStatus.ACTIVE)
     expect(startedGoal.goalLoaded).toBe(true)
     expect(startedGoal.goal?.objective).toContain(objective)
     expect(startedGoal.goal?.objective).toContain(`${SCENARIO_MARKER}${modelScript.id}`)
@@ -76,7 +82,7 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     expect(JSON.stringify((await modelScript.requestAt(start)).body)).toContain(objective)
     await openGoalMenu(page)
     await goalAction(page, 'pause').click()
-    await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).goal?.status).toBe(AgentGoalStatus.PAUSED)
+    await workerGoal(AgentGoalStatus.PAUSED)
     await expectGoalStatus(page, 'paused')
     await modelScript.releaseGateIfHeld(firstGate)
     await waitForAgentIdle(page)
@@ -91,17 +97,16 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     expect(restoredGoal.goal?.objective).toBe(startedGoal.goal?.objective)
     await openGoalMenu(page)
     await goalAction(page, 'resume').click()
-    await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).goal?.status).toBe(AgentGoalStatus.ACTIVE)
-    expect((await readNativeSidebarSnapshot(context, agentId)).goal?.nativeId).toBe(startedGoal.goal?.nativeId)
+    expect((await workerGoal(AgentGoalStatus.ACTIVE)).goal?.nativeId).toBe(startedGoal.goal?.nativeId)
     await expectGoalStatus(page, 'active')
     await modelScript.waitForGate(secondGate)
     expect(JSON.stringify((await modelScript.requestAt(start + 1)).body)).toContain(objective)
     await clearGoal(page)
     await approvePiGoalClear(page)
-    await expect.poll(async () => {
+    await retryUntilPass(async () => {
       const snapshot = await readNativeSidebarSnapshot(context, agentId)
-      return snapshot.goalLoaded && snapshot.goal === undefined
-    }).toBe(true)
+      expect({ loaded: snapshot.goalLoaded, goal: snapshot.goal }, 'the Worker loaded the goal state and holds no goal').toEqual({ loaded: true, goal: undefined })
+    })
     await expectNoControlBanner(page)
     await expectEmptyGoalCard(page)
   }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))

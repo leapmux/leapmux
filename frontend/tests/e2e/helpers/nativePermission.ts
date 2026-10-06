@@ -15,6 +15,7 @@ import { expectTurnEndedAfter } from './nativeStoredControlDecision'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
+import { retryUntilPass } from './retryUntilPass'
 import { isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { answerControl, assistantBubbles, enterControlFeedback, messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
@@ -207,17 +208,9 @@ export async function exerciseNativePermissionRefusal(context: ManagedNativeScen
     const current = await currentNativeAgent(context)
     expect(current.id).toBe(agent.id)
     expect(current.agentSessionId).toBe(agent.agentSessionId)
-    // Read until the Worker holds the refusal row. The poll reports the last reader error when it never does.
-    await expect.poll(async () => {
-      const snapshot = await readNativeMessageSnapshot(context, agent.id)
-      try {
-        options.nativeRefusal(snapshot)
-        return 'proved'
-      }
-      catch (error) {
-        return error instanceof Error ? error.message : String(error)
-      }
-    }).toBe('proved')
+    // Read until the Worker holds the refusal row. A failed read and a snapshot that does not prove the refusal both
+    // start the next attempt, and the final failure states the last error.
+    await retryUntilPass(async () => options.nativeRefusal(await readNativeMessageSnapshot(context, agent.id)))
     await options.viewProof?.()
     await expectTurnEndedAfter(context.modelScript, start + 1)
   }

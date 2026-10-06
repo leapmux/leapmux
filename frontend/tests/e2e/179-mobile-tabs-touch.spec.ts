@@ -3,6 +3,7 @@ import type { AgentServer } from './helpers/workspace'
 import { expect, test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { COARSE_POINTER_METRICS, touchDown, touchDragGripOnto } from './helpers/touch'
 import { chatScrollContainer, composerEditor, stableBox, workspaceRow } from './helpers/ui'
 
@@ -34,6 +35,17 @@ async function textIndex(rows: Locator, needle: string): Promise<number> {
   const index = texts.findIndex(text => text.includes(needle))
   expect(index, `a row containing "${needle}" (have: ${texts.join(' | ')})`).toBeGreaterThanOrEqual(0)
   return index
+}
+
+/**
+ * Wait until the row that contains `earlier` comes before the row that contains `later`.
+ * The store confirms a reorder after the pointer lifts. `textIndex` throws for an absent row, and the wait retries that
+ * read, so a row that the list draws late does not end the wait.
+ */
+async function expectRowBefore(rows: Locator, earlier: string, later: string): Promise<void> {
+  await retryUntilPass(async () => {
+    expect(await textIndex(rows, earlier), `the row of "${earlier}" comes before the row of "${later}"`).toBeLessThan(await textIndex(rows, later))
+  })
 }
 
 /**
@@ -112,7 +124,7 @@ test.describe('mobile tab sheet (phone)', () => {
       draggedRow: alphaRow,
       draggingClass: /tabDragging/,
     })
-    await expect.poll(async () => await textIndex(rows, 'Beta') < await textIndex(rows, 'Alpha')).toBe(true)
+    await expectRowBefore(rows, 'Beta', 'Alpha')
   })
 
   test('a long press on a sheet row body opens its menu, not an unintended drag', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
@@ -479,7 +491,7 @@ test.describe('tablet touch (desktop layout)', () => {
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, whatever else the strip holds. Polled: the reorder lands when
     // the store confirms it, which can be after mouse.up returns.
-    await expect.poll(async () => await textIndex(tabs, 'Beta') < await textIndex(tabs, 'Alpha')).toBe(true)
+    await expectRowBefore(tabs, 'Beta', 'Alpha')
   })
 
   test('a touch drag from a grip reorders', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
@@ -507,6 +519,6 @@ test.describe('tablet touch (desktop layout)', () => {
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, from any starting order. Polled: the reorder lands when the
     // store confirms it, which can be after the lift.
-    await expect.poll(async () => await textIndex(tabs, 'Beta') < await textIndex(tabs, 'Alpha')).toBe(true)
+    await expectRowBefore(tabs, 'Beta', 'Alpha')
   })
 })

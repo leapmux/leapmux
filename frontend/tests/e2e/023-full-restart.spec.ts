@@ -1,7 +1,7 @@
 import type { AgentServer } from './helpers/workspace'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'
-import { listTerminalsViaAPI, terminalExitedViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
+import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
 import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Wait for the Worker to store the title before its process stops. */
@@ -69,7 +69,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await waitForTerminalText(page, 'EXITEDRESTORE')
 
     await page.keyboard.press('Control+D')
-    await expect.poll(() => terminalExitedViaAPI(separateHubWorker, authenticatedWorkspace.workspaceId, terminalId)).toBe(true)
+    await waitForTerminalExitViaAPI(separateHubWorker, authenticatedWorkspace.workspaceId, terminalId)
 
     await stopWorker(separateHubWorker)
     await stopHub(separateHubWorker)

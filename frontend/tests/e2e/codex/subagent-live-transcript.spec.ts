@@ -7,6 +7,7 @@ import { codexTest } from '../codex-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { tabById } from '../helpers/ui'
 
 /** Require the actual Codex child completion to retain its native thread and turn IDs. */
@@ -22,8 +23,11 @@ async function expectNativeCodexCompletion(context: Pick<ManagedNativeScenarioCo
     })
     return { snapshot, results }
   }
-  await expect.poll(async () => (await endings()).results.length).toBe(1)
-  const { snapshot, results } = await endings()
+  const { snapshot, results } = await retryUntilPass(async () => {
+    const read = await endings()
+    expect(read.results.length, 'the Worker stores one completion of the native Codex child turn').toBe(1)
+    return read
+  })
   const result = results[0]
   if (!result)
     throw new Error('The native Codex child has no stored turn completion.')

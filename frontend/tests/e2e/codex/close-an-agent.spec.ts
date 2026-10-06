@@ -4,6 +4,7 @@ import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { codexTest } from '../codex-fixtures'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, expectAgentTabCount, tabById, waitForAgentIdle } from '../helpers/ui'
 import { inspectLastTabCloseViaAPI } from '../helpers/worktree'
 
@@ -26,7 +27,9 @@ codexTest.describe('codex agent lifecycle', () => {
       await dialog.getByRole('button', { name: 'Confirm?', exact: true }).click()
     }
     await expectAgentTabCount(page, tabsBefore - 1)
-    await expect.poll(() => nativeAgentById(native, agent.id)).toBeNull()
+    await retryUntilPass(async () => {
+      expect(await nativeAgentById(native, agent.id), 'the Worker lists the closed agent no more').toBeNull()
+    })
   })
 
   codexTest('closes a busy native tool and its provider processes', async ({ native }) => {

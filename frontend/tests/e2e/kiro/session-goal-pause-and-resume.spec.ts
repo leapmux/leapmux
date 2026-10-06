@@ -13,6 +13,7 @@ import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { isFileNameComponent } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
@@ -261,10 +262,13 @@ kiroTest.describe('Kiro session goal', () => {
         await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
         return request
       }
-      await expect.poll(() => kiroGoalExecutionId(nativeMessages())).toMatch(/\S/)
-      const setExecutionId = kiroGoalExecutionId(nativeMessages())
-      if (!setExecutionId)
-        throw new Error('The held native Kiro step contains no started execution.')
+      // Kiro writes its session files while the test reads them, so each wait on them retries a read that throws.
+      const setExecutionId = await retryUntilPass(() => {
+        const id = kiroGoalExecutionId(nativeMessages())
+        if (!id)
+          throw new Error('The held native Kiro step contains no started execution.')
+        return id
+      })
       expect(kiroGoalCancellation(nativeMessages(), setExecutionId)).toBeUndefined()
 
       await openGoalMenu(page)
@@ -272,8 +276,13 @@ kiroTest.describe('Kiro session goal', () => {
       await expectGoalStatus(page, 'paused')
       const detail = page.locator('[data-testid="goal-status-detail"]:visible')
       await expect(detail.filter({ hasText: KIRO_ROUND_LIMIT_WORD }), 'the reader paused the goal, not the round limit').toHaveCount(0)
-      await expect.poll(() => kiroGoalCancellation(nativeMessages(), setExecutionId)?.executionId).toBe(setExecutionId)
-      await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).backgroundTasks.find(task => task.id === sessionId)?.activeForm).toMatch(/^Paused:/)
+      await retryUntilPass(() => {
+        expect(kiroGoalCancellation(nativeMessages(), setExecutionId)?.executionId, 'Kiro records the cancellation of the paused execution').toBe(setExecutionId)
+      })
+      await retryUntilPass(async () => {
+        expect((await readNativeSidebarSnapshot(context, agentId)).backgroundTasks.find(task => task.id === sessionId)?.activeForm, 'the Worker marks the goal step as paused')
+          .toMatch(/^Paused:/)
+      })
       const paused = await readNativeSidebarSnapshot(context, agentId)
       expect(paused.goal?.status).toBe(AgentGoalStatus.PAUSED)
       expect(paused.goal?.nativeId).toBe(workflowId)
@@ -331,19 +340,23 @@ kiroTest.describe('Kiro session goal', () => {
       expect(nativeModelContextText(resumeRequest)).toContain(objective.text)
       expect(nativeModelContextText(resumeRequest)).toContain(objective.marker)
       expect(kiroGoalSessionId(resumeRequest)).toBe(sessionId)
-      await expect.poll(() => {
+      const resumeExecutionId = await retryUntilPass(() => {
         const id = kiroGoalExecutionId(nativeMessages())
-        return id !== setExecutionId ? id : undefined
-      }).toMatch(/\S/)
-      const resumeExecutionId = kiroGoalExecutionId(nativeMessages())
-      if (!resumeExecutionId)
-        throw new Error('The resumed native Kiro step contains no new execution.')
+        if (!id || id === setExecutionId)
+          throw new Error('The resumed native Kiro step contains no new execution.')
+        return id
+      })
       expect(kiroGoalCancellation(nativeMessages(), resumeExecutionId)).toBeUndefined()
 
       await clearGoal(page)
       await expectEmptyGoalCard(page)
-      await expect.poll(() => kiroGoalCancellation(nativeMessages(), resumeExecutionId)?.executionId).toBe(resumeExecutionId)
-      await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).backgroundTasks.find(task => task.id === sessionId)?.status).toBe(BackgroundTaskStatus.STOPPED)
+      await retryUntilPass(() => {
+        expect(kiroGoalCancellation(nativeMessages(), resumeExecutionId)?.executionId, 'Kiro records the cancellation of the cleared execution').toBe(resumeExecutionId)
+      })
+      await retryUntilPass(async () => {
+        expect((await readNativeSidebarSnapshot(context, agentId)).backgroundTasks.find(task => task.id === sessionId)?.status, 'the Worker stops the goal step')
+          .toBe(BackgroundTaskStatus.STOPPED)
+      })
       await modelScript.releaseGate(resumeGate)
       await expect.poll(async () => (await modelScript.status()).requests.find(request => request.rule === resumeRule)?.response?.status).toBe(200)
       await expect.poll(async () => (await modelScript.status()).pendingGates.includes(resumeGate)).toBe(false)

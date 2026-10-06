@@ -4,6 +4,7 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
+  currentNativeAgent,
   expectNativeOptionValue,
   nativeAgentById,
   nativeAgentsByIds,
@@ -398,7 +399,7 @@ describe('nativeAgentsByIds', () => {
     expect(workerChannel.callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', 'ListAgents', expect.anything(), expect.anything(), { tabIds: ['first', 'second'] })
   })
 
-  it('throws the failure of the Worker read, so a poll retries and reports it', async () => {
+  it('throws the failure of the Worker read, so a retried wait reads again and reports it', async () => {
     const failure = new Error('The Worker channel closed.')
     workerChannel.callWorker.mockRejectedValueOnce(failure)
     await expect(nativeAgentsByIds(server, ['first'])).rejects.toBe(failure)
@@ -423,6 +424,30 @@ describe('nativeAgentById', () => {
   it('returns null when the Worker holds no such agent', async () => {
     workerChannel.callWorker.mockResolvedValueOnce({ agents: [] })
     expect(await nativeAgentById(server, 'missing')).toBeNull()
+  })
+})
+
+describe('currentNativeAgent', () => {
+  const context = { page: pageWithSelectedTab('selected-agent'), leapmuxServer: { hubUrl: 'http://hub.invalid', adminToken: 'session', workerId: 'worker-1' } }
+
+  it('reads again after a Worker read that throws, and returns the active agent', async () => {
+    const agent = create(AgentInfoSchema, { id: 'selected-agent', status: AgentStatus.ACTIVE })
+    workerChannel.callWorker
+      .mockRejectedValueOnce(new Error('The Worker channel closed while the Worker reconnected.'))
+      .mockResolvedValue({ agents: [agent] })
+    await expect(currentNativeAgent(context)).resolves.toBe(agent)
+    expect(workerChannel.callWorker).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads again while the agent starts, and returns it once it is active', async () => {
+    const starting = create(AgentInfoSchema, { id: 'selected-agent', status: AgentStatus.STARTING })
+    const active = create(AgentInfoSchema, { id: 'selected-agent', status: AgentStatus.ACTIVE })
+    workerChannel.callWorker
+      .mockResolvedValueOnce({ agents: [starting] })
+      .mockResolvedValueOnce({ agents: [] })
+      .mockResolvedValue({ agents: [active] })
+    await expect(currentNativeAgent(context)).resolves.toBe(active)
+    expect(workerChannel.callWorker).toHaveBeenCalledTimes(3)
   })
 })
 

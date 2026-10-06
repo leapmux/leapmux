@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { clearRecordedToasts, getRecordedToasts } from './helpers/toast'
 import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, treeRow } from './helpers/ui'
 import { showWorkspaceWithAgents } from './helpers/workspace'
@@ -158,15 +159,10 @@ test.describe('file tab close', () => {
     // assertion below tests the UI rather than racing the previous close.
     const fileTabId = await fileTab.getAttribute('data-tab-id')
     expect(fileTabId, 'the file tab must carry its id for the worker probe').toBeTruthy()
-    await expect
-      .poll(async () => (await inspectLastTabCloseViaAPI(
-        hubUrl,
-        adminToken,
-        workerId,
-        TabType.FILE,
-        fileTabId!,
-      )).shouldPrompt)
-      .toBe(true)
+    await retryUntilPass(async () => {
+      const inspection = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.FILE, fileTabId!)
+      expect(inspection.shouldPrompt, 'the Worker treats the file tab as the last tab of the branch').toBe(true)
+    })
 
     // Now it IS the last tab, on a branch with uncommitted work.
     await fileTab.locator('[data-testid="tab-close"]').click()

@@ -25,6 +25,7 @@ import {
   ListTerminalsResponseSchema,
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
 import { API_POLL_INTERVAL_MS, callHub, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
+import { retryUntilPass } from './retryUntilPass'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 import { activeWorkspaceRow, expectAnyVisible, isMaybeVisible, loginViaToken, sidebarSectionHeader } from './ui'
 
@@ -390,8 +391,9 @@ export async function waitForAgentStartupViaAPI(
   intervalMs = API_POLL_INTERVAL_MS,
 ): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
   const deadline = Date.now() + timeoutMs
+  const reads: AgentListReads = {}
   while (true) {
-    const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
+    const agents = await listAgentsForWait(hubUrl, token, workerId, workspaceId, reads)
     // A FAILED startup is terminal, so waiting longer cannot help -- and it is
     // the interesting case: the git-mode work is what failed, so every
     // downstream assertion (the worktree exists, the branch is checked out)
@@ -408,7 +410,7 @@ export async function waitForAgentStartupViaAPI(
     if (Date.now() >= deadline) {
       throw new Error(
         `waitForAgentStartupViaAPI: ${expectedCount} agent(s) did not finish starting within ${timeoutMs}ms `
-        + `(saw ${JSON.stringify(agents)})`,
+        + `(saw ${JSON.stringify(agents)})${lastFailedRead(reads)}`,
       )
     }
     await new Promise(r => setTimeout(r, intervalMs))
@@ -487,16 +489,43 @@ export async function waitForAgentsViaAPI(
   intervalMs = API_POLL_INTERVAL_MS,
 ): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
   const deadline = Date.now() + timeoutMs
+  const reads: AgentListReads = {}
   while (true) {
-    const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
+    const agents = await listAgentsForWait(hubUrl, token, workerId, workspaceId, reads)
     if (agents.length > 0) {
       return agents
     }
     if (Date.now() >= deadline) {
-      throw new Error(`No agents appeared for workspace ${workspaceId} within ${timeoutMs}ms`)
+      throw new Error(`No agents appeared for workspace ${workspaceId} within ${timeoutMs}ms${lastFailedRead(reads)}`)
     }
     await new Promise(r => setTimeout(r, intervalMs))
   }
+}
+
+/** The last read of a wait loop over `listAgentsViaAPI` that threw. */
+interface AgentListReads {
+  lastFailure?: unknown
+}
+
+/**
+ * Read the agents of the workspace for a wait loop. The Hub read and the channel read throw while the Hub or the Worker
+ * restarts, so a read that throws reads as no agent, and `reads` keeps the error for the message of a timeout.
+ */
+async function listAgentsForWait(hubUrl: string, token: string, workerId: string, workspaceId: string, reads: AgentListReads) {
+  try {
+    return await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
+  }
+  catch (error) {
+    reads.lastFailure = error
+    return []
+  }
+}
+
+/** State the last read that threw, as the tail of a timeout message, or '' when no read threw. */
+function lastFailedRead(reads: AgentListReads): string {
+  if (reads.lastFailure === undefined)
+    return ''
+  return `; the last read that failed: ${reads.lastFailure instanceof Error ? reads.lastFailure.message : String(reads.lastFailure)}`
 }
 
 /**
@@ -554,20 +583,35 @@ export async function listAgentsViaAPI(
 
 /**
  * The status of one agent of the workspace, as its Worker reports it, or undefined while the Worker lists no such
- * agent. Poll it with `expect.poll`: the Worker, not the tab bar, is the authority on an agent's state.
+ * agent. The Worker, not the tab bar, is the authority on an agent's state. The Hub read of the tab list throws when
+ * it fails, so a wait on this read uses `waitForAgentStatusViaAPI`, not `expect.poll`.
  */
 export async function agentStatusViaAPI(server: AgentServer, workspaceId: string, agentId: string): Promise<number | undefined> {
   const agents = await listAgentsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
   return agents.find(agent => agent.id === agentId)?.status
 }
 
+/** Wait until the Worker reports `status` for one agent of the workspace. A read that throws starts the next read. */
+export async function waitForAgentStatusViaAPI(server: AgentServer, workspaceId: string, agentId: string, status: AgentStatus): Promise<void> {
+  await retryUntilPass(async () => {
+    expect(await agentStatusViaAPI(server, workspaceId, agentId), `the Worker reports agent ${agentId} as ${AgentStatus[status]}`).toBe(status)
+  })
+}
+
 /**
  * Whether the Worker reports one terminal of the workspace as exited, or undefined while it lists no such terminal.
- * Poll it with `expect.poll`, as `agentStatusViaAPI`.
+ * A wait on this read uses `waitForTerminalExitViaAPI`, as `agentStatusViaAPI` explains.
  */
 export async function terminalExitedViaAPI(server: AgentServer, workspaceId: string, terminalId: string): Promise<boolean | undefined> {
   const terminals = await listTerminalsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
   return terminals.find(terminal => terminal.id === terminalId)?.exited
+}
+
+/** Wait until the Worker reports one terminal of the workspace as exited. A read that throws starts the next read. */
+export async function waitForTerminalExitViaAPI(server: AgentServer, workspaceId: string, terminalId: string): Promise<void> {
+  await retryUntilPass(async () => {
+    expect(await terminalExitedViaAPI(server, workspaceId, terminalId), `the Worker reports terminal ${terminalId} as exited`).toBe(true)
+  })
 }
 
 /**

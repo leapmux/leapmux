@@ -6,6 +6,7 @@ import { nativeModelContextText, nativeModelToolNames } from '../helpers/nativeS
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piWorkflowToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -50,7 +51,10 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     await expect(row).toHaveAttribute('data-status', 'running')
     expect(await workflowGroupHeading(row)).toBe('')
     await modelScript.releaseGate(gate)
-    await expect.poll(async () => (await readNativeSidebarSnapshot(native)).backgroundTasks.find(task => task.id === taskId)?.status).toBe(BackgroundTaskStatus.COMPLETED)
+    await retryUntilPass(async () => {
+      expect((await readNativeSidebarSnapshot(native)).backgroundTasks.find(task => task.id === taskId)?.status, 'the Worker completes the workflow task')
+        .toBe(BackgroundTaskStatus.COMPLETED)
+    })
     await expect.poll(async () => (await modelScript.status()).ruleMatches['the parent receives the actual workflow completion'] ?? 0).toBeGreaterThan(0)
     const completed = await modelScript.status()
     expect(completed.ruleMatches['the first actual workflow child replies']).toBe(1)

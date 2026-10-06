@@ -11,6 +11,7 @@ import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { stepRequest } from './mockModelScript'
 import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
 import { nativeAgentById, nativeModelConversationTurns, nativeTextStep } from './nativeScenario'
+import { retryUntilPass } from './retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, createGitRepo } from './worktree'
 
@@ -96,11 +97,11 @@ export async function resumePickerScenario(
     await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer })).toHaveCount(1)
   }
-  let sessionId = ''
-  await expect.poll(async () => {
-    sessionId = (await nativeAgentById(context, subjectId))?.agentSessionId ?? ''
-    return sessionId
-  }).not.toBe('')
+  const sessionId = await retryUntilPass(async () => {
+    const stored = (await nativeAgentById(context, subjectId))?.agentSessionId ?? ''
+    expect(stored, 'the Worker stores the native session of the first turn').not.toBe('')
+    return stored
+  })
   const originalAnswerRows = await countOriginalAnswerRows(context, subjectId, texts)
   // What the live transcript drew before the close is what the reopened one must
   // draw again: an answer tool can store the answer in rows that render no

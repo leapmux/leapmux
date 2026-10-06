@@ -3,6 +3,7 @@ import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, sendMessage, subagentReportBubble } from '../helpers/ui'
 import { expectReadOnlySubagentReason } from '../helpers/unsupportedSubagent'
@@ -71,20 +72,18 @@ export async function exerciseGooseDelegateTranscript(context: ManagedNativeScen
   // Worker-backed: the child agent exists, with its parent linkage. The read
   // asks the Worker about the child ID of the registry row, because the
   // tab projection of the Hub is empty here.
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const child = await nativeAgentById(context, childId)
-    if (!child)
-      return null
-    return {
+    expect(child && {
       hasParent: child.parentAgentId !== '',
       hasSpawnSpan: child.spawnSpanId !== '',
       acceptsMessages: child.acceptsMessages,
-    }
-  }).toEqual({
-    hasParent: true,
-    hasSpawnSpan: true,
-    // Goose cannot steer a subagent, so the child tab is a read-only
-    // transcript -- the same fact the read-only reason above shows.
-    acceptsMessages: false,
+    }, `the Worker holds the child agent ${childId} with its parent links`).toEqual({
+      hasParent: true,
+      hasSpawnSpan: true,
+      // Goose cannot steer a subagent, so the child tab is a read-only
+      // transcript -- the same fact the read-only reason above shows.
+      acceptsMessages: false,
+    })
   })
 }

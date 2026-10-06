@@ -10,6 +10,7 @@ import { getTestChannel } from './api'
 import { googleFunctionDeclarations, googleLastUserText, googlePartsText } from './googleModelContent'
 import { jsonStringValues } from './jsonStringValues'
 import { nativeToolResult } from './nativeToolResult'
+import { retryUntilPass } from './retryUntilPass'
 
 /** The provider supplies any native final-answer tool through this callback. */
 export type NativeTextStep = (text: string) => MockModelStep
@@ -68,8 +69,12 @@ export function nativeTextStep(context: NativeScenarioContext, text: string): Mo
 /**
  * Read the actual Worker agents of `agentIds`, without the Hub's optimistic tab list.
  * The Worker lists the agents that it holds, so an ID that it does not hold is absent from the result.
- * A failed read throws its error. Inside `expect.poll`, a thrown error starts the next attempt, and the poll reports
- * the last error when it ends.
+ * A failed read throws its error, for example while the Worker reconnects.
+ *
+ * Wait on this read with `retryUntilPass` (`./retryUntilPass.ts`), and put the assertion inside the attempt.
+ * `expect.poll` is not a correct wait here: Playwright calls the poll function outside the `try` that retries a failed
+ * matcher, so the first thrown read ends the poll at once. `retryUntilPass` retries a thrown read and a failed
+ * assertion the same way, and its final failure states the last error.
  */
 export async function nativeAgentsByIds(
   context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
@@ -147,11 +152,13 @@ export async function expectNativeOptionValue(
 /** Resolve the active tab to a successfully started native Worker agent. */
 export async function currentNativeAgent(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<AgentInfo> {
   const agentId = await selectedAgentTabId(context.page)
-  await expect.poll(async () => (await nativeAgentById(context, agentId))?.status).toBe(AgentStatus.ACTIVE)
-  const agent = await nativeAgentById(context, agentId)
-  if (!agent || agent.status !== AgentStatus.ACTIVE)
-    throw new Error('The active native agent did not complete startup.')
-  return agent
+  return retryUntilPass(async () => {
+    const agent = await nativeAgentById(context, agentId)
+    if (!agent)
+      throw new Error(`The Worker holds no native agent ${agentId}.`)
+    expect(agent.status, `the Worker reports the selected native agent ${agentId} as active`).toBe(AgentStatus.ACTIVE)
+    return agent
+  })
 }
 
 /** Read submitted or server-held native context from a recorded model request. */

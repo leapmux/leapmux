@@ -17,6 +17,7 @@ import { callHub, SESSION_COOKIE_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME 
 import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
 import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
+import { retryUntilPass } from './retryUntilPass'
 import { E2E_BROWSER_HOST } from './server'
 import { readEntry, waitForStoredEntry, writeEntry } from './storage'
 import { terminalXterm } from './terminal'
@@ -1357,10 +1358,13 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
   const context = { leapmuxServer: { hubUrl, adminToken: cookie, workerId: tab.workerId } }
   let agent = await nativeAgentById(context, agentId)
   if (agent?.status === AgentStatus.STARTING) {
-    await expect.poll(async () => {
-      agent = await nativeAgentById(context, agentId)
-      return agent !== null && agent.status !== AgentStatus.STARTING
-    }).toBe(true)
+    agent = await retryUntilPass(async () => {
+      const current = await nativeAgentById(context, agentId)
+      if (!current)
+        throw new Error(`The Worker holds no native settings agent ${agentId}.`)
+      expect(current.status, 'the Worker ends the startup of the native settings agent').not.toBe(AgentStatus.STARTING)
+      return current
+    })
   }
   if (agent?.status === AgentStatus.STARTUP_FAILED)
     throw new Error(`The native settings agent failed to start: ${agent.startupError || 'The Worker supplied no startup error.'}`)
@@ -1417,10 +1421,13 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
   await expect(offered).toBeEnabled()
   await offered.click()
   await waitForSettingsIdle(page)
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const current = await nativeAgentById(snapshot.context, snapshot.agent.id)
-    return current !== null && entries.every(([groupId, value]) => nativeOptionValue(current, groupId) === value)
-  }).toBe(true)
+    if (!current)
+      throw new Error(`The Worker holds no native agent ${snapshot.agent.id}.`)
+    expect(Object.fromEntries(entries.map(([groupId]) => [groupId, nativeOptionValue(current, groupId)])), 'the Worker applies every option of the preset')
+      .toEqual(Object.fromEntries(entries))
+  })
 }
 
 /**
@@ -2127,17 +2134,16 @@ export async function expectAgentTabCount(page: Page, count: number): Promise<vo
  * Drag tests need a real rectangle for pointer coordinates. Waiting prevents the unrelated "Could not get bounding boxes" failure.
  */
 export async function boxOf(locator: Locator): Promise<{ x: number, y: number, width: number, height: number }> {
-  // Return the geometry captured inside the poll.
+  // Return the geometry captured inside the wait.
   // A separate read could follow a workspace switch that replaces the tile and tab strip.
-  // expect.poll retries through the global assertion timeout.
-  let box: { x: number, y: number, width: number, height: number } | null = null
-  await expect.poll(async () => {
-    box = await locator.boundingBox()
-    return box !== null
-  }).toBe(true)
-  if (!box)
-    throw new Error(`No bounding box for ${locator}`)
-  return box
+  // `boundingBox` throws when no element appears within the action timeout, as during that replacement, so the wait
+  // retries a read that throws.
+  return retryUntilPass(async () => {
+    const box = await locator.boundingBox()
+    if (!box)
+      throw new Error(`No bounding box for ${locator}`)
+    return box
+  })
 }
 
 /**
@@ -2219,21 +2225,22 @@ export interface ElementBox {
  * Read the element rectangle after movement stops.
  * An anchored popover moves after each underlying layout change. A long list grows across several frames and repositions the popover each time.
  * A sample during movement measures that shift. A click can hit the popover instead of the underlying trigger, which causes failures under load.
- * Two consecutive identical reads prove that movement stopped. `expect.poll` caps the wait at the project timeout.
+ * Two consecutive identical reads prove that movement stopped. A read that throws, as when no element appears within
+ * the action timeout, starts the next attempt.
  */
 export async function stableBox(element: Locator): Promise<ElementBox> {
   let previous: string | null = null
-  let box: ElementBox | null = null
-  await expect.poll(async () => {
-    box = await element.boundingBox()
-    if (!box)
-      return false
+  return retryUntilPass(async () => {
+    const box = await element.boundingBox()
+    if (!box) {
+      previous = null
+      throw new Error('the element reports no bounding box')
+    }
     const key = `${box.x},${box.y},${box.width},${box.height}`
     const settled = key === previous
     previous = key
-    return settled
-  }).toBe(true)
-  if (!box)
-    throw new Error('the element never reported a bounding box')
-  return box
+    if (!settled)
+      throw new Error(`the element moved to ${key}`)
+    return box
+  })
 }

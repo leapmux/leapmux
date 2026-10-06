@@ -16,6 +16,7 @@ import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
 import { currentNativeAgent, nativeAgentById, nativeOptionValue } from '../helpers/nativeScenario'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { isAlive } from '../helpers/processTree'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { withTestWorkspace } from '../helpers/workspace'
@@ -117,7 +118,9 @@ export async function withRegisteredLettaMcp(
   const close = async (agentId: string) => {
     const closed = await closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, agentId)
     expect(closed.failureMessage).toBe('')
-    await expect.poll(() => nativeAgentById(context, agentId)).toBeNull()
+    await retryUntilPass(async () => {
+      expect(await nativeAgentById(context, agentId), 'the Worker lists the closed agent no more').toBeNull()
+    })
   }
   await close(before.id)
   const configuration = configureLettaMcp({ ...workspace, conversationId: before.agentSessionId, servers })

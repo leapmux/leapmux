@@ -18,7 +18,7 @@ import {
   workspaceMenuItem,
   workspaceRow,
 } from './helpers/ui'
-import { agentStatusViaAPI, terminalExitedViaAPI } from './helpers/worktree'
+import { waitForAgentStatusViaAPI, waitForTerminalExitViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, processTest, restartWorker, stopWorker, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
@@ -158,7 +158,7 @@ test.describe('workspace archive', () => {
     const { workspaceId, agentId } = authenticatedWorkspace
     const agentTab = agentTabs(page).first()
     await expect(agentTab).toHaveAttribute('data-tab-id', agentId)
-    await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
+    await waitForAgentStatusViaAPI(leapmuxServer, workspaceId, agentId, AgentStatus.ACTIVE)
     // The answer has to SURVIVE the archive and the resume below, so it is a
     // scripted turn: the transcript is the subject, and a live model would make
     // its content the variable this test cannot control.
@@ -171,8 +171,8 @@ test.describe('workspace archive', () => {
 
     await archiveWorkspaceViaUI(page, workspaceId)
 
-    await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.INACTIVE)
-    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId)).toBe(true)
+    await waitForAgentStatusViaAPI(leapmuxServer, workspaceId, agentId, AgentStatus.INACTIVE)
+    await waitForTerminalExitViaAPI(leapmuxServer, workspaceId, terminalId)
     await expect(agentTab).toBeVisible()
     await expect(terminalTab).toBeVisible()
     await agentTab.click()
@@ -193,8 +193,8 @@ test.describe('workspace archive', () => {
     expect(await page.evaluate(() => (window as unknown as { __archiveRestartCalls?: number }).__archiveRestartCalls)).toBe(0)
 
     await clickWorkspaceMenuItem(page, workspaceId, 'Unarchive')
-    await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
-    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId)).toBe(true)
+    await waitForAgentStatusViaAPI(leapmuxServer, workspaceId, agentId, AgentStatus.ACTIVE)
+    await waitForTerminalExitViaAPI(leapmuxServer, workspaceId, terminalId)
   })
 
   test('should keep file tabs uncloseable in an archived workspace', async ({ page, authenticatedWorkspace }) => {
@@ -303,7 +303,7 @@ processTest.describe('workspace archive reconciliation', () => {
     // This test stops the worker-scoped Worker. The cleanup brings it back after
     // a failure, so a later test of this Playwright worker does not fail for it.
     await withCleanup(async () => {
-      await expect.poll(() => agentStatusViaAPI(separateHubWorker, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
+      await waitForAgentStatusViaAPI(separateHubWorker, workspaceId, agentId, AgentStatus.ACTIVE)
       await sendScriptedTurn(page, modelScript)
 
       await stopWorker(separateHubWorker)
@@ -311,7 +311,7 @@ processTest.describe('workspace archive reconciliation', () => {
       await archiveWorkspaceViaUI(page, workspaceId)
 
       await restartWorker(separateHubWorker)
-      await expect.poll(() => agentStatusViaAPI(separateHubWorker, workspaceId, agentId)).toBe(AgentStatus.INACTIVE)
+      await waitForAgentStatusViaAPI(separateHubWorker, workspaceId, agentId, AgentStatus.INACTIVE)
     }, () => ensureWorkerOnline(separateHubWorker))
   })
 })

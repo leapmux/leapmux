@@ -6,6 +6,7 @@ import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
@@ -241,11 +242,11 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(1)
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_RESUME_TOOL_MARKER' }).first()).toBeVisible()
 
-    let sessionID = ''
-    await expect.poll(async () => {
-      sessionID = (await nativeAgentById({ leapmuxServer }, rootID))?.agentSessionId ?? ''
-      return sessionID
-    }).not.toBe('')
+    const sessionID = await retryUntilPass(async () => {
+      const stored = (await nativeAgentById({ leapmuxServer }, rootID))?.agentSessionId ?? ''
+      expect(stored, 'the Worker stores the native session of the root agent').not.toBe('')
+      return stored
+    })
     await closeAgentViaAPI(hubUrl, adminToken, workerId, rootID)
 
     await openNewAgentDialog(page)

@@ -7,6 +7,7 @@ import { getTestChannel } from '../helpers/api'
 import { exerciseNativeGoalPauseAndResume } from '../helpers/nativeGoalLifecycle'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { writeToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { messageBubbles } from '../helpers/ui'
 
 /** The plan that Grok's Goal Plan Writer writes, in the sections its prompt states. */
@@ -81,10 +82,11 @@ grokTest('records the native user pause and resumes new native goal model work',
       const agent = await currentNativeAgent(native)
       const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
       // `user_paused` states no reason. Each pause of Grok's own states one.
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const response = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: agent.id, limit: 1 })
-        return { status: response.goal?.status, statusDetail: response.goal?.statusDetail }
-      }).toEqual({ status: AgentGoalStatus.PAUSED, statusDetail: '' })
+        expect({ status: response.goal?.status, statusDetail: response.goal?.statusDetail }, 'the Worker holds the goal paused by the reader, with no reason')
+          .toEqual({ status: AgentGoalStatus.PAUSED, statusDetail: '' })
+      })
     },
   })
 })

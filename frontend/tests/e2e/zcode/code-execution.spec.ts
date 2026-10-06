@@ -9,6 +9,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { runNativeToolTurn, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { zcodeCreateWorkflowToolCall, zcodeGetWorkflowRunToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
@@ -37,13 +38,12 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
     await sendMessage(page, modelScript.prompt(`Run the native ${label} workflow script.`))
     await waitForNativeToolSteps(native, start + 3)
     const launch = zcodeWorkflowLaunch(nativeToolResult(await modelScript.requestAt(start + 2), launchCallId))
-    await expect.poll(async () => {
+    await retryUntilPass(async () => {
       const snapshot = await readNativeSidebarSnapshot(native, agent.id)
       const tasks = snapshot.backgroundTasks.filter(task => task.id === launchCallId && task.kind === BackgroundTaskKind.WORKFLOW)
-      if (tasks.length > 1)
-        throw new Error('The native ZCode workflow has repeated task rows.')
-      return tasks[0]?.status
-    }).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
+      expect(tasks.map(task => task.status), 'the Worker holds one task row of the native ZCode workflow, and the row ended')
+        .toEqual([failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED])
+    })
     await waitForAgentIdle(page)
     const readCallId = `native-workflow-read-${label}`
     const readAnswer = `The native ${label} read returned.`

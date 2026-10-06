@@ -11,11 +11,20 @@ import type { ModelScript } from './modelScriptFixture'
 import type { HeldChildCase, HeldChildContext } from './subagentRegistry'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+import { startWaitLimitForTests } from './testDeadline'
+
+/** The end of the wait limit that a failure case starts, so that a wait which never passes ends inside the case. */
+let endWaitLimit: (() => void) | undefined
+
+afterEach(() => {
+  endWaitLimit?.()
+  endWaitLimit = undefined
+})
 
 /** The Worker registry that the fake snapshot read returns, and the order of the reads and model script calls. */
 const registry = vi.hoisted(() => ({ tasks: [] as unknown[], log: [] as string[] }))
@@ -235,21 +244,36 @@ describe('requireRegistryRow', () => {
   })
 
   it('states the missing subagent row in its failure', async () => {
+    endWaitLimit = startWaitLimitForTests(300)
     const view = registry(async () => false)
     await expect(requireRegistryRow(view.page)).rejects.toThrow('the scripted spawn produced no subagent row in the registry')
   })
 
   it('states the missing shell row in its failure', async () => {
+    endWaitLimit = startWaitLimitForTests(300)
     const view = registry(async () => false)
     await expect(requireRegistryRow(view.page, 'shell')).rejects.toThrow('the scripted command produced no shell row in the registry')
   })
 
-  it('keeps the error of a failed row read instead of reporting a missing row', async () => {
+  it('reads again after a row read that throws, and returns the row that then shows', async () => {
+    const reads = [async () => {
+      throw new Error('Element is not attached to the DOM')
+    }, async () => false, async () => true]
+    const view = registry(async () => (reads.shift() ?? (async () => true))())
+    expect(await requireRegistryRow(view.page)).toBe(view.row)
+    expect(reads).toEqual([])
+  })
+
+  it('keeps the error of a row read that always fails as the error and the cause of its failure', async () => {
+    endWaitLimit = startWaitLimitForTests(300)
     const closed = new Error('Target page, context or browser has been closed')
     const view = registry(async () => {
       throw closed
     })
-    await expect(requireRegistryRow(view.page)).rejects.toBe(closed)
+    const failure = await requireRegistryRow(view.page).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message.split('\n')[0]).toBe(closed.message)
+    expect((failure as Error).cause).toBe(closed)
   })
 })
 

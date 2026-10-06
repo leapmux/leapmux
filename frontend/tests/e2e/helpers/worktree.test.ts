@@ -14,7 +14,11 @@ import {
   initGitRepo,
   managedWorktreePath,
   terminalExitedViaAPI,
+  waitForAgentStartupViaAPI,
+  waitForAgentStatusViaAPI,
+  waitForAgentsViaAPI,
   waitForSoleAgentViaAPI,
+  waitForTerminalExitViaAPI,
   waitForWorkerTabTitle,
 } from './worktree'
 
@@ -100,6 +104,59 @@ describe('waitForSoleAgentViaAPI', () => {
       agents: [{ id: 'a-1', status: AgentStatus.ACTIVE }, { id: 'a-2', status: AgentStatus.ACTIVE }],
     }))
     await expect(waitForSoleAgentViaAPI(server, 'ws')).rejects.toThrow('must hold exactly one agent, but its Worker lists 2: a-1, a-2')
+  })
+
+  it('reads again after a Hub read that throws while the Hub restarts', async () => {
+    workspace([{ tabType: 'TAB_TYPE_AGENT', tabId: 'a-1' }], () => ({
+      agents: [{ id: 'a-1', title: 'Agent', workingDir: '/repo', status: AgentStatus.ACTIVE, startupError: '' }],
+    }))
+    vi.mocked(callHub).mockRejectedValueOnce(new Error('fetch failed'))
+    await expect(waitForSoleAgentViaAPI(server, 'ws')).resolves.toMatchObject({ id: 'a-1' })
+    expect(callHub).toHaveBeenCalledTimes(2)
+  })
+
+  it('states the last failed read when no agent appears', async () => {
+    vi.mocked(callHub).mockRejectedValue(new Error('fetch failed'))
+    await expect(waitForAgentsViaAPI(server.hubUrl, server.adminToken, server.workerId, 'ws', 50)).rejects.toThrow('the last read that failed: fetch failed')
+  })
+})
+
+describe('waitForAgentStartupViaAPI', () => {
+  it('reads again after a Hub read that throws, and returns the started agents', async () => {
+    workspace([{ tabType: 'TAB_TYPE_AGENT', tabId: 'a-1' }], () => ({
+      agents: [{ id: 'a-1', title: 'Agent', workingDir: '/repo', status: AgentStatus.ACTIVE, startupError: '' }],
+    }))
+    vi.mocked(callHub).mockRejectedValueOnce(new Error('fetch failed'))
+    await expect(waitForAgentStartupViaAPI(server.hubUrl, server.adminToken, server.workerId, 'ws')).resolves.toHaveLength(1)
+  })
+})
+
+describe('waitForAgentStatusViaAPI', () => {
+  it('reads again after a read that throws and a read with another status', async () => {
+    workspace([{ tabType: 'TAB_TYPE_AGENT', tabId: 'a-1' }], () => ({ agents: [{ id: 'a-1', status: AgentStatus.ACTIVE }] }))
+    vi.mocked(callHub).mockRejectedValueOnce(new Error('fetch failed'))
+    callWorker.mockResolvedValueOnce({ agents: [{ id: 'a-1', status: AgentStatus.STARTING }] })
+    await expect(waitForAgentStatusViaAPI(server, 'ws', 'a-1', AgentStatus.ACTIVE)).resolves.toBeUndefined()
+    expect(callHub).toHaveBeenCalledTimes(3)
+  })
+
+  it('fails with the status that the Worker reports when it never reaches the expected one', async () => {
+    workspace([{ tabType: 'TAB_TYPE_AGENT', tabId: 'a-1' }], () => ({ agents: [{ id: 'a-1', status: AgentStatus.INACTIVE }] }))
+    await expect(waitForAgentStatusViaAPI(server, 'ws', 'a-1', AgentStatus.ACTIVE)).rejects.toThrow('the Worker reports agent a-1 as ACTIVE')
+  })
+})
+
+describe('waitForTerminalExitViaAPI', () => {
+  it('reads again after a read that throws, and ends when the Worker reports the exit', async () => {
+    workspace([{ tabType: 'TAB_TYPE_TERMINAL', tabId: 't-1' }], () => ({ terminals: [{ terminalId: 't-1', title: 'Terminal', status: 0, exited: true }] }))
+    vi.mocked(callHub).mockRejectedValueOnce(new Error('fetch failed'))
+    await expect(waitForTerminalExitViaAPI(server, 'ws', 't-1')).resolves.toBeUndefined()
+    expect(callHub).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails while the Worker reports the terminal as running', async () => {
+    workspace([{ tabType: 'TAB_TYPE_TERMINAL', tabId: 't-1' }], () => ({ terminals: [{ terminalId: 't-1', title: 'Terminal', status: 0, exited: false }] }))
+    await expect(waitForTerminalExitViaAPI(server, 'ws', 't-1')).rejects.toThrow('the Worker reports terminal t-1 as exited')
   })
 })
 

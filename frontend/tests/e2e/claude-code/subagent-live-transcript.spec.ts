@@ -9,16 +9,18 @@ import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { tabById } from '../helpers/ui'
 
 /** Check the actual forwarded child answer and every stored byte after reload. */
 async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<void> {
   const child = await currentNativeAgent(context)
   expect(child.parentAgentId).not.toBe('')
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const parent = await readNativeSidebarSnapshot(context, child.parentAgentId)
-    return parent.backgroundTasks.find(task => task.childAgentId === child.id)?.status
-  }).toBe(BackgroundTaskStatus.COMPLETED)
+    expect(parent.backgroundTasks.find(task => task.childAgentId === child.id)?.status, 'the Worker completes the task of the child')
+      .toBe(BackgroundTaskStatus.COMPLETED)
+  })
   const snapshot = await readNativeMessageSnapshot(context, child.id)
   const answers = snapshot.messages.filter((message) => {
     const body = nativeMessageBody(message)

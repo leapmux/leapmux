@@ -8,6 +8,7 @@ import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { nativeAgentById } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { deepseekHarnessChildReportRule } from './childReports'
 
 export async function finishDeepseekHarnessChild(finishChild: () => Promise<void>, waitForReport: () => Promise<void>): Promise<void> {
@@ -52,27 +53,25 @@ export async function waitForDeepseekHarnessChildReport(context: ManagedNativeSc
   const rule = deepseekHarnessChildReportRule(child.agentSessionId)
   const server = context.leapmuxServer
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const status = await context.modelScript.status()
     const count = status.ruleMatches[rule.name] ?? 0
     if (count > reportNumber)
       throw new Error('The native child produced more parent reports than the scenario expects.')
-    if (count < reportNumber)
-      return false
+    expect(count, 'the native child sent its report to the parent').toBe(reportNumber)
     const reports = status.requests.filter(request => request.rule === rule.name)
     const request = reports[reportNumber - 1]
     if (reports.length !== reportNumber || !request)
       throw new Error('The native child report count does not match its exact recorded requests.')
-    if (!request.response)
-      return false
+    expect(request.response, 'the mock answered the report request').toBeDefined()
     const snapshot = await readNativeMessageSnapshot(context, parentAgentId)
     if (snapshot.agentSessionId !== parent.agentSessionId)
       throw new Error('The native parent Session changed before its child report completed.')
-    if (!deepseekHarnessCompletedReport(request, parent.agentSessionId, snapshot.messages.map(nativeMessageBody)))
-      return false
+    expect(deepseekHarnessCompletedReport(request, parent.agentSessionId, snapshot.messages.map(nativeMessageBody)), 'the Worker stores the completed parent turn of the report')
+      .toBe(true)
     const queue = await channel.callWorker(server.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: parentAgentId })
     if (!queue.snapshot)
       throw new Error('The native parent report has no authoritative Worker input state.')
-    return !queue.snapshot.activeTurn
-  }).toBe(true)
+    expect(queue.snapshot.activeTurn, 'the native parent ended its report turn').toBe(false)
+  })
 }

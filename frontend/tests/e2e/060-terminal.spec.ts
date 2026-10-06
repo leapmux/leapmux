@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
 import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
-import { listTerminalsViaAPI, terminalExitedViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
+import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
 
 test.describe('Terminal', () => {
   // Closing a terminal that is running something is the case the close guard
@@ -180,7 +180,7 @@ test.describe('Terminal', () => {
     await typeInTerminal(page, 'exit')
 
     // Wait until the Worker reports the shell as exited.
-    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, authenticatedWorkspace.workspaceId, terminalId)).toBe(true)
+    await waitForTerminalExitViaAPI(leapmuxServer, authenticatedWorkspace.workspaceId, terminalId)
 
     // The terminal tab should still be visible (not removed)
     await expect(terminalTabs(page)).toBeVisible()

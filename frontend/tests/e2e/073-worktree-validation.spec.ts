@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { expect, test } from './fixtures'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { menuOptionTexts } from './helpers/ui'
 import { chooseGitMode, createGitRepo, openNewWorkspaceDialogAt, setWorkingDir } from './helpers/worktree'
 
@@ -31,10 +32,13 @@ test.describe('repository branch discovery', () => {
     await expect(page.getByLabel('Use current state')).toBeChecked()
     await chooseGitMode(page, 'Switch to branch')
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
-    await expect.poll(async () => {
+    // Each read clicks the menu trigger, which `LoadingMenu` disables while it loads. A click that times out on the
+    // disabled trigger throws, so the wait retries the read.
+    await retryUntilPass(async () => {
       const options = await menuOptionTexts(dialog, 'branch-select-menu')
-      return { beta: options.includes('beta-branch'), alpha: options.includes('alpha-branch') }
-    }).toEqual({ beta: true, alpha: false })
+      expect({ beta: options.includes('beta-branch'), alpha: options.includes('alpha-branch') }, 'the menu lists the branches of the new directory')
+        .toEqual({ beta: true, alpha: false })
+    })
     await dialog.getByRole('button', { name: 'Cancel' }).click()
   })
 
@@ -45,7 +49,9 @@ test.describe('repository branch discovery', () => {
 
     execFileSync('git', ['branch', 'new-after-open'], { cwd: repository })
     await dialog.getByLabel('Refresh directory tree').click()
-    await expect.poll(() => menuOptionTexts(dialog, 'branch-select-menu')).toContain('new-after-open')
+    await retryUntilPass(async () => {
+      expect(await menuOptionTexts(dialog, 'branch-select-menu'), 'the refreshed menu lists the new branch').toContain('new-after-open')
+    })
     await dialog.getByRole('button', { name: 'Cancel' }).click()
   })
 })

@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/worktree'
 
@@ -280,10 +281,10 @@ claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
     // agent named after the plan. Polling the server here is what makes the
     // assertion below about PERSISTENCE rather than about timing.
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    await expect.poll(async () => {
+    await retryUntilPass(async () => {
       const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
-      return agents.map(a => a.title)
-    }).toContain('My Custom Name')
+      expect(agents.map(a => a.title), 'the Worker stores the new agent name').toContain('My Custom Name')
+    })
 
     await page.reload()
     await waitForWorkspaceReady(page)

@@ -2,6 +2,7 @@ import { openAgentViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { nativeAgentsByIds } from './helpers/nativeScenario'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { tabbarLabels } from './helpers/tabLabels'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
 import { expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
@@ -38,7 +39,7 @@ test.describe('Offline close and cross-workspace move', () => {
     const { hubUrl, adminToken, workerId } = separateHubWorker
     // The open agents of `agentIds`, as the Worker lists them. ListAgents excludes a row with `closed_at` set, and
     // reconcileAgents stops the process and marks the row closed in one step, so this read shows the reap.
-    // A failed read throws, and `expect.poll` reads again while a restarted Worker reconnects.
+    // A failed read throws while a restarted Worker reconnects, so the wait runs the read through `retryUntilPass`.
     const openAgentIds = async (agentIds: string[]) =>
       (await nativeAgentsByIds({ leapmuxServer: separateHubWorker }, agentIds)).map(agent => agent.id).sort()
 
@@ -131,8 +132,9 @@ test.describe('Offline close and cross-workspace move', () => {
           // waiting out the hourly interval. The moved agent must survive: its
           // hub-side ownership row never changed, only the tile it hangs off.
           await restartWorker(separateHubWorker)
-          await expect.poll(() => openAgentIds([closedAgentId, movedAgentId]))
-            .toEqual([movedAgentId])
+          await retryUntilPass(async () => {
+            expect(await openAgentIds([closedAgentId, movedAgentId]), 'the Worker reaps the closed agent and keeps the moved one').toEqual([movedAgentId])
+          })
         }, () => ensureWorkerOnline(separateHubWorker))
       })
     })

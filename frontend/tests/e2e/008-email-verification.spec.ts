@@ -11,6 +11,7 @@ import {
   waitForEmailEnabled,
 } from './helpers/api'
 import { withCaptureSmtp } from './helpers/mail'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { hubDataDir } from './helpers/server'
 import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI, submitLoginForm } from './helpers/ui'
 
@@ -21,11 +22,8 @@ test.describe('Email verification', () => {
       await signUpViaUI(page, username, 'password123', 'Verify User', `${username}@test.local`)
       await expect(page).toHaveURL(/\/verify-email/)
 
-      let token = ''
-      await expect.poll(async () => {
-        token = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
-        return token
-      }).not.toBe('')
+      // The read throws while the Hub stores no code yet, so the wait retries it.
+      const token = await retryUntilPass(() => readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username))
       await page.getByTestId('verify-email-code-input').fill(token)
       await page.getByTestId('verify-email-submit').click()
       await expect(page).toHaveURL(/\/$/)

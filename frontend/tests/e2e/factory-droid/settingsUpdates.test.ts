@@ -1,8 +1,9 @@
 import type { Page } from '@playwright/test'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { DroidNativeSettingsUpdate } from '../helpers/droidSettingsFrame'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { startWaitLimitForTests } from '../helpers/testDeadline'
 import { droidSettingsMatch, expectDroidNativeSettings, readDroidNativeSettings } from './settingsUpdates'
 
 /** The stored messages that each Worker read returns, one list for each read. */
@@ -20,10 +21,18 @@ vi.mock('../helpers/nativeMessages', () => ({
 
 vi.mock('../helpers/nativeScenario', () => ({ selectedAgentTabId: async () => 'droid-agent' }))
 
-vi.mock('@playwright/test', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@playwright/test')>()
-  return { ...actual, expect }
+/** The end of the test record that limits a wait which never passes. */
+let endWaitLimit: (() => void) | undefined
+
+afterEach(() => {
+  endWaitLimit?.()
+  endWaitLimit = undefined
 })
+
+/** Limit the wait of the check to a short time, so that a check that never passes fails inside the unit test. */
+function limitWait(): void {
+  endWaitLimit = startWaitLimitForTests(500)
+}
 
 function update(fields: Partial<DroidNativeSettingsUpdate>): DroidNativeSettingsUpdate {
   return { requestId: undefined, modelId: undefined, reasoningEffort: undefined, interactionMode: undefined, autonomyLevel: undefined, ...fields }
@@ -99,13 +108,15 @@ describe('expectDroidNativeSettings', () => {
   })
 
   it('fails with the settings events that Droid reported', async () => {
+    limitWait()
     worker.reads = [[storedMessage({ type: 'settings_updated', requestId: 'leapmux-1', settings: { modelId: 'model-a' } })]]
     await expect(expectDroidNativeSettings(context, { modelId: 'model-b' })).rejects.toThrow(/model-b.*model-a/)
   })
 
-  it('states that no read succeeded when every read fails', async () => {
+  it('states the failed read when every read fails', async () => {
+    limitWait()
     worker.reads = [new Error('The Worker read failed.')]
-    await expect(expectDroidNativeSettings(context, { modelId: 'model-b' })).rejects.toThrow('no read of the stored messages succeeded')
+    await expect(expectDroidNativeSettings(context, { modelId: 'model-b' })).rejects.toThrow('The Worker read failed.')
   })
 
   it('refuses an expectation without a setting before it reads anything', async () => {

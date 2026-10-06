@@ -20,6 +20,7 @@ import { cleanupOnFailure } from './cleanup'
 import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
+import { retryUntilPass } from './retryUntilPass'
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
@@ -78,8 +79,9 @@ export interface RowFilter {
  * Wait for the first visible registry row of `kind` and return it. The spec fails when no row appears.
  *
  * Every caller scripts the spawn or the command against the mock, so a missing row is a product or script defect,
- * and a skip would hide it. The poll expands the section on each attempt, because a section can collapse while it
- * hydrates. A failed read, such as a closed page, keeps its own error in the poll's report.
+ * and a skip would hide it. The wait expands the section on each attempt, because a section can collapse while it
+ * hydrates. An expand click that fails while the section rerenders starts the next attempt, and the final failure
+ * states the last error.
  *
  * Do not wait for the agent to become idle before this call: the thinking indicator stays visible while a background
  * task runs, so that wait blocks on the task that the caller wants to inspect.
@@ -89,14 +91,13 @@ export async function requireRegistryRow(
   kind: 'subagent' | 'shell' = 'subagent',
 ): Promise<Locator> {
   const row = page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).first()
-  await expect.poll(async () => {
+  const missing = kind === 'shell'
+    ? 'the scripted command produced no shell row in the registry'
+    : 'the scripted spawn produced no subagent row in the registry'
+  await retryUntilPass(async () => {
     await expandBackgroundTasksSection(page)
-    return row.isVisible()
-  }, {
-    message: kind === 'shell'
-      ? 'the scripted command produced no shell row in the registry'
-      : 'the scripted spawn produced no subagent row in the registry',
-  }).toBe(true)
+    expect(await row.isVisible(), missing).toBe(true)
+  })
   return row
 }
 

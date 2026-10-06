@@ -2,6 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { exerciseNativeReadOnlyPlan } from '../helpers/nativeReadOnlyPlan'
 import { currentNativeAgent, nativeModelContextText, nativeModelToolNames, nativeOptionValue } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
 import { expectNoPlanReview } from '../helpers/unsupportedPlanMode'
 
@@ -24,7 +25,9 @@ export interface OpenCodeFamilyPlan {
 export async function exerciseOpenCodeFamilyReadOnlyPlan(context: ManagedNativeScenarioContext, plan: OpenCodeFamilyPlan): Promise<void> {
   const { page } = context
   const primaryAgent = async () => nativeOptionValue(await currentNativeAgent(context), 'primaryAgent')
-  await expect.poll(primaryAgent).toBe(plan.defaultPrimaryAgent)
+  await retryUntilPass(async () => {
+    expect(await primaryAgent(), 'the session starts on its default primary agent').toBe(plan.defaultPrimaryAgent)
+  })
   await expectNoPlanReview(context, {
     relatedProof: () => exerciseNativeReadOnlyPlan(context, {
       preparePlan: async () => {

@@ -8,6 +8,7 @@ import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { reopenFromSessionPicker } from '../helpers/nativeResume'
 import { nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo } from '../helpers/worktree'
 
@@ -40,10 +41,11 @@ diracTest.describe('Dirac session resume', () => {
       const held = await modelScript.waitForGate(diracGate)
       diracGateHeld = true
       expect(JSON.stringify(stepRequest(held, progressStep + 1).body)).toContain(firstAnswer)
-      await expect.poll(async () => {
-        sessionId = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, subjectId))?.agentSessionId ?? ''
-        return sessionId
-      }).not.toBe('')
+      sessionId = await retryUntilPass(async () => {
+        const stored = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, subjectId))?.agentSessionId ?? ''
+        expect(stored, 'the Worker stores the native session of the held turn').not.toBe('')
+        return stored
+      })
       await closeAgentViaAPI(hubUrl, adminToken, workerId, subjectId)
     }
     finally {

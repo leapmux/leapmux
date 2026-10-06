@@ -5,6 +5,7 @@ import { CODEX_ITEM } from '../../../src/generated/contracts/codex-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 
 /**
  * Whether the Worker stored the start of a native Codex command item.
@@ -28,8 +29,8 @@ export function codexCommandStarted(messages: readonly AgentChatMessage[], sessi
 /** Resolve when the Worker holds the start of a Codex command item of the active agent. */
 export async function waitForCodexCommandStart(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<void> {
   const agent = await currentNativeAgent(context)
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const snapshot = await readNativeMessageSnapshot(context, agent.id)
-    return codexCommandStarted(snapshot.messages, snapshot.agentSessionId)
-  }).toBe(true)
+    expect(codexCommandStarted(snapshot.messages, snapshot.agentSessionId), 'the Worker holds the start of the Codex command item').toBe(true)
+  })
 }

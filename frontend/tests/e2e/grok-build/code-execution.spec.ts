@@ -10,6 +10,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, waitForAgentIdle } from '../helpers/ui'
@@ -54,8 +55,13 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
     expect(launch.name).toBe(name)
     const path = grokWorkflowManifestPath(launch, home, agent.agentSessionId)
     expect(readFileSync(launch.scriptPath, 'utf8')).toBe(source)
-    await expect.poll(() => grokWorkflowCompletion(readGrokWorkflowManifest(path), launch)?.status).toBe(failed ? 'failed' : 'completed')
-    const manifest = readGrokWorkflowManifest(path)
+    // Grok writes the manifest while the workflow runs, so a read can find the file absent or half written. The read
+    // throws then, and the wait retries it.
+    const manifest = await retryUntilPass(() => {
+      const read = readGrokWorkflowManifest(path)
+      expect(grokWorkflowCompletion(read, launch)?.status, 'the Grok workflow manifest stores the final status').toBe(failed ? 'failed' : 'completed')
+      return read
+    })
     const completion = grokWorkflowCompletion(manifest, launch)
     if (!isObject(manifest) || !isObject(manifest.state) || typeof manifest.state.objective !== 'string')
       throw new Error('The native Grok workflow manifest has no objective.')

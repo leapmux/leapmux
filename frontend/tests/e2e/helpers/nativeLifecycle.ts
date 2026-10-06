@@ -21,6 +21,7 @@ import { currentNativeAgent, nativeAgentById, nativeScenarioModelContextText, na
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { isAlive, listProcesses } from './processTree'
 import { bashToolCall } from './providerToolCalls'
+import { retryUntilPass } from './retryUntilPass'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
@@ -247,7 +248,9 @@ export async function exerciseCloseAgent(
     await expect.poll(() => owned.filter(isAlive)).toEqual([])
     expect(isAlive(ownership.workerPid)).toBe(true)
     // ListAgents omits a row only after the Worker records its completed close.
-    await expect.poll(() => nativeAgentById(context, agent.id)).toBeNull()
+    await retryUntilPass(async () => {
+      expect(await nativeAgentById(context, agent.id), 'the Worker lists the closed agent no more').toBeNull()
+    })
   }
   finally {
     if (toolPid > 0 && isAlive(toolPid))
@@ -284,7 +287,9 @@ export async function exerciseSessionReset(
   expect(before.agentSessionId).not.toBe('')
   await sendMessage(context.page, options.command ?? '/clear')
   await expect(visibleOnly(context.page.getByText('Context cleared', { exact: true })).first()).toBeVisible()
-  await expect.poll(async () => (await nativeAgentById(context, before.id))?.agentSessionId ?? '').not.toBe(before.agentSessionId)
+  await retryUntilPass(async () => {
+    expect((await nativeAgentById(context, before.id))?.agentSessionId ?? '', 'the Worker starts a new native session').not.toBe(before.agentSessionId)
+  })
   const next = await sendNativeAnswer(context, 'Reply in the new native session.', `RESETNEWANSWER${marker}`)
   const nativeContext = nativeScenarioModelContextText(context, next)
   expect(nativeContext).not.toContain(prompt)
@@ -389,17 +394,20 @@ export async function exerciseAgentStartup(
     await wrapper.entry
     if (options.launch.lazy) {
       // A lazy provider can accept stdin before its first process starts reading it.
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const queue = await readQueue()
-        return queue.activeTurn || queue.items.some(item => item.text.includes(prompt))
-      }).toBe(true)
+        expect(queue.activeTurn || queue.items.some(item => item.text.includes(prompt)), 'the Worker started the turn or queued the prompt').toBe(true)
+      })
     }
     else {
       // The dispatcher reserves this item, then waits for native startup before it can deliver the input.
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const queue = await readQueue()
-        return queue.items.filter(item => item.text.includes(prompt)).map(item => ({ state: item.state, reserved: queue.activeTurn && !queue.activeTurnSteerable }))
-      }).toEqual([{ state: AgentInputState.DISPATCHING, reserved: true }])
+        expect(
+          queue.items.filter(item => item.text.includes(prompt)).map(item => ({ state: item.state, reserved: queue.activeTurn && !queue.activeTurnSteerable })),
+          'the Worker reserves the queued prompt while native startup waits',
+        ).toEqual([{ state: AgentInputState.DISPATCHING, reserved: true }])
+      })
       await expect(context.page.getByTestId('agent-input-queue')).toContainText(prompt)
     }
     await expect(editor).toHaveText('')
@@ -413,11 +421,15 @@ export async function exerciseAgentStartup(
         await expect(userBubbles(context.page).filter({ hasText: prompt }).first()).toBeVisible()
       }
       else {
-        await expect.poll(async () => (await nativeAgentById(privateContext, agentId))?.status).toBe(AgentStatus.STARTUP_FAILED)
+        await retryUntilPass(async () => {
+          expect((await nativeAgentById(privateContext, agentId))?.status, 'the Worker reports the failed startup').toBe(AgentStatus.STARTUP_FAILED)
+        })
         await expect(context.page.getByTestId('agent-startup-error')).toBeVisible()
         expect((await nativeAgentById(privateContext, agentId))?.startupError).not.toBe('')
-        await expect.poll(async () => (await readQueue()).items.filter(item => item.text.includes(prompt)).map(item => item.state))
-          .toEqual([AgentInputState.FAILED])
+        await retryUntilPass(async () => {
+          expect((await readQueue()).items.filter(item => item.text.includes(prompt)).map(item => item.state), 'the Worker fails the queued prompt')
+            .toEqual([AgentInputState.FAILED])
+        })
         await expect(context.page.getByTestId('agent-input-queue')).toContainText(prompt)
         await expect(context.page.getByTestId('agent-input-queue')).toContainText('Failed')
       }

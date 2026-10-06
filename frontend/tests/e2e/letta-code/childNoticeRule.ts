@@ -7,6 +7,7 @@ import { escapeRegExp } from '../../../src/lib/regexp'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { nativeToolResult } from '../helpers/nativeToolResult'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 
 export interface LettaChildLaunch {
   spawnCallId: string
@@ -118,14 +119,15 @@ export async function registerLettaChildNoticeRule(context: ManagedNativeScenari
     }
     return false
   }).toBe(true)
-  let childId = ''
-  await expect.poll(async () => {
-    const rows = (await readNativeSidebarSnapshot(context, parent.id)).backgroundTasks.filter(task => task.kind === BackgroundTaskKind.SUBAGENT && task.title === options.description && task.childAgentId !== '')
-    if (rows.length > 1)
-      throw new Error('The Letta notification matches more than one actual child row.')
-    childId = rows[0]?.id ?? ''
-    return childId !== ''
-  }).toBe(true)
+  const rows = await retryUntilPass(async () => {
+    const found = (await readNativeSidebarSnapshot(context, parent.id)).backgroundTasks.filter(task => task.kind === BackgroundTaskKind.SUBAGENT && task.title === options.description && task.childAgentId !== '')
+    expect(found.length, 'the Worker holds the actual child row of the Letta notification').toBeGreaterThan(0)
+    return found
+  })
+  const [row, ...others] = rows
+  if (!row || others.length > 0)
+    throw new Error('The Letta notification matches more than one actual child row.')
+  const childId = row.id
   if (!launch)
     throw new Error('The Letta notification has no matching actual Agent receipt.')
   const rule = lettaChildNoticeRule(launch, childId, options)

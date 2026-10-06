@@ -7,6 +7,7 @@ import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { bashToolCall } from './providerToolCalls'
+import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
 import { expectSteeredReply, queuedInputRow, steerQueuedInput } from './steer'
 import { createToolOutputControl } from './toolOutputControl'
@@ -41,7 +42,9 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
     await sendMessage(context.page, context.modelScript.prompt('Run the controlled waiting command, then reply with one word: finished.'))
     await context.modelScript.waitForSteps(start + 1)
     await output.waitForFirstOutput()
-    await expect.poll(async () => (await nativeAgentById(context, agent.id))?.activityState).toBe(AgentActivityState.WORKING)
+    await retryUntilPass(async () => {
+      expect((await nativeAgentById(context, agent.id))?.activityState, 'the Worker reports the agent as working').toBe(AgentActivityState.WORKING)
+    })
     if (options.expectDisplayedOutput ?? true)
       await expect(messageContents(context.page).filter({ hasText: output.firstLiveTail }).first()).toBeVisible()
     await expect(context.page.locator('[data-testid="interrupt-button"]:visible')).toBeVisible()
@@ -135,10 +138,12 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
     await sendMessage(context.page, context.modelScript.prompt(nextPrompt))
     const readQueue = async () => channel.callWorker(server.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })
     // The held turn is active, so the Worker lets the queued head preempt it.
-    await expect.poll(
-      async () => (await readQueue()).snapshot?.items.filter(item => item.text.includes(nextPrompt)).map(item => ({ state: item.state, canSteer: item.canSteer, canPreempt: item.canPreempt })),
-      { message: 'the queued prompt waits, offers no steer, and can preempt the held turn' },
-    ).toEqual([{ state: AgentInputState.QUEUED, canSteer: false, canPreempt: true }])
+    await retryUntilPass(async () => {
+      expect(
+        (await readQueue()).snapshot?.items.filter(item => item.text.includes(nextPrompt)).map(item => ({ state: item.state, canSteer: item.canSteer, canPreempt: item.canPreempt })),
+        'the queued prompt waits, offers no steer, and can preempt the held turn',
+      ).toEqual([{ state: AgentInputState.QUEUED, canSteer: false, canPreempt: true }])
+    })
     const item = (await readQueue()).snapshot?.items.find(candidate => candidate.text.includes(nextPrompt))
     if (!item)
       throw new Error('The unsupported steering probe has no queued Worker input.')

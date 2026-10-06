@@ -16,6 +16,7 @@ import { createNativePermissionFileWrite, exerciseNativePermissionDecision } fro
 import { nativeAgentById, nativeModelInstructionText } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { nativeToolResult } from './nativeToolResult'
+import { retryUntilPass } from './retryUntilPass'
 import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { chooseSettingsOption, tabById, waitForSettingsIdle } from './ui'
@@ -89,9 +90,13 @@ export async function exerciseNativeWorkspaceTrustLimit(
     let agentId = ''
     const expectedStatus = options.startup === 'failed' ? AgentStatus.STARTUP_FAILED : AgentStatus.ACTIVE
     const completeStartup = async () => {
-      await expect.poll(async () => (await nativeAgentById(privateContext, agentId))?.status).toBe(expectedStatus)
+      const agent = await retryUntilPass(async () => {
+        const current = await nativeAgentById(privateContext, agentId)
+        expect(current?.status, 'the Worker ends the startup with the expected status').toBe(expectedStatus)
+        return current
+      })
       if (options.startup === 'failed')
-        expect((await nativeAgentById(privateContext, agentId))?.startupError).toContain(options.startupError)
+        expect(agent?.startupError).toContain(options.startupError)
     }
     await expectNoNativeStartupControl(privateContext, {
       testId: 'control-banner',

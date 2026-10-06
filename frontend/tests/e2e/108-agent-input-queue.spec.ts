@@ -169,7 +169,7 @@ test.describe('agent input queue', () => {
       })
 
       // Wait for the Worker snapshot to confirm the new order. It can arrive after the pointer lifts.
-      await expect.poll(async () => (await rows.first().textContent())?.includes('second queued')).toBe(true)
+      await expect(rows.first()).toContainText('second queued')
     })
   })
 

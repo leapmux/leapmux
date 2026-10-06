@@ -11,6 +11,7 @@ import { currentNativeAgent, nativeAgentById, nativeModelToolNames } from '../he
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { qoderWorkflowToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
@@ -81,11 +82,11 @@ qoderTest('executes native Workflow code and preserves the computed result and s
       if (launch.sessionId !== agent.agentSessionId)
         throw new Error('The Qoder Workflow launch changed the native session.')
       const rowKey = `workflow:${launch.sessionId}:${launch.callId}`
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
         evidence.tasks = tasks
-        return Boolean(tasks.find(task => task.id === rowKey)?.endedAt)
-      }).toBe(true)
+        expect(Boolean(tasks.find(task => task.id === rowKey)?.endedAt), 'the Worker ends the task row of the Qoder Workflow').toBe(true)
+      })
       await expect.poll(async () => {
         const status = await modelScript.status()
         evidence.modelRequests = status.requests

@@ -21,6 +21,7 @@ import {
   reopenedNativeAgentVerdict,
   reopenFromSessionPicker,
 } from './nativeResume'
+import { startWaitLimitForTests } from './testDeadline'
 
 /** The poll fixture reads a value at most this many times, as a bounded stand-in for the Playwright timeout. */
 const POLL_ATTEMPTS = 5
@@ -453,10 +454,24 @@ describe('expectReopenedNativeAgent', () => {
   })
 
   it('fails when the Worker never ends the startup', async () => {
+    const end = startWaitLimitForTests(300)
+    try {
+      const { page } = selectedTabPage([['reopened']])
+      calls.agent.mockResolvedValue(agent({ status: AgentStatus.STARTING, agentSessionId: '' }))
+      await expect(expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).rejects.toThrow('The Worker must end the startup of the reopened agent.')
+      expect(calls.agent.mock.calls.length).toBeGreaterThan(1)
+    }
+    finally {
+      end()
+    }
+  })
+
+  it('reads again after a Worker read that throws while the Worker reconnects', async () => {
     const { page } = selectedTabPage([['reopened']])
-    calls.agent.mockResolvedValue(agent({ status: AgentStatus.STARTING, agentSessionId: '' }))
-    await expect(expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).rejects.toThrow('The Worker must end the startup of the reopened agent.')
-    expect(calls.agent).toHaveBeenCalledTimes(POLL_ATTEMPTS)
+    const reopened = agent({})
+    calls.agent.mockRejectedValueOnce(new Error('The Worker channel closed.')).mockResolvedValue(reopened)
+    expect(await expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).toBe(reopened)
+    expect(calls.agent).toHaveBeenCalledTimes(2)
   })
 })
 

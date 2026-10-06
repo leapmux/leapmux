@@ -4,6 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { agentTabs, ASSISTANT_BUBBLE_SELECTOR, expectAgentTabCount, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
@@ -62,10 +63,12 @@ claudeTest.describe('Claude subagent background tasks', () => {
 
     // 5. Worker-backed: the child agent exists, links its parent, and holds a
     //    spawn span ID. Query the worker directly for that tab ID.
-    await expect.poll(async () => await nativeAgentById({ leapmuxServer }, childTabId) !== null).toBe(true)
-    const child = await nativeAgentById({ leapmuxServer }, childTabId)
-    if (!child)
-      throw new Error('The Worker lost the child agent after it reported the agent.')
+    const child = await retryUntilPass(async () => {
+      const found = await nativeAgentById({ leapmuxServer }, childTabId)
+      if (!found)
+        throw new Error(`The Worker holds no child agent ${childTabId}.`)
+      return found
+    })
     expect(child.parentAgentId).toBe(parentTabId)
     expect(child.spawnSpanId).not.toBe('')
 

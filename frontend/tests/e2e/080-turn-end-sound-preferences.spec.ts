@@ -3,6 +3,7 @@ import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect, test } from './fixtures'
 import { nativeAgentById } from './helpers/nativeScenario'
 import { openPreferencesAs, preferenceScopeChip, setPreferenceScope } from './helpers/preferences'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet, sendToolUsingTurn, waitForIdleSoundReceipt } from './helpers/turnEndSound'
 import { agentTabs, expectAgentTabCount, getBrowserPref, openAgentViaUI, openSettingsAt, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
@@ -132,7 +133,9 @@ test.describe('Turn End Sound Preferences', () => {
     // Close it. Closing a tab whose turn already ended must not re-ring.
     await tabs.first().locator('[data-testid="tab-close"]').click()
     await expectAgentTabCount(page, 1)
-    await expect.poll(() => nativeAgentById({ leapmuxServer }, closingId)).toBeNull()
+    await retryUntilPass(async () => {
+      expect(await nativeAgentById({ leapmuxServer }, closingId), 'the Worker lists the closed agent no more').toBeNull()
+    })
 
     await expectDoorbellQuiet(page, 1)
   })

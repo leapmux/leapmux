@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentActivityState, AgentInputState, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseQueuedTurnWithoutSteering, exerciseSteerAfterTool, exerciseSteerBeforeTool } from './nativeToolSteering'
 import { bashToolCall } from './providerToolCalls'
+import { startWaitLimitForTests } from './testDeadline'
 
 /** The browser, Worker and output steps that a scenario takes, in order, and the state of the doubles. */
 const harness = vi.hoisted(() => ({
@@ -302,12 +303,18 @@ describe('exerciseQueuedTurnWithoutSteering', () => {
   })
 
   it('fails when the queued head cannot preempt the held turn', async () => {
-    const { script } = fakeScript(0, turns)
-    script.waitForGate.mockImplementation(async () => {
-      harness.queueNextSend = { state: AgentInputState.QUEUED, canSteer: false, canPreempt: false }
-    })
-    await expect(exerciseQueuedTurnWithoutSteering(context(script))).rejects.toThrow('the queued prompt waits, offers no steer, and can preempt the held turn')
-    expect(harness.events).not.toContain('worker:SteerQueuedAgentInput')
+    const end = startWaitLimitForTests(300)
+    try {
+      const { script } = fakeScript(0, turns)
+      script.waitForGate.mockImplementation(async () => {
+        harness.queueNextSend = { state: AgentInputState.QUEUED, canSteer: false, canPreempt: false }
+      })
+      await expect(exerciseQueuedTurnWithoutSteering(context(script))).rejects.toThrow('the queued prompt waits, offers no steer, and can preempt the held turn')
+      expect(harness.events).not.toContain('worker:SteerQueuedAgentInput')
+    }
+    finally {
+      end()
+    }
   })
 
   it('fails when the held turn already read the queued prompt', async () => {

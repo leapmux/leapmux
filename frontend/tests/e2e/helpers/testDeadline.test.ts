@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { currentTestDeadline, startTestDeadline, WAIT_REPORT_MARGIN_MS, waitTimeoutBeforeTestDeadline } from './testDeadline'
+import { currentTestDeadline, startTestDeadline, startWaitLimitForTests, WAIT_REPORT_MARGIN_MS, waitTimeoutBeforeTestDeadline } from './testDeadline'
 
 const ends: Array<() => void> = []
 
@@ -54,6 +54,25 @@ describe('currentTestDeadline', () => {
 describe('startTestDeadline', () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY])('rejects the start %s, which states no time', (startedAt) => {
     expect(() => startTestDeadline(startedAt, () => 120_000)).toThrow('A test start must be a finite time')
+    expect(currentTestDeadline()).toBeUndefined()
+  })
+})
+
+describe('startWaitLimitForTests', () => {
+  it('limits a wait to the stated time from now, and the end function removes the limit', () => {
+    const before = Date.now()
+    const end = startWaitLimitForTests(300)
+    ends.push(end)
+    const limit = waitTimeoutBeforeTestDeadline()
+    expect(limit).toBeGreaterThan(0)
+    expect(limit).toBeLessThanOrEqual(300)
+    expect(limit).toBeGreaterThanOrEqual(300 - (Date.now() - before))
+    end()
+    expect(waitTimeoutBeforeTestDeadline()).toBe(0)
+  })
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('refuses the limit %s, which states no finite wait', (limitMs) => {
+    expect(() => startWaitLimitForTests(limitMs)).toThrow('A wait limit must be a positive number of milliseconds')
     expect(currentTestDeadline()).toBeUndefined()
   })
 })

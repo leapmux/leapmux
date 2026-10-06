@@ -5,6 +5,7 @@ import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSessionRow, openStoredSessionRow, sessionMenu, sessionMenuTrigger } from '../helpers/nativeResume'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI } from '../helpers/worktree'
@@ -291,10 +292,10 @@ test.describe('Agent Session Resume', () => {
       // Polled through ListAgents, a WORKER-backed RPC. The hub's tab list and
       // the local tab state are optimistic CRDT state and would report a
       // healthy tab for an agent whose process is gone.
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-        return agents.map(a => a.status)
-      }).toEqual([AgentStatus.ACTIVE])
+        expect(agents.map(a => a.status), 'the restarted Worker starts the one agent of the workspace').toEqual([AgentStatus.ACTIVE])
+      })
     })
   })
 

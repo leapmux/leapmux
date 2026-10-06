@@ -6,6 +6,7 @@ import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from './nativeConversation'
 import { currentNativeAgent, expectNativeOptionValue, nativeAgentById, nativeOptionGroup, nativeOptionValue } from './nativeScenario'
+import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
 import { chooseSettingsOption, expectSettingsOptionChosen, offeredSettingsOptions, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
@@ -23,15 +24,15 @@ interface NativeOptionProof {
  */
 export async function waitForNativeOptionApplied(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, groupId: string, value: string): Promise<AgentInfo> {
   const { id } = await currentNativeAgent(context)
-  await expect.poll(async () => {
+  return retryUntilPass(async () => {
     const current = await nativeAgentById(context, id)
-    return current?.status === AgentStatus.ACTIVE && current.agentSessionId !== ''
-      && nativeOptionValue(current, groupId) === value
-  }).toBe(true)
-  const applied = await nativeAgentById(context, id)
-  if (!applied)
-    throw new Error(`The native agent ${id} disappeared after it applied ${groupId}=${value}.`)
-  return applied
+    if (!current)
+      throw new Error(`The Worker holds no native agent ${id}.`)
+    expect(current.status, `the native agent ${id} is active`).toBe(AgentStatus.ACTIVE)
+    expect(current.agentSessionId, `the native agent ${id} has a native session`).not.toBe('')
+    expect(nativeOptionValue(current, groupId), `the Worker applied ${groupId}=${value}`).toBe(value)
+    return current
+  })
 }
 
 /** Restore one selected setting and prove its next actual native request. */

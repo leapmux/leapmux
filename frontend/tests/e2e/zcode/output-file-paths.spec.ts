@@ -13,6 +13,7 @@ import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { checkNativeOutputReceipt, expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { zcodeCreateWorkflowToolCall, zcodeGetWorkflowRunToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { sendMessage } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
@@ -37,12 +38,11 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   await sendMessage(native.page, native.modelScript.prompt('Run the native large-output workflow once.'))
   await waitForNativeToolSteps(native, launchStart + 3)
   const launch = zcodeWorkflowLaunch(nativeToolResult(await native.modelScript.requestAt(launchStart + 2), launchId))
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const tasks = (await readNativeSidebarSnapshot(native, agent.id)).backgroundTasks.filter(task => task.id === launchId && task.kind === BackgroundTaskKind.WORKFLOW)
-    if (tasks.length > 1)
-      throw new Error('The native ZCode output path workflow has repeated task rows.')
-    return tasks[0]?.status
-  }).toBe(BackgroundTaskStatus.COMPLETED)
+    expect(tasks.map(task => task.status), 'the Worker holds one task row of the native ZCode output path workflow, and the row completed')
+      .toEqual([BackgroundTaskStatus.COMPLETED])
+  })
   const callId = `native-output-path-read-${randomUUID()}`
   const { resultRequest } = await runNativeToolTurn(native, {
     toolCalls: [zcodeGetWorkflowRunToolCall(callId, launch.runId)],

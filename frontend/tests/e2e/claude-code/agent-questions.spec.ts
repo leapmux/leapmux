@@ -9,6 +9,7 @@ import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
 
@@ -429,10 +430,14 @@ claudeTest.describe('Agent Settings', () => {
     await expect(banner).toContainText('Pick a color')
     // The open question holds the Worker in WAITING_FOR_USER. The move into that
     // state was the turn's settle edge (see agentActivity.store `apply`).
-    await expect.poll(async () => (await nativeAgentById(native, agent.id))?.activityState).toBe(AgentActivityState.WAITING_FOR_USER)
+    await retryUntilPass(async () => {
+      expect((await nativeAgentById(native, agent.id))?.activityState, 'the Worker holds the agent waiting for the user').toBe(AgentActivityState.WAITING_FOR_USER)
+    })
     const after = await observeSettledReceipts(page)
     await banner.getByTestId('control-interrupt').click()
-    await expect.poll(async () => (await nativeAgentById(native, agent.id))?.activityState).toBe(AgentActivityState.IDLE)
+    await retryUntilPass(async () => {
+      expect((await nativeAgentById(native, agent.id))?.activityState, 'the Worker reports the interrupted agent as idle').toBe(AgentActivityState.IDLE)
+    })
     // The interrupt withdraws the question, so no banner stays on the page, visible or hidden.
     await expectNoControlBanner(page)
     await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
@@ -446,7 +451,10 @@ claudeTest.describe('Agent Settings', () => {
     // working. The stop therefore rings no second alert and records no receipt.
     expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    await expect.poll(async () => (await channel.callWorker(leapmuxServer.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })).snapshot?.paused).toBe(true)
+    await retryUntilPass(async () => {
+      const queue = await channel.callWorker(leapmuxServer.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })
+      expect(queue.snapshot?.paused, 'the Worker pauses the input queue after the interrupt').toBe(true)
+    })
     await resumePausedQueue(page)
 
     // Verify the agent is still responsive after interrupt by sending another message

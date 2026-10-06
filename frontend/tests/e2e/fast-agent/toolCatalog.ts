@@ -9,6 +9,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { waitForAgentIdle } from '../helpers/ui'
 
 export interface FastAgentCatalogTool {
@@ -131,18 +132,17 @@ async function nativeToolsCommand(context: ManagedNativeScenarioContext, command
   const before = await readNativeMessageSnapshot(context, agent.id)
   const modelBefore = await context.modelScript.status()
   await sendFastAgentCatalogCommand(context.leapmuxServer, agent.id, command)
-  let response: string | null = null
-  await expect.poll(async () => {
-    response = fastAgentCatalogCommandReply(before, await readNativeMessageSnapshot(context, agent.id), heading)
-    return response !== null
-  }).toBe(true)
+  const response = await retryUntilPass(async () => {
+    const reply = fastAgentCatalogCommandReply(before, await readNativeMessageSnapshot(context, agent.id), heading)
+    if (reply === null)
+      throw new Error('The native Fast Agent catalog command supplied no completed response.')
+    return reply
+  })
   await waitForAgentIdle(context.page)
   assertFastAgentCatalogNoInference(modelBefore, await context.modelScript.status())
   const after = await currentNativeAgent(context)
   expect(after.id).toBe(agent.id)
   expect(after.agentSessionId).toBe(agent.agentSessionId)
-  if (response === null)
-    throw new Error('The native Fast Agent catalog command supplied no completed response.')
   return response
 }
 

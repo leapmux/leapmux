@@ -7,6 +7,7 @@ import { AgentActivityState } from '../../../src/generated/proto/leapmux/v1/agen
 import { getUserId } from './api'
 import { currentNativeAgent, nativeAgentById, nativeTextStep } from './nativeScenario'
 import { readToolCall } from './providerToolCalls'
+import { retryUntilPass } from './retryUntilPass'
 import { armTurnEndSound, doorbellCount, soundReceiptCursor, waitForIdleSoundReceipt } from './turnEndSound'
 import { answerControl, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
@@ -117,7 +118,10 @@ export async function exerciseTurnEndSound(context: ManagedNativeScenarioContext
   if (options.approveTool) {
     await context.modelScript.waitForSteps(start + 1)
     await waitForControlBanner(context.page)
-    await expect.poll(async () => (await nativeAgentById(context, agent.id))?.publishedActivityState).toBe(AgentActivityState.WAITING_FOR_USER)
+    await retryUntilPass(async () => {
+      expect((await nativeAgentById(context, agent.id))?.publishedActivityState, 'the Worker publishes that the agent waits for the user')
+        .toBe(AgentActivityState.WAITING_FOR_USER)
+    })
     // Arming the sound reloads the page, so the banner of the open request must show again before the answer.
     await armTurnEndSound(context.page, userId, sound)
     await waitForControlBanner(context.page)

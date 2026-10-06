@@ -2,6 +2,7 @@ import { AgentGoalAction, ListAgentMessagesRequestSchema, ListAgentMessagesRespo
 import { getTestChannel } from '../helpers/api'
 import { goalAction, nativeGoalProbeTurn } from '../helpers/goalsAndTodos'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { waitForSettingsHydrated } from '../helpers/ui'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
 import { expect, junieTest } from '../junie-fixtures'
@@ -12,8 +13,7 @@ junieTest.describe('junie unsupported controls', () => {
     await waitForSettingsHydrated(page)
     const agentId = await selectedAgentTabId(page)
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    let actions: AgentGoalAction[] = []
-    await expect.poll(async () => {
+    const actions = await retryUntilPass(async () => {
       const response = await channel.callWorker(
         leapmuxServer.workerId,
         'ListAgentMessages',
@@ -21,9 +21,9 @@ junieTest.describe('junie unsupported controls', () => {
         ListAgentMessagesResponseSchema,
         { agentId, limit: 1 },
       )
-      actions = response.goalSupportedActions
-      return actions
-    }).toContain(AgentGoalAction.CLEAR)
+      expect(response.goalSupportedActions, 'the Worker states the goal actions of the agent').toContain(AgentGoalAction.CLEAR)
+      return response.goalSupportedActions
+    })
     expect(actions).not.toContain(AgentGoalAction.SET)
     await expect(goalAction(page, 'set')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Set a goal' })).toHaveCount(0)

@@ -11,6 +11,7 @@ import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScena
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
@@ -53,11 +54,11 @@ claudeTest('executes native Workflow code and preserves the computed result and 
         throw new Error(`The Claude Workflow has ${launches.length} exact native launch receipts.`)
       const launch = launches[0]!
       evidence.launch = launch
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
         evidence.tasks = tasks
-        return Boolean(tasks.find(task => task.id === launch.taskId)?.endedAt)
-      }).toBe(true)
+        expect(Boolean(tasks.find(task => task.id === launch.taskId)?.endedAt), 'the Worker ends the task row of the Claude Workflow').toBe(true)
+      })
       await expect.poll(async () => {
         const status = await modelScript.status()
         evidence.modelRequests = status.requests

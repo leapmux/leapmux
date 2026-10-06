@@ -1,10 +1,10 @@
 import type { DroidNativeSettingsUpdate } from '../helpers/droidSettingsFrame'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { expect } from '@playwright/test'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { parseDroidNativeSettingsUpdates } from '../helpers/droidSettingsFrame'
 import { readAllAgentMessages } from '../helpers/nativeMessages'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 
 /** The prefix of the request ID of a settings change that LeapMux sends. Droid copies the ID into its settings event. */
 const LEAPMUX_REQUEST_PREFIX = 'leapmux-'
@@ -61,16 +61,10 @@ export async function expectDroidNativeSettings(
 ): Promise<void> {
   expectedSettingKeys(expected)
   const agentId = await selectedAgentTabId(context.page)
-  // The events of the last read that succeeded. The poll states only the boolean, so the failure states the events.
-  const last: { updates?: DroidNativeSettingsUpdate[] } = {}
-  try {
-    await expect.poll(async () => {
-      last.updates = await readDroidNativeSettings(context, agentId)
-      return droidSettingsMatch(last.updates, expected, event)
-    }).toBe(true)
-  }
-  catch (error) {
-    const reported = last.updates === undefined ? 'no read of the stored messages succeeded' : `it reported ${JSON.stringify(last.updates)}`
-    throw new Error(`Droid reported no ${event} settings event that states ${JSON.stringify(expected)}: ${reported}.`, { cause: error })
-  }
+  // The failure states the last error: the failed Worker read, or the settings events that the last read returned.
+  await retryUntilPass(async () => {
+    const updates = await readDroidNativeSettings(context, agentId)
+    if (!droidSettingsMatch(updates, expected, event))
+      throw new Error(`Droid reported no ${event} settings event that states ${JSON.stringify(expected)}: it reported ${JSON.stringify(updates)}.`)
+  })
 }

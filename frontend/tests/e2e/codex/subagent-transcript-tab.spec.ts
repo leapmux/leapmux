@@ -15,6 +15,7 @@ import { stepRequest } from '../helpers/mockModelScript'
 import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexWaitAgentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { expectNoRegistryRows, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById } from '../helpers/ui'
@@ -82,10 +83,10 @@ codexTest.describe('codex subagent lifecycle', () => {
     // 6. Worker-backed: the child exists with parent linkage and reports the
     //    read-only capability. Query the worker directly for the child tab ID
     //    (the child tab propagates to the hub's ListTabs async).
-    await expect.poll(async () => {
+    await retryUntilPass(async () => {
       const child = await nativeAgentById(native, childTabId)
-      return child && !child.acceptsMessages ? 'read-only' : null
-    }).toBe('read-only')
+      expect(child && !child.acceptsMessages ? 'read-only' : null, 'the Worker holds the child as a read-only agent').toBe('read-only')
+    })
 
     // 7. Select the parent and prove the child answer did not leak into it.
     await tabById(page, parentTabId).click()

@@ -2,6 +2,7 @@ import { expect } from '@playwright/test'
 import { clineTest } from '../cline-fixtures'
 import { nativeAgentsByIds, selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expectNoRegistryRows, expectRegistryRow, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
@@ -115,9 +116,10 @@ clineTest.describe('Cline subagent registry', () => {
     expect(new Set(childTabIds).size, 'two children, not one twice').toBe(2)
 
     // Worker-backed: each child states the lead as its parent.
-    await expect.poll(async () => {
+    await retryUntilPass(async () => {
       const agents = await nativeAgentsByIds(native, childTabIds)
-      return childTabIds.map(id => agents.find(agent => agent.id === id)?.parentAgentId ?? null)
-    }).toEqual([parentTabId, parentTabId])
+      expect(childTabIds.map(id => agents.find(agent => agent.id === id)?.parentAgentId ?? null), 'the Worker links each child to the lead')
+        .toEqual([parentTabId, parentTabId])
+    })
   })
 })

@@ -11,6 +11,7 @@ import { validateGateName } from './mockModelScript'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
+import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
 import { expandBackgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal } from './subagentRegistry'
 import { sendMessage, tabById, waitForAgentIdle } from './ui'
@@ -323,8 +324,7 @@ export async function openRunningNativeChild(
     await context.modelScript.waitForGate(options.gate)
     await options.beforeRelease?.()
     const taskId = await options.resolveTaskId?.(parent.id)
-    let childId = ''
-    await expect.poll(async () => {
+    const childId = await retryUntilPass(async () => {
       const snapshot = await readNativeSidebarSnapshot(context, parent.id)
       const selected = selectRunningChildTask(snapshot.backgroundTasks, {
         parentId: parent.id,
@@ -333,9 +333,10 @@ export async function openRunningNativeChild(
         ...(options.rowText !== undefined ? { rowText: options.rowText } : {}),
         ...(taskId !== undefined ? { taskId } : {}),
       })
-      childId = selected?.childAgentId ?? ''
-      return childId
-    }, { message: 'the Worker holds the running task of the scripted native child' }).not.toBe('')
+      const selectedId = selected?.childAgentId ?? ''
+      expect(selectedId, 'the Worker holds the running task of the scripted native child').not.toBe('')
+      return selectedId
+    })
     await expandBackgroundTasksSection(context.page)
     const row = context.page.locator(`[data-testid="bg-task-row"]:visible[data-kind="subagent"][data-child-agent-id="${cssAttributeValue(childId)}"]`).first()
     await expect(row).toBeVisible()

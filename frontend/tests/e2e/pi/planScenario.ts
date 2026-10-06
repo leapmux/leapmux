@@ -4,6 +4,7 @@ import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { answerPlanReview, chatScrollContainer, openWorkspace, sendMessage, waitForControlBanner } from '../helpers/ui'
 
@@ -15,9 +16,11 @@ export async function exercisePiFreshPlanSession(context: ManagedNativeScenarioC
   const { page, modelScript, leapmuxServer } = context
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-fresh-plan-'), agentOpenOptions(context.provider))
   const readSession = async () => (await nativeAgentById(context, agentId))?.agentSessionId ?? ''
-  await expect.poll(readSession).not.toBe('')
-  const originalSession = await readSession()
-  expect(originalSession).not.toBe('')
+  const originalSession = await retryUntilPass(async () => {
+    const session = await readSession()
+    expect(session, 'the Worker starts the native session of the new agent').not.toBe('')
+    return session
+  })
   await page.reload()
   await openWorkspace(page, context.workspaceId)
   await sendMessage(page, '/plan start')
@@ -35,10 +38,11 @@ export async function exercisePiFreshPlanSession(context: ManagedNativeScenarioC
   await expect(banner).toContainText('Plan Ready for Review')
   await page.getByTestId('plan-clear-context-checkbox').filter({ visible: true }).click()
   await answerPlanReview(page, 'approve')
-  await expect.poll(async () => {
+  await retryUntilPass(async () => {
     const current = await readSession()
-    return current !== '' && current !== originalSession
-  }).toBe(true)
+    expect(current, 'the approval with a cleared context starts a native session').not.toBe('')
+    expect(current, 'the approval with a cleared context leaves the original native session').not.toBe(originalSession)
+  })
   await modelScript.waitForSteps(start + 2)
   await expect(chatScrollContainer(page).getByText('FRESH_PLAN_DONE', { exact: true })).toBeVisible()
 }

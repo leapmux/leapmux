@@ -3,6 +3,7 @@ import { AgentGoalStatus, ListAgentMessagesRequestSchema, ListAgentMessagesRespo
 import { getTestChannel } from '../helpers/api'
 import { exerciseNativeGoalPauseAndResume } from '../helpers/nativeGoalLifecycle'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { qwenTest } from '../qwen-fixtures'
 
 // Qwen Code changes its goal through its goal control
@@ -19,10 +20,11 @@ qwenTest('pauses through the native goal control and resumes new native goal wor
       const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
       // Qwen states a reason for each pause of its own ("Three Goal turns in a
       // row recorded nothing to judge ..."). The reader's pause states none.
-      await expect.poll(async () => {
+      await retryUntilPass(async () => {
         const response = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: agent.id, limit: 1 })
-        return { status: response.goal?.status, statusDetail: response.goal?.statusDetail }
-      }).toEqual({ status: AgentGoalStatus.PAUSED, statusDetail: '' })
+        expect({ status: response.goal?.status, statusDetail: response.goal?.statusDetail }, 'the Worker holds the goal paused by the reader, with no reason')
+          .toEqual({ status: AgentGoalStatus.PAUSED, statusDetail: '' })
+      })
     },
   })
 })
