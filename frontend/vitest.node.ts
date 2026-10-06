@@ -193,6 +193,7 @@ export const NODE_TEST_FILES = [
   'src/stores/chatMessageOrder.test.ts',
   'src/stores/editorRef.store.test.ts',
   'src/styles/codeBlock.test.ts',
+  'src/test-support/anyErrorAssertions.test.ts',
   'src/test-support/chatRowReads.test.ts',
   'src/test-support/codeSurfacesArePaired.test.ts',
   'src/test-support/color.test.ts',
