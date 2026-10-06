@@ -43,7 +43,7 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
   const parent = createTestDirectory('cursor-mcp-form-')
   const workingDir = deliberateWorkingDir(
     createGitRepo(parent, 'repo'),
-    'Cursor reads `.cursor/mcp.json` and keeps the approval of `agent mcp enable` for the project of its directory. A repository of its own makes the directory that project, and the server and its receipt stay outside it in the parent.',
+    'Cursor takes the nearest directory that holds `.git` as its MCP project. It reads `.cursor/mcp.json` there and keeps the approval of `agent mcp enable` for that project. In a plain directory of the run, that project is the LeapMux checkout. A repository of its own makes the directory the project, and the server and its receipt stay outside it in the parent.',
   )
   const receiptLog = join(parent, 'native-mcp-receipt.json')
   const echoArguments = { query: 'cursor', limit: 0, tail: 'END_MCP_ARGUMENTS' }
