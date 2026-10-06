@@ -4,33 +4,20 @@ import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { clickNativeToolApproval, processNativeToolApproval } from '../helpers/nativeToolExecution'
+import { approveNativeToolsUntil } from '../helpers/nativeToolExecution'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-/** Run native client operations within one actual Cursor Run. */
+/**
+ * Run native client operations within one actual Cursor Run.
+ * The Cursor service streams the tool calls and the answer text in one Run response, so the turn uses one model step.
+ * The operations end when the transcript shows `marker`.
+ */
 export async function runCursorNativeOperations(context: ManagedNativeScenarioContext, calls: MockModelToolCall[], marker: string): Promise<void> {
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ toolCalls: calls, text: 'The actual native operations completed.' })
+  const start = await context.modelScript.queue({ toolCalls: calls, text: 'The actual native operations completed.' })
   await sendMessage(context.page, context.modelScript.prompt('Execute the supplied native operations in this turn.'))
   await context.modelScript.waitForSteps(start + 1)
-  const allow = context.page.locator('[data-testid="control-allow-btn"]:visible').first()
   const done = messageContents(context.page).filter({ hasText: marker }).first()
-  let approvals = 0
-  while (!await done.isVisible()) {
-    await expect.poll(async () => {
-      return processNativeToolApproval({
-        completed: () => done.isVisible(),
-        clickIfReady: async () => {
-          const clicked = await allow.evaluateAll(clickNativeToolApproval, approvals < 16)
-          if (clicked)
-            approvals++
-          return clicked
-        },
-      })
-    }).not.toBe('waiting')
-    if (await done.isVisible())
-      break
-  }
+  await approveNativeToolsUntil(context.page, () => done.isVisible())
   await waitForAgentIdle(context.page)
   await expect(done).toBeVisible()
 }

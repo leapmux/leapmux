@@ -3,7 +3,7 @@ import type { MockModelRequestRecord, MockModelScenarioStatus } from './mockMode
 import type { MockModelServer } from './mockModelServer'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,7 +13,7 @@ import { stepRequest } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { createNativeToolDirectory } from './nativeToolDirectory'
-import { clickNativeToolApproval, exerciseShellToolExecution, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, processNativeToolApproval, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
+import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseShellToolExecution, expectFileDiff, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
 const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn() }))
@@ -246,6 +246,152 @@ describe('runNativeToolTurn', () => {
     const context = { page: guardedBrowserHandle<Page>({}), provider: AgentProvider.CODEX, modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({ queue }) }
     await expect(runNativeToolTurn(context, { toolCalls: [], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('at least one tool call')
     expect(queue).not.toHaveBeenCalled()
+  })
+})
+
+describe('approveNativeToolsUntil', () => {
+  /** An Allow button whose evaluation records the limit flag that each attempt passes. */
+  function allowButton(flags: boolean[], clickWhenAllowed: () => boolean) {
+    return guardedBrowserHandle<Locator>({
+      evaluateAll: (async (_check: unknown, allowed: boolean) => {
+        flags.push(allowed)
+        return allowed && clickWhenAllowed()
+      }) as unknown as Locator['evaluateAll'],
+    })
+  }
+
+  it('reads no button when the operation already completed', async () => {
+    const flags: boolean[] = []
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => true, allowButton(flags, () => true))
+    expect(flags).toEqual([])
+  })
+
+  it('allows each approval until the operation completes', async () => {
+    const flags: boolean[] = []
+    let clicks = 0
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => clicks >= 3, allowButton(flags, () => {
+      clicks++
+      return true
+    }))
+    expect(clicks).toBe(3)
+    expect(flags).toEqual([true, true, true])
+  })
+
+  it(`passes the limit flag after ${NATIVE_APPROVAL_LIMIT} approvals, so a further ready button fails the click`, async () => {
+    const flags: boolean[] = []
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => flags.length > NATIVE_APPROVAL_LIMIT, allowButton(flags, () => true))
+    expect(flags).toEqual([...Array.from({ length: NATIVE_APPROVAL_LIMIT }).fill(true), false])
+  })
+
+  it('reads the first visible Allow button of the page by default', async () => {
+    const flags: boolean[] = []
+    let clicks = 0
+    const first = allowButton(flags, () => {
+      clicks++
+      return true
+    })
+    const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => first }))
+    await approveNativeToolsUntil(page, async () => clicks >= 1)
+    expect(flags).toEqual([true])
+  })
+})
+
+/** A page whose diff locator records its filters, and whose first match reports `visible`. */
+function diffPage(visible: boolean) {
+  const log: string[] = []
+  class FirstDiff {
+    readonly _apiName = 'Locator'
+    async _expect(expression: string) {
+      log.push(expression)
+      return { matches: visible, received: visible, log: [], timedOut: false }
+    }
+  }
+  const first = new FirstDiff() as unknown as Locator
+  const diff: Locator = guardedBrowserHandle<Locator>({
+    locator: (selector: string) => {
+      log.push(selector)
+      return diff
+    },
+    filter: (options?: Parameters<Locator['filter']>[0]) => {
+      log.push(`filter ${String(options?.hasText)}`)
+      return diff
+    },
+    first: () => first,
+  })
+  const page = guardedBrowserHandle<Page>({ locator: (selector: string) => {
+    log.push(selector)
+    return diff
+  } })
+  return { page, log }
+}
+
+describe('expectFileDiff', () => {
+  it('requires one visible diff that holds both lines', async () => {
+    const { page, log } = diffPage(true)
+    await expectFileDiff(page, { before: PARITY_BEFORE, after: PARITY_AFTER })
+    expect(log).toEqual(['[data-testid="message-bubble"]:visible', '[data-file-diff]:visible', `filter ${PARITY_AFTER}`, `filter ${PARITY_BEFORE}`, 'to.be.visible'])
+  })
+
+  it('fails when no visible diff holds both lines', async () => {
+    await expect(expectFileDiff(diffPage(false).page, { before: PARITY_BEFORE, after: PARITY_AFTER })).rejects.toThrow('one visible file diff shows the old and the new line')
+  })
+
+  it.each([
+    { before: '', after: PARITY_AFTER },
+    { before: PARITY_BEFORE, after: '' },
+    { before: PARITY_BEFORE, after: PARITY_BEFORE },
+    { before: 'const x', after: 'const x = 2' },
+    { before: 'const x = 2', after: 'x = 2' },
+  ])('refuses the lines $before and $after before it reads the page', async (change) => {
+    await expect(expectFileDiff(guardedBrowserHandle<Page>({}), change)).rejects.toThrow('neither line may hold the other')
+  })
+})
+
+describe('exerciseFileEditSequence', () => {
+  /** A model script whose last wait leaves `content` in the edited file, as the native agent would. */
+  function editingScript(path: string, content: string, waits: number[]) {
+    return {
+      prompt: (text: string) => text,
+      queue: async (...steps: unknown[]) => {
+        expect(steps).toHaveLength(4)
+        return 7
+      },
+      waitForSteps: async (count: number) => {
+        waits.push(count)
+        writeFileSync(path, content)
+      },
+    }
+  }
+
+  it('returns the step index of the seed step after it checks the diff and the file', async () => {
+    const waits: number[] = []
+    const { page, log } = diffPage(true)
+    const modelScript = editingScript(join(directory, 'parity.ts'), `${PARITY_AFTER}\n`, waits)
+    const context = { page, modelScript, provider: AgentProvider.CLAUDE_CODE } as unknown as NativeScenarioContext
+    expect(await exerciseFileEditSequence(context, { workingDir: directory, fileName: 'parity.ts' })).toBe(7)
+    expect(waits).toEqual([11])
+    expect(log.at(-1)).toBe('to.be.visible')
+  })
+
+  it('fails when the edit leaves the file without the new line', async () => {
+    const modelScript = editingScript(join(directory, 'parity.ts'), `${PARITY_BEFORE}\n`, [])
+    const context = { page: diffPage(true).page, modelScript, provider: AgentProvider.CLAUDE_CODE } as unknown as NativeScenarioContext
+    await expect(exerciseFileEditSequence(context, { workingDir: directory, fileName: 'parity.ts' })).rejects.toThrow('the edit changed the file on disk')
+  })
+
+  it('fails when the edit keeps the seeded line on disk', async () => {
+    const modelScript = editingScript(join(directory, 'parity.ts'), `${PARITY_BEFORE}\n${PARITY_AFTER}\n`, [])
+    const context = { page: diffPage(true).page, modelScript, provider: AgentProvider.CLAUDE_CODE } as unknown as NativeScenarioContext
+    await expect(exerciseFileEditSequence(context, { workingDir: directory, fileName: 'parity.ts' })).rejects.toThrow('the edit replaced the seeded line')
+  })
+})
+
+describe('PARITY_BEFORE and PARITY_AFTER', () => {
+  it('keeps each constant on one line, and neither holds the other, so a diff filter on one cannot match only the other', () => {
+    for (const line of [PARITY_BEFORE, PARITY_AFTER])
+      expect(line).not.toMatch(/[\r\n]/)
+    expect(PARITY_BEFORE.includes(PARITY_AFTER)).toBe(false)
+    expect(PARITY_AFTER.includes(PARITY_BEFORE)).toBe(false)
   })
 })
 

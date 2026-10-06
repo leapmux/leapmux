@@ -1,6 +1,9 @@
 /**
  * These helpers drive the Goals & To-dos section of the right sidebar in end-to-end (E2E) tests:
- * the session-goal card, its actions and its editor, and the to-do list.
+ *
+ * - The session-goal card, its actions, and its editor.
+ * - The to-do list.
+ * - The native probe turn that comes before a check of missing goal actions.
  *
  * The sidebar mounts twice (desktop and mobile), and both mounts can be visible.
  * Scope each locator of a present element to `:visible`.
@@ -8,13 +11,15 @@
  * ./goalsAndTodos.test.ts checks these locator rules in this source.
  */
 import type { Locator, Page } from '@playwright/test'
+import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { countGoalTransitionsInMessages } from './goalTransitions'
 import { SCENARIO_MARKER } from './mockModelScript'
+import { sendNativeAnswer } from './nativeConversation'
 import { readAllAgentMessages } from './nativeMessages'
-import { composerEditor, expandSidebarSection, queuePauseButton, stableBox } from './ui'
+import { composerEditor, expandSidebarSection, inputQueue, queuePauseButton, stableBox } from './ui'
 
 /** Locator for the Goals & To-dos section header in the right sidebar. */
 export function goalsAndTodosSection(page: Page): Locator {
@@ -38,6 +43,11 @@ export async function expandGoalsAndTodosSection(page: Page): Promise<void> {
  */
 export function goalCard(page: Page | Locator): Locator {
   return page.locator('[data-testid="goal-card"]:visible')
+}
+
+/** Find the visible objective of the session-goal card. */
+export function goalObjective(page: Page | Locator): Locator {
+  return page.locator('[data-testid="goal-objective"]:visible')
 }
 
 /**
@@ -112,7 +122,7 @@ export function scriptedObjective(modelScript: Pick<ModelScript, 'id' | 'prompt'
  * A string requires that text. A scripted objective requires its text and its scenario marker.
  */
 export async function expectGoalObjective(page: Page, objective: string | GoalObjective): Promise<void> {
-  const displayed = page.locator('[data-testid="goal-objective"]:visible')
+  const displayed = goalObjective(page)
   if (typeof objective === 'string') {
     await expect(displayed).toContainText(objective)
     return
@@ -191,7 +201,7 @@ export interface TextGoalQueueCase {
  * Positional strings could swap those values without a type error and fail later inside this helper.
  */
 export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase): Promise<void> {
-  const queue = page.locator('[data-testid="agent-input-queue"]:visible')
+  const queue = inputQueue(page)
   const pauseButton = queuePauseButton(page)
   const modeTrigger = page.locator('[data-testid="composer-mode-trigger"]:visible')
 
@@ -259,4 +269,12 @@ export async function countGoalTransitions(
   catch {
     return null
   }
+}
+
+/**
+ * Run the one native turn that comes before a check of missing goal actions, and return its model request.
+ * The turn proves that the agent works, so the absent goal actions are a fact of the provider, not of a broken agent.
+ */
+export async function nativeGoalProbeTurn(context: NativeScenarioContext): Promise<MockModelRequestRecord> {
+  return sendNativeAnswer(context, 'Complete before the native goal refusal.', 'The native goal probe completed.')
 }

@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { clearGoal, countGoalTransitions, expectGoalObjective, pauseResumeClearGoal, scriptedObjective, setGoal, submitGoal } from './goalsAndTodos'
+import { clearGoal, countGoalTransitions, expectGoalObjective, nativeGoalProbeTurn, pauseResumeClearGoal, scriptedObjective, setGoal, submitGoal } from './goalsAndTodos'
 import { SCENARIO_MARKER } from './mockModelScript'
 
 const source = readFileSync(join(import.meta.dirname, 'goalsAndTodos.ts'), 'utf-8')
@@ -78,6 +78,9 @@ vi.mock('./ui', async importOriginal => ({
 
 const reads = vi.hoisted(() => ({ messages: vi.fn<() => Promise<AgentChatMessage[]>>() }))
 vi.mock('./nativeMessages', () => ({ readAllAgentMessages: reads.messages }))
+
+const answers = vi.hoisted(() => ({ send: vi.fn() }))
+vi.mock('./nativeConversation', () => ({ sendNativeAnswer: answers.send }))
 
 /** A fake locator records its actions. A click on a goal action changes the status that the status dot reports. */
 function fakeLocator(selector: string) {
@@ -261,5 +264,17 @@ describe('countGoalTransitions', () => {
   it.each(['', ' '])('refuses an absent agent ID before any Worker read: %j', async (agentId) => {
     await expect(countGoalTransitions(context, agentId)).rejects.toThrow('requires an agent ID')
     expect(reads.messages).not.toHaveBeenCalled()
+  })
+})
+
+describe('nativeGoalProbeTurn', () => {
+  it('runs one native answer turn of the context and returns its request', async () => {
+    const request = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: {} }
+    answers.send.mockReset()
+    answers.send.mockResolvedValueOnce(request)
+    const context = { page: fakePage(), provider: 0 } as unknown as Parameters<typeof nativeGoalProbeTurn>[0]
+    expect(await nativeGoalProbeTurn(context)).toBe(request)
+    expect(answers.send).toHaveBeenCalledTimes(1)
+    expect(answers.send).toHaveBeenCalledWith(context, 'Complete before the native goal refusal.', 'The native goal probe completed.')
   })
 })

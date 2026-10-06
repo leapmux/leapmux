@@ -1,5 +1,42 @@
-import { describe, expect, it } from 'vitest'
-import { expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, validateNativeScriptCases } from './nativeCodeExecution'
+import type { Page } from '@playwright/test'
+import type { ManagedNativeScenarioContext } from './nativeScenario'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { agentOpenOptions } from '../agentSettings'
+import { expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
+
+const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn() }))
+vi.mock('./api', () => ({ openAgentViaAPI: opened.open }))
+vi.mock('./runDirectory', async importOriginal => ({
+  ...await importOriginal<typeof import('./runDirectory')>(),
+  createTestDirectory: (prefix: string) => {
+    opened.events.push(`directory ${prefix}`)
+    return `/run/${prefix}directory`
+  },
+}))
+vi.mock('./ui', async importOriginal => ({
+  ...await importOriginal<typeof import('./ui')>(),
+  openWorkspace: async (_page: unknown, workspaceId: string) => { opened.events.push(`workspace ${workspaceId}`) },
+}))
+vi.mock('./nativeScenario', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeScenario')>(),
+  selectedAgentTabId: async () => 'agent-1',
+}))
+vi.mock('./nativeConversation', () => ({
+  sendNativeAnswer: async (_context: unknown, prompt: string) => {
+    opened.events.push(`answer ${prompt}`)
+    return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { catalog: true } }
+  },
+}))
+
+beforeEach(() => {
+  opened.events = []
+  opened.open.mockReset()
+  opened.open.mockImplementation(async (_hub: string, _cookie: string, _worker: string, _workspace: string, directory: string) => {
+    opened.events.push(`open ${directory}`)
+    return 'agent-1'
+  })
+})
 
 describe('nativeCodeExecutionSchema', () => {
   const schema = { type: 'object', properties: { source: { type: 'string' }, options: { type: 'object' } } }
@@ -64,5 +101,32 @@ describe('expectNativeCodeExecutionAbsent', () => {
   it('rejects an empty catalog and absent executor definitions', () => {
     expect(() => expectNativeCodeExecutionAbsent({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { tools: [] } }, ['exec'])).toThrow('nonempty tool catalog')
     expect(() => expectNativeCodeExecutionAbsent({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: {} }, [])).toThrow('audited executor names')
+  })
+})
+
+const context = {
+  page: {} as Page,
+  provider: AgentProvider.CURSOR,
+  workspaceId: 'workspace-1',
+  leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' },
+} as unknown as ManagedNativeScenarioContext
+
+describe('openNativeCatalogTurn', () => {
+  it('opens the agent with the pinned settings in a fresh directory, shows the workspace, and returns the catalog turn', async () => {
+    const request = await openNativeCatalogTurn(context)
+    expect(request.body).toEqual({ catalog: true })
+    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
+    expect(opened.events).toEqual(['directory native-code-limit-', 'open /run/native-code-limit-directory', 'workspace workspace-1', 'answer Reply once while the native tool catalog remains available.'])
+  })
+
+  it('takes the directory prefix and the open settings of the caller', async () => {
+    await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
+    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
+  })
+
+  it('runs no turn when the agent does not open', async () => {
+    opened.open.mockRejectedValue(new Error('the Worker refused the agent'))
+    await expect(openNativeCatalogTurn(context)).rejects.toThrow('the Worker refused the agent')
+    expect(opened.events).toEqual(['directory native-code-limit-'])
   })
 })

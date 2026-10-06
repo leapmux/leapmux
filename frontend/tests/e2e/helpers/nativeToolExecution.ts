@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolResultReader } from './nativeScenario'
@@ -52,17 +52,24 @@ export async function processNativeToolApproval(control: NativeToolApprovalOpera
   return await control.completed() ? 'completed' : 'waiting'
 }
 
-/** Allow only actual native tool approval requests until the script completes. */
-export async function waitForNativeToolSteps(context: NativeScenarioContext, target: number, options: { beforeIdle?: () => Promise<void> } = {}): Promise<void> {
-  // `clickNativeToolApproval` checks and clicks one button in one browser operation, so the loop reads the first visible Allow button.
-  const allow = controlButton(context.page, 'allow').first()
+/** The most native approvals that one wait allows. A turn that asks more often than this has a defect. */
+export const NATIVE_APPROVAL_LIMIT = 16
+
+/**
+ * Allow each actual native approval request until `completed` reports true.
+ * `allow` locates the Allow button. The default is the first visible Allow button of the page:
+ * `clickNativeToolApproval` checks and clicks one button in one browser operation, so the loop reads one button.
+ * A page that shows more than one agent passes a locator that is scoped to the agent.
+ * The wait fails when the agent asks for more than {@link NATIVE_APPROVAL_LIMIT} approvals.
+ */
+export async function approveNativeToolsUntil(page: Page, completed: () => Promise<boolean>, allow: Locator = controlButton(page, 'allow').first()): Promise<void> {
   let approvals = 0
-  while ((await context.modelScript.status()).nextStep < target) {
+  while (!await completed()) {
     await expect.poll(async () => {
       return processNativeToolApproval({
-        completed: async () => (await context.modelScript.status()).nextStep >= target,
+        completed,
         clickIfReady: async () => {
-          const clicked = await allow.evaluateAll(clickNativeToolApproval, approvals < 16)
+          const clicked = await allow.evaluateAll(clickNativeToolApproval, approvals < NATIVE_APPROVAL_LIMIT)
           if (clicked)
             approvals++
           return clicked
@@ -70,6 +77,11 @@ export async function waitForNativeToolSteps(context: NativeScenarioContext, tar
       })
     }).not.toBe('waiting')
   }
+}
+
+/** Allow only actual native tool approval requests until the script completes. */
+export async function waitForNativeToolSteps(context: NativeScenarioContext, target: number, options: { beforeIdle?: () => Promise<void> } = {}): Promise<void> {
+  await approveNativeToolsUntil(context.page, async () => (await context.modelScript.status()).nextStep >= target)
   await context.modelScript.waitForSteps(target)
   await options.beforeIdle?.()
   await waitForAgentIdle(context.page)
@@ -203,7 +215,6 @@ export async function exerciseShellToolExecution(
 }
 
 interface FileToolOptions extends ToolPreparation {
-  writeCall?: (callId: string, path: string, content: string) => MockModelToolCall
   editCall?: (callId: string, path: string, before: string, after: string) => MockModelToolCall
   editStep?: (callId: string, path: string, before: string, after: string) => MockModelStep
   readAfterCall?: (callId: string, path: string) => MockModelToolCall
@@ -217,7 +228,10 @@ interface FileSequenceOptions {
 export interface NativeFileSequence {
   filePath: string
   prompt: string
+  /** The tool steps of the sequence, in order. */
   steps: MockModelStep[]
+  /** The final answer. The caller queues it through `nativeTextStep`, so a provider that answers through a tool keeps its own form. */
+  answer: string
 }
 
 /** Restrict a sequence to one file inside the supplied private working directory. */
@@ -229,6 +243,12 @@ function sequenceFilePath(options: FileSequenceOptions): string {
   return join(options.workingDir, options.fileName)
 }
 
+/** The line that the file edit sequence seeds. The sequence replaces it with {@link PARITY_AFTER}. */
+export const PARITY_BEFORE = 'const parityBefore = 1'
+
+/** The line that the file edit sequence writes in place of {@link PARITY_BEFORE}. */
+export const PARITY_AFTER = 'const parityAfter = 2'
+
 /** Build the native edit sequence. Shell creates the file. Read and Edit use the same absolute path. Keep the fixed markers. */
 export function nativeFileEditSequence(provider: NativeScenarioContext['provider'], options: FileSequenceOptions): NativeFileSequence {
   const filePath = sequenceFilePath(options)
@@ -236,12 +256,27 @@ export function nativeFileEditSequence(provider: NativeScenarioContext['provider
     filePath,
     prompt: 'Create the file, read it, then change parityBefore to parityAfter.',
     steps: [
-      { toolCalls: [bashToolCall(provider, 'seed-file', `printf "const parityBefore = 1\\n" > ${quotePosixShellArgument(filePath)}`)] },
+      { toolCalls: [bashToolCall(provider, 'seed-file', `printf "${PARITY_BEFORE}\\n" > ${quotePosixShellArgument(filePath)}`)] },
       { toolCalls: [readToolCall(provider, 'read-file', filePath)] },
-      { toolCalls: [editToolCall(provider, 'edit-file', { path: filePath, before: 'const parityBefore = 1', after: 'const parityAfter = 2' })] },
-      { text: 'The file is edited.' },
+      { toolCalls: [editToolCall(provider, 'edit-file', { path: filePath, before: PARITY_BEFORE, after: PARITY_AFTER })] },
     ],
+    answer: 'The file is edited.',
   }
+}
+
+/**
+ * Require one visible file diff in a chat message that shows both `before` and `after`.
+ * The diff of an edit shows the removed and the added line. Two separate filters could match two different diffs,
+ * such as a write diff that holds only the old line. A file tab draws a diff too, so the check reads the messages
+ * alone.
+ */
+export async function expectFileDiff(page: Page, change: { before: string, after: string }): Promise<void> {
+  if (!change.before || !change.after || change.before.includes(change.after) || change.after.includes(change.before)) {
+    throw new Error('A file diff check needs two nonempty lines, and neither line may hold the other. An empty line '
+      + 'matches every diff, and a line that holds the other matches a diff that shows only the longer line.')
+  }
+  const diff = messageBubbles(page).locator('[data-file-diff]:visible').filter({ hasText: change.after }).filter({ hasText: change.before })
+  await expect(diff.first(), 'one visible file diff shows the old and the new line').toBeVisible()
 }
 
 /** Retain the original native Write turn and its fixed file marker. */
@@ -252,36 +287,39 @@ export function nativeFileWriteSequence(provider: NativeScenarioContext['provide
     prompt: `Write ${options.fileName} with one marker line.`,
     steps: [
       { toolCalls: [writeToolCall(provider, 'write-file', { path: filePath, content: 'written-42\n' })] },
-      { text: 'The file is written.' },
     ],
+    answer: 'The file is written.',
   }
 }
 
-/** Complete the original edit sequence and preserve its visible diff and disk guards. */
+/**
+ * Complete the original edit sequence and preserve its visible diff and disk guards.
+ * Return the step index of the seed step, the first step of the sequence. The request at `start + n` holds the result
+ * of the step at `start + n - 1`.
+ */
 export async function exerciseFileEditSequence(
   context: NativeScenarioContext,
   options: FileSequenceOptions & { approveSeed?: (firstStepCount: number) => Promise<void> },
-): Promise<void> {
+): Promise<number> {
   const sequence = nativeFileEditSequence(context.provider, options)
-  const start = await context.modelScript.queue(...sequence.steps)
+  const start = await context.modelScript.queue(...sequence.steps, nativeTextStep(context, sequence.answer))
   await sendMessage(context.page, context.modelScript.prompt(sequence.prompt))
   await options.approveSeed?.(start + 1)
-  await context.modelScript.waitForSteps(start + sequence.steps.length)
+  await context.modelScript.waitForSteps(start + sequence.steps.length + 1)
   await waitForAgentIdle(context.page)
-  const diff = context.page.locator('[data-file-diff]:visible')
-  await expect(diff.filter({ hasText: 'const parityAfter = 2' }).first()).toBeVisible()
-  await expect(diff.filter({ hasText: 'const parityBefore = 1' }).first()).toBeVisible()
+  await expectFileDiff(context.page, { before: PARITY_BEFORE, after: PARITY_AFTER })
   const onDisk = readFileSync(sequence.filePath, 'utf8')
-  expect(onDisk, 'the edit changed the file on disk').toContain('const parityAfter = 2')
-  expect(onDisk, 'the edit replaced the seeded line').not.toContain('const parityBefore = 1')
+  expect(onDisk, 'the edit changed the file on disk').toContain(PARITY_AFTER)
+  expect(onDisk, 'the edit replaced the seeded line').not.toContain(PARITY_BEFORE)
+  return start
 }
 
 /** Complete the original Write sequence and preserve its actual disk result. */
 export async function exerciseFileWriteSequence(context: NativeScenarioContext, options: FileSequenceOptions): Promise<void> {
   const sequence = nativeFileWriteSequence(context.provider, options)
-  const start = await context.modelScript.queue(...sequence.steps)
+  const start = await context.modelScript.queue(...sequence.steps, nativeTextStep(context, sequence.answer))
   await sendMessage(context.page, context.modelScript.prompt(sequence.prompt))
-  await context.modelScript.waitForSteps(start + sequence.steps.length)
+  await context.modelScript.waitForSteps(start + sequence.steps.length + 1)
   await waitForAgentIdle(context.page)
   expect(readFileSync(sequence.filePath, 'utf8'), 'the write changed the file on disk').toContain('written-42')
 }
@@ -309,7 +347,7 @@ export async function exerciseFileToolExecution(
     options.editStep?.('native-edit', file, before, after)
     ?? { toolCalls: [options.editCall?.('native-edit', file, before, after) ?? editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
     { toolCalls: [options.readAfterCall?.('native-read-after', file) ?? readToolCall(context.provider, 'native-read-after', file)] },
-    { toolCalls: [options.writeCall?.('native-write', created, written) ?? writeToolCall(context.provider, 'native-write', { path: created, content: written })] },
+    { toolCalls: [writeToolCall(context.provider, 'native-write', { path: created, content: written })] },
     nativeTextStep(context, 'The native file operations ended.'),
   )
   await sendMessage(context.page, context.modelScript.prompt('Read the scratch file, edit it, read it again, and create the second file.'))
@@ -318,9 +356,7 @@ export async function exerciseFileToolExecution(
   await nativeFileReadResult(await context.modelScript.requestAt(stepIndex + 3), 'native-read-after', after, before, context.readToolResult)
   expect(readFileSync(file, 'utf8')).toBe(`${after}\n`)
   expect(readFileSync(created, 'utf8')).toBe(written)
-  const diff = messageBubbles(context.page).locator('[data-file-diff]').filter({ hasText: after }).first()
-  await expect(diff).toBeVisible()
-  await expect(diff).toContainText(before)
+  await expectFileDiff(context.page, { before, after })
   await context.page.reload()
-  await expect(messageBubbles(context.page).locator('[data-file-diff]').filter({ hasText: after }).first()).toBeVisible()
+  await expectFileDiff(context.page, { before, after })
 }
