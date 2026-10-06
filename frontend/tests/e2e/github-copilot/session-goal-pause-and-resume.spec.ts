@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { copilotTest } from '../copilot-fixtures'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 
 copilotTest('session-goal-pause-and-resume: sets, pauses, resumes and clears a native session goal', async ({ authenticatedCopilotWorkspace, page }) => {
   void authenticatedCopilotWorkspace
@@ -10,11 +10,9 @@ copilotTest('session-goal-pause-and-resume: sets, pauses, resumes and clears a n
 
   await expandGoalsAndTodosSection(page)
   await pauseButton.click()
-  await goalAction(page, 'set').click()
-  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective)
-  await page.locator('[data-testid="set-goal-submit"]:visible').click()
+  await submitGoal(page, objective)
 
-  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(objective)
+  await expectGoalObjective(page, objective)
   await expectGoalStatus(page, 'active')
   // The runtime's own continuation prompt waits in the queue. LeapMux never writes
   // one of its own, so a queue with nothing in it would mean the effect was lost.
@@ -23,12 +21,12 @@ copilotTest('session-goal-pause-and-resume: sets, pauses, resumes and clears a n
   await openGoalMenu(page)
   await goalAction(page, 'pause').click()
   await expectGoalStatus(page, 'paused')
-  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(objective)
+  await expectGoalObjective(page, objective)
 
   // The objective survives a reload, because the runtime stores it.
   await page.reload()
   await expandGoalsAndTodosSection(page)
-  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(objective)
+  await expectGoalObjective(page, objective)
   await expectGoalStatus(page, 'paused')
 
   await openGoalMenu(page)
@@ -36,7 +34,6 @@ copilotTest('session-goal-pause-and-resume: sets, pauses, resumes and clears a n
   await expectGoalStatus(page, 'active')
   await expect(queue).toBeVisible()
 
-  await openGoalMenu(page)
-  await goalAction(page, 'clear').click()
-  await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+  await clearGoal(page)
+  await expectEmptyGoalCard(page)
 })

@@ -1,5 +1,5 @@
 import { claudeTest } from '../claude-fixtures'
-import { exerciseTextGoalQueue } from '../helpers/subagentRegistry'
+import { exerciseTextGoalQueue } from '../helpers/goalsAndTodos'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 claudeTest.describe('claude session goal input queue', () => {

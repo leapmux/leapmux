@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { waitForAgentIdle } from '../helpers/ui'
 import { captureDeepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
 import { deepseekHarnessModelContextText } from './modelContextText'
@@ -18,10 +18,7 @@ deepseekHarnessTest('pauses the native goal driver and resumes its own second mo
       { name: 'the first actual native goal round', when: { user: marker }, once: true, respond: { text: 'The first native goal round completed.', gate: firstGate } },
       { name: 'the second actual native goal round', when: { user: marker }, once: true, respond: { text: 'The second native goal round completed.', gate: secondGate } },
     )
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt(`Keep ${marker} until the operator clears it.`))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await submitGoal(page, modelScript.prompt(`Keep ${marker} until the operator clears it.`))
     await modelScript.waitForGate(firstGate)
     await expectGoalStatus(page, 'active')
     await openGoalMenu(page)
@@ -49,8 +46,7 @@ deepseekHarnessTest('pauses the native goal driver and resumes its own second mo
     await expectGoalStatus(page, 'paused')
     await modelScript.releaseGateIfHeld(secondGate)
     await waitForAgentIdle(page)
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await clearGoal(page)
+    await expectEmptyGoalCard(page)
   })
 })

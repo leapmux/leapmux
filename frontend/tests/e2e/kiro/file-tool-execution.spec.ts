@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
@@ -58,7 +58,7 @@ kiroTest.describe('Kiro tool execution', () => {
 
     // Kiro's to-do list reaches the session's checklist.
     await expandGoalsAndTodosSection(page)
-    const todos = page.locator('[data-testid="goals-and-todos"]:visible')
+    const todos = goalsAndTodosList(page)
     await expect(todos).toContainText('Edit the note')
     await expect(todos).toContainText('Report the result')
   })

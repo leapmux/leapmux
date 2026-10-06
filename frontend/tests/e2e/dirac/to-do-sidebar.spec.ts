@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { diracTest } from '../dirac-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { chooseSettingsOption, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -17,7 +17,7 @@ diracTest('shows completed native plan entries in the sidebar and keeps their st
   await modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(page)
   await expandGoalsAndTodosSection(page)
-  const list = page.locator('[data-testid="goals-and-todos"]:visible').first()
+  const list = goalsAndTodosList(page)
   await expect(list).toContainText('DIRACPLANONE')
   await expect(list).toContainText('DIRACPLANTWO')
   await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(2)

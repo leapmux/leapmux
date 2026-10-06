@@ -1,6 +1,5 @@
-import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
+import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
 import { assistantBubbles, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
@@ -17,19 +16,6 @@ function verdict(ok: boolean, reason: string): string {
   return JSON.stringify({ ok, reason })
 }
 
-/**
- * Set the goal from the sidebar card.
- *
- * MiMo's goal command takes the condition as the prompt of the turn that it
- * starts, so the objective carries the scenario marker.
- */
-async function setGoal(page: Page, objective: string): Promise<void> {
-  await expandGoalsAndTodosSection(page)
-  await goalAction(page, 'set').click()
-  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective)
-  await page.locator('[data-testid="set-goal-submit"]:visible').click()
-}
-
 mimoTest.describe('MiMo Code session goal', () => {
   mimoTest('a goal that the judge finds met ends done, and the card clears', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
     void authenticatedMiMoWorkspace
@@ -39,19 +25,18 @@ mimoTest.describe('MiMo Code session goal', () => {
       respond: { text: verdict(true, 'The transcript says GOAL_DONE.') },
     })
     await modelScript.queue({ text: 'GOAL_DONE' })
-    await setGoal(page, modelScript.prompt('Reply with the word GOAL_DONE.'))
+    await submitGoal(page, modelScript.prompt('Reply with the word GOAL_DONE.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Reply with the word GOAL_DONE.')
+    await expectGoalObjective(page, 'Reply with the word GOAL_DONE.')
     await expectGoalStatus(page, 'done')
     // The model's own answer. The goal notice in the transcript states the objective,
     // which holds the word too, so only an agent bubble proves that the model answered.
     await expect(assistantBubbles(page).filter({ hasText: 'GOAL_DONE' })).toBeVisible()
 
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await clearGoal(page)
+    await expectEmptyGoalCard(page)
   })
 
   // A verdict of "not met" makes MiMo run another pass of the loop, with the
@@ -72,7 +57,7 @@ mimoTest.describe('MiMo Code session goal', () => {
       },
     )
     await modelScript.queue({ text: 'FIRST_PASS' }, { text: 'SECOND_PASS' })
-    await setGoal(page, modelScript.prompt('Reply with the word SECOND_PASS.'))
+    await submitGoal(page, modelScript.prompt('Reply with the word SECOND_PASS.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 

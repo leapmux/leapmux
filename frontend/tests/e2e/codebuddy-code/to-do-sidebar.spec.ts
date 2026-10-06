@@ -1,6 +1,6 @@
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { codebuddyTaskCreateToolCall, codebuddyTaskUpdateToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code to-do sidebar', () => {
@@ -17,7 +17,7 @@ codebuddyTest.describe('CodeBuddy Code to-do sidebar', () => {
     await waitForAgentIdle(page)
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
-    const list = page.locator('[data-testid="goals-and-todos"]:visible')
+    const list = goalsAndTodosList(page)
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(1)
     await expect(list.locator('[data-task-checkbox="pending"]')).toHaveCount(1)
     await expect(list).toContainText('Report the result')

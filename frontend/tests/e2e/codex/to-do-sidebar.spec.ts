@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('Codex to-do sidebar', () => {
@@ -23,7 +23,7 @@ codexTest.describe('Codex to-do sidebar', () => {
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
-    const list = page.locator('[data-testid="goals-and-todos"]:visible')
+    const list = goalsAndTodosList(page)
     await expect(list).toContainText('Inspect the input')
     await expect(list).toContainText('Check the output')
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(1)

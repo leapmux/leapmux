@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE
@@ -29,7 +29,7 @@ claudeTest.describe('Claude Code to-do sidebar', () => {
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
-    const list = page.locator('[data-testid="goals-and-todos"]:visible')
+    const list = goalsAndTodosList(page)
     await expect(list).toContainText('Inspect the repository')
     await expect(list).toContainText('List three checks')
     await expect(list).toContainText('Report their purpose')

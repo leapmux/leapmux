@@ -1,7 +1,7 @@
 /**
  * The unit tests check the source rules for shared registry locators.
  * claude-code/background-tasks-sidebar.spec.ts checks actual Worker state before hydration.
- * Goal transition tests exercise the separate pure parser.
+ * ./goalsAndTodos.test.ts checks the locators of the Goals & To-dos section.
  *
  * The .test.ts extension selects Vitest. The .spec.ts extension selects Playwright.
  * Both runner configurations and testFileNaming.test.ts enforce that distinction.
@@ -10,40 +10,16 @@ import type { Locator, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow } from './subagentRegistry'
 
 const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'utf-8')
 
-// Exclude only the enclosing quote through the lookahead.
-// A selector can contain a different quote, such as '[data-testid="x"]'.
-// Excluding every quote stops that match at the inner quote and finds no complete selector.
-const LOCATOR = /page\.locator\(\s*(['"`])((?:(?!\1).)*)\1/g
-
-// The helper can select an element through getByTestId also.
-// Check both forms so a new helper cannot escape the source guard.
-// A minimum total count cannot detect an unexamined locator family.
-// Convert the captured test ID to its selector form so one predicate checks both forms.
-const TEST_ID = /page\.getByTestId\(\s*(['"`])((?:(?!\1).)*)\1/g
-
-function selectorsIn(text: string): string[] {
-  // Group 2 always matches, including an empty value.
-  // The fallback satisfies the type checker.
-  return [
-    ...[...text.matchAll(LOCATOR)].map(match => match[2] ?? ''),
-    ...[...text.matchAll(TEST_ID)].map(match => `[data-testid="${match[2]}"]`),
-  ]
-}
-
 /** The source of one exported helper, from its signature to its closing brace. */
 function bodyOf(name: string): string {
-  const asyncStart = source.indexOf(`export async function ${name}(`)
-  const start = asyncStart < 0 ? source.indexOf(`export function ${name}(`) : asyncStart
-  const end = start < 0 ? -1 : source.indexOf('\n}\n', start)
-  if (end < 0)
-    throw new Error(`${name} is no longer an exported function of subagentRegistry.ts`)
-  return source.slice(start, end)
+  return exportedFunctionBody(source, name, 'subagentRegistry.ts')
 }
 
 /**
@@ -60,13 +36,13 @@ function bodyOf(name: string): string {
  * Source checks detect these defects before a slow browser spec times out.
  */
 describe('registry locators', () => {
-  it.each(['backgroundTasksSection', 'goalsAndTodosSection'])('selects the first visible sidebar mount in %s', (name) => {
+  it.each(['backgroundTasksSection'])('selects the first visible sidebar mount in %s', (name) => {
     const body = bodyOf(name)
     expect(selectorsIn(body)).toHaveLength(1)
     expect(body).toMatch(/return page\.locator\([^\n]*:visible[^\n]*\)\.first\(\)/)
   })
   /** Test IDs for surfaces that the app mounts more than once. */
-  const DUPLICATED = ['bg-task-', 'goal-', 'section-header-']
+  const DUPLICATED = ['bg-task-', 'section-header-']
 
   /**
    * A zero-count assertion requires both mounts to contain no rows.
@@ -85,23 +61,6 @@ describe('registry locators', () => {
       DUPLICATED.some(id => selector.includes(`data-testid="${id}`)) && !selector.includes(':visible'),
     )
     expect(offenders).toEqual([])
-  })
-
-  /**
-   * Check both locator syntax forms.
-   * A helper that uses getByTestId must obey the same element-scope rule as page.locator.
-   * Use a fixture to test both parser paths because the production helper can use only one syntax form.
-   * A minimum total selector count cannot prove that the parser supports both forms.
-   */
-  it('reads a getByTestId locator, not only a page.locator one', () => {
-    const sample = `
-      page.locator('[data-testid="goal-card"]:visible')
-      page.getByTestId('agent-input-queue')
-    `
-    expect(selectorsIn(sample)).toEqual([
-      '[data-testid="goal-card"]:visible',
-      '[data-testid="agent-input-queue"]',
-    ])
   })
 
   it('leaves an absence assertion unscoped, so a collapsed section cannot pass it', () => {

@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
+import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
@@ -16,12 +16,8 @@ qwenTest.describe('Qwen Code settings and goal', () => {
       respond: { text: 'DONE' },
     })
 
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
-    const objective = modelScript.prompt('Reply with the word DONE.')
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective)
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
-    await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Reply with the word DONE.')
+    await submitGoal(page, modelScript.prompt('Reply with the word DONE.'))
+    await expectGoalObjective(page, 'Reply with the word DONE.')
 
     // Qwen pauses a goal after turns that record no progress, and it states why.
     await expectGoalStatus(page, 'paused')
@@ -37,8 +33,7 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     await expect.poll(async () => (await modelScript.status()).ruleMatches['every goal turn answers DONE'] ?? 0).toBeGreaterThan(roundsBeforeResume)
     await expectGoalStatus(page, 'paused')
 
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await clearGoal(page)
+    await expectEmptyGoalCard(page)
   })
 })

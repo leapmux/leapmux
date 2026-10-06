@@ -7,8 +7,8 @@ import { expect } from '@playwright/test'
  * The kap-server owns goal state and sends goal.updated events. LeapMux changes the session profile. Creating the goal starts no turn, so the Worker sends the objective as user input.
  */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expandGoalsAndTodosSection, expectEmptyGoalCard } from '../helpers/goalsAndTodos'
 import { completeGoalToolCall, createGoalToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
@@ -43,6 +43,6 @@ kimiTest.describe('Kimi Code session goal', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'KIMI_GOAL_DONE' })).not.toHaveCount(0)
     // The server removes a completed goal, and the card follows it.
     await expandGoalsAndTodosSection(page)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
   })
 })

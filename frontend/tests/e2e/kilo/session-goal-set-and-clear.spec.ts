@@ -1,5 +1,6 @@
+import { scriptedObjective } from '../helpers/goalsAndTodos'
 import { kiloTest } from '../kilo-fixtures'
-import { exerciseKiloGoal, KILO_ACP_IDLE_FALLBACK_MS, scriptedObjective } from './goalScenario'
+import { exerciseKiloGoal, KILO_ACP_IDLE_FALLBACK_MS } from './goalScenario'
 
 kiloTest.setTimeout(KILO_ACP_IDLE_FALLBACK_MS * 4)
 

@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codewhaleTest.describe('Codewhale to-do list', () => {
@@ -24,7 +24,7 @@ codewhaleTest.describe('Codewhale to-do list', () => {
 
     // The worker reads the list that the runtime RETURNS, not the call's input,
     // so each row here is the runtime's own.
-    const todos = page.locator('[data-testid="goals-and-todos"]:visible')
+    const todos = goalsAndTodosList(page)
     await expandGoalsAndTodosSection(page)
     for (const step of ['Inspect the repository', 'List three checks', 'Report their purpose'])
       await expect(todos).toContainText(step)

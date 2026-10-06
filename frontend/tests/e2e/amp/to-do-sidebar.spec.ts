@@ -3,6 +3,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
+import { goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { waitForSettingsHydrated } from '../helpers/ui'
@@ -23,6 +24,6 @@ ampTest('offers no native to-do tool and keeps an authoritative empty sidebar af
     }
     const snapshot = await readNativeSidebarSnapshot(context)
     expect(snapshot.todos).toEqual([])
-    await expect(page.locator('[data-testid="goals-and-todos"]:visible')).toHaveCount(0)
+    await expect(goalsAndTodosList(page)).toHaveCount(0)
   }
 })

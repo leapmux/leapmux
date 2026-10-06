@@ -1,7 +1,8 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
+import { pauseResumeClearGoal, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
 import { piTest } from '../pi-fixtures'
-import { exercisePiGoalPanel, pauseResumeClearGoal, scriptedObjective, setGoal } from './goalScenario'
+import { approvePiGoalClear, exercisePiGoalPanel } from './goalScenario'
 
 piTest('session-goal-pause-and-resume: pauses and resumes a native goal after reload', async ({ authenticatedPiWorkspace, page, modelScript }) => {
   void authenticatedPiWorkspace
@@ -14,7 +15,7 @@ piTest('session-goal-pause-and-resume: pauses and resumes a native goal after re
       await modelScript.waitForSteps(1)
       await modelScript.waitForGate(gate)
     })
-    await pauseResumeClearGoal(page, objective, { clearApproval: true })
+    await pauseResumeClearGoal(page, objective, { afterClear: () => approvePiGoalClear(page) })
   }, async () => {
     await modelScript.releaseGateIfHeld(gate)
   })

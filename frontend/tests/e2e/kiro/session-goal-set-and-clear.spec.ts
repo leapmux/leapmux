@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
 import { blockGoalToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction } from '../helpers/subagentRegistry'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
@@ -31,11 +31,8 @@ kiroTest.describe('Kiro session goal', () => {
     // the step's message and for the failed run.
     await modelScript.fallback({ text: 'Recorded.' })
 
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt('Rewrite the history.'))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
-    await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Rewrite the history.')
+    await submitGoal(page, modelScript.prompt('Rewrite the history.'))
+    await expectGoalObjective(page, 'Rewrite the history.')
 
     await expectGoalStatus(page, 'blocked')
     await expect(page.locator('[data-testid="goal-status-detail"]:visible')).toContainText('The repository is read-only.')

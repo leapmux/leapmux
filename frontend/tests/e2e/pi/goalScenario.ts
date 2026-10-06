@@ -1,66 +1,25 @@
 import type { Page } from '@playwright/test'
-import type { ModelScript } from '../helpers/modelScriptFixture'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { AgentGoalStatus, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, goalsAndTodosSection, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { SCENARIO_MARKER } from '../helpers/mockModelScript'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { openWorkspace, tabById, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
-export function scriptedObjective(modelScript: ModelScript, text: string): GoalObjective {
-  return { input: modelScript.prompt(text), text, marker: `${SCENARIO_MARKER}${modelScript.id}` }
-}
-
-export async function setGoal(page: Page, objective: GoalObjective, afterSubmit?: () => Promise<void>): Promise<void> {
-  await expandGoalsAndTodosSection(page)
-  await goalAction(page, 'set').click()
-  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective.input)
-  await page.locator('[data-testid="set-goal-submit"]:visible').click()
-  await afterSubmit?.()
-  await expectObjective(page, objective)
-  await expectGoalStatus(page, 'active')
-}
-
-export async function pauseResumeClearGoal(page: Page, objective: GoalObjective, options: { clearApproval?: boolean } = {}): Promise<void> {
-  await openGoalMenu(page)
-  await goalAction(page, 'pause').click()
-  await expectGoalStatus(page, 'paused')
-
-  await page.reload()
-  await expandGoalsAndTodosSection(page)
-  await expectObjective(page, objective)
-  await expectGoalStatus(page, 'paused')
-
-  await openGoalMenu(page)
-  await goalAction(page, 'resume').click()
-  await expectGoalStatus(page, 'active')
-
-  await openGoalMenu(page)
-  await goalAction(page, 'clear').click()
-  if (options.clearApproval) {
-    const approval = page.getByTestId('control-banner').filter({ visible: true })
-    await expect(approval).toContainText('Clear goal?')
-    await page.getByRole('button', { name: 'Approve', exact: true }).click()
-  }
-  await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-}
-
-interface GoalObjective {
-  input: string
-  text: string
-  marker: string
-}
-
-async function expectObjective(page: Page, objective: GoalObjective): Promise<void> {
-  const displayed = page.locator('[data-testid="goal-objective"]:visible')
-  await expect(displayed).toContainText(objective.text)
-  await expect(displayed).toContainText(objective.marker)
+/**
+ * Approve Pi's confirmation of a goal clear.
+ * Pi asks before it clears a goal, so the goal card stays until the approval.
+ */
+export async function approvePiGoalClear(page: Page): Promise<void> {
+  const approval = page.getByTestId('control-banner').filter({ visible: true })
+  await expect(approval).toContainText('Clear goal?')
+  await page.getByRole('button', { name: 'Approve', exact: true }).click()
 }
 
 /** Control the native goal turns while preserving the goal panel and clear confirmation. */
@@ -86,12 +45,10 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     const agent = await currentNativeAgent(context)
     expect(agent.id).toBe(agentId)
     expect(agent.agentProvider).toBe(provider)
-    await expect(page.locator('[data-testid="section-header-todos"]:visible')).toBeVisible()
+    await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt(objective))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await expectEmptyGoalCard(page)
+    await submitGoal(page, modelScript.prompt(objective))
     await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).goal?.status).toBe(AgentGoalStatus.ACTIVE)
     const startedGoal = await readNativeSidebarSnapshot(context, agentId)
     expect(startedGoal.goalLoaded).toBe(true)
@@ -123,8 +80,7 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     await expectGoalStatus(page, 'active')
     const resumed = await modelScript.waitForGate(secondGate)
     expect(JSON.stringify(resumed.requests.find(request => request.stepIndex === start + 1)?.body)).toContain(objective)
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
+    await clearGoal(page)
     const banner = page.getByTestId('control-banner').filter({ visible: true })
     await expect(banner).toContainText('Clear goal?')
     await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
@@ -133,7 +89,7 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
       return snapshot.goalLoaded && snapshot.goal === undefined
     }).toBe(true)
     await expect(banner).toHaveCount(0)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
   }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))
   await waitForAgentIdle(page)
   expect((await modelScript.waitForSteps(start + 2)).unexpectedRequests).toEqual([])

@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { piTodoToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
@@ -17,7 +17,7 @@ piTest('follows native create, update, and clear snapshots across reload', async
 
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)
-  const list = page.locator('[data-testid="goals-and-todos"]:visible')
+  const list = goalsAndTodosList(page)
   await expect(list).toContainText('Inspect the repository')
   await expect(list).toContainText('Report the finding')
   await expect(list.locator('[data-task-checkbox="pending"]')).toHaveCount(2)

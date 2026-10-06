@@ -8,6 +8,7 @@ import { AgentGoalStatus, AgentProvider, BackgroundTaskKind, BackgroundTaskStatu
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { SCENARIO_MARKER } from '../helpers/mockModelScript'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -16,7 +17,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { isFileNameComponent } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { expandBackgroundTasksSection, expandGoalsAndTodosSection, expectGoalStatus, goalAction, openChildTabFromRow, openGoalMenu } from '../helpers/subagentRegistry'
+import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 import { kiroGoalCancellation, kiroGoalExecutionId, kiroGoalSessionId, readKiroGoalMessages } from './goalReceipt'
@@ -92,11 +93,8 @@ kiroTest.describe('Kiro session goal', () => {
       await modelScript.fallback({ text: 'The native goal notification completed.' })
       modelScript.allowUnconsumed('Native Pause and Clear stop the held goal executions on purpose.')
 
-      await expandGoalsAndTodosSection(page)
-      await goalAction(page, 'set').click()
-      await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective)
-      await page.locator('[data-testid="set-goal-submit"]:visible').click()
-      await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Keep inspecting the repository.')
+      await submitGoal(page, objective)
+      await expectGoalObjective(page, 'Keep inspecting the repository.')
       await expectGoalStatus(page, 'active')
       const setStatus = await modelScript.waitForGate(setGate)
       const setRequests = setStatus.requests.filter(request => request.rule === setRule)
@@ -315,7 +313,7 @@ kiroTest.describe('Kiro session goal', () => {
       await installPremeasureObservation()
       await expandGoalsAndTodosSection(page)
       await expectGoalStatus(page, 'paused')
-      await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Keep inspecting the repository.')
+      await expectGoalObjective(page, 'Keep inspecting the repository.')
       await expect(detail.filter({ hasText: KIRO_ROUND_LIMIT_WORD }), 'the reader paused the goal, not the round limit').toHaveCount(0)
       await assertNoSavedStaleAnswer()
 
@@ -346,9 +344,8 @@ kiroTest.describe('Kiro session goal', () => {
         throw new Error('The resumed native Kiro step contains no new execution.')
       expect(kiroGoalCancellation(nativeMessages(), resumeExecutionId)).toBeUndefined()
 
-      await openGoalMenu(page)
-      await goalAction(page, 'clear').click()
-      await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+      await clearGoal(page)
+      await expectEmptyGoalCard(page)
       await expect.poll(() => kiroGoalCancellation(nativeMessages(), resumeExecutionId)?.executionId).toBe(resumeExecutionId)
       await expect.poll(async () => (await readNativeSidebarSnapshot(context, agentId)).backgroundTasks.find(task => task.id === sessionId)?.status).toBe(BackgroundTaskStatus.STOPPED)
       await modelScript.releaseGate(resumeGate)
@@ -358,7 +355,7 @@ kiroTest.describe('Kiro session goal', () => {
       expect(nativeModelContextText(cleared)).not.toContain(staleAnswer)
       expect(JSON.stringify(nativeMessages())).not.toContain(staleAnswer)
       expect(kiroGoalExecutionId(nativeMessages())).toBe(resumeExecutionId)
-      await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+      await expectEmptyGoalCard(page)
       await assertNoSavedStaleAnswer()
       await expect(messageContents(page).filter({ hasText: staleAnswer })).toHaveCount(0)
     }, () => finishCleanup([

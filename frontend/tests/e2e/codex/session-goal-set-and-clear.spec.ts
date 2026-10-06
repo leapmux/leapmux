@@ -2,9 +2,9 @@ import { expect } from '@playwright/test'
 /** Test acknowledged native goal commands and the Worker goal state. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
+import { clearGoal, countGoalTransitions, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, goalCard, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { countGoalTransitions, expandGoalsAndTodosSection, expectGoalStatus, goalAction, goalCard, openGoalMenu } from '../helpers/subagentRegistry'
 import { sendMessage, stableBox, transcriptRows, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('Codex session goal', () => {
@@ -46,14 +46,10 @@ codexTest.describe('Codex session goal', () => {
     await expandGoalsAndTodosSection(page)
 
     // 3. The empty card is the route to the first goal.
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
 
-    // 4. Set one through the dialog. The field is the app's markdown editor, so
-    //    the target is its contenteditable body rather than a textarea.
-    await goalAction(page, 'set').click()
-    const input = page.locator('[data-testid="goal-editor"]:visible .ProseMirror')
-    await input.fill(modelScript.prompt('Reply with the single word DONE and then stop.'))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    // 4. Set one through the dialog.
+    await submitGoal(page, modelScript.prompt('Reply with the single word DONE and then stop.'))
 
     // 5. The card shows the objective the worker stored, not the text typed.
     await expect(goalCard(page)).toBeVisible()
@@ -73,9 +69,7 @@ codexTest.describe('Codex session goal', () => {
     //    back escaped. What the card does with real marks is a unit case.
     const longObjective = `Keep going until every check passes on both runners. ${'Then confirm the result and report it back before stopping. '.repeat(8)}`
     await openGoalMenu(page)
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt(longObjective))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await submitGoal(page, modelScript.prompt(longObjective))
 
     const objective = page.locator('[data-testid="goal-objective"]:visible')
     await expect.poll(async () => await objective.textContent())
@@ -101,9 +95,8 @@ codexTest.describe('Codex session goal', () => {
     await expectGoalStatus(page, 'active')
 
     // 8. Clear. The card returns to the empty state that can set another.
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await clearGoal(page)
+    await expectEmptyGoalCard(page)
 
     // 9. The transcript records the TRANSITIONS and not the progress reports.
     //    This is the assertion the whole change exists for: Codex sends a full
@@ -120,7 +113,7 @@ codexTest.describe('Codex session goal', () => {
     expect(tabId).not.toBe('')
     const agentId = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, tabId))?.id ?? ''
     expect(agentId).not.toBe('')
-    const transitions = async () => await countGoalTransitions(hubUrl, adminToken, workerId, agentId)
+    const transitions = async () => await countGoalTransitions({ leapmuxServer: { hubUrl, adminToken, workerId } }, agentId)
     // Five actions were performed above.
     await expect.poll(transitions).toBeGreaterThan(0)
     // A generous ceiling that still fails loudly if a progress report ever
@@ -151,13 +144,10 @@ codexTest.describe('Codex session goal', () => {
     await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
     await modelScript.waitForSteps(1)
     await waitForAgentIdle(page)
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
     // Marked, and answered by a fallback, because Codex starts its own turn on
     // every goal set with the objective as the prompt.
     await modelScript.fallback({ text: 'Working on the objective.' })
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt('Keep the build green.'))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await submitGoal(page, modelScript.prompt('Keep the build green.'))
     await expectGoalStatus(page, 'active')
 
     // The to-do list is SCRIPTED, so the chip below is a precondition this test

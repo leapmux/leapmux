@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { finishCleanup } from '../helpers/cleanup'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, goalCard, openGoalMenu } from '../helpers/subagentRegistry'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, goalCard, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
@@ -13,10 +13,8 @@ kimiTest.describe('Kimi Code session goal', () => {
     await modelScript.fallback({ text: 'Working on the objective.', gate: first })
     try {
       await expandGoalsAndTodosSection(page)
-      await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-      await goalAction(page, 'set').click()
-      await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt('Keep inspecting this repository until I pause the goal.'))
-      await page.locator('[data-testid="set-goal-submit"]:visible').click()
+      await expectEmptyGoalCard(page)
+      await submitGoal(page, modelScript.prompt('Keep inspecting this repository until I pause the goal.'))
       await expect(goalCard(page)).toBeVisible()
       await expect.poll(() => page.locator('[data-testid="goal-objective"]:visible').textContent()).toContain('Keep inspecting this repository')
       await expectGoalStatus(page, 'active')
@@ -40,9 +38,8 @@ kimiTest.describe('Kimi Code session goal', () => {
       // Clear the goal while the resumed turn is still held. A released gate stays open, and the
       // goal loop of Kimi then asks the model again at once. That loop answered 200 requests, the
       // limit of the fallback, before the click that clears the goal arrived.
-      await openGoalMenu(page)
-      await goalAction(page, 'clear').click()
-      await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+      await clearGoal(page)
+      await expectEmptyGoalCard(page)
       // Kimi may abort the held turn when the goal clears, as it does when the goal pauses.
       await modelScript.releaseGateIfHeld(second)
       await waitForAgentIdle(page)

@@ -88,6 +88,21 @@ export async function expectClipsLongText(label: Locator) {
 }
 
 // ──────────────────────────────────────────────
+// Sidebar sections
+// ──────────────────────────────────────────────
+
+/**
+ * Expand a collapsed sidebar section through its header button, and leave an open section unchanged.
+ * Pass the section header locator, which carries `data-closed` while the section is collapsed.
+ * A header that the read cannot reach counts as open. The next step then fails on the section content and states what is absent.
+ */
+export async function expandSidebarSection(section: Locator): Promise<void> {
+  const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed')).catch(() => true)
+  if (!isOpen)
+    await section.locator('> [role="button"]').click()
+}
+
+// ──────────────────────────────────────────────
 // Common UI interaction helpers
 // ──────────────────────────────────────────────
 

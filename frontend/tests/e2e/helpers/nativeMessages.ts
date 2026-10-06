@@ -32,6 +32,26 @@ export async function readNativeMessageSnapshot(
     && before.rootAgentId.trim() !== ''
   if (before.agentSessionId.trim() === '' && !linkedVirtualChild)
     throw new Error('The native message read requires a started agent with a native session or linked virtual child.')
+  const messages = await readAllAgentMessages(context, agentId)
+  const after = await nativeAgentById(context, agentId)
+  if (!after || after.status !== AgentStatus.ACTIVE || after.id !== before.id || after.agentSessionId !== before.agentSessionId
+    || after.parentAgentId !== before.parentAgentId || after.spawnSpanId !== before.spawnSpanId || after.rootAgentId !== before.rootAgentId || after.providerChildKey !== before.providerChildKey) {
+    throw new Error('The native session changed or its agent ownership links changed during the Worker message read.')
+  }
+  return { agentId, agentSessionId: before.agentSessionId, messages }
+}
+
+/**
+ * Read every stored Worker message of one agent, oldest first, page by page.
+ * A page that repeats a message ID, does not advance the cursor, or claims another page with no message fails the read.
+ * The read does not check the agent identity. `readNativeMessageSnapshot` adds that check.
+ */
+export async function readAllAgentMessages(
+  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
+  agentId: string,
+): Promise<AgentChatMessage[]> {
+  if (agentId.trim() === '')
+    throw new Error('The Worker message read requires a nonempty agent ID.')
   const server = context.leapmuxServer
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const messages: AgentChatMessage[] = []
@@ -56,14 +76,8 @@ export async function readNativeMessageSnapshot(
       cursor = message.seq
     }
     if (!response.hasMore)
-      break
+      return messages
   }
-  const after = await nativeAgentById(context, agentId)
-  if (!after || after.status !== AgentStatus.ACTIVE || after.id !== before.id || after.agentSessionId !== before.agentSessionId
-    || after.parentAgentId !== before.parentAgentId || after.spawnSpanId !== before.spawnSpanId || after.rootAgentId !== before.rootAgentId || after.providerChildKey !== before.providerChildKey) {
-    throw new Error('The native session changed or its agent ownership links changed during the Worker message read.')
-  }
-  return { agentId, agentSessionId: before.agentSessionId, messages }
 }
 
 /** Decode common Worker bytes. The provider reader interprets the returned JSON value. */

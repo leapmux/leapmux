@@ -1,7 +1,7 @@
 import { AgentGoalAction, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
+import { goalAction } from '../helpers/goalsAndTodos'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { goalAction } from '../helpers/subagentRegistry'
 import { waitForSettingsHydrated } from '../helpers/ui'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
 import { expect, junieTest } from '../junie-fixtures'

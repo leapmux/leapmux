@@ -1,7 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
 import { completeGoalToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, expectGoalStatus, expectRegistryRow, goalAction } from '../helpers/subagentRegistry'
+import { expectRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
 import { kiroTest, openKiroAgent } from '../kiro-fixtures'
@@ -30,11 +31,8 @@ kiroTest.describe('Kiro session goal', () => {
     })
     await modelScript.fallback({ text: 'Recorded.' })
 
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt('Write the release notes.'))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
-    await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Write the release notes.')
+    await submitGoal(page, modelScript.prompt('Write the release notes.'))
+    await expectGoalObjective(page, 'Write the release notes.')
 
     await expectGoalStatus(page, 'done')
     const step = await expectRegistryRow(page, { titleContains: 'goal · work #1' })

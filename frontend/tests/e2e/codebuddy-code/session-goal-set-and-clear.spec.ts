@@ -1,5 +1,5 @@
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
+import { expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code session goal', () => {
@@ -15,23 +15,20 @@ codebuddyTest.describe('CodeBuddy Code session goal', () => {
     await sendMessage(page, modelScript.prompt('Reply once before the goal command.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill('Keep the example objective active.')
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await submitGoal(page, 'Keep the example objective active.')
     await expectGoalStatus(page, 'active')
-    await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Keep the example objective active.')
+    await expectGoalObjective(page, 'Keep the example objective active.')
 
     await openGoalMenu(page)
     await expect(goalAction(page, 'pause')).toHaveCount(0)
     await expect(goalAction(page, 'resume')).toHaveCount(0)
     await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
     await waitForAgentIdle(page)
     expect((await modelScript.status()).ruleMatches['native goal command turn']).toBeGreaterThan(1)
 
     await page.reload()
     await expandGoalsAndTodosSection(page)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
   })
 })

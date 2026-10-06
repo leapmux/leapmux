@@ -1,8 +1,8 @@
 import { commandCodeTest, expect } from '../command-code-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { commandCodeTaskCreateToolCall, commandCodeTaskUpdateToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -17,7 +17,7 @@ commandCodeTest('creates and completes the actual native task and preserves its 
   if (!taskID)
     throw new Error('The native task creation returned no actual task ID.')
   await expandGoalsAndTodosSection(page)
-  const item = goalsAndTodosSection(page)
+  const item = goalsAndTodosList(page)
   await expect(item).toContainText('Inspect the native checklist')
   await expect(item.locator('[data-task-checkbox="pending"]')).toHaveCount(1)
   const next = (await modelScript.status()).stepCount

@@ -4,10 +4,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { withCleanup } from './cleanup'
+import { clearGoal, expectEmptyGoalCard, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from './goalsAndTodos'
 import { currentNativeAgent } from './nativeScenario'
 import { writeToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from './subagentRegistry'
 import { applyPermissionPreset } from './ui'
 
 /**
@@ -66,10 +66,7 @@ export async function exerciseNativeGoalPauseAndResume(
       when: roundWhen,
       respond: { text: 'The current goal needs another iteration.' },
     })
-    await expandGoalsAndTodosSection(context.page)
-    await goalAction(context.page, 'set').click()
-    await context.page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(context.modelScript.prompt(`Keep ${marker} until the operator clears it.`))
-    await context.page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await submitGoal(context.page, context.modelScript.prompt(`Keep ${marker} until the operator clears it.`))
     await context.modelScript.waitForGate(gate)
     await expectGoalStatus(context.page, 'active')
     await openGoalMenu(context.page)
@@ -102,9 +99,8 @@ export async function exerciseNativeGoalPauseAndResume(
       expect(existsSync(progressFile), 'the pause cancelled the running round before its tool call').toBe(false)
     }
     await expectGoalStatus(context.page, 'paused')
-    await openGoalMenu(context.page)
-    await goalAction(context.page, 'clear').click()
-    await expect(context.page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await clearGoal(context.page)
+    await expectEmptyGoalCard(context.page)
   }, async () => {
     await context.modelScript.releaseGateIfHeld(gate)
   })

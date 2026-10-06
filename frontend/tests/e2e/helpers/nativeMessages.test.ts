@@ -3,7 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
 import { AgentChatMessageSchema, AgentInfoSchema, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readNativeMessageSnapshot, readNativeToolOutputRecord } from './nativeMessages'
+import { nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readAllAgentMessages, readNativeMessageSnapshot, readNativeToolOutputRecord } from './nativeMessages'
 
 const calls = vi.hoisted(() => ({ agent: vi.fn(), worker: vi.fn() }))
 vi.mock('./nativeScenario', () => ({ nativeAgentById: calls.agent }))
@@ -16,6 +16,27 @@ function message(id: string, seq: bigint, body: unknown = {}) {
 beforeEach(() => {
   vi.resetAllMocks()
   calls.agent.mockResolvedValue(create(AgentInfoSchema, { id: 'parent', status: AgentStatus.ACTIVE, agentSessionId: 'native-session' }))
+})
+
+describe('readAllAgentMessages', () => {
+  it('reads every ascending page and reads no agent identity', async () => {
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('zero', 0n), message('one', 1n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('two', 2n)], hasMore: false }))
+    expect((await readAllAgentMessages(context, 'parent')).map(value => value.id)).toEqual(['zero', 'one', 'two'])
+    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.AFTER, cursorSeq: 1n, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.agent).not.toHaveBeenCalled()
+  })
+
+  it.each(['', '  '])('refuses an absent agent ID before any Worker read: %j', async (agentId) => {
+    await expect(readAllAgentMessages(context, agentId)).rejects.toThrow('nonempty agent ID')
+    expect(calls.worker).not.toHaveBeenCalled()
+  })
+
+  it('refuses a page that repeats a message ID', async () => {
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 0n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 1n)] }))
+    await expect(readAllAgentMessages(context, 'parent')).rejects.toThrow('duplicate message ID')
+  })
 })
 
 describe('readNativeMessageSnapshot', () => {

@@ -1,17 +1,13 @@
 import type { Page } from '@playwright/test'
 import type { ServerInfo } from '../fixtures'
+import type { GoalObjective } from '../helpers/goalsAndTodos'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
-import { SCENARIO_MARKER } from '../helpers/mockModelScript'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, setGoal } from '../helpers/goalsAndTodos'
 import { waitForNativeInputQueueIdle } from '../helpers/nativeInputQueueIdle'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 
 export const KILO_ACP_IDLE_FALLBACK_MS = 60_000
-
-export function scriptedObjective(modelScript: ModelScript, text: string): GoalObjective {
-  return { input: modelScript.prompt(text), text, marker: `${SCENARIO_MARKER}${modelScript.id}` }
-}
 
 export async function exerciseKiloGoal(page: Page, modelScript: ModelScript, objective: GoalObjective, server: ServerInfo): Promise<void> {
   const gate = 'kilo-resumed-goal'
@@ -23,7 +19,7 @@ export async function exerciseKiloGoal(page: Page, modelScript: ModelScript, obj
 
   await page.reload()
   await expandGoalsAndTodosSection(page)
-  await expectObjective(page, objective)
+  await expectGoalObjective(page, objective)
   await expectGoalStatus(page, 'paused')
 
   await withCleanup(async () => {
@@ -34,35 +30,12 @@ export async function exerciseKiloGoal(page: Page, modelScript: ModelScript, obj
     await expectGoalStatus(page, 'active')
 
     await page.locator('[data-testid="queue-pause-button"]:visible').click()
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
+    await clearGoal(page)
     await deliverQueuedKiloGoalCommand(page, '/goal clear')
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
   }, async () => {
     await modelScript.releaseGateIfHeld(gate)
   })
-}
-
-interface GoalObjective {
-  input: string
-  text: string
-  marker: string
-}
-
-async function expectObjective(page: Page, objective: GoalObjective): Promise<void> {
-  const displayed = page.locator('[data-testid="goal-objective"]:visible')
-  await expect(displayed).toContainText(objective.text)
-  await expect(displayed).toContainText(objective.marker)
-}
-
-async function setGoal(page: Page, objective: GoalObjective, afterSubmit?: () => Promise<void>): Promise<void> {
-  await expandGoalsAndTodosSection(page)
-  await goalAction(page, 'set').click()
-  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(objective.input)
-  await page.locator('[data-testid="set-goal-submit"]:visible').click()
-  await afterSubmit?.()
-  await expectObjective(page, objective)
-  await expectGoalStatus(page, 'active')
 }
 
 async function deliverQueuedKiloGoalCommand(page: Page, command: string): Promise<void> {

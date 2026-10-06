@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
@@ -28,7 +28,7 @@ ohMyPiTest.describe('Oh My Pi to-do list', () => {
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
-    const list = page.locator('[data-testid="goals-and-todos"]:visible').first()
+    const list = goalsAndTodosList(page)
     for (const step of STEPS)
       await expect(list).toContainText(step)
     // The list keeps omp's order, which is the order of the call.

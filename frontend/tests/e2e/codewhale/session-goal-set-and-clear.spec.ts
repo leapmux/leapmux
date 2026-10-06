@@ -8,8 +8,8 @@ import { expect } from '@playwright/test'
  */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
+import { expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { blockGoalToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codewhaleTest.describe('Codewhale session goal', () => {
@@ -23,7 +23,7 @@ codewhaleTest.describe('Codewhale session goal', () => {
     await waitForAgentIdle(page)
 
     await expandGoalsAndTodosSection(page)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
 
     // The kickoff turn. The model marks the goal blocked through the runtime's
     // own goal tool, which ends the continuation passes, and then answers.
@@ -31,12 +31,10 @@ codewhaleTest.describe('Codewhale session goal', () => {
       { toolCalls: [blockGoalToolCall(AgentProvider.CODEWHALE, 'goal-blocked', 'The scripted test stops here.')] },
       { text: 'The goal is blocked.' },
     )
-    await goalAction(page, 'set').click()
     // The objective carries the marker, because the kickoff turn takes the
     // objective as its prompt.
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(modelScript.prompt('Keep the build green.'))
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
-    await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText('Keep the build green.')
+    await submitGoal(page, modelScript.prompt('Keep the build green.'))
+    await expectGoalObjective(page, 'Keep the build green.')
 
     await modelScript.waitForSteps()
     await expectGoalStatus(page, 'blocked')
@@ -46,11 +44,11 @@ codewhaleTest.describe('Codewhale session goal', () => {
     await expect(goalAction(page, 'pause')).toHaveCount(0)
     await expect(goalAction(page, 'resume')).toHaveCount(0)
     await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
 
     // The clear reached the runtime, so the goal does not return after a reload.
     await page.reload()
     await expandGoalsAndTodosSection(page)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
   })
 })

@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { waitForAgentIdle } from '../helpers/ui'
 import { captureDeepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
 import { deepseekHarnessModelContextText } from './modelContextText'
@@ -14,10 +14,7 @@ deepseekHarnessTest('keeps the literal clear objective and clears the actual nat
   const owner = await captureDeepseekHarnessGoalOwner(context)
   await withDeepseekHarnessGoalCleanup(context, owner, [gate], async () => {
     await modelScript.rule({ name: 'the exact reserved objective round', when: { user: 'Objective: "clear"' }, once: true, respond: { text: 'The literal clear objective reached the native goal driver.', gate } })
-    await expandGoalsAndTodosSection(page)
-    await goalAction(page, 'set').click()
-    await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill('clear')
-    await page.locator('[data-testid="set-goal-submit"]:visible').click()
+    await submitGoal(page, 'clear')
     await modelScript.waitForGate(gate)
     await expect(page.locator('[data-testid="goal-objective"]:visible')).toHaveText('clear')
     await expectGoalStatus(page, 'active')
@@ -26,13 +23,12 @@ deepseekHarnessTest('keeps the literal clear objective and clears the actual nat
     if (!goal)
       throw new Error('The literal objective reached no actual native goal round.')
     expect(deepseekHarnessModelContextText(goal)).toContain('Objective: "clear"')
-    await openGoalMenu(page)
-    await goalAction(page, 'clear').click()
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await clearGoal(page)
+    await expectEmptyGoalCard(page)
     await modelScript.releaseGateIfHeld(gate)
     await waitForAgentIdle(page)
     await page.reload()
     await expandGoalsAndTodosSection(page)
-    await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
+    await expectEmptyGoalCard(page)
   })
 })

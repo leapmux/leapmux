@@ -3,9 +3,9 @@ import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { gooseTest } from '../goose-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { exerciseGoosePermissionRemoval } from './permissionScenario'
 
@@ -37,7 +37,7 @@ gooseTest('permission-prompts: the sidebar follows each checklist the agent writ
 
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)
-  const list = page.locator('[data-testid="goals-and-todos"]:visible')
+  const list = goalsAndTodosList(page)
   await expect(list).toContainText('Inspect the repository')
   await expect(list).toContainText('Report their purpose')
   await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(1)

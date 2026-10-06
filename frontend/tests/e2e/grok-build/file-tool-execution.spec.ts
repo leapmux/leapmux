@@ -3,9 +3,9 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const PROVIDER = AgentProvider.GROK_BUILD
@@ -60,7 +60,7 @@ grokTest.describe('Grok Build tool execution', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'All four tools ran.' })).toBeVisible()
 
     await expandGoalsAndTodosSection(page)
-    const todos = page.locator('[data-testid="goals-and-todos"]:visible')
+    const todos = goalsAndTodosList(page)
     await expect(todos).toContainText('Run the shell command')
     await expect(todos).toContainText('Report the result')
   })

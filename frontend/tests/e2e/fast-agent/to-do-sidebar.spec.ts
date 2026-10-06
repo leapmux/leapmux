@@ -1,5 +1,5 @@
 import { fastAgentTest, expect as fastExpect, openFastAgentAgent } from '../fastagent-fixtures'
-import { goalsAndTodosSection } from '../helpers/subagentRegistry'
+import { goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 fastAgentTest.describe('Fast Agent to-do support', () => {

@@ -1,5 +1,6 @@
 /**
- * These helpers drive the background-task registry and the Goals & To-dos section in end-to-end (E2E) tests.
+ * These helpers drive the background-task registry in end-to-end (E2E) tests.
+ * ./goalsAndTodos.ts drives the Goals & To-dos section.
  * Scope locators for present chat rows to :visible because ChatView can premeasure a hidden copy.
  * Select the first visible sidebar mount for section headers because only that mount receives Worker metadata.
  * Keep zero-count registry locators unscoped so a collapsed section cannot hide a forbidden row.
@@ -15,20 +16,16 @@ import type { MockModelMatcher, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import { expect } from '@playwright/test'
-import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { getTestChannel } from './api'
 import { cleanupOnFailure } from './cleanup'
-import { countGoalTransitionsInMessages } from './goalTransitions'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
   assistantBubbles,
-  composerEditor,
+  expandSidebarSection,
   expectAssistantAnswer,
   sendMessage,
-  stableBox,
   tabById,
   waitForAgentIdle,
 } from './ui'
@@ -41,144 +38,9 @@ export function backgroundTasksSection(page: Page): Locator {
   return page.locator('[data-testid="section-header-background_tasks"]:visible').first()
 }
 
-/** Locator for the Goals & To-dos section header in the right sidebar. */
-export function goalsAndTodosSection(page: Page): Locator {
-  return page.locator('[data-testid="section-header-todos"]:visible').first()
-}
-
-async function expandSection(section: Locator): Promise<void> {
-  const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed')).catch(() => true)
-  if (!isOpen)
-    await section.locator('> [role="button"]').click()
-}
-
 /** Expand the Background tasks section if it is collapsed. */
 export async function expandBackgroundTasksSection(page: Page): Promise<void> {
-  await expandSection(backgroundTasksSection(page))
-}
-
-/** Expand the Goals & To-dos section if it is collapsed. */
-export async function expandGoalsAndTodosSection(page: Page): Promise<void> {
-  await expandSection(goalsAndTodosSection(page))
-}
-
-/**
- * Find the visible session-goal card inside Goals & To-dos.
- * Both the sidebar and the ThinkingIndicator popover can show a goal card.
- * Pass a scoped Locator when both surfaces are open.
- */
-export function goalCard(page: Page | Locator): Locator {
-  return page.locator('[data-testid="goal-card"]:visible')
-}
-
-/**
- * Find one goal action, such as set or clear.
- * The empty card displays its set button directly.
- * The other actions require openGoalMenu first.
- * Both the sidebar and the ThinkingIndicator popover can display a goal card.
- * Pass a Locator that selects the intended surface when both are open.
- */
-export function goalAction(page: Page | Locator, action: string): Locator {
-  return page.locator(`[data-testid="goal-action-${action}"]:visible`)
-}
-
-/**
- * Open the existing goal card's action menu.
- * The empty state supplies its set button directly and needs no menu.
- * Use the same scoped root as goalAction when multiple goal surfaces are visible.
- */
-export async function openGoalMenu(page: Page | Locator): Promise<void> {
-  const trigger = page.locator('[data-testid="goal-actions-trigger"]:visible')
-  // Wait for the menu trigger to stop moving before the click.
-  // Objective expansion and status changes can move the trigger.
-  // A to-do update can also move it.
-  // Playwright can otherwise report a timeout even when the moving control remains visible and enabled.
-  await stableBox(trigger)
-  await trigger.click()
-}
-
-/** What one provider's queued goal route looks like on the wire. */
-export interface TextGoalQueueCase {
-  /** The objective to type into the goal editor. */
-  objective: string
-  /** The exact command text a Clear must enqueue, such as `/goal off`. */
-  clearCommand: string
-  /** The composer mode a Set switches the session into, when it switches one. */
-  modeAfterSet?: string
-  /** The composer mode a Clear restores, when it restores one. */
-  modeAfterClear?: string
-}
-
-/**
- * Verify the provider's real queued goal command.
- * Pause the queue to establish the state before native delivery.
- * The options object distinguishes the two optional mode values.
- * Positional strings could swap those values without a type error and fail later inside this helper.
- */
-export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase): Promise<void> {
-  const queue = page.locator('[data-testid="agent-input-queue"]:visible')
-  const pauseButton = page.locator('[data-testid="queue-pause-button"]:visible')
-  const modeTrigger = page.locator('[data-testid="composer-mode-trigger"]:visible')
-
-  await expect(composerEditor(page)).toBeVisible()
-  await expect(goalsAndTodosSection(page)).toBeVisible()
-  await expandGoalsAndTodosSection(page)
-  await expect(goalAction(page, 'set')).toBeVisible()
-
-  await pauseButton.click()
-  await goalAction(page, 'set').click()
-  await page.locator('[data-testid="goal-editor"]:visible .ProseMirror').fill(test.objective)
-  await page.locator('[data-testid="set-goal-submit"]:visible').click()
-  await expect(queue).toContainText(`/goal ${test.objective}`)
-  // The command stays in the queue until the provider receives it.
-  // Require the empty goal card before that delivery.
-  await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-
-  await pauseButton.click()
-  await expect(page.locator('[data-testid="goal-objective"]:visible')).toContainText(test.objective)
-  if (test.modeAfterSet)
-    await expect(modeTrigger).toContainText(test.modeAfterSet)
-
-  // Pause again so the clear command stays visible in the queue while the goal
-  // turn changes state.
-  await pauseButton.click()
-  await openGoalMenu(page)
-  await goalAction(page, 'clear').click()
-  await expect(queue).toContainText(test.clearCommand)
-
-  // The set command starts a turn that prevents the clear command from dispatching.
-  // End that turn before releasing the clear command.
-  // A single interrupt-button count can race a turn end and cannot prove that the queue drained.
-  // A turn end between that count and the click can also detach the button.
-  await endActiveTurn(page)
-  await pauseButton.click()
-  await expect(queue).toHaveCount(0)
-  await expect(page.locator('[data-testid="goal-card-empty"]:visible')).toBeVisible()
-  if (test.modeAfterClear)
-    await expect(modeTrigger).toContainText(test.modeAfterClear)
-}
-
-/**
- * End the active turn if one exists.
- * Try the click directly because a prior count can race the turn end.
- * Ignore that click failure, then require the interrupt button to disappear.
- * The final assertion proves that the turn ended even when the click races it.
- */
-async function endActiveTurn(page: Page): Promise<void> {
-  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
-  await interrupt.click().catch(() => {})
-  await expect(interrupt).toHaveCount(0)
-}
-
-/**
- * Wait for the goal card to report the requested status.
- * Worker broadcasts can arrive after the card appears.
- * Poll the status so an earlier rendered state cannot satisfy the assertion.
- */
-export async function expectGoalStatus(page: Page, status: string): Promise<void> {
-  await expect
-    .poll(async () => await page.locator('[data-testid="goal-status-dot"]:visible').getAttribute('data-status'))
-    .toBe(status)
+  await expandSidebarSection(backgroundTasksSection(page))
 }
 
 /**
@@ -545,32 +407,4 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
 export async function expectSectionPersists(page: Page): Promise<void> {
   await expect(backgroundTasksSection(page)).toBeVisible()
   await expect(page.locator('[data-testid="bg-task-row"]:visible').first()).toBeVisible()
-}
-
-/**
- * Count persisted session-goal transitions through the encrypted Worker test channel.
- * A virtual chat list removes rows outside its viewport.
- * A rendered text count therefore cannot count the complete persisted transcript.
- * Return null while a Worker read fails so the caller can wait for reconnection.
- */
-export async function countGoalTransitions(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  agentId: string,
-): Promise<number | null> {
-  const channel = await getTestChannel(hubUrl, token)
-  try {
-    const resp = await channel.callWorker(
-      workerId,
-      'ListAgentMessages',
-      ListAgentMessagesRequestSchema,
-      ListAgentMessagesResponseSchema,
-      { agentId, limit: 200 },
-    )
-    return countGoalTransitionsInMessages(resp.messages ?? [])
-  }
-  catch {
-    return null
-  }
 }

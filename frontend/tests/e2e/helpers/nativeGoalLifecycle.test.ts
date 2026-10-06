@@ -62,9 +62,16 @@ async function pollFor<T>(read: () => T | Promise<T>, accept: (value: T) => bool
   }
 }
 
-vi.mock('./subagentRegistry', async importOriginal => ({
-  ...await importOriginal<typeof import('./subagentRegistry')>(),
-  expandGoalsAndTodosSection: async () => {},
+// The composite helpers call the primitives of their own module directly, so a mock of a primitive
+// cannot reach them. The fakes below drive the fake browser at the same level as each helper.
+vi.mock('./goalsAndTodos', async importOriginal => ({
+  ...await importOriginal<typeof import('./goalsAndTodos')>(),
+  submitGoal: async (_page: Page, objective: string) => {
+    browser.editorText = objective
+    browser.submit()
+  },
+  clearGoal: async () => browser.act('clear'),
+  expectEmptyGoalCard: async () => expect(browser.goal).toBe('none'),
   openGoalMenu: async () => {},
   goalAction: (_page: Page, action: string) => ({ click: async () => browser.act(action) }),
   expectGoalStatus: async (_page: Page, status: string) => pollFor(() => browser.goal, goal => goal === status),
@@ -260,15 +267,9 @@ function fakePage(): Page {
   // The fake supplies only the page queries that the helper makes directly.
   return Object.assign({} as Page, {
     locator: (selector: string) => {
-      if (selector === '[data-testid="goal-editor"]:visible .ProseMirror')
-        return { fill: async (text: string) => { browser.editorText = text } }
-      if (selector === '[data-testid="set-goal-submit"]:visible')
-        return { click: async () => browser.submit() }
       // The simulated agent never queues a command, so the queue holds no item.
       if (selector === '[data-testid="agent-input-queue"]:visible')
         return countProbe(() => 0)
-      if (selector === '[data-testid="goal-card-empty"]:visible')
-        return countProbe(() => browser.goal === 'none' ? 1 : 0)
       throw new Error(`The fake page has no locator for ${selector}.`)
     },
   })

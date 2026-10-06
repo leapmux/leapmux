@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
+import { goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
@@ -22,6 +23,6 @@ clineTest('offers no native to-do tool and keeps an authoritative empty sidebar 
     }
     const snapshot = await readNativeSidebarSnapshot(context)
     expect(snapshot.todos).toEqual([])
-    await expect(page.locator('[data-testid="goals-and-todos"]:visible')).toHaveCount(0)
+    await expect(goalsAndTodosList(page)).toHaveCount(0)
   }
 })

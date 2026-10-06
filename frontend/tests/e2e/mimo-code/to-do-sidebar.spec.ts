@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { mimoTaskToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
@@ -22,7 +22,7 @@ mimoTest.describe('MiMo Code to-do list', () => {
     await waitForAgentIdle(page)
 
     await expandGoalsAndTodosSection(page)
-    const list = page.locator('[data-testid="goals-and-todos"]:visible')
+    const list = goalsAndTodosList(page)
     await expect(list).toContainText('Inspect the parser')
     await expect(list).toContainText('Write the report')
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(1)

@@ -1,5 +1,5 @@
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { lettaTaskCreateToolCall, lettaTaskListToolCall, lettaTaskUpdateToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 
@@ -21,7 +21,7 @@ lettaTest.describe('tracks the Letta Code to-do list', () => {
 
     await expect(goalsAndTodosSection(page)).toBeVisible()
     await expandGoalsAndTodosSection(page)
-    const list = page.locator('[data-testid="goals-and-todos"]:visible')
+    const list = goalsAndTodosList(page)
     await expect(list).toContainText('Inspect the repository')
     await expect(list).toContainText('List three checks')
     await expect(list.locator('[data-task-checkbox="completed"]')).toHaveCount(1)

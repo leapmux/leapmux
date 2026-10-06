@@ -3,8 +3,8 @@ import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
 import { AgentGoalAction, AgentStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
+import { expandGoalsAndTodosSection, goalAction, goalsAndTodosSection, openGoalMenu } from './goalsAndTodos'
 import { currentNativeAgent } from './nativeScenario'
-import { expandGoalsAndTodosSection, goalAction, goalsAndTodosSection, openGoalMenu } from './subagentRegistry'
 import { expectPermissionShortcuts, openPlusMenu, settingsGroupTrigger, waitForNativeSettingsHydrated } from './ui'
 
 interface RelatedNativeProof {

@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
 import { TodoStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -25,7 +25,7 @@ deepseekHarnessTest('updates the whole native to-do snapshot and keeps sidebar s
     { content: 'Report the native result', status: TodoStatus.PENDING },
   ])
   await expandGoalsAndTodosSection(page)
-  const list = goalsAndTodosSection(page)
+  const list = goalsAndTodosList(page)
   await expect(list).toContainText('Inspect the native source')
   await expect(list).toContainText('Report the native result')
   await expect(list.locator('[data-task-checkbox="in_progress"]')).toHaveCount(1)

@@ -1,8 +1,8 @@
 import type { MockModelRequestRecord, MockModelStep } from '../helpers/mockModelScript'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
+import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { junieAnswerToolCall, junieSubmitPlanToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import {
   chooseSettingsOption,
   controlBanner,
@@ -121,7 +121,7 @@ export async function exerciseNativePlanReview(
   await expect(page.getByText('The plan is ready to implement.').filter({ visible: true }).first()).toBeVisible()
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)
-  const list = page.locator('[data-testid="goals-and-todos"]:visible')
+  const list = goalsAndTodosList(page)
   await expect(list).toContainText('Inspect the repository')
   await expect(list).toContainText('Apply the change')
 

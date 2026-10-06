@@ -1,5 +1,5 @@
 import { gooseTest } from '../goose-fixtures'
-import { exerciseTextGoalQueue } from '../helpers/subagentRegistry'
+import { exerciseTextGoalQueue } from '../helpers/goalsAndTodos'
 
 gooseTest('queues and observes session-goal commands', async ({
   authenticatedGooseWorkspace,

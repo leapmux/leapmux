@@ -3,9 +3,9 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
@@ -59,7 +59,7 @@ qwenTest.describe('Qwen Code tool execution', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'All four tools ran.' })).toBeVisible()
 
     await expandGoalsAndTodosSection(page)
-    const todos = page.locator('[data-testid="goals-and-todos"]:visible')
+    const todos = goalsAndTodosList(page)
     await expect(todos).toContainText('Run the shell command')
     await expect(todos).toContainText('Report the result')
   })

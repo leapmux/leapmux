@@ -1,12 +1,12 @@
 import { expect } from '@playwright/test'
 import { TodoStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { geminiTest } from '../gemini-fixtures'
+import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiTodoSnapshotToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo, expectRelatedTodoSurvivesReload } from '../helpers/relatedTodoProof'
-import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -52,7 +52,7 @@ geminiTest('preserves all native task statuses and replaces and clears the saved
     const verifySnapshot = async () => {
       const snapshot = await readNativeSidebarSnapshot(context)
       expect(snapshot.todos.map(todo => ({ content: todo.content, status: todo.status }))).toEqual(todos.map(todo => ({ content: todo.description, status: canonicalStatuses[todo.status].value })))
-      const list = page.locator('[data-testid="goals-and-todos"]:visible').first()
+      const list = goalsAndTodosList(page)
       if (todos.length === 0) {
         await expect(list.locator('[data-task-checkbox]')).toHaveCount(0)
         return
