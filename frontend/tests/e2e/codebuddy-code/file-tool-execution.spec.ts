@@ -1,11 +1,9 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest } from '../codebuddy-fixtures'
+import { codebuddyTest } from '../codebuddy-fixtures'
 import { exerciseFileEditSequence, exerciseFileToolExecution, exerciseFileWriteSequence } from '../helpers/nativeToolExecution'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code file tool execution', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.CODEBUDDY
 
   codebuddyTest('seeds, reads and edits a file, and draws the edit diff', async ({ codebuddyWorkspace, page, modelScript }) => {

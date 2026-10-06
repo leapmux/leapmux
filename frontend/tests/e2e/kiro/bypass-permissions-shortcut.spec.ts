@@ -5,9 +5,7 @@ import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contract
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, assistantBubbles, closeComposerMenus, expectSettingsOptionChosen, openPlusMenu, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro settings', () => {
   // Kiro has no preset between its own rules and every call, so Smart has no match.

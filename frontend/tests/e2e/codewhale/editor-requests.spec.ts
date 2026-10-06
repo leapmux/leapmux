@@ -1,13 +1,11 @@
 import { codewhaleExtractControl } from '../../../src/components/chat/providers/codewhale/extractControl'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
 
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 // LeapMux exposes no native multiline editor route for this provider.
 codewhaleTest('classifies real native controls and proves the missing editor-requests route', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {

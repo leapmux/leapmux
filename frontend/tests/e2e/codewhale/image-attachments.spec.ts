@@ -1,10 +1,8 @@
 import { expect } from '@playwright/test'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { CODEWHALE_VISION_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest.describe('Codewhale attachments', () => {
   codewhaleTest('delivers an image attachment to the model', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {

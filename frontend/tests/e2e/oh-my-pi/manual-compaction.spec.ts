@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest.describe('Oh My Pi compaction notice', () => {
   ohMyPiTest('draws the native notice after a manual compaction', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {

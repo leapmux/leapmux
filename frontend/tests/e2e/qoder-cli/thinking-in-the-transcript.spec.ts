@@ -1,9 +1,7 @@
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI basic chat', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('draws model reasoning in a thought band', async ({ qoderWorkspace, page, modelScript }) => {
     void qoderWorkspace
     const reasoning = 'QODER_THOUGHT_MARKER I compare the two values.'

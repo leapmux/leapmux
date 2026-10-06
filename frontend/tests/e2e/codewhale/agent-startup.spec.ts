@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { hubSpawnEnv } from '../helpers/server'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest('delivers input through a controlled native startup', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }

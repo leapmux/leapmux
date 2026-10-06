@@ -1,11 +1,9 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { bandRows, chooseSettingsOption, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 const REASONING = 'THINKING_MATRIX_PROBE: I checked the answer first.'
 

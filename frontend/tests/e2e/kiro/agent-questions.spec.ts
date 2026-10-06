@@ -6,9 +6,7 @@ import { kiroUserText } from '../helpers/kiroSurface'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 const PROVIDER = AgentProvider.KIRO
 

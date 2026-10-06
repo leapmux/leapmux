@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
-import { GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest.describe('Grok Build Basic Chat', () => {
   grokTest('draws model reasoning in a thought row', async ({ authenticatedGrokWorkspace, page, modelScript }) => {

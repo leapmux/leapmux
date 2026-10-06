@@ -1,11 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'
 
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 cursorTest('reports actual native quota refusal without a quota meter', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
   await expectNoRateLimitState(context, { relatedProof: async () => {

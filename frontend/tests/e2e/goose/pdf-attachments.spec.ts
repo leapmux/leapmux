@@ -1,8 +1,6 @@
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome } from '../helpers/attachments'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest('keeps refused PDF and binary attachments out of the next request', async ({ authenticatedGooseWorkspace, page, modelScript }) => {
   void authenticatedGooseWorkspace

@@ -5,9 +5,7 @@ import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachme
 import { createTestDirectory } from '../helpers/runDirectory'
 import { writeToolImage } from '../helpers/toolImages'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro attachments', () => {
   kiroTest('accepts an image attachment and carries it through the turn', async ({ authenticatedKiroWorkspace, page, modelScript }) => {

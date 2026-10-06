@@ -4,7 +4,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -15,8 +15,6 @@ import { getGlobalState } from '../helpers/server'
 import { applyPermissionPreset, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectUnansweredMcpInput } from '../helpers/unsupportedMcpInput'
 import { clineToolError } from './toolError'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 /**
  * The request budget of the probe server, in seconds: Cline's own `timeout` field.

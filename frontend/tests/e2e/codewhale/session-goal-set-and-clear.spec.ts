@@ -7,12 +7,10 @@ import { expect } from '@playwright/test'
  * Setting a goal starts a turn at once. Codewhale starts another pass after each turn until the model completes or blocks the goal. The runtime exposes no pause or resume route.
  */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { blockGoalToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest.describe('Codewhale session goal', () => {
   codewhaleTest('sets a goal that the model blocks, and clears it', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {

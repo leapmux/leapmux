@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest, createClineWorkingDir } from '../cline-fixtures'
+import { clineTest, createClineWorkingDir } from '../cline-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { hubSpawnEnv } from '../helpers/server'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest('delivers input through a controlled native startup', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE }

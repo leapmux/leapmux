@@ -4,12 +4,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code tool execution', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.LETTA
 
   async function chatText(page: Parameters<typeof messageContents>[0]): Promise<string> {

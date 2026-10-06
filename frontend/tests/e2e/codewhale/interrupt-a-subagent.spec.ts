@@ -1,10 +1,8 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { HELD_CHILD_NAME, HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest('proves the unsupported native child interrupt route while its original task runs', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }

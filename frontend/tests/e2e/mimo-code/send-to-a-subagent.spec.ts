@@ -11,9 +11,7 @@ import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { steerQueuedInput } from '../helpers/steer'
 import { openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
   mimoTest('sends a queued message into a running subagent', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {

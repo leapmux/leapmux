@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { geminiResultImages } from '../../../src/components/chat/providers/gemini/extractors/results'
 import { isObject } from '../../../src/lib/jsonPick'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
@@ -12,8 +12,6 @@ import { expectDecodedImageInBubble, imageInBubble, writeToolImage } from '../he
 import { readAttached, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 import { readGeminiStoredToolRecord } from './toolRecord'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('recovers the actual native image bytes into the exact tool result after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

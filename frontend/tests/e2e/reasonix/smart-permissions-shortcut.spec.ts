@@ -4,9 +4,7 @@ import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset, chooseSettingsOption, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfiguration'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
+import { reasonixTest } from '../reasonix-fixtures'
 
 reasonixTest('smart-permissions-shortcut: applies Reasonix session settings and preserves them after reload', async ({ authenticatedReasonixWorkspace, page, modelScript }) => {
   void authenticatedReasonixWorkspace

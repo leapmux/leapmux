@@ -5,9 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
+import { reasonixTest } from '../reasonix-fixtures'
 
 reasonixTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.REASONIX }

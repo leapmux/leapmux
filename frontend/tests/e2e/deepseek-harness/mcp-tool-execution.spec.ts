@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
-import { test } from '../fixtures'
+import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
 import { readMcpCallArguments } from '../helpers/mcpRequestReceipt'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
@@ -19,7 +19,7 @@ import { deepseekHarnessCanonicalMcpProjection, deepseekHarnessInspectReply, dee
 import { deepseekHarnessToolResultText } from './nativeToolResultText'
 import { nativeContext } from './scenarios'
 
-test('uses real native MCP results and preserves failure state after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+deepseekHarnessTest('uses real native MCP results and preserves failure state after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const directory = createTestDirectory('deepseek-mcp-results-')
   const script = writeMcpResultServer(directory, { receiptLog: join(directory, 'receipts.json') })
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
@@ -37,7 +37,7 @@ test('uses real native MCP results and preserves failure state after reload', as
   })
 })
 
-test('preserves the computed canonical native MCP result while removing private MCP metadata', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }) => {
+deepseekHarnessTest('preserves the computed canonical native MCP result while removing private MCP metadata', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const directory = createTestDirectory('deepseek-mcp-canonical-')
   const receiptLog = join(directory, 'receipts.json')

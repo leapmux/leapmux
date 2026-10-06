@@ -2,11 +2,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest, openJunieAgent } from '../junie-fixtures'
+import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
 
 junieTest.describe('Junie questions', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.JUNIE
 
   junieTest('ask_user raises a permission-shaped choice', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

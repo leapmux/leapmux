@@ -3,10 +3,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
+import { opencodeTest } from '../opencode-fixtures'
 import { readOpenCodeShellOutcome } from './nativeShellOutcome'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
 opencodeTest('tool call renders with span', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
   void authenticatedOpencodeWorkspace // fixture trigger

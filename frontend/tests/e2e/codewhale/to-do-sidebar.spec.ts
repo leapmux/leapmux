@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest.describe('Codewhale to-do list', () => {
   codewhaleTest('shows the list that todo_write keeps, and keeps it after a reload', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {

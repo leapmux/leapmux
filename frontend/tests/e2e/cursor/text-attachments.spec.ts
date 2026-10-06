@@ -2,12 +2,10 @@ import type { Page } from '@playwright/test'
 import type { AttachmentKind } from '../helpers/attachments'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 async function proveAttachment(page: Page, modelScript: ModelScript, kind: AttachmentKind, filename: string): Promise<void> {
   await modelScript.queue({ text: 'Attachment received.' })

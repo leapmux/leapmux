@@ -5,10 +5,8 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { applyPermissionPreset } from '../helpers/ui'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
+import { reasonixTest } from '../reasonix-fixtures'
 import { readReasonixChildTaskId, reasonixChildTaskMatcher } from './childIdentity'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
 
 reasonixTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedReasonixWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedReasonixWorkspace.workspaceId, provider: AgentProvider.REASONIX }

@@ -1,7 +1,5 @@
 import { exerciseManualCompaction } from '../helpers/manualCompaction'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
+import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('compacts a scripted conversation on request', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
   void authenticatedOpencodeWorkspace

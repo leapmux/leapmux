@@ -1,9 +1,7 @@
-import { FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from '../fastagent-fixtures'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
 
 fastAgentTest.describe('Fast Agent attachments', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('delivers PDF attachment bytes to the model', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
     // fast-agent sends the ACP blob unchanged as a Chat Completions `file` part

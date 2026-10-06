@@ -4,9 +4,7 @@ import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
+import { kiloTest } from '../kilo-fixtures'
 
 kiloTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }

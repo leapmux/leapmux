@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { assistantBubbles, bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('preserves the native model thought in its own transcript row after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

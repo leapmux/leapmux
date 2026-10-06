@@ -4,15 +4,13 @@ import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chatText, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The installed agent executes the scripted shell command. Calculated output proves that the executor ran the command.
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi tool execution', () => {
   ohMyPiTest('draws the output of a command', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace

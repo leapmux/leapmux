@@ -4,9 +4,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('subagent-live-transcript: routes the prompt, tools, and final report into the child tab', async ({
   authenticatedZCodeWorkspace,

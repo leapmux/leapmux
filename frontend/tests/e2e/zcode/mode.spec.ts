@@ -1,10 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, openSettingsMenu, settingsBar, waitForSettingsIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
+import { zcodeTest } from '../zcode-fixtures'
 import { exerciseZCodeMode } from './modeScenario'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
 
 zcodeTest('the mode chip starts on Build and can switch to Plan and Yolo', async ({ authenticatedZCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }

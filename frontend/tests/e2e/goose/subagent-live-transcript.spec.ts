@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { bashToolCall, goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage } from '../helpers/ui'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest('shows a child tool request before the child finishes', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   void authenticatedGooseWorkspace

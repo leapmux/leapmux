@@ -1,6 +1,6 @@
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 
 const cursorConfig: ACPFixtureConfig = {
@@ -12,10 +12,11 @@ const cursorConfig: ACPFixtureConfig = {
 
 export const CURSOR_E2E_SKIP_REASON = detectACPSkipReason(cursorConfig)
 
-export const cursorTest = base.extend<{
+export const cursorTest = base.extend<CliSkipFixture & {
   cursorWorkspace: WorkspaceFixture
   authenticatedCursorWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(CURSOR_E2E_SKIP_REASON),
   cursorWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, cursorConfig, use)
   },

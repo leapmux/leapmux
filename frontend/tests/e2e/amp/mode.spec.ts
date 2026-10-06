@@ -3,7 +3,7 @@ import type { AmpThreadView } from '../helpers/ampSurface'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { expect } from '@playwright/test'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
@@ -14,8 +14,6 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeC
  *
  * Amp's mode selects its model and effort together. The first message fixes the mode. The Worker starts no Amp process before that message. Later choices explain that another mode needs a new session.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 /** The mock's record of the thread that an agent in `workingDir` created. */
 async function threadIn(mockModelUrl: string, workingDir: string): Promise<AmpThreadView | undefined> {
   const tree = pathToFileURL(realpathSync(workingDir)).href

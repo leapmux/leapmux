@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { withCleanup } from '../helpers/cleanup'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
@@ -13,8 +13,6 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('disables the actual native question tool while real permission controls still work', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }, testInfo) => {
   const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }

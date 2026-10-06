@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { COPILOT_MODE, COPILOT_OPTION } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, expectSettingsChip, messageBubbles, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest('uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
   void authenticatedCopilotWorkspace

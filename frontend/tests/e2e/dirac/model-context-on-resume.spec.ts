@@ -1,7 +1,7 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { DIRAC_E2E_SKIP_REASON, diracTest } from '../dirac-fixtures'
-import { expect, test } from '../fixtures'
+import { diracTest } from '../dirac-fixtures'
+import { expect } from '../fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { nativeModelContextText } from '../helpers/nativeScenario'
@@ -11,13 +11,11 @@ import { assistantBubbles, loginViaToken, openMenu, openWorkspace, sendMessage, 
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
-test.describe('Dirac session resume', () => {
+diracTest.describe('Dirac session resume', () => {
   const SESSION_MENU = 'session-select-menu'
   const provider: AgentProvider = AgentProvider.DIRAC
   const label = 'Dirac'
-  const skip = DIRAC_E2E_SKIP_REASON
-  test.skip(!!skip, skip ?? '')
-  test('reattaches an incomplete task without its prior model context', async ({ page, leapmuxServer, modelScript }) => {
+  diracTest('reattaches an incomplete task without its prior model context', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const keeperDir = createGitRepo(dataDir, `resume-keeper-c-${crypto.randomUUID()}`)
     const subjectDir = createGitRepo(dataDir, `resume-subject-c-${crypto.randomUUID()}`)

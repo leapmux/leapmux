@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest.describe('Cline compaction notice', () => {
   clineTest('shows the native notice after context overflow recovery', async ({ authenticatedClineWorkspace, page, modelScript }) => {

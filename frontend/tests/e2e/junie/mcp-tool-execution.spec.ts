@@ -3,11 +3,9 @@ import { writeJunieMcpConfig } from '../helpers/junieMcp'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { junieAnswerToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest, openJunieAgent } from '../junie-fixtures'
+import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
 
 junieTest.describe('native mcp tool execution', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('runs a project MCP tool through the native agent', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const echoArguments = { query: 'probe', limit: 0, tail: 'END_MCP_ARGUMENTS' }
     await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { brave_mode: 'on' }, (workingDir) => {

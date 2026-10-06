@@ -1,4 +1,4 @@
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { DROID_MOCK_MODEL_IDS, MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
@@ -6,8 +6,6 @@ import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, sen
 import { nativeContext } from './scenarios'
 
 droidTest.describe('Factory Droid settings', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('sends a selected custom model to the mock and keeps it after reload', async ({ authenticatedDroidWorkspace, page, modelScript, leapmuxServer }) => {
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, `model-${DROID_MOCK_MODEL_IDS.alternate}`)

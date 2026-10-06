@@ -1,10 +1,8 @@
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { ARITHMETIC_PROMPT, bandRows, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 fastAgentTest.describe('Fast Agent thinking and context usage', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   const REASONING = 'I add the two numbers column by column.'
 
   fastAgentTest('draws the reasoning in a thought band', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

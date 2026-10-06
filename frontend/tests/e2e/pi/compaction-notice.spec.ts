@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
 import { compactionChatSelector, expectCompactionNotice } from '../helpers/compaction'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 const OLD_CONTEXT_MARKER = 'LEAPMUXOLDCONTEXTPIRIVER'
 

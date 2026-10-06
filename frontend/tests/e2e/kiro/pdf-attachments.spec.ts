@@ -1,7 +1,5 @@
 import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro attachments', () => {
   kiroTest('accepts a PDF attachment and carries it through the turn', async ({ authenticatedKiroWorkspace, page, modelScript }) => {

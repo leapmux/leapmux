@@ -1,11 +1,9 @@
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { expectContextUsage } from '../helpers/contextUsage'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 diracTest.describe('Dirac thinking and context usage', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('reports the usage block as context usage', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
     void authenticatedDiracWorkspace
     const usage = { inputTokens: 1200, outputTokens: 80, contextWindow: 8000 }

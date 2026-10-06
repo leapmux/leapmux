@@ -1,17 +1,17 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const CLAUDE = AgentProvider.CLAUDE_CODE
 
-test.describe('Claude Code to-do sidebar', () => {
+claudeTest.describe('Claude Code to-do sidebar', () => {
   // TodoWrite re-sends the whole list, so the second call replaces the first.
   // Claude suppresses the todo row in the transcript; the sidebar is the surface
   // the matrix documents.
-  test('the sidebar follows each list the agent writes, and keeps it after a reload', async ({ authenticatedWorkspace, page, modelScript }) => {
+  claudeTest('the sidebar follows each list the agent writes, and keeps it after a reload', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
     await modelScript.queue(
       {

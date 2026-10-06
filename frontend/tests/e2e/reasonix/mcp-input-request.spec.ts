@@ -2,15 +2,15 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { reasonixTest } from '../reasonix-fixtures'
 
-test('answers a native Reasonix MCP form and preserves draft values after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+reasonixTest('answers a native Reasonix MCP form and preserves draft values after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = createTestDirectory('reasonix-mcp-form-')
   const script = writeMcpFormServer(directory, 'form-server.mjs')
   writeFileSync(join(directory, '.mcp.json'), JSON.stringify({ mcpServers: { form_probe: { command: process.execPath, args: [script] } } }))

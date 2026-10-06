@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 kiroTest('applies thinking independently of a fixed native model and effort before and after reload', async ({ authenticatedKiroWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiroWorkspace.workspaceId, provider: AgentProvider.KIRO }

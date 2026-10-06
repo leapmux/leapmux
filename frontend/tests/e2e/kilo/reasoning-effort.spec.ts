@@ -2,10 +2,8 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption } from '../helpers/nativeSettings'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
+import { kiloTest } from '../kilo-fixtures'
 import { exercisePlanAndEffort } from './settingsScenario'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
 
 kiloTest('keeps its Plan mode and effort after a turn and reload', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
   await exercisePlanAndEffort({ page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }, 'effort')

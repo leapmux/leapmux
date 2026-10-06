@@ -3,9 +3,7 @@ import { CONTEXT_USAGE_FIELD } from '../../../src/generated/contracts/session-in
 import { pickNumber } from '../../../src/lib/jsonPick'
 import { watchAgentContextUsage } from '../helpers/contextUsageEvents'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro basic chat', () => {
   kiroTest('shows Kiro\'s native context percentage in the agent info card', async ({ authenticatedKiroWorkspace, leapmuxServer, page, modelScript }) => {

@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { CLINE_E2E_SKIP_REASON, clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest, offeredTools } from '../cline-fixtures'
 import { clineRunTeammateTaskToolCall, clineSpawnTeammateToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest.describe('Cline workflow grouping', () => {
   clineTest('groups two native teammate runs under their team', async ({ authenticatedClineWorkspace, page, modelScript }) => {

@@ -4,9 +4,7 @@ import { MOCK_MODELS, MOCK_PROVIDER_IDS } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('keeps the low effort after a turn and reload', async ({ authenticatedZCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }

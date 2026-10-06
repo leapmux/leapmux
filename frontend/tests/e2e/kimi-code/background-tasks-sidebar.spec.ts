@@ -9,9 +9,7 @@ import { getGlobalState } from '../helpers/server'
 import { expectNoRegistryRows, expectRowBecomesFinal, requireRegistryRow } from '../helpers/subagentRegistry'
 import { createToolOutputControl } from '../helpers/toolOutputControl'
 import { applyPermissionPreset, assistantBubbles, expectSettingsChip, sendMessage, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
   kimiTest.beforeEach(async ({ authenticatedKimiWorkspace, page }) => {

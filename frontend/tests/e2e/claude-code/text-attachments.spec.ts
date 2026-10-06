@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { writeAttachmentFixture } from '../helpers/attachments'
 import { waitForAgentIdle } from '../helpers/ui'
 
-test.describe('Attachment Support', () => {
-  test('a text file reaches the model', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('Attachment Support', () => {
+  claudeTest('a text file reaches the model', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()

@@ -1,11 +1,9 @@
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 droidTest.describe('Factory Droid basic chat', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('draws the answer and ends the turn', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
     void authenticatedDroidWorkspace
     await modelScript.rule(DROID_TITLE_RULE)

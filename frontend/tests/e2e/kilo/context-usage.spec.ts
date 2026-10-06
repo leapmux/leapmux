@@ -1,8 +1,6 @@
 import { expectContextUsage } from '../helpers/contextUsage'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
+import { kiloTest } from '../kilo-fixtures'
 
 kiloTest('shows the context usage that the model reports', async ({ authenticatedKiloWorkspace, page, modelScript }) => {
   void authenticatedKiloWorkspace

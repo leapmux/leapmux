@@ -1,9 +1,9 @@
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { exerciseTextGoalQueue } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-test.describe('claude session goal input queue', () => {
-  test('routes session-goal commands through the input queue', async ({
+claudeTest.describe('claude session goal input queue', () => {
+  claudeTest('routes session-goal commands through the input queue', async ({
     authenticatedWorkspace,
     page,
     modelScript,

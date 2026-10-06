@@ -1,13 +1,11 @@
 import { unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { expectGeminiLiveChild, finishGeminiChildWithReload, openGeminiRunningChild } from './childScenarios'
 import { geminiNativeProject } from './nativeStore'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('stores the original native child prompt and results in its distinct tab after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

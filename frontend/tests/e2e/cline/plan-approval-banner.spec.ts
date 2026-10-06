@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest, offeredTools } from '../cline-fixtures'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
@@ -14,8 +14,6 @@ import { assistantBubbles, expectSettingsChip, sendMessage, visibleControlBanner
  *
  * The switch_to_act_mode tool opens the actual plan review. Approval recreates the same native session in Act and continues the plan.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 const PROVIDER = AgentProvider.CLINE
 
 clineTest.describe('Cline control requests', () => {

@@ -1,9 +1,7 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('send message and receive response', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   void authenticatedCursorWorkspace

@@ -8,9 +8,7 @@ import { exerciseNativePermissionRefusal } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, waitForSettingsHydrated } from '../helpers/ui'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 const CLASSIFIER_RULE = 'qwen-auto-classifier-states-no-verdict'
 

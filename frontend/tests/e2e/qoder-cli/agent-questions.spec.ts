@@ -2,11 +2,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI control answers', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.QODER
 
   qoderTest('returns a selected answer from its native question tool', async ({ qoderWorkspace, page, modelScript }) => {

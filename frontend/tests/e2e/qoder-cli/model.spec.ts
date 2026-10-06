@@ -1,12 +1,10 @@
 import { MOCK_MODELS, QODER_ALTERNATE_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI settings', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('switches the model used by the next request', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
     void qoderWorkspace
     await waitForSettingsHydrated(page, 'model')

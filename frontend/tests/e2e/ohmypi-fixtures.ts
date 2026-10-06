@@ -1,5 +1,7 @@
+import type { CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -30,12 +32,13 @@ export const OH_MY_PI_E2E_SKIP_REASON: string | null = OH_MY_PI.path === null
  */
 const YOLO = { optionValues: { permissionMode: 'yolo' } }
 
-export const ohMyPiTest = base.extend<{
+export const ohMyPiTest = base.extend<CliSkipFixture & {
   ohMyPiWorkspace: WorkspaceFixture
   authenticatedOhMyPiWorkspace: WorkspaceFixture
   /** An agent in LeapMux's default `write` mode, which asks before a command runs. */
   approvingOhMyPiWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(OH_MY_PI_E2E_SKIP_REASON),
   ohMyPiWorkspace: async ({ leapmuxServer }, use) => {
     await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.OH_MY_PI, prefix: 'omp-e2e', openOptions: YOLO }, use)
   },

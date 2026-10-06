@@ -4,9 +4,7 @@ import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 piTest('keeps the low effort after a turn and reload', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }

@@ -3,9 +3,7 @@ import { AgentGoalStatus, AgentProvider, ListAgentMessagesRequestSchema, ListAge
 import { getTestChannel } from '../helpers/api'
 import { exerciseNativeGoalPauseAndResume } from '../helpers/nativeGoalLifecycle'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 // Qwen Code changes its goal through its goal control
 // (`qwen/control/session/goal/control`), which pauses the goal at once and

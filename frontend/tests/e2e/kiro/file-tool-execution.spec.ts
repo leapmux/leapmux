@@ -6,9 +6,7 @@ import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 const PROVIDER = AgentProvider.KIRO
 

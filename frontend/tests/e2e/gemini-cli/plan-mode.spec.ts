@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { exerciseNativeReadOnlyPlan } from '../helpers/nativeReadOnlyPlan'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('reads real file context through native plan mode after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

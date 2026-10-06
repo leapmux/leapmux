@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { GROK_METHOD, GROK_MODE, GROK_PLAN_OUTCOME, GROK_REPLY_FIELD } from '../../../src/generated/contracts/grok-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -11,8 +11,6 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 const PROVIDER = AgentProvider.GROK_BUILD
 

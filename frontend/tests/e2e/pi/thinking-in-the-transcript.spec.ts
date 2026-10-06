@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 const REASONING = 'I add the two numbers.'
 

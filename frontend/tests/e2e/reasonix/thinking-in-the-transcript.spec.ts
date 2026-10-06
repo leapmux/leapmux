@@ -2,9 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
+import { reasonixTest } from '../reasonix-fixtures'
 
 const REASONING = 'THINKING_MATRIX_PROBE: I checked the answer first.'
 

@@ -1,15 +1,13 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { AgentProvider, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { exerciseQuestionReply } from './questionScenarios'
 import { nativeContext } from './scenarios'
-
-diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
 
 diracTest.describe('dirac agent questions', () => {
   diracTest('returns the selected form answer through the native question tool', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }, testInfo) => {

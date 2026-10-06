@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, tabById, userBubbles } from '../helpers/ui'
 import { openCursorRunningChild } from './childScenario'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('shows an actual child Read result in its own tab before the child completes', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }

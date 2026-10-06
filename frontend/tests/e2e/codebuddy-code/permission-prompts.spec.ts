@@ -1,13 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code control requests', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('raises a banner for a tool call and runs it once allowed', async ({ askingCodebuddyWorkspace, page, modelScript }) => {
     const output = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-permission-allowed.txt')
     const command = 'printf CODEBUDDY_ALLOWED > ./codebuddy-permission-allowed.txt'
@@ -47,8 +45,6 @@ codebuddyTest.describe('CodeBuddy Code control requests', () => {
 })
 
 codebuddyTest.describe('CodeBuddy Code control answers', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.CODEBUDDY
 
   function laterRequests(status: { requests: { stepIndex?: number, body: unknown }[] }, from: number): string {

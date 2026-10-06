@@ -1,10 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { exerciseNativeQuotaRefusal } from '../helpers/nativeQuota'
 import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('proves a real native quota response without a quota window in the info card', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }

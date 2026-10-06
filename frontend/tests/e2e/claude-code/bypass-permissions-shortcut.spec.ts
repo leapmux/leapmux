@@ -1,13 +1,12 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { test } from '../fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { expectSettingsChip, settingsBar, waitForSettingsIdle } from '../helpers/ui'
 
-test.describe('plan mode - bypass permissions', () => {
-  test('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('plan mode - bypass permissions', () => {
+  claudeTest('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
     await expectSettingsChip(page, 'Default')

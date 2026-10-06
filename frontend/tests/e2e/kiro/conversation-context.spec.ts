@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro basic chat', () => {
   kiroTest('continues the conversation in the same session', async ({ authenticatedKiroWorkspace, page, modelScript }) => {

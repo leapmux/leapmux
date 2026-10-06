@@ -1,12 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('changes the native model and restores the selected model after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

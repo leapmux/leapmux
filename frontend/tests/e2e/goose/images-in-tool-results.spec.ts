@@ -1,11 +1,9 @@
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { goosePermissionJudgmentToolCall, gooseReadImageToolCall } from '../helpers/providerToolCalls'
 import { expectDecodedImageInBubble, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest('shows the picture returned by read_image', async ({ authenticatedGooseWorkspace, page, modelScript }) => {
   const workingDir = authenticatedGooseWorkspace.workingDir

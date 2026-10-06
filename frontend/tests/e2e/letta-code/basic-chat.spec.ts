@@ -1,11 +1,9 @@
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code basic chat', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   lettaTest('draws the answer and ends the turn', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
     await modelScript.rule(LETTA_TITLE_RULE)

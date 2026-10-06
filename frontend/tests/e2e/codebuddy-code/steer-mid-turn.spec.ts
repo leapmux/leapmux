@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpers/attachments'
 import { lastUserText } from '../helpers/mockModelScript'
@@ -9,8 +9,6 @@ import { getRecordedToasts } from '../helpers/toast'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code steering', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('steers queued text into the active native turn', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     const gate = 'codebuddy-text-steer'

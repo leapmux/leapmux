@@ -13,9 +13,7 @@ import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../h
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
-import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 

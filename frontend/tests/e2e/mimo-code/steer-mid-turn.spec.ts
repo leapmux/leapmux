@@ -1,9 +1,7 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseProviderSteer } from '../helpers/providerSteer'
 import { applyPermissionPreset, waitForSettingsHydrated } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code settings', () => {
   mimoTest('steers a queued message into the active turn', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {

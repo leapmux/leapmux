@@ -2,9 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
+import { opencodeTest } from '../opencode-fixtures'
 
 const REASONING = 'THINKING_MATRIX_PROBE: I checked the answer first.'
 

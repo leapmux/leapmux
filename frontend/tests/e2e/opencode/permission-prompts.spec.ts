@@ -9,10 +9,8 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { createGitRepo } from '../helpers/worktree'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
+import { opencodeTest } from '../opencode-fixtures'
 import { exerciseOpenCodeFamilyDenial } from './permissionDenial'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
 opencodeTest('asks before a shell command touches a file outside the working directory', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   const parent = createTestDirectory('opencode-permission-')

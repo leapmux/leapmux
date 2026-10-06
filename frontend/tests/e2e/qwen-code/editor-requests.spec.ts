@@ -5,9 +5,7 @@ import { createNativePermissionFileWrite, exerciseNativePermissionDecision } fro
 
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 // LeapMux exposes no native multiline editor route for this provider.
 qwenTest('classifies real native controls and proves the missing editor-requests route', async ({ page, modelScript, leapmuxServer, authenticatedQwenWorkspace }) => {

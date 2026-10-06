@@ -5,9 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
+import { reasonixTest } from '../reasonix-fixtures'
 
 function requireWorkingDir(path: string | undefined): string {
   if (!path)

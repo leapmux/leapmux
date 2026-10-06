@@ -5,9 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
+import { opencodeTest } from '../opencode-fixtures'
 
 async function answerOpenCodeQuestion(page: Page, modelScript: ModelScript, provider: AgentProvider): Promise<void> {
   await modelScript.queue(

@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code basic chat', () => {
   // The second prompt reaches the same MiMo session.

@@ -8,9 +8,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { expectSettingsChip, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 /**
  * Open a MiMo agent on its plan agent.

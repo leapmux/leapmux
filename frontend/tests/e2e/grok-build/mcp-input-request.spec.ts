@@ -4,14 +4,12 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { createGitRepo } from '../helpers/worktree'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 /**
  * A private MCP server exposes one tool that requests a form.

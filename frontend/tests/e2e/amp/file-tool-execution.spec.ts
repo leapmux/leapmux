@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { chatText, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -13,8 +13,6 @@ import { chatText, sendMessage, waitForAgentIdle } from '../helpers/ui'
  *
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp tool execution', () => {
   ampTest('draws the lines a read returns', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     const notes = join(createNativeToolDirectory(authenticatedAmpWorkspace.workingDir), 'notes.txt')

@@ -8,9 +8,7 @@ import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 kiroTest('runs the actual project MCP tool and receives its native service result', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   let receiptLog = ''

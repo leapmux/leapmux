@@ -6,7 +6,7 @@ import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protoc
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -17,8 +17,6 @@ import { openWorkspace } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
 import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('loads private native configuration and calls only the suite mock', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }, testInfo) => {
   void authenticatedAmpWorkspace

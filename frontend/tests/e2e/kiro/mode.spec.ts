@@ -5,9 +5,7 @@ import { KIRO_MOCK_MODELS } from '../helpers/kiroSurface'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeLastStepBody } from '../helpers/nativeScenario'
 import { chooseSettingsOption, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 const [EFFORT_MODEL, PLAIN_MODEL] = KIRO_MOCK_MODELS
 

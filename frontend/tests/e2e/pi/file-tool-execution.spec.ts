@@ -6,9 +6,7 @@ import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 piTest('write tool creates a file and the chat surfaces the path', async ({ authenticatedPiWorkspace, page, modelScript }) => {
   const workingDir = authenticatedPiWorkspace.workingDir

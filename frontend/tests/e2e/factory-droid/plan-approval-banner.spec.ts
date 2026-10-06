@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs'
 import { DROID_CONFIRMATION_TYPE, DROID_PERMISSION_OPTION, DROID_REPLY, DROID_TOOL } from '../../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickString } from '../../../src/lib/jsonPick'
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -14,8 +14,6 @@ import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, savedControlAnswer, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid Spec mode', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('shows the native plan review and returns to Default after approval', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, 'permissionMode-spec')

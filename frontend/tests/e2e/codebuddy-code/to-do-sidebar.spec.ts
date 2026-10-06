@@ -1,11 +1,9 @@
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { codebuddyTaskCreateToolCall, codebuddyTaskUpdateToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code to-do sidebar', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('keeps native task updates after reload and clears the completed list', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await modelScript.queue(

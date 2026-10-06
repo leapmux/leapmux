@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chatText, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The test answers real native permission requests. Allow executes the tool. Deny must reach the next native model request as a refusal.
@@ -13,8 +13,6 @@ import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
  *
  * Oh My Pi sends an `extension_ui_request` select dialog before execution. Approve and Deny become the shared Allow and Deny controls.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi control requests', () => {
   ohMyPiTest('runs a command after the reader allows it', async ({ approvingOhMyPiWorkspace, page, modelScript }) => {
     void approvingOhMyPiWorkspace

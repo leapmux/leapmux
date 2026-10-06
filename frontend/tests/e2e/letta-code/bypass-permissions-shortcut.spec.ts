@@ -1,9 +1,7 @@
 import { applyPermissionPreset, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, lettaTest } from '../letta-fixtures'
+import { expect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code bypass permissions', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   lettaTest('the Bypass shortcut switches the session to Unrestricted', async ({ askingLettaWorkspace, page }) => {
     void askingLettaWorkspace
     await waitForSettingsHydrated(page)

@@ -2,14 +2,12 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { exerciseGoosePermissionRemoval } from './permissionScenario'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 const GOOSE = AgentProvider.GOOSE
 

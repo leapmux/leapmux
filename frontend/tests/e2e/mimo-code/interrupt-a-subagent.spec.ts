@@ -2,9 +2,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest('proves the unsupported native child interrupt route while its original task runs', async ({ page, modelScript, leapmuxServer, authenticatedMiMoWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedMiMoWorkspace.workspaceId, provider: AgentProvider.MIMO_CODE }

@@ -1,8 +1,6 @@
 import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome } from '../helpers/attachments'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code attachments', () => {
   kimiTest('refuses a PDF and a binary file', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

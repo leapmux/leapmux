@@ -1,9 +1,7 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest.describe('Oh My Pi interrupt', () => {
   ohMyPiTest('stops a model call and takes the next prompt', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {

@@ -13,9 +13,7 @@ import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTru
 
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 // LeapMux exposes no interactive native workspace-trust route for this provider.
 kimiTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedKimiWorkspace }) => {

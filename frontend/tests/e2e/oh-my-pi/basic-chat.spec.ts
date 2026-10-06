@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The native agent reads the prompt and returns the answer.
@@ -10,8 +10,6 @@ import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi basic chat', () => {
   ohMyPiTest('renders an assistant answer and ends the turn with a timed divider', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace

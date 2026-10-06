@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
-import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code settings and goal', () => {
   // The goal card changes the goal through Qwen's goal control. Qwen starts the goal turns.

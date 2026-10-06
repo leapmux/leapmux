@@ -1,12 +1,10 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { bandRows, chooseSettingsOption, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 const REASONING = 'THINKING_MATRIX_PROBE: I checked the answer first.'
 

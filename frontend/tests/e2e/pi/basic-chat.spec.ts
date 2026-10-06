@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 piTest('renders an assistant answer and clears the thinking indicator', async ({ authenticatedPiWorkspace, page, modelScript }) => {
   void authenticatedPiWorkspace

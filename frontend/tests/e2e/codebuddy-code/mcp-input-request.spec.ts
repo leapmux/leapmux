@@ -5,7 +5,7 @@ import process from 'node:process'
 import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, createCodebuddyWorkingDir, expect, openCodebuddyAgent } from '../codebuddy-fixtures'
+import { codebuddyTest, createCodebuddyWorkingDir, expect, openCodebuddyAgent } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -15,8 +15,6 @@ import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/prov
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   function installUserMcpServer(configDir: string, script: string): () => void {
     const configPath = join(configDir, '.mcp.json')
     if (existsSync(configPath))

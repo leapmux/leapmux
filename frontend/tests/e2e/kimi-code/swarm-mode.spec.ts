@@ -2,10 +2,8 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
+import { kimiTest } from '../kimi-fixtures'
 import { kimiModelContextText } from './modelContextText'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
 
 kimiTest('applies independent swarm mode to native context and preserves it after reload', async ({ authenticatedKimiWorkspace, page, modelScript, leapmuxServer }) => {
   // The reader joins the raw message text: the generic JSON reader escapes the

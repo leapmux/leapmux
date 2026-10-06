@@ -2,15 +2,13 @@ import type { Page } from '@playwright/test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { editToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { nativeDroidCallId } from './toolResult'
 
 droidTest.describe('Factory Droid control requests', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   function banner(page: Page) {
     return page.getByTestId('control-banner').filter({ visible: true })
   }

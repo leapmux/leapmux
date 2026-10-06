@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
@@ -13,8 +13,6 @@ import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusM
  *
  * Cline's hub exposes no model catalog. The Worker combines its native provider catalog with the configured custom model.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 /** The option ids the mode group offers. */
 async function modeOptions(page: Page): Promise<string[]> {
   const group = await openSettingsMenu(page, 'permissionMode')

@@ -5,10 +5,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chooseSettingsOption, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
+import { zcodeTest } from '../zcode-fixtures'
 import { exerciseZCodeRemovalPermission } from './permissionScenario'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
 
 zcodeTest('bypass-permissions-shortcut: the permission banner applies the selected bypass pill on allow', async ({ authenticatedZCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }

@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -13,8 +13,6 @@ import { applyPermissionPreset, chatText, sendMessage, waitForAgentIdle } from '
  *
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp tool execution', () => {
   ampTest('draws the output of a command', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     void authenticatedAmpWorkspace

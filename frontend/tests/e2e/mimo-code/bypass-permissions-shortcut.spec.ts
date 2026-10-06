@@ -8,9 +8,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { applyPermissionPreset, closeComposerMenus, openPlusMenu, openSettingsMenu, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code settings', () => {
   // MiMo controls native approvals through two runtime switches.

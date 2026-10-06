@@ -5,8 +5,10 @@
  * `helpers/mockAgentEnvironment.ts` writes to `KIMI_CODE_HOME`, never a Kimi
  * account.
  */
+import type { CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -53,10 +55,11 @@ export interface KimiWorkspaceFixture extends WorkspaceFixture {
   workingDir: string
 }
 
-export const kimiTest = base.extend<{
+export const kimiTest = base.extend<CliSkipFixture & {
   kimiWorkspace: KimiWorkspaceFixture
   authenticatedKimiWorkspace: KimiWorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(KIMI_E2E_SKIP_REASON),
   kimiWorkspace: async ({ leapmuxServer }, use) => {
     const workingDir = createTestDirectory('kimi-e2e-wd-')
     await withAgentWorkspace(

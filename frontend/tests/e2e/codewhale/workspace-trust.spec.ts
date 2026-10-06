@@ -5,7 +5,7 @@ import { codewhaleExtractControl } from '../../../src/components/chat/providers/
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -19,8 +19,6 @@ import { getGlobalState } from '../helpers/server'
 import { chooseSettingsOption, openWorkspace, tabById, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
 import { withAgentWorkspace } from '../helpers/workspace'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 // LeapMux exposes no interactive native workspace-trust route for this provider.
 codewhaleTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {

@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 const COPILOT = AgentProvider.GITHUB_COPILOT
 

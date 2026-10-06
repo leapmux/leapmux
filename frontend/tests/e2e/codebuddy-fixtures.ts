@@ -12,8 +12,10 @@
  * JSON completion is dropped with `error_during_execution`.
  */
 import type { Page } from '@playwright/test'
+import type { CliSkipFixture } from './acp-fixture-factory'
 import { CODEBUDDY_MODE } from '../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -60,7 +62,8 @@ function codebuddyWorkspace(prefix: string, openOptions?: { optionValues: Record
   }
 }
 
-export const codebuddyTest = base.extend<{ codebuddyWorkspace: CodebuddyWorkspaceFixture, askingCodebuddyWorkspace: CodebuddyWorkspaceFixture }>({
+export const codebuddyTest = base.extend<CliSkipFixture & { codebuddyWorkspace: CodebuddyWorkspaceFixture, askingCodebuddyWorkspace: CodebuddyWorkspaceFixture }>({
+  cliSkip: cliSkipFixture(CODEBUDDY_E2E_SKIP_REASON),
   codebuddyWorkspace: codebuddyWorkspace('codebuddy-e2e', BYPASS),
   // An agent in Default mode, which raises a banner for each tool call. The
   // control-request spec needs the banner; the bypass workspace answers every

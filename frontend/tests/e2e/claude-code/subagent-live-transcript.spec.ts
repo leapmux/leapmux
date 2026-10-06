@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { AgentProvider, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { registerClaudeChildReportRules } from '../helpers/claudeChildReportRule'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -40,8 +40,8 @@ async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioCo
   expect(reopened.messages).toEqual(snapshot.messages)
 }
 
-test.describe('Claude subagent background tasks', () => {
-  test('shows a child prompt while that child still waits for its model', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
+claudeTest.describe('Claude subagent background tasks', () => {
+  claudeTest('shows a child prompt while that child still waits for its model', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedWorkspace
     await exerciseLiveChildTranscript(page, modelScript, {
       provider: AgentProvider.CLAUDE_CODE,
@@ -55,7 +55,7 @@ test.describe('Claude subagent background tasks', () => {
     })
   })
 
-  test('shows a child file result only in the running child tab', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
+  claudeTest('shows a child file result only in the running child tab', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedWorkspace
     const agent = await currentNativeAgent({ page, leapmuxServer })
     expect(agent.agentProvider).toBe(AgentProvider.CLAUDE_CODE)

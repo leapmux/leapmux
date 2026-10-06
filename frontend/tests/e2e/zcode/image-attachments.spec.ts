@@ -5,9 +5,7 @@ import { expect } from '@playwright/test'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 async function proveAttachment(page: Page, modelScript: ModelScript, kind: AttachmentKind, filename: string): Promise<void> {
   await modelScript.queue({ text: 'Attachment received.' })

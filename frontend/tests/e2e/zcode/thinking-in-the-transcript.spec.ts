@@ -2,9 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 const REASONING = 'THINKING_MATRIX_PROBE: I checked the answer first.'
 

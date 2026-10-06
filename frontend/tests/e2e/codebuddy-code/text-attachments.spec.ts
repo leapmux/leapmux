@@ -1,11 +1,9 @@
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('the model receives a text attachment', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await modelScript.queue({ text: 'Attachment received.' })

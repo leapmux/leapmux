@@ -1,6 +1,6 @@
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -15,10 +15,11 @@ const geminiConfig: ACPFixtureConfig = {
 
 export const GEMINI_E2E_SKIP_REASON = detectACPSkipReason(geminiConfig)
 
-export const geminiTest = base.extend<{
+export const geminiTest = base.extend<CliSkipFixture & {
   geminiWorkspace: WorkspaceFixture
   authenticatedGeminiWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(GEMINI_E2E_SKIP_REASON),
   geminiWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, geminiConfig, use)
   },

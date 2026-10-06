@@ -8,7 +8,7 @@ import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesRespons
 import { isObject } from '../../../src/lib/jsonPick'
 import { parseMessageContent } from '../../../src/lib/messageParser'
 import { agentOpenOptions } from '../agentSettings'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { CODEWHALE_VISION_MODEL_ID } from '../helpers/mockAgentEnvironment'
@@ -22,8 +22,6 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { expectMcpToolImage, expectToolRowImage, mcpResultImage, writeToolImage } from '../helpers/toolImages'
 import { applyPermissionPreset, openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 /** Prove that the actual image bytes reside in the completed Worker's stored row. */
 async function expectSavedImage(context: ManagedNativeScenarioContext, callId: string, uri: string): Promise<void> {

@@ -1,11 +1,10 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test as fixturesTest } from '../fixtures'
+import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, visibleOnly, waitForSettingsIdle } from '../helpers/ui'
-import { processTest as test } from '../process-control-fixtures'
 
 /** The native model ID and beta header together prove the 1M selection. */
 function expectNativeOpus1M(request: MockModelRequestRecord | undefined): void {
@@ -111,8 +110,8 @@ test.describe('Agent Settings', () => {
 // Closed composer menus retain model labels. Match the notification's exact shape.
 const MODEL_CHANGE_PATTERN = /Model \(Sonnet → Opus\)/
 
-fixturesTest.describe('1m-context model', () => {
-  fixturesTest('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page, modelScript }) => {
+claudeTest.describe('1m-context model', () => {
+  claudeTest('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -154,7 +153,7 @@ fixturesTest.describe('1m-context model', () => {
 
   // The Default selection must resolve to a concrete model and retain its effort menu.
   // The resumed native session can retain Opus. Do not require the account's initial model.
-  fixturesTest('switching to Default resolves to a concrete model with its effort menu', async ({ authenticatedWorkspace, page }) => {
+  claudeTest('switching to Default resolves to a concrete model with its effort menu', async ({ authenticatedWorkspace, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 

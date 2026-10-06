@@ -2,10 +2,8 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption } from '../helpers/nativeSettings'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
+import { opencodeTest } from '../opencode-fixtures'
 import { exercisePlanAndEffort } from './settingsScenario'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 
 opencodeTest('keeps its Plan mode and effort after a turn and reload', async ({ authenticatedOpencodeWorkspace, page, modelScript, leapmuxServer }) => {
   await exercisePlanAndEffort({ page, modelScript, leapmuxServer, workspaceId: authenticatedOpencodeWorkspace.workspaceId, provider: AgentProvider.OPENCODE }, 'effort')

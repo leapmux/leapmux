@@ -1,7 +1,5 @@
 import { exerciseContextUsage } from '../helpers/contextUsage'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('shows the context usage that the model reports', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
   void authenticatedZCodeWorkspace

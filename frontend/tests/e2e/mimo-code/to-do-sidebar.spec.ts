@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { mimoTaskToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code to-do list', () => {
   // MiMo's to-do tool acts on one item for each call, and states the item's id

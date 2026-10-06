@@ -6,12 +6,10 @@ import { exerciseShellToolExecution, waitForNativeToolSteps } from '../helpers/n
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('qoder CLI tool execution', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('runs a Bash tool and draws its span', async ({ qoderWorkspace, page, modelScript }) => {
     void qoderWorkspace
     const call = bashToolCall(AgentProvider.QODER, 'call-1', 'echo hi')

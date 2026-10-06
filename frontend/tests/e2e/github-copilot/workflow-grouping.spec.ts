@@ -1,14 +1,12 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { applyPermissionPreset } from '../helpers/ui'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
 import { readCopilotChildTaskId } from './childIdentity'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCopilotWorkspace.workspaceId, provider: AgentProvider.GITHUB_COPILOT }

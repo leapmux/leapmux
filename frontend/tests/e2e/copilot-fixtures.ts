@@ -1,11 +1,11 @@
 /**
  * Copilot-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGroups'
 import { COPILOT_PERMISSION_MODE } from '../../src/generated/contracts/copilot-protocol'
-import { AgentProvider, authenticateACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { withAgentWorkspace } from './helpers/workspace'
 
@@ -18,10 +18,11 @@ const copilotConfig: ACPFixtureConfig = {
 
 export const COPILOT_E2E_SKIP_REASON = detectACPSkipReason(copilotConfig)
 
-export const copilotTest = base.extend<{
+export const copilotTest = base.extend<CliSkipFixture & {
   copilotWorkspace: WorkspaceFixture
   authenticatedCopilotWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(COPILOT_E2E_SKIP_REASON),
   copilotWorkspace: async ({ leapmuxServer }, use) => {
     await withAgentWorkspace(leapmuxServer, {
       provider: copilotConfig.agentProvider,

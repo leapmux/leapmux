@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { releaseNativeTurnGate } from '../helpers/nativeLifecycle'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 // Gemini CLI offers no steering route: its ACP initialize response states no
 // steer capability, and a second session/prompt aborts the running one

@@ -5,7 +5,7 @@ import process from 'node:process'
 import { AgentProvider } from '../acp-fixture-factory'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
+import { zcodeTest } from '../zcode-fixtures'
 import { zcodeScriptCandidatePaths } from '../zcode-install'
 
 /**
@@ -21,8 +21,6 @@ import { zcodeScriptCandidatePaths } from '../zcode-install'
 const APP_SERVER_LAUNCH = { holdWhen: ['app-server', '--stdio'], passThroughWhen: ['--prepare-storage'] }
 
 zcodeTest.describe('zcode agent startup', () => {
-  zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON ?? '')
-
   for (const failed of [false, true]) {
     zcodeTest(failed ? 'retains queued input after a real startup failure' : 'delivers queued input after the native process starts', async ({ page, modelScript, leapmuxServer, authenticatedZCodeWorkspace }) => {
       const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }

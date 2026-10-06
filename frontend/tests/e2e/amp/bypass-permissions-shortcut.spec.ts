@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -13,8 +13,6 @@ import { applyPermissionPreset, chatText, expectSettingsChip, openPlusMenu, send
  *
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp permissions', () => {
   ampTest('retains an already-selected native Bypass preset across two preparation calls', async ({ authenticatedAmpWorkspace, page, modelScript, leapmuxServer }) => {
     const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }

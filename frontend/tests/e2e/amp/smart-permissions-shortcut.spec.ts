@@ -1,11 +1,9 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfiguration'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('proves the absent shortcut after a native shell operation', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {
   const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }

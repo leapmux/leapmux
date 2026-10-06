@@ -1,4 +1,4 @@
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -9,8 +9,6 @@ import { closeAgentViaAPI } from '../helpers/worktree'
 import { withDiracPlanReadiness } from './planReadiness'
 
 diracTest.describe('Dirac plan mode', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('the plan card resolves at the next prompt and raises no approval', async ({ page, authenticatedEmptyWorkspace, approvalDisabledDiracHome, leapmuxServer, modelScript }, testInfo) => {
     void approvalDisabledDiracHome
     const home = leapmuxServer.agentEnv.HOME

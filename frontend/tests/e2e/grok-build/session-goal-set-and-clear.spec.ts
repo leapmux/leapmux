@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
-import { GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest.describe('Grok Build session goal', () => {
   grokTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

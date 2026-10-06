@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 
 /**
@@ -9,8 +9,6 @@ import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
  *
  * The agent tool returns a child ID at once. Codewhale omits child events from the parent stream. The Worker reads the child transcript and run record until the run ends.
  */
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
-
 codewhaleTest.describe('Codewhale subagent registry', () => {
   codewhaleTest('shows the child prompt while the child remains open', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
     void authenticatedCodewhaleWorkspace

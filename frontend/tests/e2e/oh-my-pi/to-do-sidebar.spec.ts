@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * A real native to-do tool updates the authoritative Worker snapshot. The sidebar must follow each update.
@@ -12,8 +12,6 @@ import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
  *
  * Oh My Pi's todo tool keeps tasks in phases. Each result contains the complete list. The Worker reads that result as a snapshot.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 const STEPS = ['Inspect the repository', 'List three checks', 'Report their purpose']
 
 ohMyPiTest.describe('Oh My Pi to-do list', () => {

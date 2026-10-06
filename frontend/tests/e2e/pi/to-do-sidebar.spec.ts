@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { piTodoToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 piTest('follows native create, update, and clear snapshots across reload', async ({ authenticatedPiWorkspace, page, modelScript }) => {
   void authenticatedPiWorkspace

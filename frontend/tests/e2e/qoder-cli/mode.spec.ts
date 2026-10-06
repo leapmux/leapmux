@@ -5,11 +5,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, openPlusMenu, openSettingsMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, expectQoderModeChip, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI settings', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('the mode menu lists the five modes, and a switch survives a reload', async ({ qoderWorkspace, page }) => {
     void qoderWorkspace
     await waitForSettingsHydrated(page)

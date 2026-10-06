@@ -1,8 +1,8 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
+import { claudeProcessTest as test } from '../claude-fixtures'
 import { chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-import { processTest as test } from '../process-control-fixtures'
 
 function nativeSystemInstructions(request: MockModelRequestRecord | undefined): string {
   expect(request?.protocol).toBe('anthropic-messages')

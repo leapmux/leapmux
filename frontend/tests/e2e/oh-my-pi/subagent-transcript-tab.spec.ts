@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, userBubbles } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -12,8 +12,6 @@ import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
  *
  * Each task entry starts a separate child. Native subagent events identify its messages and progress. The yield tool ends that child. The test profile disables background tasks, so the parent waits for the child.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 /** What the subagent yields, and what its row and its transcript report. */
 const REPORT = 'Apple, banana, cherry. One, two, three. Done.'
 

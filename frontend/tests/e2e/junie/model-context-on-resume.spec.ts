@@ -1,16 +1,13 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
 import { resumePickerScenario } from '../helpers/nativeResumePicker'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
-import { JUNIE_E2E_SKIP_REASON } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 import { junieModelTurns } from './modelTurns'
 
-test.describe('Junie session resume', () => {
+junieTest.describe('Junie session resume', () => {
   const provider: AgentProvider = AgentProvider.JUNIE
   const label = 'Junie'
-  const skip = JUNIE_E2E_SKIP_REASON
-  test.skip(!!skip, skip ?? '')
-  test('continues a closed session chosen from the native picker', async ({ page, leapmuxServer, modelScript }) => {
+  junieTest('continues a closed session chosen from the native picker', async ({ page, leapmuxServer, modelScript }) => {
     await resumePickerScenario({ page, leapmuxServer, modelScript }, {
       provider,
       label,

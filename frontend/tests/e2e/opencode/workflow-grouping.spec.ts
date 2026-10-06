@@ -4,9 +4,7 @@ import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
+import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedOpencodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOpencodeWorkspace.workspaceId, provider: AgentProvider.OPENCODE }

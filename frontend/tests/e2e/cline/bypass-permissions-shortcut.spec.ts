@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, expectSettingsChip, openPlusMenu, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
@@ -12,8 +12,6 @@ import { applyPermissionPreset, expectSettingsChip, openPlusMenu, sendMessage, v
  *
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 const PROVIDER = AgentProvider.CLINE
 
 clineTest.describe('Cline control requests', () => {

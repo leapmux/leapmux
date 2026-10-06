@@ -1,10 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { backgroundTasksSection, expectRowBecomesFinal, expectSectionPersists, HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, tabById } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest('keeps the actual native background task row through completion and reload', async ({ page, modelScript, leapmuxServer, authenticatedGrokWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGrokWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }

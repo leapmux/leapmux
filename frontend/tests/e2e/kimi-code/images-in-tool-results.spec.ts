@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { kimiReadMediaFileToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code images in tool results', () => {
   kimiTest('a ReadMediaFile of a PNG draws the picture in the tool row', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

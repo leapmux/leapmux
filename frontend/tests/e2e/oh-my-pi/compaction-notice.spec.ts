@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { exerciseManualCompaction } from '../helpers/manualCompaction'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('preserves the native completed compaction notice after a verified summary and reload', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
   void authenticatedOhMyPiWorkspace

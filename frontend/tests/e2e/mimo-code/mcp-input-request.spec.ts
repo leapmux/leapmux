@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code MCP confirmation', () => {
   // MiMo Code 0.1.15 declares no elicitation capability (its MCP client states

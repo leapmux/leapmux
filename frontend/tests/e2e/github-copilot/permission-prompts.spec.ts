@@ -4,13 +4,11 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { createNativePermissionFileWrite, exerciseNativePermissionRefusal, exerciseNativePermissionWrite, expectDeclinedToolRow } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseProviderSteer } from '../helpers/providerSteer'
 import { COPILOT_USER_REJECTION, copilotToolCompletion } from './permissionRefusal'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 async function allowShellPermission(page: Page): Promise<void> {
   const banner = page.getByTestId('control-banner').filter({ visible: true })

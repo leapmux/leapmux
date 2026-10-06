@@ -1,11 +1,9 @@
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('uses private native settings and a file credential through the local model API', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

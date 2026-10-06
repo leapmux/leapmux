@@ -2,11 +2,9 @@ import { expect } from '@playwright/test'
 import { formatTokenCount } from '../../../src/components/chat/rendererUtils'
 import { CONTEXT_USAGE_FIELD } from '../../../src/generated/contracts/session-info'
 import { pickNumber } from '../../../src/lib/jsonPick'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { watchAgentContextUsage } from '../helpers/contextUsageEvents'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest('shows the current tokens from its native usage event', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
   void authenticatedCopilotWorkspace

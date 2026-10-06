@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { waitForSettingsHydrated } from '../helpers/ui'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest('offers no native to-do tool and keeps an authoritative empty sidebar after real tool execution', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE }

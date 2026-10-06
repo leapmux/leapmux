@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * A real native question tool opens the shared question controls. The selected answer must reach the native model.
@@ -13,8 +13,6 @@ import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
  *
  * Oh My Pi's ask tool sends a series of native dialogs. The Worker combines them into one question request.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 /**
  * The text of every tool result in one Chat Completions request, which is the
  * protocol that the E2E `models.yml` gives omp.

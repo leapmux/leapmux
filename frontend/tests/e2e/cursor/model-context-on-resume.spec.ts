@@ -1,7 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON } from '../cursor-fixtures'
-import { test } from '../fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { resumePickerScenario } from '../helpers/nativeResumePicker'
 import { cursorModelTurns } from './modelTurns'
 
@@ -15,9 +14,7 @@ const provider = AgentProvider.CURSOR
 
 const label = 'Cursor'
 
-test.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
-
-test('restores old Worker rows and native model context after reopening', async ({ page, leapmuxServer, modelScript }) => {
+cursorTest('restores old Worker rows and native model context after reopening', async ({ page, leapmuxServer, modelScript }) => {
   let firstConversationId: string | undefined
   await resumePickerScenario({ page, leapmuxServer, modelScript }, {
     provider,

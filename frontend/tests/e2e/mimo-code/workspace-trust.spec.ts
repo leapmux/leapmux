@@ -12,10 +12,8 @@ import { exerciseNativeWorkspaceTrustLimit, projectConfigurationWorker } from '.
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
+import { mimoTest } from '../mimo-fixtures'
 import { createMiMoControlDeletion } from './controlScenarios'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
 
 // LeapMux exposes no interactive native workspace-trust route for this provider.
 mimoTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedMiMoWorkspace }) => {

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { chatText, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -13,8 +13,6 @@ import { chatText, sendMessage, waitForAgentIdle } from '../helpers/ui'
  *
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline tool execution', () => {
   clineTest('draws the lines a read returns', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     const notes = join(createNativeToolDirectory(authenticatedClineWorkspace.workingDir), 'notes.txt')

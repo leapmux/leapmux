@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 const CLINE = AgentProvider.CLINE
 

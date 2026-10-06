@@ -3,12 +3,10 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('delivers a valid WAV with its exact native MIME type and decoded bytes', async ({ page, modelScript, authenticatedGeminiWorkspace }) => {
   void authenticatedGeminiWorkspace

@@ -2,14 +2,13 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles } from '../helpers/ui'
 import { runCursorNativeOperations } from './nativeExecutionScenario'
 
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 cursorTest('reads and changes actual native file bytes with spaces and shell metacharacters', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
   const directory = authenticatedCursorWorkspace.workingDir

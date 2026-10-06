@@ -1,13 +1,11 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openCursorRunningChild } from './childScenario'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('background-tasks-sidebar: task delegation creates a registry row with a sanitized key', async ({
   authenticatedCursorWorkspace,

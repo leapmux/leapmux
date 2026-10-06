@@ -4,9 +4,7 @@ import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 async function proveNoNativeSteer(page: Page, modelScript: ModelScript, gate: string): Promise<void> {
   const queuedText = 'Deliver this after the first turn ends.'

@@ -5,7 +5,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -17,8 +17,6 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { applyPermissionPreset, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('returns the actual native MCP unsupported-method reply without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const environment = leapmuxServer.agentEnv

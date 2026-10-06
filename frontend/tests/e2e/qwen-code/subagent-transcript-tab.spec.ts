@@ -6,7 +6,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
+import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -15,8 +15,6 @@ import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
  *
  * Qwen tags foreground updates with the spawning tool call. Background children publish no stream, so the Worker reads their transcript files. The native task cancel stops a selected child.
  */
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
-
 const CHILD_TASK = 'Reply with the single word PONG'
 
 /** Answer the child's turn, which has no order the test controls against the parent's. */

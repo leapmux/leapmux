@@ -2,12 +2,10 @@ import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER } from '../helpers/mock
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsOptionChosen, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie settings', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('an effort switch reaches the next request and survives a reload', async ({ authenticatedNativeEffortJunieWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedNativeEffortJunieWorkspace
     await waitForSettingsHydrated(page)

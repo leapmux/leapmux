@@ -1,13 +1,11 @@
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code file tool execution', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.CODEBUDDY
 
   codebuddyTest('shows the native Read placeholder without an inline image', async ({ codebuddyWorkspace, page, modelScript }) => {

@@ -1,7 +1,6 @@
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -16,7 +15,7 @@ import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '..
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 
-test('preserves complete native MCP arguments without an adapter permission dialog', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
+piTest('preserves complete native MCP arguments without an adapter permission dialog', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = createTestDirectory('pi-native-mcp-permission-')
   const input = { query: 'x'.repeat(900), limit: 0, tail: 'END_MCP_ARGUMENTS' }
   const receiptLog = join(directory, 'native-mcp-receipt.json')

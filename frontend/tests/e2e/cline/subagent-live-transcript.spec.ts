@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 
 /**
@@ -9,8 +9,6 @@ import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
  *
  * Cline omits the child ID from streamed spawn_agent output. One active spawn lets the Worker route that output. Concurrent spawns require the completed native child session store.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline subagent registry', () => {
   clineTest('shows the child prompt while the child still runs', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     await exerciseLiveChildTranscript(page, modelScript, {

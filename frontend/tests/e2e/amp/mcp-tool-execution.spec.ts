@@ -5,15 +5,13 @@ import { expect } from '@playwright/test'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest.describe('Amp MCP tool execution', () => {
   ampTest('runs an isolated MCP echo tool through the local executor', async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }) => {

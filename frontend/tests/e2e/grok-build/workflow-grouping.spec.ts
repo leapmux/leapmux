@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
-import { GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest.describe('Grok Build workflow grouping', () => {
   grokTest('groups a native Rhai workflow with its child', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

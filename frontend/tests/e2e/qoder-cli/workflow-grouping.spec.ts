@@ -5,11 +5,9 @@ import { qoderWorkflowToolCall, readToolCall } from '../helpers/providerToolCall
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('native workflow grouping', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   const WORKFLOW_NAME = 'qoder-e2e-workflow'
 
   const FIRST_ANSWER = 'QODER_WORKFLOW_CHILD'

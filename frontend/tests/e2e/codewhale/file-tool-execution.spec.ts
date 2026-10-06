@@ -2,14 +2,12 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, fileChangeRow, sendMessage, transcriptRows, waitForAgentIdle } from '../helpers/ui'
 import { runWithoutApprovals } from './toolScenarios'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 const CODEWHALE = AgentProvider.CODEWHALE
 

@@ -1,13 +1,11 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, listAgents, requireRegistryRow } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, sendMessage } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest('send-to-a-subagent: delegate spawn creates a clickable row with a tool-request transcript', async ({
   authenticatedGooseWorkspace,

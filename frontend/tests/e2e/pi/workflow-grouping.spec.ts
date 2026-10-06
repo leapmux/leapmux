@@ -8,10 +8,8 @@ import { piWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
+import { piTest } from '../pi-fixtures'
 import { piWorkflowNoticeRule } from './childNoticeRule'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
 piTest('runs a native two-stage workflow without workflow grouping or stage rows', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }

@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectNoCompactionNotice } from '../helpers/unsupportedCompaction'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('proves the native slash text path has no completed compaction notice', async ({ authenticatedAmpWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }

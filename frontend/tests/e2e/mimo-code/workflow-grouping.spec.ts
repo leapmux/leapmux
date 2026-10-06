@@ -11,9 +11,7 @@ import { mimoWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, messageBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 /** The run's name, from the script's `meta`. The registry titles the run and its group with it. */
 const WORKFLOW_NAME = 'leapmux-e2e-words'

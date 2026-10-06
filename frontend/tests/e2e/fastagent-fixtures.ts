@@ -1,9 +1,9 @@
 /**
  * Fast Agent e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -18,10 +18,11 @@ const fastAgentConfig: ACPFixtureConfig = {
 
 export const FAST_AGENT_E2E_SKIP_REASON = detectACPSkipReason(fastAgentConfig)
 
-export const fastAgentTest = base.extend<{
+export const fastAgentTest = base.extend<CliSkipFixture & {
   fastAgentWorkspace: WorkspaceFixture
   authenticatedFastAgentWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(FAST_AGENT_E2E_SKIP_REASON),
   fastAgentWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, fastAgentConfig, use)
   },

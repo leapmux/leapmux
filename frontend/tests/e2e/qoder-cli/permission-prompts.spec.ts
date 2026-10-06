@@ -3,11 +3,9 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, expectQoderModeChip, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI control requests', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('raises a banner for a tool call and runs it once allowed', async ({ askingQoderWorkspace, page, modelScript }) => {
     const output = join(askingQoderWorkspace.workingDir, 'qoder-control-probe.txt')
     const command = 'printf hi > ./qoder-control-probe.txt'
@@ -47,8 +45,6 @@ qoderTest.describe('Qoder CLI control requests', () => {
 })
 
 qoderTest.describe('Qoder CLI settings', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('runs a read-only shell command with no banner in Default mode', async ({ askingQoderWorkspace, page, modelScript }) => {
     const { workingDir } = askingQoderWorkspace
     await waitForSettingsHydrated(page)
@@ -74,8 +70,6 @@ qoderTest.describe('Qoder CLI settings', () => {
 })
 
 qoderTest.describe('Qoder CLI control answers', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.QODER
 
   qoderTest('a denied write does not run, and the typed reason dismisses the banner', async ({ askingQoderWorkspace, page, modelScript }) => {

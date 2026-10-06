@@ -4,15 +4,13 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { createNativePermissionFileWrite, exerciseNativePermissionDecision, exerciseNativePermissionWrite, expectDeclinedToolRow } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('requires a native permission decision before a real file change', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

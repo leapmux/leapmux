@@ -10,9 +10,9 @@
  * runs with the developer's own HOME, and Kiro reads its configuration directory on
  * every start. See `helpers/binaryOnPath.ts`.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -40,10 +40,11 @@ const kiroConfig: ACPFixtureConfig = {
 
 export const KIRO_E2E_SKIP_REASON = detectACPSkipReason(kiroConfig)
 
-export const kiroTest = base.extend<{
+export const kiroTest = base.extend<CliSkipFixture & {
   kiroWorkspace: WorkspaceFixture
   authenticatedKiroWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(KIRO_E2E_SKIP_REASON),
   kiroWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, kiroConfig, use)
   },

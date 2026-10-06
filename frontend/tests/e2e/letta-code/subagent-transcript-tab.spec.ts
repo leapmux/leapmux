@@ -3,12 +3,10 @@ import { withCleanup } from '../helpers/cleanup'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 lettaTest.describe('Letta Code subagents', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.LETTA
 
   const CHILD_TASK = 'Count the files and report the number.'

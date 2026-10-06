@@ -17,10 +17,8 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { getGlobalState } from '../helpers/server'
 import { expandBackgroundTasksSection, expandGoalsAndTodosSection, expectGoalStatus, goalAction, openChildTabFromRow, openGoalMenu } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 import { kiroGoalCancellation, kiroGoalExecutionId, kiroGoalSessionId, readKiroGoalMessages } from './goalReceipt'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
 
 /** The word of the reason that Kiro states when a goal reaches its round limit. */
 const KIRO_ROUND_LIMIT_WORD = 'maxIterations'

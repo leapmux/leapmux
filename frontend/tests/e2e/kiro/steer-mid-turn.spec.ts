@@ -5,9 +5,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { expectSteeredReply, steerQueuedInput } from '../helpers/steer'
 import { createToolOutputControl } from '../helpers/toolOutputControl'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro interrupt, steering and process lifetime', () => {
   kiroTest('steers a running turn with a queued message', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

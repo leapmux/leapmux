@@ -3,9 +3,7 @@ import { kimiAgentSwarmToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, assistantBubbles, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code workflow grouping', () => {
   kimiTest('groups native AgentSwarm members under its description', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

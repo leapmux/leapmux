@@ -1,10 +1,10 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { expectContextUsage } from '../helpers/contextUsage'
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-test.describe('Claude Code transcript and context', () => {
-  test('keeps model reasoning and context usage after a reload', async ({ authenticatedWorkspace, page, modelScript }) => {
+claudeTest.describe('Claude Code transcript and context', () => {
+  claudeTest('keeps model reasoning and context usage after a reload', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
     const reasoning = 'I check the facts before I answer.'
     const usage = { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 }

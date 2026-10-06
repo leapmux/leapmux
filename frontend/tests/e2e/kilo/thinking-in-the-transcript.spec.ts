@@ -2,9 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
+import { kiloTest } from '../kilo-fixtures'
 
 const REASONING = 'THINKING_MATRIX_PROBE: I checked the answer first.'
 

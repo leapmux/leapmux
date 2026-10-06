@@ -1,11 +1,11 @@
 /**
  * Dirac e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -20,12 +20,13 @@ const diracConfig: ACPFixtureConfig = {
 
 export const DIRAC_E2E_SKIP_REASON = detectACPSkipReason(diracConfig)
 
-export const diracTest = base.extend<{
+export const diracTest = base.extend<CliSkipFixture & {
   diracWorkspace: WorkspaceFixture
   authenticatedDiracWorkspace: WorkspaceFixture
   approvalDisabledDiracHome: string
   askingDiracWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(DIRAC_E2E_SKIP_REASON),
   diracWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, diracConfig, use)
   },

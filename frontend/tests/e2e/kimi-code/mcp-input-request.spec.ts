@@ -13,9 +13,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { applyPermissionPreset, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest('returns the actual native MCP unsupported-method reply without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const environment = leapmuxServer.agentEnv

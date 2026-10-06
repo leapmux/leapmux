@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -12,8 +12,6 @@ import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
  *
  * Kiro tags each child update with its subtask ID. The spawning parent call identifies the registry row and ends with the child's report.
  */
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
-
 kiroTest.describe('Kiro subagent registry', () => {
   kiroTest('a subagent opens a row and a child transcript with its answer', async ({
     page,

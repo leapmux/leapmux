@@ -13,9 +13,7 @@ import { hubSpawnEnv } from '../helpers/server'
 import { messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 import { createGitRepo } from '../helpers/worktree'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 interface Server {
   hubUrl: string

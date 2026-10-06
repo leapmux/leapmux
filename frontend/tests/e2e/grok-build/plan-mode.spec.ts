@@ -2,12 +2,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest('keeps the native Plan constraint after the setting changes and reloads', async ({ authenticatedGrokWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGrokWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }

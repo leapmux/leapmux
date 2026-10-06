@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { hubSpawnEnv } from '../helpers/server'
-import { createKiroWorkingDir, KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { createKiroWorkingDir, kiroTest } from '../kiro-fixtures'
 
 kiroTest('delivers input through a controlled native startup', async ({ page, modelScript, leapmuxServer, authenticatedKiroWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiroWorkspace.workspaceId, provider: AgentProvider.KIRO }

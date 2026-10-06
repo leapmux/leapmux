@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { DROID_TOOL } from '../../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -9,8 +9,6 @@ import { nativeContext } from './scenarios'
 import { readDroidToolResult } from './toolResult'
 
 droidTest.describe('Factory Droid tool execution', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.DROID
 
   async function chatText(page: Parameters<typeof messageContents>[0]): Promise<string> {

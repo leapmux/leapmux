@@ -13,9 +13,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { applyPermissionPreset, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('returns the actual native MCP unsupported-method reply without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const environment = leapmuxServer.agentEnv

@@ -9,10 +9,12 @@
  * a Qoder account, a real model, or the developer's own Qoder configuration.
  */
 import type { Page, TestInfo } from '@playwright/test'
+import type { CliSkipFixture } from './acp-fixture-factory'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -83,7 +85,8 @@ async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: 
     await testInfo.attach('qoder-native-log', { path, contentType: 'text/plain' })
 }
 
-export const qoderTest = base.extend<{ qoderWorkspace: QoderWorkspaceFixture, askingQoderWorkspace: QoderWorkspaceFixture }>({
+export const qoderTest = base.extend<CliSkipFixture & { qoderWorkspace: QoderWorkspaceFixture, askingQoderWorkspace: QoderWorkspaceFixture }>({
+  cliSkip: cliSkipFixture(QODER_E2E_SKIP_REASON),
   qoderWorkspace: qoderWorkspace('qoder-e2e', ACCEPT_EDITS),
   // An agent in Default mode, which raises a banner for each tool call. The
   // control-request spec needs the banner; the accept-edits workspace answers

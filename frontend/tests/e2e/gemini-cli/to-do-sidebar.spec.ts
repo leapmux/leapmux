@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { TodoStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -9,8 +9,6 @@ import { exerciseRelatedTodo, expectRelatedTodoSurvivesReload } from '../helpers
 import { expandGoalsAndTodosSection } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 // Gemini CLI asks for approval of write_todos in its default mode: the tool is not
 // in the allow list of its read-only policy (bundle/policies/read-only.toml). The

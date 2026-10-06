@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest, offeredTools } from '../cline-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
@@ -11,8 +11,6 @@ import { expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from
  *
  * Cline fixes tools and system instructions when it creates a session. A Plan or Act change recreates the same session with its earlier messages.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline settings', () => {
   clineTest('Shift+Tab toggles Plan mode from the composer', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
     const context = { page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId, provider: AgentProvider.CLINE }

@@ -1,13 +1,13 @@
 import { expect } from '@playwright/test'
 /** Test child tab identity and isolated transcripts. Preserve the completed span edge cases. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, listAgents, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-test.describe('Claude subagent background tasks', () => {
-  test('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
+claudeTest.describe('Claude subagent background tasks', () => {
+  claudeTest('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
     authenticatedWorkspace,
     page,
     leapmuxServer,
@@ -151,8 +151,8 @@ const AGENT_RESULT_HEADER = /Agent (?:"[\s\S]*?"|\S+) (?:completed|failed|launch
 /** The Agent tool's own card title, which carries the subagent type. */
 const AGENT_TYPE = 'general-purpose'
 
-test.describe('subagent spawn has no span', () => {
-  test('the spawn rows draw no rail of their own', async ({ authenticatedWorkspace, page, modelScript }) => {
+claudeTest.describe('subagent spawn has no span', () => {
+  claudeTest('the spawn rows draw no rail of their own', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
 
     // The spawn is the one tool this turn runs, which is what makes the rail

@@ -4,11 +4,9 @@ import { lastUserText } from '../helpers/mockModelScript'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code control requests', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.LETTA
 
   function banner(page: Page) {

@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
+import { claudeProcessTest as test } from '../claude-fixtures'
 import { chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, expectSettingsOptionChosen, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { processTest as test } from '../process-control-fixtures'
 import { claudeUltracodeEnabled } from './ultracodeRequest'
 
 test.describe('Agent Settings', () => {

@@ -4,7 +4,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cleanName } from '../../../src/lib/validate'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { finishCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { isAlive } from '../helpers/processTree'
@@ -20,8 +20,6 @@ import { openOpaqueAmpTask } from './opaqueTask'
  * A native background shell command remains active after its first turn ends.
  * An interrupt stops the Amp process and its owned background command.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 /** The native child report also appears in the parent's tool result. */
 const REPORT = 'Apple, banana, cherry. One, two, three. Done.'
 

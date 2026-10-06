@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -17,7 +17,7 @@ function workflowScript(prompt: string): string {
   ].join('\n')
 }
 
-test('shows a native Claude Workflow run without a grouped child row', async ({ authenticatedWorkspace, page, modelScript }) => {
+claudeTest('shows a native Claude Workflow run without a grouped child row', async ({ authenticatedWorkspace, page, modelScript }) => {
   void authenticatedWorkspace
   const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
   const tabsBefore = await agentTabs.count()

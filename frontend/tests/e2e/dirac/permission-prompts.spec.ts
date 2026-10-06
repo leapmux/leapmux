@@ -1,12 +1,10 @@
 import type { Page } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { bashToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
 import { messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 diracTest.describe('Dirac control requests', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.DIRAC
 
   function banner(page: Page) {

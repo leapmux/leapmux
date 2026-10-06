@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { expectNativeCodeExecutionAbsent } from '../helpers/nativeCodeExecution'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { nativeContext } from './scenarios'
 import { exerciseGeminiShellToolExecution } from './shellScenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('excludes a native script executor while a real shell command still executes', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

@@ -1,5 +1,5 @@
 import { CODEBUDDY_EFFORT_LEVEL, CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
@@ -7,8 +7,6 @@ import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusM
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('switches the effort and the mode, and keeps them after a reload', async ({ codebuddyWorkspace, page }) => {
     void codebuddyWorkspace
     await waitForSettingsHydrated(page)
@@ -70,8 +68,6 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
 })
 
 codebuddyTest.describe('CodeBuddy Code model switch', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   // The effort is a launch argument that does not depend on the model, so a model switch must keep it on
   // screen and in the Worker row, and it must restart nothing. The alternate mock model declares no
   // reasoning, so CodeBuddy sends no effort for it. The native proof is the model, and the kept setting

@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles } from '../helpers/ui'
@@ -12,8 +12,6 @@ import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbl
  *
  * Grok sends child output through its _x.ai/session_notification extension. Its native subagent cancel stops a selected child.
  */
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
-
 /**
  * The words that open the system prompt of a Grok subagent's own turn.
  *

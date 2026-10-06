@@ -6,9 +6,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 const PROVIDER = AgentProvider.KIRO
 

@@ -4,9 +4,7 @@ import { kiroToolResult } from '../helpers/kiroToolResult'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { kiroSwitchToExecutionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 kiroTest('hands the actual native plan to execution without a plan review banner', async ({ page, modelScript, leapmuxServer, authenticatedEmptyWorkspace }) => {
   await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { permissionMode: 'plan' })

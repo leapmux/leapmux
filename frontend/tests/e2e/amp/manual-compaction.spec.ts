@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
@@ -26,8 +26,6 @@ async function proveNoNativeManualCompaction(page: Page, modelScript: ModelScrip
 }
 
 ampTest.describe('Amp manual compaction', () => {
-  ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
   ampTest('passes the slash command to the model in stream mode', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     void authenticatedAmpWorkspace
     await proveNoNativeManualCompaction(page, modelScript)

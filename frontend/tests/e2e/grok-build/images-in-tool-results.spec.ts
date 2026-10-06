@@ -3,14 +3,12 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { createGrokWorkingDir, GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { createGrokWorkingDir, grokTest, openGrokAgent } from '../grok-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 const GROK = AgentProvider.GROK_BUILD
 

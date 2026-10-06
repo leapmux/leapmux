@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, assistantBubbles, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest('shows a child tool before the child finishes', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
   void authenticatedCopilotWorkspace

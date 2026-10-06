@@ -3,9 +3,7 @@ import { expect } from '@playwright/test'
 import { reasonixViewImageToolCall } from '../helpers/providerToolCalls'
 import { writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
+import { reasonixTest } from '../reasonix-fixtures'
 
 reasonixTest('keeps view_image text when ACP omits image bytes', async ({ authenticatedReasonixWorkspace, page, modelScript }) => {
   const workingDir = authenticatedReasonixWorkspace.workingDir

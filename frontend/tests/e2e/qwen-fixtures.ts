@@ -1,9 +1,9 @@
 /**
  * Qwen Code e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -18,10 +18,11 @@ const qwenConfig: ACPFixtureConfig = {
 
 export const QWEN_E2E_SKIP_REASON = detectACPSkipReason(qwenConfig)
 
-export const qwenTest = base.extend<{
+export const qwenTest = base.extend<CliSkipFixture & {
   qwenWorkspace: WorkspaceFixture
   authenticatedQwenWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(QWEN_E2E_SKIP_REASON),
   qwenWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, qwenConfig, use)
   },

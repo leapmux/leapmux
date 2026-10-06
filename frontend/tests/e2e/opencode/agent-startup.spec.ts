@@ -1,11 +1,9 @@
 import { AgentProvider } from '../acp-fixture-factory'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
+import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest.describe('opencode agent startup', () => {
-  opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON ?? '')
-
   for (const failed of [false, true]) {
     opencodeTest(failed ? 'retains queued input after a real startup failure' : 'delivers queued input after the native process starts', async ({ page, modelScript, leapmuxServer, authenticatedOpencodeWorkspace }) => {
       const executable = findBinary('opencode')

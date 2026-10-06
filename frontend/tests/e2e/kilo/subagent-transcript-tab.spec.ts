@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
+import { kiloTest } from '../kilo-fixtures'
 
 kiloTest('subagent spawn creates a prompt and report transcript', async ({
   authenticatedKiloWorkspace,

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { bashToolCall, editToolCall } from '../helpers/providerToolCalls'
 import { chatText, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
@@ -14,8 +14,6 @@ import { chatText, sendMessage, visibleControlBanner, waitForAgentIdle } from '.
  *
  * Amp delegates tool permissions to the Worker's helper. Ask raises a banner. Allow All answers at once. Workspace settings must not bypass Ask. Guarded files still follow these rules.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp permissions', () => {
   ampTest('runs a command after the reader allows it', async ({ askingAmpWorkspace, page, modelScript }) => {
     void askingAmpWorkspace

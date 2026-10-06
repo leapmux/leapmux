@@ -3,10 +3,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { listProcesses, withDescendants } from '../helpers/processTree'
 import { openWorkspace } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 import { kiroEngineProcesses, kiroRunProcesses } from './processOwnership'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
 
 kiroTest.describe('kiro process lifetime', () => {
   kiroTest('stops the whole process tree when the agent closes', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

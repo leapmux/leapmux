@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { CURSOR_METHOD } from '../../../src/generated/contracts/cursor-protocol'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -8,8 +8,6 @@ import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { cursorCreatePlanToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('approves a native create-plan request', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   void authenticatedCursorWorkspace

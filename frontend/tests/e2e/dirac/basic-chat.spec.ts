@@ -1,12 +1,10 @@
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac Basic Chat', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('send message and receive response', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
     void authenticatedDiracWorkspace
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-respond', 'complete', 'Hello from the mock model.')] })
@@ -17,8 +15,6 @@ diracTest.describe('Dirac Basic Chat', () => {
 })
 
 diracTest.describe('Dirac settings', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('a turn completes through the respond tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

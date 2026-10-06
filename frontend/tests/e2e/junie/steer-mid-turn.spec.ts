@@ -1,11 +1,9 @@
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 
 junieTest.describe('junie unsupported controls', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('runs a steered prompt in the next turn', async ({ authenticatedJunieWorkspace, page, modelScript }) => {
     void authenticatedJunieWorkspace
     const firstPrompt = modelScript.prompt('Answer the first request.')

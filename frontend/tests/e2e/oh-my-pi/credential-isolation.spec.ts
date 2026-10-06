@@ -1,9 +1,7 @@
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('loads private native configuration and calls only the suite mock', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }

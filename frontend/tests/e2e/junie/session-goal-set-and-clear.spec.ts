@@ -4,12 +4,10 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { goalAction } from '../helpers/subagentRegistry'
 import { waitForSettingsHydrated } from '../helpers/ui'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('junie unsupported controls', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('does not offer Set for the session goal', async ({ authenticatedJunieWorkspace, page, leapmuxServer }) => {
     void authenticatedJunieWorkspace
     await waitForSettingsHydrated(page)

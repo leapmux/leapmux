@@ -1,15 +1,13 @@
 import { globSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { codebuddyFindWorkflowToolCall, codebuddyWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, userBubbles } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
 
 codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('groups a native Workflow run with its child agent', async ({ codebuddyWorkspace, leapmuxServer, page, modelScript }) => {
     const markerPath = join(codebuddyWorkspace.workingDir, 'workflow-child-marker.txt')
     writeFileSync(markerPath, 'WORKFLOW_CHILD_FILE_MARKER\n')

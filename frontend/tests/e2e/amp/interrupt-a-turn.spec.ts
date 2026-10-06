@@ -1,9 +1,7 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer } from '../helpers/ui'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest.describe('Amp interrupt', () => {
   ampTest('stops a model call and continues the thread at the next prompt', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {

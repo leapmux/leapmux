@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { CLINE_SPAWN_WARNING } from '../../../src/components/chat/providers/cline/spawnWarning'
 import { CLINE_DECLINE_REASON } from '../../../src/generated/contracts/cline-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { bashToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { chatText, expectSettingsChip, messageBubbles, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
@@ -14,8 +14,6 @@ import { chatText, expectSettingsChip, messageBubbles, sendMessage, visibleContr
  *
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 const PROVIDER = AgentProvider.CLINE
 
 clineTest.describe('Cline control requests', () => {

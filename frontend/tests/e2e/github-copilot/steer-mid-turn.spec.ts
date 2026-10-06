@@ -1,10 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { exerciseProviderSteer } from '../helpers/providerSteer'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 async function allowShellPermission(page: Page): Promise<void> {
   const banner = page.getByTestId('control-banner').filter({ visible: true })

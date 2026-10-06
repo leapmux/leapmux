@@ -5,9 +5,7 @@ import { expect } from '@playwright/test'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
-import { REASONIX_E2E_SKIP_REASON, reasonixTest } from '../reasonix-fixtures'
-
-reasonixTest.skip(!!REASONIX_E2E_SKIP_REASON, REASONIX_E2E_SKIP_REASON || '')
+import { reasonixTest } from '../reasonix-fixtures'
 
 async function proveAttachment(page: Page, modelScript: ModelScript, kind: AttachmentKind, filename: string): Promise<void> {
   await modelScript.queue({ text: 'Attachment received.' })

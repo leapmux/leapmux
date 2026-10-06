@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRegistryRow, expectRowBecomesFinal, expectSectionPersists, listAgents, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -12,8 +12,6 @@ import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForA
  *
  * Cline omits the child ID from streamed spawn_agent output. One active spawn lets the Worker route that output. Concurrent spawns require the completed native child session store.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline subagent registry', () => {
   clineTest('follows one subagent from its spawn to its report, with its own transcript', async ({ authenticatedClineWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedClineWorkspace

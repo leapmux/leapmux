@@ -1,12 +1,10 @@
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac settings apply', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('switches the mode and the effort, and keeps them after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

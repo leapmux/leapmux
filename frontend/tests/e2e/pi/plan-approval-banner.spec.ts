@@ -3,7 +3,6 @@ import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION, PI_PLAN_DIALOG } from '../.
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickString } from '../../../src/lib/jsonPick'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -15,8 +14,9 @@ import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { listAgents } from '../helpers/subagentRegistry'
 import { openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { piTest } from '../pi-fixtures'
 
-test('plan-approval-banner: tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+piTest('plan-approval-banner: tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const provider = AgentProvider.PI
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-fresh-plan-'), {
     agentProvider: provider,
@@ -59,7 +59,7 @@ test('plan-approval-banner: tracks a fresh Pi implementation session after plan 
 // selects "Stay in Plan mode", whose action does nothing: no turn starts, plan mode
 // stays on, and the session stays the same. The next prompt therefore reaches the model
 // with the plan-mode contract and without the Normal-mode contract that an exit adds.
-test('rejects the native Pi plan review and keeps planning in the same session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+piTest('rejects the native Pi plan review and keeps planning in the same session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const provider = AgentProvider.PI
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-plan-stay-'), {
     agentProvider: provider,

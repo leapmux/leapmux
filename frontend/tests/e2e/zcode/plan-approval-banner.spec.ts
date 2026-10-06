@@ -7,7 +7,6 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD, ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -17,8 +16,9 @@ import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../h
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
+import { zcodeTest } from '../zcode-fixtures'
 
-test('rejects a native ZCode plan and delivers approval-shaped feedback as feedback', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as feedback', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.setViewportSize({ width: 780, height: 1000 })
@@ -104,7 +104,7 @@ function zcodePlanFileStem(sessionId: string): string {
 //   more in the same turn.
 // ZCode keeps plan mode as a flag beside its mode, and LeapMux stores Build as the
 // mode that the approval leaves plan mode for.
-test('approves a native ZCode plan and runs the native exit in the same turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+zcodeTest('approves a native ZCode plan and runs the native exit in the same turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const settings = agentOpenOptions(agentSettings(AgentProvider.ZCODE))
   const directory = createTestDirectory('zcode-approval-')
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
@@ -169,7 +169,7 @@ test('approves a native ZCode plan and runs the native exit in the same turn', a
 // mode only after ZCode itself reports running in it, and the plan still
 // executes: an early setMode would have failed the exit and ended the turn
 // without the approved continuation.
-test('approves a native ZCode plan into a chosen mode applied after the native exit', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+zcodeTest('approves a native ZCode plan into a chosen mode applied after the native exit', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const settings = agentOpenOptions(agentSettings(AgentProvider.ZCODE))
   const directory = createTestDirectory('zcode-approval-yolo-')
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {

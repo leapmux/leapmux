@@ -6,9 +6,7 @@ import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code tool execution', () => {
   // MiMo refuses an edit before the session reads the file.

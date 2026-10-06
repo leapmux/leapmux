@@ -3,9 +3,7 @@ import { ohMyPiYieldToolCall } from '../helpers/providerToolCalls'
 import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('proves the unsupported native child interrupt route while its original task runs', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }

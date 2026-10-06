@@ -1,11 +1,9 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, expectQoderModeChip, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI plan approval', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.QODER
 
   function planText(revision: string): string {

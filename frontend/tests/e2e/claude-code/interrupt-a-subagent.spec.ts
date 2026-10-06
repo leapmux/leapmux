@@ -1,13 +1,13 @@
 /** Test native child interruption without stopping the parent. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { exerciseChildInterrupt, expectNoRegistryRows, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 
-test.describe('Claude subagent background tasks', () => {
+claudeTest.describe('Claude subagent background tasks', () => {
   // Claude's native stop_task control stops only the selected child.
   // The registry reports the user stop as interrupted.
   // Activity ends the child thinking indicator without a synthetic transcript message.
-  test('the Interrupt control of a working subagent\'s tab stops that subagent alone', async ({
+  claudeTest('the Interrupt control of a working subagent\'s tab stops that subagent alone', async ({
     authenticatedWorkspace,
     page,
     modelScript,

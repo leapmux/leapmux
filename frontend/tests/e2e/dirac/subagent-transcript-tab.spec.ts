@@ -1,12 +1,10 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 diracTest.describe('Dirac subagent transcript', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.DIRAC
 
   const CHILD_TASK = 'Count the files and report one number.'

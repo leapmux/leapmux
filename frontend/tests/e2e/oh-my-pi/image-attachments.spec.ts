@@ -1,7 +1,5 @@
 import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest.describe('Oh My Pi attachments', () => {
   ohMyPiTest('delivers an image attachment to the model', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {

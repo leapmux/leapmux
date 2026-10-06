@@ -2,14 +2,12 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
 
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 // LeapMux exposes no native multiline editor route for this provider.
 ampTest('classifies real native controls and proves the missing editor-requests route', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {

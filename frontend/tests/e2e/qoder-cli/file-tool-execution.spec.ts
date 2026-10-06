@@ -1,12 +1,10 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseFileEditSequence, exerciseFileToolExecution, exerciseFileWriteSequence } from '../helpers/nativeToolExecution'
 import { waitForControlBanner } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI file tool execution', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.QODER
 
   qoderTest('seeds, reads and edits a file, and draws the edit diff', async ({ qoderWorkspace, page, modelScript }) => {

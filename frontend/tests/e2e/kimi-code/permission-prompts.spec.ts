@@ -5,9 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelBodiesAfter } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest, occurrences } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest, occurrences } from '../kimi-fixtures'
 
 const KIMI = AgentProvider.KIMI_CODE
 

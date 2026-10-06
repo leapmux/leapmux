@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest('sends the slash command as model text without a native compaction', async ({ authenticatedClineWorkspace, page, modelScript }) => {
   void authenticatedClineWorkspace

@@ -1,14 +1,14 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { listAgents } from '../helpers/subagentRegistry'
 import { openWorkspace, sendMessage } from '../helpers/ui'
+import { piTest } from '../pi-fixtures'
 
-test('tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+piTest('tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const provider = AgentProvider.PI
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-fresh-plan-'), {
     agentProvider: provider,

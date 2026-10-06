@@ -1,10 +1,8 @@
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code session goal', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('sets and clears a goal through native commands', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')

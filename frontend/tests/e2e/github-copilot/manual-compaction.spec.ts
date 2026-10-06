@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 const OLD_CONTEXT_MARKER = 'LEAPMUXOLDCONTEXTCOPILOTRIVER'
 

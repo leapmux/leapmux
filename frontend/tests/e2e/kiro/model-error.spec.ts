@@ -4,9 +4,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { expectRateLimitNotice } from '../helpers/rateLimit'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 /**
  * The words that Kiro states for a throttled model call. Kiro adds the id of the

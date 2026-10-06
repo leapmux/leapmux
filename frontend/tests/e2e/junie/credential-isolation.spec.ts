@@ -8,12 +8,10 @@ import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolatio
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace, sendMessage } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('native credential isolation', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest.skip(process.platform !== 'darwin', 'the system keychain probe exists on macOS')
 
   junieTest('uses the private credential stub during a native turn', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

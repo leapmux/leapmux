@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAnswer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
@@ -11,8 +11,6 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAns
  * The Worker drives Amp's stream JSON protocol.
  * The isolated mock supplies Amp's remote service.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp basic chat', () => {
   ampTest('renders an assistant answer and ends the turn with a timed divider', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     void authenticatedAmpWorkspace

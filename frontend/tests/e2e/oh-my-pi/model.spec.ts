@@ -3,15 +3,13 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The selected model must reach an actual native request. The setting must survive a page reload.
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest('switches the model for the next native request', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
   void authenticatedOhMyPiWorkspace
   await waitForSettingsHydrated(page)

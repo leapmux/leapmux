@@ -5,9 +5,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { zcodeNodeImageToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('mcp-tool-execution: shows the picture emitted by the native Node tool', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
   const workingDir = authenticatedZCodeWorkspace.workingDir

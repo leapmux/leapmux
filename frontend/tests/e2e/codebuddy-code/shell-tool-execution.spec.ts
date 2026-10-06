@@ -1,13 +1,11 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code tool execution', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('runs a Bash tool and draws its span', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     const call = bashToolCall(AgentProvider.CODEBUDDY, 'call-1', 'echo hi')

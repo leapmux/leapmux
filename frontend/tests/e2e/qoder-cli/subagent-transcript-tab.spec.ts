@@ -4,11 +4,9 @@ import { attachQoderWorkerFrames } from '../helpers/qoderWorkerFrames'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/worktree'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI subagent registry', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.QODER
 
   qoderTest('follows one subagent from its spawn to its report, with its own transcript', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }, testInfo) => {

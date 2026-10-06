@@ -1,10 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest, codewhaleToolMessages, expectCodewhalePosture } from '../codewhale-fixtures'
+import { codewhaleTest, codewhaleToolMessages, expectCodewhalePosture } from '../codewhale-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 const CODEWHALE = AgentProvider.CODEWHALE
 

@@ -7,10 +7,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { createNativePermissionFileWrite, exerciseNativePermissionWrite } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseProviderSteer } from '../helpers/providerSteer'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
+import { kiloTest } from '../kilo-fixtures'
 import { exerciseOpenCodeFamilyDenial } from '../opencode/permissionDenial'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
 
 async function allowShellPermission(page: Page): Promise<void> {
   const banner = page.getByTestId('control-banner').filter({ visible: true })

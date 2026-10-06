@@ -2,11 +2,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, goalsAndTodosSection } from '../helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('qoder CLI to-do sidebar', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('shows native WriteTodos state and restores it after reload', async ({ qoderWorkspace, page, modelScript }) => {
     void qoderWorkspace
     await modelScript.queue(

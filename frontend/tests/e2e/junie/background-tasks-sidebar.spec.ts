@@ -6,12 +6,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { backgroundBashToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest, openJunieAgent } from '../junie-fixtures'
+import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
 import { nativeContext, runningChild } from './scenarios'
 
 junieTest.describe('Junie subagents and background tasks', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.JUNIE
 
   function junieHousekeeping() {

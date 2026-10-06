@@ -1,12 +1,10 @@
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest.describe('Codewhale settings', () => {
   codewhaleTest('Shift+Tab toggles plan mode from the composer', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {

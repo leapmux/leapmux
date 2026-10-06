@@ -4,7 +4,6 @@ import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
 import { AgentActivityState, AgentProvider, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { test } from '../fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { resumeInterruptedQueue } from '../helpers/nativeLifecycle'
@@ -86,8 +85,8 @@ async function expectQuestionAnswers(page: Page, script: ModelScript, before: nu
   await expect(page.locator('[data-testid="control-banner"]:visible')).toHaveCount(0)
 }
 
-test.describe('Control Request - AskUserQuestion', () => {
-  test('single question - select an option and submit', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('Control Request - AskUserQuestion', () => {
+  claudeTest('single question - select an option and submit', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message that triggers AskUserQuestion
     await askQuestions(page, modelScript, [COLOR_Q_3])
 
@@ -122,7 +121,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     expect(answer).not.toContain('Green color')
   })
 
-  test('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message with 2 questions
     const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
@@ -156,7 +155,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Large'])
   })
 
-  test('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace, modelScript }) => {
     const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
     const banner = await waitForControlBanner(page)
@@ -182,7 +181,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Large'])
   })
 
-  test('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace, modelScript }) => {
     const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
 
     await waitForControlBanner(page)
@@ -199,7 +198,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Go with the recommended option.'])
   })
 
-  test('Stop button rejects the request', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('Stop button rejects the request', async ({ page, authenticatedWorkspace, modelScript }) => {
     await askQuestions(page, modelScript, [COLOR_Q_2])
 
     await waitForControlBanner(page)
@@ -211,7 +210,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
   })
 
-  test('multi-question control request stays on the correct agent tab', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('multi-question control request stays on the correct agent tab', async ({ page, authenticatedWorkspace, modelScript }) => {
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await expect(agentTabs).toHaveCount(1)
 
@@ -251,7 +250,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Large'])
   })
 
-  test('control request on a background agent tab badges it', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('control request on a background agent tab badges it', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
     await openAgentViaUI(page)
@@ -278,7 +277,7 @@ test.describe('Control Request - AskUserQuestion', () => {
     }
   })
 
-  test('control request on a background workspace badges its tab when returned to', async ({ page, leapmuxServer, modelScript }) => {
+  claudeTest('control request on a background workspace badges its tab when returned to', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Active')
     let ws2 = ''
@@ -352,8 +351,8 @@ async function askColor(page: Parameters<typeof sendMessage>[0], script: ModelSc
   await script.waitForSteps()
 }
 
-test.describe('Control Request Draft Persistence', () => {
-  test('AskUserQuestion custom text draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+claudeTest.describe('Control Request Draft Persistence', () => {
+  claudeTest('AskUserQuestion custom text draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Trigger AskUserQuestion.
     await askColor(page, modelScript)
 
@@ -380,7 +379,7 @@ test.describe('Control Request Draft Persistence', () => {
     await expect(restoredEditor).toContainText('my custom color answer')
   })
 
-  test('control request draft is isolated from conversation draft', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+  claudeTest('control request draft is isolated from conversation draft', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Type a conversation draft first.
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()

@@ -6,9 +6,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeWorkspaceTrustLimit, projectConfigurationWorker } from '../helpers/nativeWorkspaceTrustLimit'
 import { createGitRepo } from '../helpers/worktree'
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
-
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
+import { kiloTest } from '../kilo-fixtures'
 
 kiloTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KILO }

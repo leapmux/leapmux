@@ -2,11 +2,9 @@ import type { Page } from '@playwright/test'
 import type { MockModelUsage } from '../helpers/mockModelScript'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { readContextRow } from '../helpers/contextUsage'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 /** The window that Codewhale 0.10.0 states for the model of the E2E environment. */
 const MODEL_WINDOW_TOKENS = 1_000_000

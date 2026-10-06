@@ -1,10 +1,8 @@
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code binary attachments', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('carries the bytes of a binary attachment to the model', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await modelScript.queue({ text: 'The binary file reached the model.' })

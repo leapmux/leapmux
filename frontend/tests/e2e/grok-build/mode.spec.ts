@@ -2,12 +2,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
   // Grok reports its session mode and never its approval mode, so the approval

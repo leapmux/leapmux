@@ -4,10 +4,8 @@ import { createOutputGate, runWithGatedOutput } from '../helpers/outputGate'
 import { bashToolCall, mimoInteractiveBashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { applyPermissionPreset, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
+import { mimoTest } from '../mimo-fixtures'
 import { exerciseMiMoShellToolExecution } from './shellToolExecution'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
 
 mimoTest.describe('MiMo Code tool execution', () => {
   mimoTest('a shell command renders as a tool card with its output', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
@@ -42,8 +40,6 @@ mimoTest.describe('MiMo Code tool execution', () => {
     await expect(railedRows.first()).toBeVisible()
   })
 })
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
 
 mimoTest.describe('MiMo Code interactive commands', () => {
   // Nobody can type into a command that LeapMux runs, so the worker refuses the

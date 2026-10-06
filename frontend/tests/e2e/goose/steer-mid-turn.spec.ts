@@ -1,12 +1,10 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 async function proveNoNativeSteer(page: Page, modelScript: ModelScript, gate: string): Promise<void> {
   const queuedText = 'Deliver this after the first turn ends.'

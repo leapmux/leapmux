@@ -2,7 +2,7 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openWorkspace } from '../helpers/ui'
-import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
+import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.
@@ -11,8 +11,6 @@ import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
  *
  * Qwen tags foreground updates with the spawning tool call. Background children publish no stream, so the Worker reads their transcript files. The native task cancel stops a selected child.
  */
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
-
 qwenTest.describe('Qwen Code subagent registry', () => {
   qwenTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'yolo' })

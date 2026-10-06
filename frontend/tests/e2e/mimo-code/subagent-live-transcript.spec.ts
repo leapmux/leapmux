@@ -7,9 +7,7 @@ import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
  *
  * MiMo tags each child message with its actor ID. The Worker routes those messages into that child's transcript.
  */
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
   mimoTest('shows the child prompt while the child still runs', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {

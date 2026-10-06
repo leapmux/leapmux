@@ -1,14 +1,12 @@
 import type { Page } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeDroidCallId } from './toolResult'
 
 droidTest.describe('Factory Droid control requests', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   function banner(page: Page) {
     return page.getByTestId('control-banner').filter({ visible: true })
   }

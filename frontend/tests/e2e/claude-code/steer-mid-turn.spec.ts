@@ -1,13 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { claudeTest } from '../claude-fixtures'
+import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { expectNativePdfPart, nativeUserStrings, scriptedRequest } from '../helpers/attachmentModelProbe'
 import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpers/attachments'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 import { queuedInputRow, steerButton, steerQueuedInput } from '../helpers/steer'
 import { chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-import { processTest as test } from '../process-control-fixtures'
 
 test.describe('agent input queue', () => {
   test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace, modelScript }) => {

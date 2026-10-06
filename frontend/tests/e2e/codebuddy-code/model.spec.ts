@@ -1,12 +1,10 @@
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, closeComposerMenus, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('switches the model for the next native request', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
     void codebuddyWorkspace
     await waitForSettingsHydrated(page)

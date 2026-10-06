@@ -1,10 +1,8 @@
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { rateLimitWindowLabel } from '../helpers/rateLimit'
 import { assistantBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid rate-limit state', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('does not invent a rate window after a native 429 retry', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
     void authenticatedDroidWorkspace
     await modelScript.rule(DROID_TITLE_RULE)

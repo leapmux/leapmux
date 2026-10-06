@@ -2,7 +2,6 @@ import type { McpResultContent } from '../helpers/mcpResultServer'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
-import { test } from '../fixtures'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -54,7 +53,7 @@ deepseekHarnessTest('keeps native output paths and the exact inline preview afte
 })
 
 for (const layout of ['omitted-middle-image', 'retained-end-images'] as const) {
-  test(`keeps native MCP preview paths and image order after reload for ${layout}`, async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
+  deepseekHarnessTest(`keeps native MCP preview paths and image order after reload for ${layout}`, async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const directory = createTestDirectory('deepseek-mcp-paths-')
     const imagePath = join(directory, writeToolImage(directory, layout))

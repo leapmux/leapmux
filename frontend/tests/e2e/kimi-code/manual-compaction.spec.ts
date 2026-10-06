@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code compaction notice', () => {
   kimiTest('keeps the native summary and removes old context after manual compaction', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

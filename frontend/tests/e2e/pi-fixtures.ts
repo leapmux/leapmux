@@ -1,6 +1,7 @@
-import type { WorkspaceFixture } from './helpers/workspace'
 /** Pi fixtures use the shared agent workspace lifetime. */
-import { AgentProvider } from './acp-fixture-factory'
+import type { CliSkipFixture } from './acp-fixture-factory'
+import type { WorkspaceFixture } from './helpers/workspace'
+import { AgentProvider, cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
@@ -23,10 +24,11 @@ export const PI_E2E_SKIP_REASON: string | null = PI.path === null
   ? PI.skipReason
   : (versionOutput(PI.path) === null ? PI_MISSING_REASON : null)
 
-export const piTest = base.extend<{
+export const piTest = base.extend<CliSkipFixture & {
   piWorkspace: WorkspaceFixture
   authenticatedPiWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(PI_E2E_SKIP_REASON),
   piWorkspace: async ({ leapmuxServer }, use) => {
     await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.PI, prefix: 'pi-e2e' }, use)
   },

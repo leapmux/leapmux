@@ -1,14 +1,12 @@
 import { expect } from '@playwright/test'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The native usage event must reach the agent info card. The test checks the reported count and its display.
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi basic chat', () => {
   ohMyPiTest('reports model usage in the agent info card', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace

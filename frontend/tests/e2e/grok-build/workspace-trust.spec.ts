@@ -1,13 +1,11 @@
 import { existsSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText, nativeModelToolNames } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { openGrokMcpWorkspace } from './mcpWorkspace'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 for (const decision of ['allow', 'deny'] as const) {
   grokTest(`keeps project configuration unloaded until the native trust decision is ${decision}`, async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {

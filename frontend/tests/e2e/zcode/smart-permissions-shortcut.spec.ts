@@ -4,9 +4,7 @@ import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset, expectSettingsChip, openPlusMenu, waitForSettingsHydrated } from '../helpers/ui'
 import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfiguration'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('smart-permissions-shortcut: offers only the bypass permission shortcut', async ({ authenticatedZCodeWorkspace, page }) => {
   void authenticatedZCodeWorkspace

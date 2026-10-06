@@ -1,9 +1,7 @@
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code basic chat', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   lettaTest('draws model reasoning in a thought band', async ({ authenticatedReasoningLettaWorkspace, page, modelScript }) => {
     void authenticatedReasoningLettaWorkspace
     const reasoning = 'LETTA_THOUGHT_MARKER I compare the two values.'

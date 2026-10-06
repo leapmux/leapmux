@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /** The thinking the scripted model reports before its answer. */
 const REASONING = 'I add the two numbers.'
@@ -10,8 +10,6 @@ const REASONING = 'I add the two numbers.'
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi basic chat', () => {
   ohMyPiTest('draws the thinking of a reply as a row of its own, before the answer, also after a reload', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     void authenticatedOhMyPiWorkspace

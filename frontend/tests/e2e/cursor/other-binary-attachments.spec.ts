@@ -1,8 +1,6 @@
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome } from '../helpers/attachments'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('other-binary-attachments: keeps refused PDF and binary attachments out of the next request', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   void authenticatedCursorWorkspace

@@ -3,11 +3,9 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest, openJunieAgent } from '../junie-fixtures'
+import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
 
 junieTest.describe('Junie control requests', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.JUNIE
 
   function junieHousekeeping() {

@@ -1,15 +1,15 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { piTest } from '../pi-fixtures'
 
 for (const answerKind of ['custom', 'selected']) {
-  test(`delivers a ${answerKind} answer to the real Pi question extension`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+  piTest(`delivers a ${answerKind} answer to the real Pi question extension`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const provider = AgentProvider.PI
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-custom-'), {
       agentProvider: provider,

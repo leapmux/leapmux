@@ -3,15 +3,13 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The test calls a real native image tool. The correlated completed result must contain a decoded image.
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi tool execution', () => {
   ohMyPiTest('draws a PNG returned by its Read tool', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
     const workingDir = authenticatedOhMyPiWorkspace.workingDir

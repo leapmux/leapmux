@@ -2,9 +2,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 qwenTest('proves the unsupported native child send route while its original task runs', async ({ page, modelScript, leapmuxServer, authenticatedQwenWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedQwenWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }

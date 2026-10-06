@@ -1,12 +1,10 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, openSettingsMenu, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 diracTest.describe('Dirac settings', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('the mode menu lists Plan and Act', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
@@ -19,8 +17,6 @@ diracTest.describe('Dirac settings', () => {
 })
 
 diracTest.describe('Dirac settings apply', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   function nativeCurrentMode(request: MockModelRequestRecord | undefined): string {
     expect(request?.protocol).toBe('openai-chat-completions')
     const body = isObject(request?.body) ? request.body : null

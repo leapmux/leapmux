@@ -3,13 +3,11 @@ import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { GOOSE_MODE } from '../../../src/generated/contracts/goose-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
-
-gooseTest.skip(!!GOOSE_E2E_SKIP_REASON, GOOSE_E2E_SKIP_REASON || '')
 
 gooseTest('smart mode asks before a removal and auto mode runs it', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   const workingDir = authenticatedGooseWorkspace.workingDir

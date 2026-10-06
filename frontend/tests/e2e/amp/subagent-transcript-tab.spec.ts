@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { clickOpaqueAmpTaskRow, openOpaqueAmpTask } from './opaqueTask'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 // Amp's stream carries the remote Task call and report without a child session ID.
 ampTest('proves the actual opaque remote Task limit for subagent-transcript-tab', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {

@@ -2,7 +2,7 @@ import type { LogLine, PhaseMark, TimingWorker } from '../helpers/timingFixture'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test as fixturesTest } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
@@ -11,22 +11,22 @@ import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWork
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, settingsBar } from '../helpers/ui'
 
 /** Measure native startup on a traced private Worker against the suite Hub. */
-const timingTest = fixturesTest.extend<{ timingWorker: TimingWorker }>({
+const timingTest = claudeTest.extend<{ timingWorker: TimingWorker }>({
   timingWorker: async ({ leapmuxServer }, use) => withTimingWorker(leapmuxServer, {
     dataDirPrefix: 'leapmux-timing-e2e',
     env: { LEAPMUX_TRACE_AGENT_STARTUP: '1' },
   }, use),
 })
 
-const startupErrorTest = fixturesTest.extend<{ failingWorker: TimingWorker }>({
+const startupErrorTest = claudeTest.extend<{ failingWorker: TimingWorker }>({
   failingWorker: async ({ leapmuxServer }, use) => withTimingWorker(leapmuxServer, {
     dataDirPrefix: 'leapmux-startup-err',
     env: { SHELL: '/usr/bin/false', LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT_SECONDS: '5' },
   }, use),
 })
 
-fixturesTest.describe('Agent Settings', () => {
-  fixturesTest('default settings on startup', async ({ authenticatedWorkspace, page }) => {
+claudeTest.describe('Agent Settings', () => {
+  claudeTest('default settings on startup', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -253,8 +253,8 @@ function renderMedianDeltas(runs: PhaseMark[][]): string {
   return lines.join('\n')
 }
 
-fixturesTest.describe('Claude Code agent startup queue', () => {
-  fixturesTest('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+claudeTest.describe('Claude Code agent startup queue', () => {
+  claudeTest('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     const executable = findBinary('claude', leapmuxServer.agentEnv)
     if (!executable)
       throw new Error('The isolated Claude executable is absent.')

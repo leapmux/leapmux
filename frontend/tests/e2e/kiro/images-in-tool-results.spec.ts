@@ -7,9 +7,7 @@ import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 const KIRO = AgentProvider.KIRO
 

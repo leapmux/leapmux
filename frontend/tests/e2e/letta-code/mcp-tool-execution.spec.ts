@@ -13,14 +13,12 @@ import { lettaMcpCliToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { writeToolImage } from '../helpers/toolImages'
 import { assistantBubbles, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, LETTA_E2E_SKIP_REASON, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
+import { expect, LETTA_TITLE_RULE, lettaTest } from '../letta-fixtures'
 import { mcpLettaTest, withRegisteredLettaMcp } from './fixtures'
 import { exerciseLettaMcpCatalog } from './mcpScenario'
 import { nativeContext } from './scenarios'
 
 lettaTest.describe('native mcp tool execution', () => {
-  lettaTest.skip(!!LETTA_E2E_SKIP_REASON, LETTA_E2E_SKIP_REASON || '')
-
   lettaTest('offers no local MCP tool to the model on its App Server path', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const workingDir = createTestDirectory('letta-mcp-')
     const imageName = writeToolImage(workingDir, 'letta-mcp')

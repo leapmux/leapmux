@@ -2,12 +2,10 @@ import { JUNIE_RESPONSES_MODEL, MOCK_MODELS } from '../helpers/mockAgentEnvironm
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie settings', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('a model switch reaches the native Responses endpoint and survives a reload', async ({ authenticatedJunieWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedJunieWorkspace
     await waitForSettingsHydrated(page)

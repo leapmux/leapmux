@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { test } from '../fixtures'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
@@ -38,8 +37,8 @@ async function waitForBoundPort(portFile: string): Promise<number> {
   return port
 }
 
-test.describe('Tool Running Badge', () => {
-  test('shows a long Claude tool\'s elapsed time, and clears it when the tool ends', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('Tool Running Badge', () => {
+  claudeTest('shows a long Claude tool\'s elapsed time, and clears it when the tool ends', async ({ page, authenticatedWorkspace, modelScript }) => {
     const dir = createTestDirectory('leapmux-badge-')
     const script = join(dir, 'tool-server.mjs')
     const portFile = join(dir, 'port')

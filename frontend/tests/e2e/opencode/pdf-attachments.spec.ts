@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
-import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from '../opencode-fixtures'
-
-opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
+import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('accepts a PDF attachment and carries it through the turn', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
   void authenticatedOpencodeWorkspace

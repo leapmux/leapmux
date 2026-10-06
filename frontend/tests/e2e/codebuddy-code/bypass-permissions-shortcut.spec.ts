@@ -1,12 +1,10 @@
 import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('offers Bypass but no Smart shortcut and runs a native tool after Bypass', async ({ codebuddyWorkspace, page, modelScript }) => {
     void codebuddyWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')

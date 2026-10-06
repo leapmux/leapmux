@@ -3,7 +3,6 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { readMcpCallExchange } from '../helpers/mcpRequestReceipt'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
@@ -14,12 +13,13 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { piTest } from '../pi-fixtures'
 import { activateNativeCodemode } from './codemodeConfiguration'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
 
-test('keeps the native codemode output path and exact preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
+piTest('keeps the native codemode output path and exact preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const directory = createTestDirectory('pi-output-path-feature-codemode-')
   const output = computedNativeToolOutput()
@@ -45,7 +45,7 @@ test('keeps the native codemode output path and exact preview after reload', asy
   })
 })
 
-test('keeps the native real MCP output path and exact preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
+piTest('keeps the native real MCP output path and exact preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const directory = createTestDirectory('pi-output-path-feature-mcp-')
   const receiptLog = join(directory, 'native-output-path-mcp-receipt.json')

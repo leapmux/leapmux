@@ -1,10 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { claudeTest } from '../claude-fixtures'
+import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, openAgentViaUI, openSettingsMenu, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { processTest as test } from '../process-control-fixtures'
 
 test.describe('Agent Settings', () => {
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {

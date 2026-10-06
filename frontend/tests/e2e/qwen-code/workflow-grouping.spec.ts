@@ -5,9 +5,7 @@ import { qwenWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectOpaqueNativeWorkflowResult, workflowGroupHeading } from '../helpers/workflowGrouping'
-import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code workflow grouping', () => {
   qwenTest('shows one workflow row after its native child answers', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

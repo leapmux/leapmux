@@ -1,9 +1,7 @@
 import { expectCompactionNotice } from '../helpers/compaction'
 import { exerciseManualCompaction } from '../helpers/manualCompaction'
 import { waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 // MiMo Code 0.1.15 sends its compaction part twice: once when the compaction
 // starts, and once when it ends, with the summary in the part's projection. The

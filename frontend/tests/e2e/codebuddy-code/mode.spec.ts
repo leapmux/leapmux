@@ -1,12 +1,10 @@
 import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEBUDDY_E2E_SKIP_REASON, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest.skip(!!CODEBUDDY_E2E_SKIP_REASON, CODEBUDDY_E2E_SKIP_REASON || '')
-
   codebuddyTest('the mode menu lists the four advertised modes', async ({ codebuddyWorkspace, page }) => {
     void codebuddyWorkspace
     await waitForSettingsHydrated(page)

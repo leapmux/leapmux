@@ -1,7 +1,5 @@
 import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code attachments', () => {
   qwenTest('delivers an image attachment to the model', async ({ authenticatedQwenWorkspace, page, modelScript }) => {

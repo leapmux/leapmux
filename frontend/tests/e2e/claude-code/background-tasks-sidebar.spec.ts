@@ -2,7 +2,6 @@ import { expect } from '@playwright/test'
 import { WS_CHANNEL_ROUTE } from '../../../src/generated/contracts/wire'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { test } from '../fixtures'
 import { registerClaudeChildReportRules } from '../helpers/claudeChildReportRule'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
@@ -12,8 +11,8 @@ import { expectClipsLongText, expectClipsToOneLine, sendMessage, tabById } from 
 import { closeAgentViaAPI } from '../helpers/worktree'
 
 /** Test native task rows, title clipping, and registry hydration. */
-test.describe('Claude subagent background tasks', () => {
-  test('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page, modelScript }) => {
+claudeTest.describe('Claude subagent background tasks', () => {
+  claudeTest('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
     // A long command lets the test measure title clipping at the section edge.
     await modelScript.queue({

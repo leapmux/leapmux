@@ -1,7 +1,5 @@
 import { exerciseManualCompaction, MANUAL_COMPACTION_SUMMARY } from '../helpers/manualCompaction'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code Basic Chat', () => {
   qwenTest('compacts a scripted conversation on request', async ({ authenticatedQwenWorkspace, page, modelScript }) => {

@@ -2,7 +2,6 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withMockModelScenario } from '../helpers/mockModelScenario'
 import { piEditorProbeToolCall } from '../helpers/providerToolCalls'
@@ -10,13 +9,14 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { readEntry, storageKeys } from '../helpers/storage'
 import { expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { piTest } from '../pi-fixtures'
 
 for (const scenario of [
   { label: 'whitespace', text: '  first line\n\tsecond line\n  ', cancel: false },
   { label: 'empty text', text: '', cancel: false },
   { label: 'cancellation', text: '  unsent text\n', cancel: true },
 ]) {
-  test(`delivers a native Pi editor answer after reload with ${scenario.label}`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
+  piTest(`delivers a native Pi editor answer after reload with ${scenario.label}`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     await page.setViewportSize({ width: 780, height: 1000 })

@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { CLINE_E2E_SKIP_REASON, clineTest, offeredTools } from '../cline-fixtures'
+import { clineTest, offeredTools } from '../cline-fixtures'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 /**
@@ -9,8 +9,6 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expect
  *
  * Cline fixes tools and system instructions when it creates a session. A Plan or Act change recreates the same session with its earlier messages.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline settings', () => {
   clineTest('moves the session between Act and Plan, and keeps the conversation', async ({ askingClineWorkspace, page, modelScript }) => {
     void askingClineWorkspace

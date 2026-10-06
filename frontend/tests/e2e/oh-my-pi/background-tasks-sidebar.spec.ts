@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall } from '../helpers/providerToolCalls'
 import { backgroundTasksSection, expectRowBecomesFinal, expectSectionPersists, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, tabById } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('keeps the actual native background task row through completion and reload', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }

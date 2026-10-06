@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { expectSettingsChip, measureBubbleEdges, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/worktree'
 
-test.describe('Control Request Draft Persistence', () => {
-  test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+claudeTest.describe('Control Request Draft Persistence', () => {
+  claudeTest('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit.
     const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
@@ -31,8 +31,8 @@ test.describe('Control Request Draft Persistence', () => {
   })
 })
 
-test.describe('Plan Mode', () => {
-  test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('Plan Mode', () => {
+  claudeTest('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -88,7 +88,7 @@ test.describe('Plan Mode', () => {
     // no plan_execution notification, so no plan file row in the popover.
   })
 
-  test('approve with clear context checkbox checked', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('approve with clear context checkbox checked', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Enter plan mode, then exit — get the approval banner.
     const banner = await enterAndExitPlanMode(page, modelScript, 'clear-ctx')
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
@@ -153,8 +153,8 @@ test.describe('Plan Mode', () => {
   })
 })
 
-test.describe('plan mode - bypass permissions', () => {
-  test('approve and switches toggle with feedback on editor content', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('plan mode - bypass permissions', () => {
+  claudeTest('approve and switches toggle with feedback on editor content', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit
     const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
@@ -185,7 +185,7 @@ test.describe('plan mode - bypass permissions', () => {
     await expect(page.locator('[data-testid="plan-approve-btn"]')).toBeVisible()
   })
 
-  test('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace, modelScript }) => {
     const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
@@ -244,8 +244,8 @@ test.describe('plan mode - bypass permissions', () => {
   })
 })
 
-test.describe('Plan Mode Tab Auto-Naming', () => {
-  test('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
+  claudeTest('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
 
     // ── Step 1: Verify initial tab name contains "Agent" ──

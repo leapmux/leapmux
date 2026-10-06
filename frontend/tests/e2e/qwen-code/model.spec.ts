@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseSettingsOption, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { openQwenAgent, QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { openQwenAgent, qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code settings and goal', () => {
   qwenTest('switches the model for the next native request', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

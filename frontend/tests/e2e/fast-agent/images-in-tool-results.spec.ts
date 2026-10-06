@@ -1,14 +1,12 @@
 import { existsSync } from 'node:fs'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, toolRows, writeToolImage } from '../helpers/toolImages'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 fastAgentTest.describe('Fast Agent images in tool results', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     const imageName = writeToolImage(workingDir, 'fastagent-mcp')

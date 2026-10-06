@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts } from '../helpers/nativeResume'
@@ -20,8 +20,6 @@ import { createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from 
  *
  * Amp stores threads on its service. The native thread list omits archived and empty threads. The mock seeds external threads. The picker filters them to the working directory. `amp threads continue` resumes the selected thread.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 const SESSION_MENU = 'session-select-menu'
 
 const NEW_SESSION_ROW = 'Start a new session'

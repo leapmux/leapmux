@@ -4,9 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, KIMI_PLAN_FILE_CAPTURE, kimiTest, occurrences } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { KIMI_PLAN_FILE_CAPTURE, kimiTest, occurrences } from '../kimi-fixtures'
 
 const KIMI = AgentProvider.KIMI_CODE
 

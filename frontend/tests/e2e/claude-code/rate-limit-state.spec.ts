@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withClaudeSubscriberWorker } from '../helpers/claudeSubscriberWorker'
 import { expectRateLimitWindow, rateLimitWindowLabel } from '../helpers/rateLimit'
@@ -9,8 +9,8 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openAgentInfoCard, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { withTestWorkspace } from '../helpers/workspace'
 
-test.describe('Claude Code rate-limit state', () => {
-  test('a subscriber sees the model warning after a reload', async ({ page, leapmuxServer, modelScript }) => {
+claudeTest.describe('Claude Code rate-limit state', () => {
+  claudeTest('a subscriber sees the model warning after a reload', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken } = leapmuxServer
     await withClaudeSubscriberWorker(leapmuxServer, async (workerId) => {
       await withTestWorkspace(leapmuxServer, 'claude-rate-limit', async ({ workspaceId }) => {
@@ -48,7 +48,7 @@ test.describe('Claude Code rate-limit state', () => {
     })
   })
 
-  test('the API-key headers do not create subscriber rate-limit state', async ({ authenticatedWorkspace, page, modelScript }) => {
+  claudeTest('the API-key headers do not create subscriber rate-limit state', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
     const rateLimits = {
       type: 'five_hour',

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { clineExtractControl } from '../../../src/components/chat/providers/cline/extractControl'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
 
@@ -12,8 +12,6 @@ import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTru
 
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 // LeapMux exposes no interactive native workspace-trust route for this provider.
 clineTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {

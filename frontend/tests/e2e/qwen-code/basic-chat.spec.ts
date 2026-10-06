@@ -3,9 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { nativeModelLastUserText } from '../helpers/nativeScenario'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { QWEN_E2E_SKIP_REASON, qwenTest } from '../qwen-fixtures'
-
-qwenTest.skip(!!QWEN_E2E_SKIP_REASON, QWEN_E2E_SKIP_REASON || '')
+import { qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code Basic Chat', () => {
   qwenTest('send message and receive response', async ({ authenticatedQwenWorkspace, page, modelScript }) => {

@@ -1,12 +1,10 @@
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
 import { closeComposerMenus, openPlusMenu, openWorkspace, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
 import { nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent settings apply', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('omits a model setting while the launch model answers a turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

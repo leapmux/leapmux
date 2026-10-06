@@ -4,10 +4,8 @@ import { withCleanup } from '../helpers/cleanup'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, userBubbles } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
+import { piTest } from '../pi-fixtures'
 import { registerPiChildNoticeRule } from './childNoticeRule'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
 piTest('background-tasks-sidebar: foreground subagent shows a live activity row', async ({
   authenticatedPiWorkspace,

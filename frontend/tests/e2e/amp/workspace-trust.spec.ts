@@ -6,7 +6,7 @@ import { expect } from '@playwright/test'
 import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -18,8 +18,6 @@ import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
 import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 // LeapMux exposes no interactive native workspace-trust route for this provider.
 ampTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {

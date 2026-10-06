@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
@@ -7,8 +7,6 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECON
  *
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp basic chat', () => {
   ampTest('keeps the conversation from one turn to the next', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     void authenticatedAmpWorkspace

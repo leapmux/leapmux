@@ -1,14 +1,14 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { zcodeTest } from '../zcode-fixtures'
 
-test('renders ZCode native question descriptions and selects an answer', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+zcodeTest('renders ZCode native question descriptions and selects an answer', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   await page.setViewportSize({ width: 600, height: 900 })
   const provider = AgentProvider.ZCODE
   const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-zcode-question-'), {

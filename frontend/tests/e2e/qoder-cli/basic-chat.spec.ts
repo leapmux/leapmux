@@ -1,11 +1,9 @@
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI basic chat', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('draws the answer and ends the turn', async ({ qoderWorkspace, page, modelScript }) => {
     void qoderWorkspace
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })

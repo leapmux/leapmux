@@ -1,9 +1,9 @@
 /**
  * OpenCode-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
+import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 
 const opencodeConfig: ACPFixtureConfig = {
@@ -15,10 +15,11 @@ const opencodeConfig: ACPFixtureConfig = {
 
 export const OPENCODE_E2E_SKIP_REASON = detectACPSkipReason(opencodeConfig)
 
-export const opencodeTest = base.extend<{
+export const opencodeTest = base.extend<CliSkipFixture & {
   opencodeWorkspace: WorkspaceFixture
   authenticatedOpencodeWorkspace: WorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(OPENCODE_E2E_SKIP_REASON),
   opencodeWorkspace: async ({ leapmuxServer }, use) => {
     await createACPWorkspace(leapmuxServer, opencodeConfig, use)
   },

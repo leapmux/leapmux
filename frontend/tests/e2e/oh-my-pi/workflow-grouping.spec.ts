@@ -6,9 +6,7 @@ import { ohMyPiYieldToolCall, spawnSubagentToolCall } from '../helpers/providerT
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('keeps two actual native task children as separate ungrouped rows', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }

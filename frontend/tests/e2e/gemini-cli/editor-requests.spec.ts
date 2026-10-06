@@ -1,13 +1,11 @@
 import { expect } from '@playwright/test'
 import { geminiExtractControl } from '../../../src/components/chat/providers/gemini/extractControl'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('excludes the unsupported native editor control while a real permission still works', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

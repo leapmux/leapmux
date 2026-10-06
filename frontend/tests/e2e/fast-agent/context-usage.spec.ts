@@ -1,10 +1,8 @@
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { expectContextUsage } from '../helpers/contextUsage'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 fastAgentTest.describe('Fast Agent thinking and context usage', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('reports the usage block as context usage', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
     await modelScript.queue({

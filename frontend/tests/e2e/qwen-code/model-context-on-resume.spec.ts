@@ -1,18 +1,13 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test } from '../fixtures'
 import { resumePickerScenario } from '../helpers/nativeResumePicker'
-import { QWEN_E2E_SKIP_REASON } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
 
 const provider = AgentProvider.QWEN_CODE
 
 const label = 'Qwen Code'
 
-const skip = QWEN_E2E_SKIP_REASON
-
-test.describe(`${label} session resume`, () => {
-  test.skip(!!skip, skip ?? '')
-
-  test('continues a closed session chosen from the native picker', async ({ page, leapmuxServer, modelScript }) => {
+qwenTest.describe(`${label} session resume`, () => {
+  qwenTest('continues a closed session chosen from the native picker', async ({ page, leapmuxServer, modelScript }) => {
     await resumePickerScenario({ page, leapmuxServer, modelScript }, { provider, label, sessionList: 'newest-of-three' })
   })
 })

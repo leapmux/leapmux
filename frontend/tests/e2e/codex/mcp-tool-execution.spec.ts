@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
+import { codexTest } from '../codex-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -16,7 +16,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace, sendMessage } from '../helpers/ui'
 
-test('executes the native MCP echo tool and preserves its argument refusal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+codexTest('executes the native MCP echo tool and preserves its argument refusal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const codexHome = leapmuxServer.agentEnv?.CODEX_HOME
   if (!codexHome)
     throw new Error('The native MCP scenario requires the isolated Codex home.')

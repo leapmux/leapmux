@@ -1,7 +1,6 @@
-import { KILO_E2E_SKIP_REASON, kiloTest } from '../kilo-fixtures'
+import { kiloTest } from '../kilo-fixtures'
 import { exerciseKiloGoal, KILO_ACP_IDLE_FALLBACK_MS, scriptedObjective } from './goalScenario'
 
-kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
 kiloTest.setTimeout(KILO_ACP_IDLE_FALLBACK_MS * 4)
 
 kiloTest('session-goal-pause-and-resume: sets, pauses, resumes, and clears the native goal', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {

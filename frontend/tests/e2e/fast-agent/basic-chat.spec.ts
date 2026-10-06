@@ -1,11 +1,9 @@
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent Basic Chat', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('send message and receive response', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
     await modelScript.queue({ text: 'Hello from the mock model.' })

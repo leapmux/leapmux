@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
 import { compactionNoticeRow } from '../helpers/compaction'
 import { exerciseManualCompaction } from '../helpers/manualCompaction'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest('shows the actual native completed compaction notice and preserves it after reload', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
   void authenticatedKimiWorkspace

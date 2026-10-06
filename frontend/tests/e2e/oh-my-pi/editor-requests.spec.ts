@@ -6,9 +6,7 @@ import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
-
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 const PREFILL = 'Initial line\nSecond line'
 const EDITOR_CASES = [

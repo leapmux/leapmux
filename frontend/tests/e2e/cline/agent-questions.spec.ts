@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 
@@ -12,8 +12,6 @@ import { assistantBubbles, sendMessage, visibleControlBanner, waitForAgentIdle }
  *
  * The Worker answers Cline's native question executor. Its reply must reach the same native call.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 const PROVIDER = AgentProvider.CLINE
 
 /**

@@ -16,9 +16,7 @@ import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTru
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
-import { KIRO_E2E_SKIP_REASON, kiroTest } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest } from '../kiro-fixtures'
 
 // LeapMux exposes no interactive native workspace-trust route for this provider.
 kiroTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedKiroWorkspace }) => {

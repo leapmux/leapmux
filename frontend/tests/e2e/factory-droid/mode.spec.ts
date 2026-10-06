@@ -1,4 +1,4 @@
-import { DROID_E2E_SKIP_REASON, droidTest, expect } from '../droid-fixtures'
+import { droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
@@ -6,8 +6,6 @@ import { closeComposerMenus, openPlusMenu, settingsGroupTrigger, waitForSettings
 import { nativeContext } from './scenarios'
 
 droidTest.describe('Factory Droid settings', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('offers the model, effort and permission-mode groups', async ({ authenticatedDroidWorkspace, page }) => {
     void authenticatedDroidWorkspace
     await waitForSettingsHydrated(page)

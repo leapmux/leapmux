@@ -1,14 +1,12 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid settings', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('applies bypass to the native session before an edit', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
     const filename = 'droid-bypass-note.txt'
     const path = join(askingDroidWorkspace.workingDir, filename)

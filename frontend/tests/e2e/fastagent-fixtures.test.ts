@@ -13,6 +13,7 @@ vi.mock('./acp-fixture-factory', async () => {
   return {
     AgentProvider,
     authenticateACPWorkspace: vi.fn(),
+    cliSkipFixture: vi.fn(() => [vi.fn(), { auto: true }]),
     createACPWorkspace: vi.fn(),
     detectACPSkipReason: vi.fn(() => null),
   }

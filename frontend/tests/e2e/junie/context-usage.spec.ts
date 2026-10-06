@@ -2,11 +2,9 @@ import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expectContextUsage } from '../helpers/contextUsage'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie attachments and context usage', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   async function scriptJunieAttachmentHousekeeping(modelScript: ModelScript, title: string): Promise<void> {
     await modelScript.rule(
       { name: 'junie-attachment-capability-filter', when: { system: 'capability filter agent' }, respond: { text: '' } },

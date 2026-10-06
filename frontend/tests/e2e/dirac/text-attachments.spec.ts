@@ -1,12 +1,10 @@
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, waitForAgentIdle } from '../helpers/ui'
 
 diracTest.describe('Dirac attachments', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('accepts a text attachment and carries it through the turn', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
     void authenticatedDiracWorkspace
     const sourcePath = await expectAttachmentOutcome(page, 'text', { supported: true, fileName: 'dirac-notes.txt' })

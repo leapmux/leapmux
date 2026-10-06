@@ -1,13 +1,11 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, messageContents, sendMessage, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest('enforces the actual Plan policy and changes to Agent without a plan review request', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }

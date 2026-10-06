@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CODEWHALE_E2E_SKIP_REASON, CODEWHALE_SERVES_JOB_ROUTES, codewhaleTest } from '../codewhale-fixtures'
+import { CODEWHALE_SERVES_JOB_ROUTES, codewhaleTest } from '../codewhale-fixtures'
 import { backgroundBashToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage } from '../helpers/ui'
@@ -12,8 +12,6 @@ import { sendMessage } from '../helpers/ui'
  *
  * The agent tool returns a child ID at once. Codewhale omits child events from the parent stream. The Worker reads the child transcript and run record until the run ends.
  */
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
-
 codewhaleTest.describe('Codewhale subagent registry', () => {
   codewhaleTest('a background shell job gets a shell row, which closes when the job ends', async ({
     authenticatedCodewhaleWorkspace,

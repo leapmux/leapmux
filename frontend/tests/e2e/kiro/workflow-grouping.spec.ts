@@ -4,9 +4,7 @@ import { completeGoalToolCall } from '../helpers/providerToolCalls'
 import { expandGoalsAndTodosSection, expectGoalStatus, expectRegistryRow, goalAction } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-import { KIRO_E2E_SKIP_REASON, kiroTest, openKiroAgent } from '../kiro-fixtures'
-
-kiroTest.skip(!!KIRO_E2E_SKIP_REASON, KIRO_E2E_SKIP_REASON || '')
+import { kiroTest, openKiroAgent } from '../kiro-fixtures'
 
 const KIRO = AgentProvider.KIRO
 

@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { cursorWebFetchPermissionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('forwards a native web-fetch permission decision', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   void authenticatedCursorWorkspace

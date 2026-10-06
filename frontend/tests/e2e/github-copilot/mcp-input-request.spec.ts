@@ -4,8 +4,7 @@ import { expect } from '@playwright/test'
 import { COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { COPILOT_E2E_SKIP_REASON } from '../copilot-fixtures'
-import { test } from '../fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
@@ -13,9 +12,7 @@ import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-test.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
-
-test('submits zero and false through a native MCP form after reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }) => {
+copilotTest('submits zero and false through a native MCP form after reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }) => {
   const directory = createTestDirectory('copilot-mcp-form-')
   const script = writeMcpFormServer(directory, 'form-server.mjs')
   const home = leapmuxServer.agentEnv.COPILOT_HOME

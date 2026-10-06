@@ -1,15 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { writeMcpPermissionServer } from '../helpers/mcpPermissionServer'
 import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall, mcpToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 fastAgentTest.describe('Fast Agent control requests', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.FAST_AGENT
 
   fastAgentTest('runs a shell command after the reader allows it', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {

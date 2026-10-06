@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -12,8 +12,6 @@ import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { invokeGeminiMcp, withGeminiMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
 import { readGeminiStoredToolRecord } from './toolRecord'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('executes a real MCP echo through the native Google model protocol', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

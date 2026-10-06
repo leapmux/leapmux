@@ -2,11 +2,11 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { test as fixturesTest } from '../fixtures'
+import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI, openPinnedModeAgentViaAPI } from '../helpers/api'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openMenu, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
-import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, processTest as test, waitForWorkerOffline } from '../process-control-fixtures'
+import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
 
 test.describe('worker restart thinking indicator', () => {
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page, modelScript }) => {
@@ -611,8 +611,8 @@ const NEW_SESSION_ROW = 'Start a new session'
 // drift. `false`: the Claude provider's session is an id, not a file path.
 const TYPE_A_HANDLE_ROW = typeAHandleLabel(false)
 
-fixturesTest.describe('Session picker in the New Agent dialog', () => {
-  fixturesTest('offers a closed session, hides the open one, and resumes what was picked', async ({
+claudeTest.describe('Session picker in the New Agent dialog', () => {
+  claudeTest('offers a closed session, hides the open one, and resumes what was picked', async ({
     page,
     leapmuxServer,
     modelScript,
@@ -755,7 +755,7 @@ fixturesTest.describe('Session picker in the New Agent dialog', () => {
     await expectAssistantAnswer(page)
   })
 
-  fixturesTest('falls back to the session-id input in a directory with no history', async ({
+  claudeTest('falls back to the session-id input in a directory with no history', async ({
     page,
     leapmuxServer,
   }) => {

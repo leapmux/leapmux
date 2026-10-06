@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { assistantBubbles, bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
 
 ampTest('keeps native thinking separate from the answer and restores it after reload', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
   void authenticatedAmpWorkspace

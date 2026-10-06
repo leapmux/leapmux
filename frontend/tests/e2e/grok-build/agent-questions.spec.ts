@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest, openGrokAgent } from '../grok-fixtures'
+import { grokTest, openGrokAgent } from '../grok-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 const PROVIDER = AgentProvider.GROK_BUILD
 

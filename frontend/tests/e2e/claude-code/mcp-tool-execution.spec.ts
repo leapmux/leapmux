@@ -3,14 +3,14 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 
-test('executes the native MCP echo tool and keeps empty string results', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+claudeTest('executes the native MCP echo tool and keeps empty string results', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = createTestDirectory('claude-mcp-execution-')
   const receiptLog = join(directory, 'native-receipt.json')
   const script = writeMcpEchoServer(directory, { receiptLog })

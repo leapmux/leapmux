@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { zcodeCreateWorkflowToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
 import { sendMessage } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
-import { ZCODE_E2E_SKIP_REASON, zcodeTest } from '../zcode-fixtures'
-
-zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
+import { zcodeTest } from '../zcode-fixtures'
 
 const WORKFLOW_NAME = 'leapmux-e2e-probe'
 

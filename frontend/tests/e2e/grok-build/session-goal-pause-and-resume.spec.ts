@@ -2,14 +2,12 @@ import type { MockModelRule } from '../helpers/mockModelScript'
 import type { NativeGoalScenario } from '../helpers/nativeGoalLifecycle'
 import { expect } from '@playwright/test'
 import { AgentGoalStatus, AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { exerciseNativeGoalPauseAndResume } from '../helpers/nativeGoalLifecycle'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles } from '../helpers/ui'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 /** The plan that Grok's Goal Plan Writer writes, in the sections its prompt states. */
 const GOAL_PLAN = [

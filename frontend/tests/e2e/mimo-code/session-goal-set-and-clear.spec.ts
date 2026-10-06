@@ -2,9 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
 import { assistantBubbles, waitForAgentIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 /**
  * The system text of MiMo's goal judge (`JUDGE_SYSTEM` in `src/session/goal.ts`).

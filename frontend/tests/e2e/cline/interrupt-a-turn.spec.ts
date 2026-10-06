@@ -1,9 +1,7 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer } from '../helpers/ui'
-
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
 
 clineTest.describe('Cline interrupt', () => {
   clineTest('stops a model call and continues the session at the next prompt', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {

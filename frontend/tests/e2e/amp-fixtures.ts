@@ -1,5 +1,7 @@
+import type { CliSkipFixture } from './acp-fixture-factory'
 import { AMP_PERMISSION_MODE } from '../../src/generated/contracts/amp-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -31,12 +33,13 @@ export interface AmpWorkspaceFixture {
  */
 const ALLOW_ALL = { optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll } }
 
-export const ampTest = base.extend<{
+export const ampTest = base.extend<CliSkipFixture & {
   ampWorkspace: AmpWorkspaceFixture
   authenticatedAmpWorkspace: AmpWorkspaceFixture
   /** An agent in LeapMux's default Ask mode, which raises a banner for each call. */
   askingAmpWorkspace: AmpWorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(AMP_E2E_SKIP_REASON),
   ampWorkspace: async ({ leapmuxServer }, use) => {
     const workingDir = createTestDirectory('amp-e2e-wd-')
     await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.AMP, prefix: 'amp-e2e', openOptions: ALLOW_ALL, workingDir: () => workingDir }, async (workspace) => {

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
@@ -11,7 +11,6 @@ import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { messageBubbles } from '../helpers/ui'
 import { cursorNativeToolOutput, runCursorNativeOperations } from './nativeExecutionScenario'
 
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 cursorTest('executes actual native shell output and preserves a nonzero exit status', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
   const suffix = crypto.randomUUID().replaceAll('-', '')

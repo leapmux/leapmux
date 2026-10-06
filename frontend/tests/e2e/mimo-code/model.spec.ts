@@ -6,9 +6,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeLastStepBody, nativeModelInstructionText } from '../helpers/nativeScenario'
 
 import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { MIMO_E2E_SKIP_REASON, mimoTest } from '../mimo-fixtures'
-
-mimoTest.skip(!!MIMO_E2E_SKIP_REASON, MIMO_E2E_SKIP_REASON || '')
+import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code settings', () => {
   // Check each selected setting in the next native model request:

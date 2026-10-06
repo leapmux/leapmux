@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /**
@@ -7,8 +7,6 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expectAssi
  *
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline basic chat', () => {
   clineTest('keeps the conversation from one turn to the next', async ({ authenticatedClineWorkspace, page, modelScript }) => {
     void authenticatedClineWorkspace

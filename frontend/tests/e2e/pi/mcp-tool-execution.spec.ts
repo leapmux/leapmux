@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { test } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { readMcpCallExchange } from '../helpers/mcpRequestReceipt'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
@@ -13,12 +12,13 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { piTest } from '../pi-fixtures'
 import { activateNativeCodemode } from './codemodeConfiguration'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
 
-test('keeps the native real MCP output path and preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
+piTest('keeps the native real MCP output path and preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const provider = AgentProvider.PI
   const directory = createTestDirectory('renderer-pi-full-output-')
@@ -62,7 +62,7 @@ test('keeps the native real MCP output path and preview after reload', async ({ 
   })
 })
 
-test('uses complete native MCP structured results, failed results, and resources', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
+piTest('uses complete native MCP structured results, failed results, and resources', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = createTestDirectory('pi-native-mcp-results-')
   const receiptLog = join(directory, 'native-result-receipt.json')
   const script = writeMcpResultServer(directory, { receiptLog })

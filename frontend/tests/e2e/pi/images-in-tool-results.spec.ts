@@ -13,11 +13,9 @@ import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { expectDecodedImageInBubble, expectMcpToolImage, expectToolRowImage, writeToolImage } from '../helpers/toolImages'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
+import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
 async function proveToolImage(page: Page, modelScript: ModelScript, provider: AgentProvider, workingDir: string, approveRead = false): Promise<void> {
   const fileName = writeToolImage(workingDir, String(provider))

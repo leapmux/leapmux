@@ -11,11 +11,9 @@ const calls = vi.hoisted(() => ({
 }))
 
 vi.mock('../kiro-fixtures', () => ({
-  KIRO_E2E_SKIP_REASON: null,
   openKiroAgent: vi.fn(async () => ({ agentId: 'selected-agent', workingDir: '/private/shard-1/project' })),
   kiroTest: Object.assign((title: string, body: unknown) => calls.registered.set(title, body), {
     describe: (_title: string, body: () => void) => body(),
-    skip: vi.fn(),
   }),
 }))
 vi.mock('../helpers/ui', () => ({

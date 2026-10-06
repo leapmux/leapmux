@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
@@ -11,8 +11,6 @@ import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle
  * Cline exposes native reasoning effort for catalog models that support it.
  * The configured custom model exposes no effort ladder.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 clineTest.describe('Cline settings', () => {
   clineTest('applies reasoning effort to the native model request', async ({ askingClineWorkspace, page, modelScript }) => {
     void askingClineWorkspace

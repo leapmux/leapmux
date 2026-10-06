@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, openGoalMenu } from '../helpers/subagentRegistry'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest('sets, pauses, resumes and clears a native session goal', async ({ authenticatedCopilotWorkspace, page }) => {
   void authenticatedCopilotWorkspace

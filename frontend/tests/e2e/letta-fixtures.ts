@@ -17,10 +17,12 @@
  * PATH. See `helpers/binaryOnPath.ts`.
  */
 import type { Page } from '@playwright/test'
+import type { CliSkipFixture } from './acp-fixture-factory'
 import type { MockModelRule } from './helpers/mockModelScript'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { LETTA_MODE } from '../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from './helpers/mockAgentEnvironment'
@@ -89,7 +91,7 @@ function lettaWorkspace(prefix: string, openOptions?: { model?: string, optionVa
   }
 }
 
-export const lettaTest = base.extend<{
+export const lettaTest = base.extend<CliSkipFixture & {
   /** An agent in Unrestricted, which raises no banner for a tool call. */
   authenticatedLettaWorkspace: LettaWorkspaceFixture
   /** A built-in vision model routed through a local provider record. */
@@ -99,6 +101,7 @@ export const lettaTest = base.extend<{
   /** An agent in LeapMux's default Standard mode, which asks before an approval tool. */
   askingLettaWorkspace: LettaWorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(LETTA_E2E_SKIP_REASON),
   authenticatedLettaWorkspace: lettaWorkspace('letta-e2e', UNRESTRICTED),
   authenticatedVisionLettaWorkspace: lettaWorkspace('letta-e2e-vision', VISION_UNRESTRICTED),
   authenticatedReasoningLettaWorkspace: lettaWorkspace('letta-e2e-reasoning', REASONING_UNRESTRICTED),

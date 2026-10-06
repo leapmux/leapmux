@@ -1,9 +1,7 @@
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid basic chat', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('draws model reasoning in a thought band', async ({ authenticatedReasoningDroidWorkspace, page, modelScript }) => {
     void authenticatedReasoningDroidWorkspace
     const reasoning = 'DROID_THOUGHT_MARKER I compare the two values.'

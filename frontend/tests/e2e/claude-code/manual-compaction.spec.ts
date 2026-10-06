@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { expectCompactionNotice } from '../helpers/compaction'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
@@ -7,12 +7,12 @@ const OLD_CONTEXT_MARKER = 'LEAPMUXOLDCONTEXTCLAUDERIVER'
 
 const SUMMARY_MARKER = 'Earlier Claude work summarized.'
 
-test.describe('Claude Code compaction notice', () => {
+claudeTest.describe('Claude Code compaction notice', () => {
   // `/compact` is Claude's own slash command. The compaction summarizer is a
   // housekeeping turn the mock answers from a rule, so the content turn the
   // test scripts stays unconsumed. The notice the transcript draws comes from
   // the CLI's `compact_boundary` system message, not from the scripted reply.
-  test('a manual compaction draws the context-compacted notice', async ({ authenticatedWorkspace, page, modelScript }) => {
+  claudeTest('a manual compaction draws the context-compacted notice', async ({ authenticatedWorkspace, page, modelScript }) => {
     void authenticatedWorkspace
     // The summarizer can run more than once and is not the turn under test.
     await modelScript.rule({

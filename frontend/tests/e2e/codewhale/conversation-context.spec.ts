@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 codewhaleTest.describe('Codewhale basic chat', () => {
   codewhaleTest('continues the same thread with a second message', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {

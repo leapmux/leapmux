@@ -1,12 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { cursorGenerateImageToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowImage, toolResultImageForName, toolRows, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 
 cursorTest('draws the native GenerateImage result before and after reload', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   const workingDir = authenticatedCursorWorkspace.workingDir

@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
@@ -19,8 +19,6 @@ import { createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from 
  *
  * The test creates the external session with Cline's installed CLI and isolated environment. `cline history --json` lists it. The Worker recreates the selected session with its stored messages.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 const SESSION_MENU = 'session-select-menu'
 
 const NEW_SESSION_ROW = 'Start a new session'

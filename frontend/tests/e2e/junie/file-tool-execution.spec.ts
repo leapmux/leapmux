@@ -4,12 +4,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, junieAnswerToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest, openJunieAgent } from '../junie-fixtures'
+import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie tool execution', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.JUNIE
 
   junieTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

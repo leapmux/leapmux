@@ -2,9 +2,7 @@ import { expect } from '@playwright/test'
 import { finishCleanup } from '../helpers/cleanup'
 import { expandGoalsAndTodosSection, expectGoalStatus, goalAction, goalCard, openGoalMenu } from '../helpers/subagentRegistry'
 import { waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code session goal', () => {
   kimiTest('set a goal from the panel, pause it, resume it, and clear it', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

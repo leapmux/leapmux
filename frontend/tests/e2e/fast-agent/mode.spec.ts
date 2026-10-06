@@ -1,4 +1,4 @@
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
@@ -7,8 +7,6 @@ import { fastAgentModesTest } from './fixtures'
 import { nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent settings', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('the settings menu shows the agent mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
@@ -37,8 +35,6 @@ fastAgentModesTest('selects another configured native agent before and after rel
 })
 
 fastAgentTest.describe('Fast Agent settings apply', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   fastAgentTest('keeps the chosen agent mode after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
     await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

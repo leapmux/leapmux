@@ -1,10 +1,8 @@
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie basic chat', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('does not expose model reasoning as an ACP thought row', async ({ authenticatedResponsesJunieWorkspace, page, modelScript }) => {
     void authenticatedResponsesJunieWorkspace
     const reasoning = 'JUNIE_THOUGHT_MARKER I compare the two values.'

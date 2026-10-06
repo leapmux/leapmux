@@ -6,9 +6,7 @@ import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('applies Kimi Code session settings', () => {
   kimiTest('switches the effort and mode in native turns, and keeps them after a reload', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

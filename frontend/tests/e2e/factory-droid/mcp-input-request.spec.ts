@@ -2,7 +2,7 @@ import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -12,8 +12,6 @@ import { withAgentWorkspace } from '../helpers/workspace'
 import { nativeDroidCallId } from './toolResult'
 
 droidTest.describe('Factory Droid MCP input form', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('shows the native refusal instead of an input form', async ({ page, leapmuxServer, modelScript }) => {
     const home = leapmuxServer.agentEnv.FACTORY_HOME_OVERRIDE
     if (!home)

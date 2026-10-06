@@ -1,9 +1,7 @@
 import { expect } from '@playwright/test'
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
 import { exerciseManualCompaction } from '../helpers/manualCompaction'
-
-codewhaleTest.skip(!!CODEWHALE_E2E_SKIP_REASON, CODEWHALE_E2E_SKIP_REASON || '')
 
 /**
  * Codewhale 0.10.0 ends a compaction with `item.completed` for a `context_compaction`

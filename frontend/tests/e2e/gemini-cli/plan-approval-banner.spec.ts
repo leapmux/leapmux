@@ -1,14 +1,12 @@
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiPlanApprovalToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, expectSettingsOptionChosen, sendMessage, visibleControlBanner, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { geminiNativeProject } from './nativeStore'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 for (const decision of ['approve', 'reject'] as const) {
   geminiTest(`reads the complete native plan file before ${decision}`, async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {

@@ -1,13 +1,12 @@
 import { expect } from '@playwright/test'
 import { AgentInputState, AgentProvider, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { queuedInputRow, steerButton } from '../helpers/steer'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 cursorTest('queues a normal prompt until the native turn ends without a steering route', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
   const agent = await currentNativeAgent(context)

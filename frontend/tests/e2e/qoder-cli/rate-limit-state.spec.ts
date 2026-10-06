@@ -1,10 +1,8 @@
 import { rateLimitWindowLabel } from '../helpers/rateLimit'
 import { assistantBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, QODER_E2E_SKIP_REASON, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI compaction and rate limits', () => {
-  qoderTest.skip(!!QODER_E2E_SKIP_REASON, QODER_E2E_SKIP_REASON || '')
-
   qoderTest('does not show a rate-limit window from BYOK model headers', async ({ qoderWorkspace, page, modelScript }) => {
     void qoderWorkspace
     const rateLimits = {

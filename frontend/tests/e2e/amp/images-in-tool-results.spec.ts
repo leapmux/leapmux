@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -10,8 +10,6 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
  *
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
-ampTest.skip(!!AMP_E2E_SKIP_REASON, AMP_E2E_SKIP_REASON || '')
-
 ampTest.describe('Amp tool execution', () => {
   ampTest('draws a PNG returned by its Read tool', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
     const { workingDir } = authenticatedAmpWorkspace

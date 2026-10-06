@@ -2,7 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { DIRAC_E2E_SKIP_REASON, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -15,8 +15,6 @@ import { readDiracMcpSessionObservation } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('native mcp tool execution', () => {
-  diracTest.skip(!!DIRAC_E2E_SKIP_REASON, DIRAC_E2E_SKIP_REASON || '')
-
   diracTest('offers no MCP tool from a project server in its ACP session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const workingDir = createTestDirectory('dirac-mcp-')
     const server = writeMcpImageServer(workingDir, 'unused.png')

@@ -12,9 +12,11 @@
  * start. See `helpers/binaryOnPath.ts`.
  */
 import type { Page } from '@playwright/test'
+import type { CliSkipFixture } from './acp-fixture-factory'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { CLINE_PERMISSION_MODE } from '../../src/generated/contracts/cline-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { cliSkipFixture } from './acp-fixture-factory'
 import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
@@ -70,7 +72,7 @@ function clineWorkspace(prefix: string, openOptions?: { optionValues: Record<str
   }
 }
 
-export const clineTest = base.extend<{
+export const clineTest = base.extend<CliSkipFixture & {
   /** An agent in Auto-approve, which raises no banner for a tool call. */
   authenticatedClineWorkspace: ClineWorkspaceFixture
   /** An agent in LeapMux's default Act mode, which asks before each edit and command. */
@@ -78,6 +80,7 @@ export const clineTest = base.extend<{
   /** An agent in Plan mode, which offers the plan tool. */
   planningClineWorkspace: ClineWorkspaceFixture
 }>({
+  cliSkip: cliSkipFixture(CLINE_E2E_SKIP_REASON),
   authenticatedClineWorkspace: clineWorkspace('cline-e2e', AUTO_APPROVE),
   askingClineWorkspace: clineWorkspace('cline-e2e-act'),
   planningClineWorkspace: clineWorkspace('cline-e2e-plan', { optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan } }),

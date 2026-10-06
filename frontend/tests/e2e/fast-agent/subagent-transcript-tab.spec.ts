@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { expect, FAST_AGENT_E2E_SKIP_REASON, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, listAgents, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -10,8 +10,6 @@ import { assistantBubbles, messageContents, openMenu, openWorkspace, sendMessage
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 
 fastAgentTest.describe('Fast Agent subagent transcript', () => {
-  fastAgentTest.skip(!!FAST_AGENT_E2E_SKIP_REASON, FAST_AGENT_E2E_SKIP_REASON || '')
-
   const PROVIDER = AgentProvider.FAST_AGENT
 
   const CHILD_TASK = 'Count the files and report one number.'

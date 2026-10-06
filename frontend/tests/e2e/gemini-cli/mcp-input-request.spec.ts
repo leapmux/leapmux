@@ -1,13 +1,11 @@
 import { join } from 'node:path'
 import process from 'node:process'
-import { GEMINI_E2E_SKIP_REASON, geminiTest } from '../gemini-fixtures'
+import { geminiTest } from '../gemini-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { invokeGeminiMcp, withGeminiMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
-
-geminiTest.skip(!!GEMINI_E2E_SKIP_REASON, GEMINI_E2E_SKIP_REASON || '')
 
 geminiTest('returns the exact native MCP input refusal without a browser form', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })

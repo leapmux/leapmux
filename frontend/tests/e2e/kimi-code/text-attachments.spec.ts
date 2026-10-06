@@ -1,7 +1,5 @@
 import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
-import { KIMI_E2E_SKIP_REASON, kimiTest } from '../kimi-fixtures'
-
-kimiTest.skip(!!KIMI_E2E_SKIP_REASON, KIMI_E2E_SKIP_REASON || '')
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code attachments', () => {
   kimiTest('accepts a text attachment and carries it through the turn', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

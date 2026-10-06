@@ -1,13 +1,12 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { test } from '../fixtures'
 import { exerciseSessionReset } from '../helpers/nativeLifecycle'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, visibleOnly } from '../helpers/ui'
 
-test.describe('Clear Command', () => {
+claudeTest.describe('Clear Command', () => {
   // Search answer rows directly. A turn-end divider can be the last agent-role row.
-  test('slash reset clears context (alias for /clear)', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('slash reset clears context (alias for /clear)', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
 
     // Send a message to establish a session
@@ -29,7 +28,7 @@ test.describe('Clear Command', () => {
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
   })
 
-  test('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
 
     // Send a message to establish a session

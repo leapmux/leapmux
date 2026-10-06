@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLINE_E2E_SKIP_REASON, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { contentText, isRecord } from '../helpers/mockModelScript'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -12,8 +12,6 @@ import { applyPermissionPreset, chatText, sendMessage, waitForAgentIdle } from '
  *
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
-clineTest.skip(!!CLINE_E2E_SKIP_REASON, CLINE_E2E_SKIP_REASON || '')
-
 /**
  * The text of the tool message that answers one call in a Chat Completions request.
  * Cline calls the mock through its DeepSeek provider, which speaks that

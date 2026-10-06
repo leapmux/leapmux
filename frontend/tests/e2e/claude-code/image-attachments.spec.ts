@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { writeAttachmentFixture } from '../helpers/attachments'
 import { waitForAgentIdle } from '../helpers/ui'
 
-test.describe('Attachment Support', () => {
-  test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {
+claudeTest.describe('Attachment Support', () => {
+  claudeTest('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
@@ -25,7 +25,7 @@ test.describe('Attachment Support', () => {
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
   })
 
-  test('the model receives an image and the user row keeps its filename', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('the model receives an image and the user row keeps its filename', async ({ page, authenticatedWorkspace, modelScript }) => {
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 

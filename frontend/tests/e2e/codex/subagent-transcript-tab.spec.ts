@@ -10,7 +10,6 @@ import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesRespons
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
-import { test } from '../fixtures'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexWaitAgentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
@@ -105,8 +104,8 @@ codexTest.describe('codex subagent lifecycle', () => {
   })
 })
 
-test.describe('provider tool rendering', () => {
-  test('reveals messages after an empty Codex wait result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+codexTest.describe('provider tool rendering', () => {
+  codexTest('reveals messages after an empty Codex wait result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const provider = AgentProvider.CODEX
     const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-empty-codex-wait-'), {
       agentProvider: provider,

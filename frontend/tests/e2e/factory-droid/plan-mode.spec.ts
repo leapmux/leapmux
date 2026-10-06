@@ -1,10 +1,8 @@
-import { DROID_E2E_SKIP_REASON, DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
+import { DROID_TITLE_RULE, droidTest, expect } from '../droid-fixtures'
 import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { assistantBubbles, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 droidTest.describe('Factory Droid Spec mode', () => {
-  droidTest.skip(!!DROID_E2E_SKIP_REASON, DROID_E2E_SKIP_REASON || '')
-
   droidTest('Shift+Tab selects the native Spec mode and offers ExitSpecMode', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
     await waitForSettingsHydrated(page)
     const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')

@@ -4,9 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
-import { PI_E2E_SKIP_REASON, piTest } from '../pi-fixtures'
-
-piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
+import { piTest } from '../pi-fixtures'
 
 piTest('can close Pi agent tab', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
   const tabs = page.locator('[data-testid="tab"]:visible')

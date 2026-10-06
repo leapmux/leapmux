@@ -8,15 +8,13 @@ import { bashToolCall, editToolCall, readToolCall, writeToolCall } from '../help
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { chatText, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-import { OH_MY_PI_E2E_SKIP_REASON, ohMyPiTest } from '../ohmypi-fixtures'
+import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
  * The installed agent writes, edits, and reads real files. The transcript must show the native read and edit diff.
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest.skip(!!OH_MY_PI_E2E_SKIP_REASON, OH_MY_PI_E2E_SKIP_REASON || '')
-
 ohMyPiTest.describe('Oh My Pi tool execution', () => {
   ohMyPiTest('draws the lines a read returns', async ({ authenticatedOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedOhMyPiWorkspace

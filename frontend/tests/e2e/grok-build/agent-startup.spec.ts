@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { createGrokWorkingDir, GROK_E2E_SKIP_REASON, grokTest } from '../grok-fixtures'
+import { createGrokWorkingDir, grokTest } from '../grok-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { hubSpawnEnv } from '../helpers/server'
-
-grokTest.skip(!!GROK_E2E_SKIP_REASON, GROK_E2E_SKIP_REASON || '')
 
 grokTest('delivers input through a controlled native startup', async ({ page, modelScript, leapmuxServer, authenticatedGrokWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGrokWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }

@@ -1,10 +1,11 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { countOriginalAnswerRows, expectNativeResumeContext, expectResumedConversation, nativeResumeTexts } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, waitForAgentIdle } from '../helpers/ui'
-import { ensureWorkerOnline, restartWorker, stopWorker, processTest as test } from '../process-control-fixtures'
+import { ensureWorkerOnline, restartWorker, stopWorker } from '../process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
   /**

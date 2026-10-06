@@ -1,12 +1,10 @@
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, JUNIE_E2E_SKIP_REASON, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie basic chat', () => {
-  junieTest.skip(!!JUNIE_E2E_SKIP_REASON, JUNIE_E2E_SKIP_REASON || '')
-
   junieTest('send message and receive response', async ({ authenticatedJunieWorkspace, page, modelScript }) => {
     void authenticatedJunieWorkspace
     await modelScript.rule(

@@ -1,11 +1,9 @@
 import { expect } from '@playwright/test'
 import { COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { COPILOT_E2E_SKIP_REASON, copilotTest } from '../copilot-fixtures'
+import { copilotTest } from '../copilot-fixtures'
 import { applyPermissionPreset, openSettingsMenu } from '../helpers/ui'
 import { exerciseCopilotPermissionPreset } from './permissionScenario'
-
-copilotTest.skip(!!COPILOT_E2E_SKIP_REASON, COPILOT_E2E_SKIP_REASON || '')
 
 copilotTest('bypass-permissions-shortcut: permission presets switch the native permission mode', async ({ authenticatedCopilotWorkspace, page }) => {
   void authenticatedCopilotWorkspace
