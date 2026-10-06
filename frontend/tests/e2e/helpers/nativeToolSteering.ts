@@ -22,7 +22,12 @@ import { answerControl, assistantBubbles, messageContents, sendMessage, userBubb
  *
  * The steer happens while the command holds its first output. The command then
  * writes its second output and ends, so the request after the tool step must
- * hold both outputs and the steering message.
+ * hold the start of the first output, the end of the second output, and the
+ * steering message. The end of the second output is its padding (see
+ * `secondLiveTail`), not its marker: a provider can keep only the start and the
+ * end of a large output and drop its middle, where the second marker sits.
+ * Cline does this. The command reaches the model only in base64, so the padding
+ * in the request can come only from the output.
  */
 export async function exerciseSteerAfterTool(context: ManagedNativeScenarioContext, options: { expectDisplayedOutput?: boolean } = {}): Promise<void> {
   const agent = await currentNativeAgent(context)
@@ -48,11 +53,12 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
     await waitForAgentIdle(context.page)
     await expectSteeredReply(context.page, 'finished steered', 'last')
     await expect(userBubbles(context.page).filter({ hasText: steering }).first()).toBeVisible()
-    // The request after the tool step reads the whole tool result and the steering message.
+    // The request after the tool step reads the tool result, which ends with the output after the steer, and the
+    // steering message.
     const next = nativeModelContextText(await context.modelScript.requestAt(start + 1))
-    expect(next).toContain(steering)
-    expect(next).toContain(output.firstMarker)
-    expect(next).toContain(output.secondMarker)
+    expect(next, 'the next request holds the steering message').toContain(steering)
+    expect(next, 'the next request holds the start of the first output').toContain(output.firstMarker)
+    expect(next, 'the next request holds the end of the second output, which the command wrote after the steer').toContain(output.secondLiveTail)
     await expect(context.page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
   }, async () => {
     await output.releaseFirstOutput()

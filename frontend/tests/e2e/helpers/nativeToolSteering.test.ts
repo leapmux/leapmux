@@ -98,6 +98,7 @@ vi.mock('./toolOutputControl', () => ({
     firstMarker: 'NATIVEFIRSTMARKER',
     secondMarker: 'NATIVESECONDMARKER',
     firstLiveTail: 'xxxx',
+    secondLiveTail: 'yyyy-second-tail',
     waitForFirstOutput: async () => {
       harness.events.push('first output')
     },
@@ -238,16 +239,27 @@ describe('exerciseSteerAfterTool', () => {
   const steering = 'Also append the word steered to your final reply.'
 
   it('lets the command write its second output after the steer, and requires both outputs in the next request', async () => {
-    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER', 'NATIVESECONDMARKER'))
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER', 'NATIVESECONDMARKER', 'yyyy-second-tail'))
     await exerciseSteerAfterTool(context(script), { expectDisplayedOutput: false })
     const outputs = harness.events.filter(event => /output|release|steer:/.test(event))
     expect(outputs).toEqual(['first output', `steer:${steering}`, 'release first', 'second output', 'release final', 'release first', 'release final'])
     expect(harness.events).toContain('request:1')
   })
 
+  it('accepts a tool result whose middle the provider dropped, with the end of the second output kept', async () => {
+    // Cline keeps the start and the end of a large output, so the second marker in the middle does not reach the model.
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER', '...[truncated 315 chars]...', 'yyyy-second-tail'))
+    await expect(exerciseSteerAfterTool(context(script), { expectDisplayedOutput: false })).resolves.toBeUndefined()
+  })
+
   it('fails when the next request lacks the second output', async () => {
-    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER'))
-    await expect(exerciseSteerAfterTool(context(script), { expectDisplayedOutput: false })).rejects.toThrow('NATIVESECONDMARKER')
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER', 'NATIVESECONDMARKER'))
+    await expect(exerciseSteerAfterTool(context(script), { expectDisplayedOutput: false })).rejects.toThrow('the next request holds the end of the second output')
+  })
+
+  it('fails when the next request lacks the start of the first output', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'yyyy-second-tail'))
+    await expect(exerciseSteerAfterTool(context(script), { expectDisplayedOutput: false })).rejects.toThrow('the next request holds the start of the first output')
   })
 })
 
