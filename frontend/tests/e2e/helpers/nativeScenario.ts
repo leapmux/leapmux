@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ServerInfo } from '../fixtures'
-import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
@@ -98,6 +98,28 @@ export function managedNativeContext(
 /** Build a native answer while keeping provider decisions at the call site. */
 export function nativeTextStep(context: NativeScenarioContext, text: string): MockModelStep {
   return context.textStep?.(text) ?? { text }
+}
+
+/**
+ * Where a native turn states its answer after its tool calls:
+ *
+ * - `next-step`: in the model step after the one that calls the tools, which reads their results. This is the usual
+ *   exchange.
+ * - `same-step`: in the step that calls the tools. A provider that streams the tool calls and the answer of one turn in
+ *   one response states it, such as Cursor, whose Run exchange holds the whole turn.
+ */
+export type NativeAnswerStep = 'next-step' | 'same-step'
+
+/**
+ * Build the model steps of one turn that calls `toolCalls` and then answers with `answer`, by the place of the answer.
+ * An answer that holds tool calls of its own, such as an answer tool, keeps them after `toolCalls` in one step.
+ */
+export function toolTurnSteps(toolCalls: readonly MockModelToolCall[], answer: MockModelStep, answerStep: NativeAnswerStep = 'next-step'): MockModelStep[] {
+  if (toolCalls.length === 0)
+    throw new Error('A tool turn needs at least one tool call.')
+  if (answerStep === 'same-step')
+    return [{ ...answer, toolCalls: [...toolCalls, ...answer.toolCalls ?? []] }]
+  return [{ toolCalls: [...toolCalls] }, answer]
 }
 
 /**

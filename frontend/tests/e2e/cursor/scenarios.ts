@@ -31,7 +31,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
  * (`helpers/cursorSurface.ts`). The tool call and the answer therefore form one scripted step.
  */
 export function exerciseCursorRelatedTodo(context: ManagedNativeScenarioContext): Promise<void> {
-  return exerciseRelatedTodo(context, { singleRequest: true })
+  return exerciseRelatedTodo(context, { answerStep: 'same-step' })
 }
 
 /** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */

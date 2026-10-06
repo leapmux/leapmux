@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
-import type { MockModelRequestRecord } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeContextFixtures } from './nativeScenario'
 import type { ProviderAgent } from './workspace'
@@ -28,6 +28,7 @@ import {
   nativeToolOutcome,
   selectedAgentTab,
   selectedAgentTabId,
+  toolTurnSteps,
 } from './nativeScenario'
 
 const workerChannel = vi.hoisted(() => ({ callWorker: vi.fn() }))
@@ -61,6 +62,36 @@ describe('managedNativeContext', () => {
 
   it('adds no protocol field that the provider does not state', () => {
     expect(Object.keys(managedNativeContext(fixtures, kiro)).sort()).toEqual(['leapmuxServer', 'modelScript', 'page', 'provider', 'providerAgent', 'workspaceId'])
+  })
+})
+
+describe('toolTurnSteps', () => {
+  const read = { id: 'read-1', name: 'read', arguments: { path: '/private/file' } }
+  const list = { id: 'list-1', name: 'list', arguments: {} }
+
+  it('answers in the step after the tool calls by default', () => {
+    expect(toolTurnSteps([read, list], { text: 'Done.' })).toEqual([{ toolCalls: [read, list] }, { text: 'Done.' }])
+  })
+
+  it('answers in the step of the tool calls for a provider that states its answer there', () => {
+    expect(toolTurnSteps([read], { text: 'Done.' }, 'same-step')).toEqual([{ text: 'Done.', toolCalls: [read] }])
+  })
+
+  it('keeps the tool calls of an answer tool after the turn\'s own tool calls in one step', () => {
+    const answerTool = { id: 'answer-1', name: 'answer', arguments: { text: 'Done.' } }
+    expect(toolTurnSteps([read], { toolCalls: [answerTool] }, 'same-step')).toEqual([{ toolCalls: [read, answerTool] }])
+    expect(toolTurnSteps([read], { toolCalls: [answerTool] })).toEqual([{ toolCalls: [read] }, { toolCalls: [answerTool] }])
+  })
+
+  it('copies the tool calls, so a later change of the caller\'s array does not reach the script', () => {
+    const calls: MockModelToolCall[] = [read]
+    const steps = toolTurnSteps(calls, { text: 'Done.' })
+    calls.push(list)
+    expect(steps[0]?.toolCalls).toEqual([read])
+  })
+
+  it('refuses a turn with no tool call', () => {
+    expect(() => toolTurnSteps([], { text: 'Done.' })).toThrow('at least one tool call')
   })
 })
 

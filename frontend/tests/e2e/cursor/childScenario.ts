@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, toolTurnSteps } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
@@ -43,7 +43,7 @@ export async function openCursorRunningChild(
     spawn,
     gate,
     // The Cursor parent states its Task call and its answer in one model turn.
-    parentSteps: [{ toolCalls: [spawn], text: 'The native parent received its child report.' }],
+    parentSteps: toolTurnSteps([spawn], { text: 'The native parent received its child report.' }, 'same-step'),
     ...(options.allowExistingRows === undefined ? {} : { allowExistingRows: options.allowExistingRows }),
     rowText: description,
     rules: [{

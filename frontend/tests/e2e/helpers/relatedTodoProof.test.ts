@@ -14,7 +14,7 @@ describe('relatedTodoTurn', () => {
   })
 
   it('answers in the step of the tool call for a provider that runs the tool in one exchange', () => {
-    const turn = relatedTodoTurn(AgentProvider.CURSOR, { singleRequest: true })
+    const turn = relatedTodoTurn(AgentProvider.CURSOR, { answerStep: 'same-step' })
     expect(turn.steps).toEqual([{
       toolCalls: [updateTodosToolCall(AgentProvider.CURSOR, RELATED_TODO_CALL_ID, [{ step: RELATED_TODO_ITEM, status: 'pending' }])],
       text: 'The native sidebar capability proof ended.',

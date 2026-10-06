@@ -147,8 +147,8 @@ describe('exerciseTodoListReplacement', () => {
     ])
   })
 
-  it('answers in the step of the tool call for a single-request provider', async () => {
-    await exerciseTodoListReplacement(todoContext(), { singleRequest: true })
+  it('answers in the step of the tool call for a provider that answers in that step', async () => {
+    await exerciseTodoListReplacement(todoContext(), { answerStep: 'same-step' })
     expect(fake.queued.map(steps => steps.length)).toEqual([1, 1])
     expect(fake.queued[0]?.[0]).toMatchObject({ text: 'The plan is written.', toolCalls: [{ id: 'todos-first' }] })
     expect(fake.events.filter(event => event.startsWith('steps'))).toEqual(['steps 1', 'steps 2'])

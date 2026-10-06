@@ -6,12 +6,11 @@
  * - The sidebar follows each list and keeps the last one after a reload.
  */
 import type { Locator } from '@playwright/test'
-import type { MockModelStep } from './mockModelScript'
-import type { NativeScenarioContext } from './nativeScenario'
+import type { NativeAnswerStep, NativeScenarioContext } from './nativeScenario'
 import type { TodoStep } from './providerToolCalls'
 import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } from './goalsAndTodos'
-import { nativeTextStep } from './nativeScenario'
+import { nativeTextStep, toolTurnSteps } from './nativeScenario'
 import { updateTodosToolCall } from './providerToolCalls'
 import { sendMessage, waitForAgentIdle } from './ui'
 
@@ -61,8 +60,8 @@ export function firstChangedTodoStep(previous: readonly TodoStep[], next: readon
 export interface TodoListReplacementOptions {
   /** The steps of the list. The default is {@link TODO_LIST_STEPS}. */
   steps?: readonly string[]
-  /** Answer in the step of the tool call, for a provider that runs the tool and answers in one model exchange. */
-  singleRequest?: boolean
+  /** Where each write turn states its answer. The default is the step after the tool call. */
+  answerStep?: NativeAnswerStep
   /**
    * Answer the permission request of each write, for a provider that asks before its to-do tool runs. The scenario
    * calls it after the agent requested the tool step, with the first step that the write changes.
@@ -87,10 +86,7 @@ async function writeTodoList(
   write: { callId: string, items: TodoStep[], changedStep: string, prompt: string, answer: string },
 ): Promise<void> {
   const call = updateTodosToolCall(context.provider, write.callId, write.items)
-  const answer = nativeTextStep(context, write.answer)
-  const steps: MockModelStep[] = options.singleRequest
-    ? [{ ...answer, toolCalls: [call, ...(answer.toolCalls ?? [])] }]
-    : [{ toolCalls: [call] }, answer]
+  const steps = toolTurnSteps([call], nativeTextStep(context, write.answer), options.answerStep)
   const start = await context.modelScript.queue(...steps)
   await sendMessage(context.page, context.modelScript.prompt(write.prompt))
   if (options.approveWrite) {

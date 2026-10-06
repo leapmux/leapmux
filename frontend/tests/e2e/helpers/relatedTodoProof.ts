@@ -1,9 +1,10 @@
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelStep, MockModelToolCall } from './mockModelScript'
-import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeAnswerStep } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { TodoStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from './goalsAndTodos'
+import { toolTurnSteps } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { updateTodosToolCall } from './providerToolCalls'
 import { sendMessage, waitForAgentIdle } from './ui'
@@ -26,8 +27,8 @@ export interface RelatedTodoOptions {
   toolCall?: MockModelToolCall
   /** The item text that the sidebar must show. The default is {@link RELATED_TODO_ITEM}. */
   item?: string
-  /** Answer in the step of the tool call, for a provider that runs the tool and answers in one model exchange. */
-  singleRequest?: boolean
+  /** Where the turn states its answer. The default is the step after the tool call. */
+  answerStep?: NativeAnswerStep
   /** Prepare the session before the turn, for a provider that asks before a tool runs. */
   prepare?: () => Promise<void>
 }
@@ -38,10 +39,7 @@ export function relatedTodoTurn(provider: AgentProvider, options: Omit<RelatedTo
   if (item.trim() === '')
     throw new Error('The related to-do item needs text.')
   const toolCall = options.toolCall ?? updateTodosToolCall(provider, RELATED_TODO_CALL_ID, [{ step: item, status: 'pending' }])
-  const steps: MockModelStep[] = options.singleRequest
-    ? [{ toolCalls: [toolCall], text: RELATED_TODO_ANSWER }]
-    : [{ toolCalls: [toolCall] }, { text: RELATED_TODO_ANSWER }]
-  return { item, steps }
+  return { item, steps: toolTurnSteps([toolCall], { text: RELATED_TODO_ANSWER }, options.answerStep) }
 }
 
 /** Exercise a real sidebar update before an absent provider control is checked. */
