@@ -9,6 +9,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
+import { ruleRequest, stepRequest } from '../helpers/mockModelScript'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
@@ -249,9 +250,13 @@ kiroTest.describe('Kiro session goal', () => {
         const index = await modelScript.queue({ text: answer })
         await sendMessage(page, modelScript.prompt(prompt))
         let finished = await modelScript.waitForSteps(index + 1)
+        // The mock records a request when it consumes its step, so the record
+        // exists after the wait. `stepRequest` throws only when the record cap
+        // dropped it, and a dropped record never returns, so a throw that ends
+        // the poll at once states the cause.
         await expect.poll(async () => {
           finished = await modelScript.status()
-          return finished.requests.find(record => record.stepIndex === index)?.response?.status
+          return stepRequest(finished, index).response?.status
         }).toBe(200)
         await attachBarrierEvidence(`${stage}-model-finished`, finished, answer)
         await waitForAgentIdle(page)
@@ -290,7 +295,8 @@ kiroTest.describe('Kiro session goal', () => {
       const callsWhilePaused = (await modelScript.status()).requests.length
       // Release only after the native executor stops. The HTTP finish cannot satisfy that cancellation proof.
       await modelScript.releaseGate(setGate)
-      await expect.poll(async () => (await modelScript.status()).requests.find(request => request.rule === setRule)?.response?.status).toBe(200)
+      // The held Set request is on record above, so `ruleRequest` throws only for a record that the cap dropped.
+      await expect.poll(async () => ruleRequest(await modelScript.status(), setRule).response?.status).toBe(200)
       await expect.poll(async () => (await modelScript.status()).pendingGates.includes(setGate)).toBe(false)
       const barrier = await sendBarrier('pause', 'Reply once while the native goal stays paused.', `KIROPAUSEBARRIER${marker}`)
       expect(nativeModelContextText(barrier)).not.toContain(staleAnswer)
@@ -358,7 +364,8 @@ kiroTest.describe('Kiro session goal', () => {
           .toBe(BackgroundTaskStatus.STOPPED)
       })
       await modelScript.releaseGate(resumeGate)
-      await expect.poll(async () => (await modelScript.status()).requests.find(request => request.rule === resumeRule)?.response?.status).toBe(200)
+      // The held Resume request is on record above, so `ruleRequest` throws only for a record that the cap dropped.
+      await expect.poll(async () => ruleRequest(await modelScript.status(), resumeRule).response?.status).toBe(200)
       await expect.poll(async () => (await modelScript.status()).pendingGates.includes(resumeGate)).toBe(false)
       const cleared = await sendBarrier('clear', 'Reply once after the native goal is cleared.', `KIROCLEARBARRIER${marker}`)
       expect(nativeModelContextText(cleared)).not.toContain(staleAnswer)
