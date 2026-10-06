@@ -26,6 +26,23 @@ export function kiroNativeToolNames(request: MockModelRequestRecord): string[] {
   })
 }
 
+/**
+ * Read the JSON input schema of the tool `name` from Kiro's actual AWS tool specifications.
+ * The read fails when the request holds no catalog, when the catalog holds no tool of that name, and when the tool
+ * states no JSON schema. Unlike {@link kiroActiveToolCatalog}, it accepts a catalog that keeps its deferred paths.
+ */
+export function kiroToolInputSchema(request: MockModelRequestRecord, name: string): Record<string, unknown> {
+  const specification = currentTools(request)
+    .map(tool => isObject(tool) && isObject(tool.toolSpecification) ? tool.toolSpecification : undefined)
+    .find(candidate => candidate?.name === name)
+  if (!specification)
+    throw new Error(`The native Kiro catalog holds no tool ${name}.`)
+  const schema = isObject(specification.inputSchema) ? specification.inputSchema.json : undefined
+  if (!isObject(schema))
+    throw new Error(`The native Kiro tool ${name} states no JSON input schema.`)
+  return schema
+}
+
 /** Read every active descriptor when the native deferred paths are disabled. */
 export function kiroActiveToolCatalog(request: MockModelRequestRecord): NativeToolDescriptor[] {
   const seen = new Set<string>()

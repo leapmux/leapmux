@@ -1,6 +1,6 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { describe, expect, it } from 'vitest'
-import { assertKiroActiveCatalog, kiroActiveToolCatalog, kiroNativeToolNames, kiroScriptExecutors } from './toolCatalog'
+import { assertKiroActiveCatalog, kiroActiveToolCatalog, kiroNativeToolNames, kiroScriptExecutors, kiroToolInputSchema } from './toolCatalog'
 
 function request(tools: unknown): MockModelRequestRecord {
   return { protocol: 'aws-event-stream', path: '/', body: { conversationState: { currentMessage: { userInputMessage: { userInputMessageContext: { tools } } } } } }
@@ -13,6 +13,28 @@ describe('kiroNativeToolNames', () => {
 
   it.each([null, [], [{}], [{ toolSpecification: { name: '' } }]].map(tools => ({ tools })))('refuses an absent or malformed native catalog: %j', ({ tools }) => {
     expect(() => kiroNativeToolNames(request(tools))).toThrow(/no tool catalog|invalid tool specification/)
+  })
+})
+
+describe('kiroToolInputSchema', () => {
+  const schema = { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] }
+
+  it('reads the JSON schema of the requested tool beside a deferred path', () => {
+    const tools = [{ toolSpecification: { name: 'tool_search' } }, { toolSpecification: { name: 'mcp_project_echo', inputSchema: { json: schema } } }]
+    expect(kiroToolInputSchema(request(tools), 'mcp_project_echo')).toEqual(schema)
+  })
+
+  it('refuses a catalog that holds no tool of the name', () => {
+    expect(() => kiroToolInputSchema(request([{ toolSpecification: { name: 'mcp_other_echo', inputSchema: { json: schema } } }]), 'mcp_project_echo')).toThrow('holds no tool mcp_project_echo')
+  })
+
+  it.each([{}, { inputSchema: {} }, { inputSchema: { json: 'object' } }].map(fields => ({ fields })))('refuses a tool with no JSON schema: %j', ({ fields }) => {
+    expect(() => kiroToolInputSchema(request([{ toolSpecification: { name: 'mcp_project_echo', ...fields } }]), 'mcp_project_echo')).toThrow('states no JSON input schema')
+  })
+
+  it('refuses an absent catalog and another model protocol', () => {
+    expect(() => kiroToolInputSchema(request([]), 'mcp_project_echo')).toThrow('no tool catalog')
+    expect(() => kiroToolInputSchema({ ...request([{ toolSpecification: { name: 'mcp_project_echo', inputSchema: { json: schema } } }]), protocol: 'openai-chat-completions' }, 'mcp_project_echo')).toThrow('AWS model request')
   })
 })
 
