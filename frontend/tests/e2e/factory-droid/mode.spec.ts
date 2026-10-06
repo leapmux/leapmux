@@ -1,9 +1,8 @@
 import { droidTest, expect } from '../droid-fixtures'
-import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { closeComposerMenus, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated } from '../helpers/ui'
-import { nativeContext } from './scenarios'
+import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid settings', () => {
   droidTest('offers the model, effort and permission-mode groups', async ({ authenticatedDroidWorkspace, page }) => {
@@ -16,15 +15,13 @@ droidTest.describe('Factory Droid settings', () => {
     await closeComposerMenus(page)
   })
 
-  droidTest('applies native Spec mode before and after reload', async ({ authenticatedDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId })
-    await exerciseNativeOption(context, {
+  droidTest('applies native Spec mode before and after reload', async ({ native }) => {
+    await exerciseNativeOption(native, {
       groupId: 'permissionMode',
       value: 'spec',
       nativeProof: async (request) => {
         expect(nativeModelToolNames(request)).toContain('ExitSpecMode')
-        await expect.poll(async () => (await droidNativeSettingsUpdates(leapmuxServer, authenticatedDroidWorkspace.workspaceId)).some(update =>
-          update.requestId?.startsWith('leapmux-') && update.interactionMode === 'spec' && update.autonomyLevel === 'off')).toBe(true)
+        await expectDroidNativeSettings(native, { interactionMode: 'spec', autonomyLevel: 'off' })
       },
     })
   })

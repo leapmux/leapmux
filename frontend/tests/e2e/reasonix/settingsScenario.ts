@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
-import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectSettingsChip, openPlusMenu, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { answerControl, applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectSettingsChip, openPlusMenu, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * Reject the request that ends each Reasonix answer in Plan mode, and keep Plan mode.
@@ -20,7 +20,7 @@ import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, exp
 async function rejectPlanExit(page: Page): Promise<void> {
   const banner = await waitForControlBanner(page)
   await expect(banner).toContainText('exit_plan_mode')
-  await page.getByTestId('control-deny-btn').filter({ visible: true }).first().click()
+  await answerControl(page, 'deny')
   await expectNoControlBanner(page)
   await waitForAgentIdle(page)
 }

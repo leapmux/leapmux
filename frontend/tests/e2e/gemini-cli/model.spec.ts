@@ -4,14 +4,12 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { nativeContext } from './scenarios'
 
-geminiTest('changes the native model and restores the selected model after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
-  const before = await currentNativeAgent(context)
+geminiTest('changes the native model and restores the selected model after reload', async ({ native }) => {
+  const before = await currentNativeAgent(native)
   const marker = uniqueMarker('GEMINIMODELCONTEXT')
-  await sendNativeAnswer(context, `Preserve ${marker} before the model change.`, `The previous model preserved ${marker}.`)
-  await exerciseNativeOption(context, {
+  await sendNativeAnswer(native, `Preserve ${marker} before the model change.`, `The previous model preserved ${marker}.`)
+  await exerciseNativeOption(native, {
     groupId: 'model',
     value: 'gemini-3.8-flash',
     nativeProof: async (request) => {
@@ -19,7 +17,7 @@ geminiTest('changes the native model and restores the selected model after reloa
       expect(request.path).toContain('/models/gemini-3.8-flash:')
       expect(nativeModelContextText(request)).toContain(`Preserve ${marker} before the model change.`)
       expect(nativeModelContextText(request)).toContain(`The previous model preserved ${marker}.`)
-      const current = await currentNativeAgent(context)
+      const current = await currentNativeAgent(native)
       expect(current.id).toBe(before.id)
       expect(current.agentSessionId).toBe(before.agentSessionId)
     },

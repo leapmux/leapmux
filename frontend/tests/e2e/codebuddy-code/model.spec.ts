@@ -1,35 +1,13 @@
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
-import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
-import { chooseSettingsOption, closeComposerMenus, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
+import { exerciseNativeOption } from '../helpers/nativeSettings'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest('switches the model for the next native request', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedCodebuddyWorkspace
-    await waitForSettingsHydrated(page)
-    await chooseSettingsOption(page, `model-${CODEBUDDY_ALT_MODEL_ID}`)
-    await waitForSettingsIdle(page)
-
-    await modelScript.queue({ text: 'The alternate model answered.' })
-    await sendMessage(page, modelScript.prompt('Reply once with the alternate model.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const body = status.requests.find(request => request.stepIndex === 0)?.body
-    if (!body || typeof body !== 'object' || !('model' in body))
-      throw new Error('the CodeBuddy model request must state its model')
-    expect(body.model).toBe(CODEBUDDY_ALT_MODEL_WIRE_ID)
-
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
-    await exerciseRestoredNativeOption(context, {
+  codebuddyTest('switches the model for the next native request', async ({ native }) => {
+    await exerciseNativeOption(native, {
       groupId: 'model',
       value: CODEBUDDY_ALT_MODEL_ID,
-      nativeProof: (request) => {
-        expect(request.body).toMatchObject({ model: CODEBUDDY_ALT_MODEL_WIRE_ID })
-      },
+      nativeProof: request => expect(request.body).toMatchObject({ model: CODEBUDDY_ALT_MODEL_WIRE_ID }),
     })
-    const group = await openSettingsMenu(page, 'model')
-    await expect(group.getByTestId(`model-${CODEBUDDY_ALT_MODEL_ID}`)).toHaveAttribute('aria-checked', 'true')
-    await closeComposerMenus(page)
   })
 })

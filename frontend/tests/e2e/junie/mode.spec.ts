@@ -1,8 +1,9 @@
+import { JUNIE_MODE } from '../../../src/generated/contracts/junie-protocol'
 import { JUNIE_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
-import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
+import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expect, junieTest } from '../junie-fixtures'
 import { exerciseNativePlanReview, exerciseNativePlanRevision, expectNativePlanToolCatalog } from './planScenarios'
-import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie settings', () => {
   junieTest('the settings menu offers the model, effort, and mode axes', async ({ authenticatedJunieWorkspace, page }) => {
@@ -14,29 +15,20 @@ junieTest.describe('Junie settings', () => {
     await expect(settingsGroupTrigger(page, 'permissionMode')).toBeVisible()
     await closeComposerMenus(page)
 
-    const mode = await openSettingsMenu(page, 'permissionMode')
-    await expect(mode.locator('[data-testid="permissionMode-default"] input[type="radio"]')).toBeChecked()
-    await expect(mode.locator('[data-testid="permissionMode-plan"] input[type="radio"]')).toBeVisible()
-    await closeComposerMenus(page)
+    await expectSettingsOptionsOffered(page, 'permissionMode', Object.values(JUNIE_MODE))
+    await expectSettingsOptionChosen(page, `permissionMode-${JUNIE_MODE.Default}`)
 
     // Junie's effort option accepts these values:
     // - low
     // - medium
     // - high
-    const effort = await openSettingsMenu(page, 'effort')
-    await expect(effort.locator('[data-testid="effort-low"]')).toBeVisible()
-    await expect(effort.locator('[data-testid="effort-medium"]')).toBeVisible()
-    await expect(effort.locator('[data-testid="effort-high"]')).toBeVisible()
-    await closeComposerMenus(page)
+    await expectSettingsOptionsOffered(page, 'effort', ['low', 'medium', 'high'])
 
     // The session lists the pinned custom model profile.
-    const model = await openSettingsMenu(page, 'model')
-    await expect(model.locator(`[data-testid="model-${JUNIE_MOCK_MODEL}"]`).first()).toBeVisible()
-    await closeComposerMenus(page)
+    expect(await offeredSettingsOptions(page, 'model')).toContain(JUNIE_MOCK_MODEL)
   })
 
-  junieTest('a mode switch to Plan reaches the chip and survives a reload', async ({ authenticatedJunieWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId })
+  junieTest('a mode switch to Plan reaches the chip and survives a reload', async ({ native: context, page }) => {
     await waitForSettingsHydrated(page)
 
     await chooseSettingsOption(page, 'permissionMode-plan')

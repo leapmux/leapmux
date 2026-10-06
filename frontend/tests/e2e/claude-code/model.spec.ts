@@ -7,10 +7,10 @@ import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, visibleOnly, waitForSettingsIdle } from '../helpers/ui'
 
 /** The native model ID and beta header together prove the 1M selection. */
-function expectNativeOpus1M(request: MockModelRequestRecord | undefined): void {
-  expect(request?.protocol).toBe('anthropic-messages')
-  expect(request?.body).toMatchObject({ model: expect.stringMatching(/^claude-opus-/) })
-  expect(request?.requestHeaders?.['anthropic-beta'].split(',')).toContain('context-1m-2025-08-07')
+function expectNativeOpus1M(request: MockModelRequestRecord): void {
+  expect(request.protocol).toBe('anthropic-messages')
+  expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-opus-/) })
+  expect(request.requestHeaders?.['anthropic-beta']?.split(',')).toContain('context-1m-2025-08-07')
 }
 
 /**
@@ -44,10 +44,9 @@ test.describe('Agent Settings', () => {
       await waitForSettingsIdle(page)
 
       // The actual answer proves that the restarted native process serves a turn.
-      await modelScript.queue({ text: '7' })
+      const step = await modelScript.queue({ text: '7' })
       await sendMessage(page, modelScript.prompt('What is 3+4? Reply with just the number, nothing else.'))
-      const status = await modelScript.waitForSteps(1)
-      expectNativeOpus1M(status.requests.find(request => request.stepIndex === 0))
+      expectNativeOpus1M(await modelScript.requestAt(step))
 
       // The duration row also has the agent role. Search all visible answer rows.
       await expectAssistantAnswer(page, { answer: /\b7\b/ })
@@ -119,8 +118,7 @@ claudeTest.describe('1m-context model', () => {
     await expectSettingsChip(page, 'Sonnet')
 
     // Switch to Opus[1m]
-    await openSettingsMenu(page, 'model')
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    await chooseSettingsOption(page, 'model-opus[1m]')
     await expectSettingsChip(page, OPUS_1M_LABEL)
 
     // Keep the actual model-change notification. ChatView keeps a hidden premeasure copy of each
@@ -131,19 +129,17 @@ claudeTest.describe('1m-context model', () => {
     await waitForSettingsIdle(page)
 
     // Verify the native model and 1M header in the restarted process's next request.
-    await modelScript.queue({ text: '8' })
+    const first = await modelScript.queue({ text: '8' })
     await sendMessage(page, modelScript.prompt('What is 5+3? Reply with just the number, nothing else.'))
-    const first = await modelScript.waitForSteps(1)
-    expectNativeOpus1M(first.requests.find(request => request.stepIndex === 0))
+    expectNativeOpus1M(await modelScript.requestAt(first))
 
     // The duration row also has the agent role. Search all visible answer rows.
     await expectAssistantAnswer(page, { answer: /\b8\b/ })
 
     // Send a follow-up to confirm the agent session is stable
-    await modelScript.queue({ text: '6' })
+    const next = await modelScript.queue({ text: '6' })
     await sendMessage(page, modelScript.prompt('What is 10-4? Reply with just the number, nothing else.'))
-    const next = await modelScript.waitForSteps(2)
-    expectNativeOpus1M(next.requests.find(request => request.stepIndex === 1))
+    expectNativeOpus1M(await modelScript.requestAt(next))
 
     await expectAssistantAnswer(page, { answer: /\b6\b/ })
 
@@ -161,21 +157,19 @@ claudeTest.describe('1m-context model', () => {
     await expectSettingsChip(page, 'Sonnet')
 
     // Move off the default onto a concrete non-default model.
-    await openSettingsMenu(page, 'model')
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    await chooseSettingsOption(page, 'model-opus[1m]')
     await expectSettingsChip(page, OPUS_1M_LABEL)
     await waitForSettingsIdle(page)
 
     // The Worker relaunches without --model. The CLI resolves the session's concrete model.
-    await openSettingsMenu(page, 'model')
-    await page.locator('[data-testid="model-default"]').click()
+    await chooseSettingsOption(page, 'model-default')
     await waitForSettingsIdle(page)
 
     // A concrete model must replace the Default placeholder.
     await expectNoSettingsChip(page, 'Default (recommended)')
 
     // The concrete model must also restore its offered effort group.
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
+    const effort = await openSettingsMenu(page, 'effort')
+    await expect(effort.getByTestId('effort-high')).toBeVisible()
   })
 })

@@ -5,16 +5,17 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickString } from '../../../src/lib/jsonPick'
 import { droidTest, expect } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
-import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, controlBanner, expectNoControlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid Spec mode', () => {
   droidTest('shows the native plan review and returns to Default after approval', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
+    void askingDroidWorkspace
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, 'permissionMode-spec')
     await waitForSettingsIdle(page)
@@ -37,10 +38,8 @@ droidTest.describe('Factory Droid Spec mode', () => {
     // The saved row reads Droid's own `proceed_once` reply as the plan button's word.
     await expect(savedControlAnswer(page)).toHaveText('Approve')
     await expectSettingsOptionChosen(page, 'permissionMode-default')
-    await expect.poll(async () => {
-      const updates = await droidNativeSettingsUpdates(leapmuxServer, askingDroidWorkspace.workspaceId)
-      return updates.at(-1)?.interactionMode === 'auto' && updates.at(-1)?.autonomyLevel === 'off'
-    }).toBe(true)
+    // Droid leaves Spec mode by itself after the approval, so the latest event states the mode, whatever sent it.
+    await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: 'off' }, 'latest')
   })
 
   // Reject answers ExitSpecMode with the option `cancel` ("No, keep iterating on
@@ -48,6 +47,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
   // further model request, because a rejected tool ends an interactive turn. It stays
   // in Spec mode and changes no setting. So this script queues the tool call alone.
   droidTest('rejects the native plan review, ends the turn, and stays in Spec mode', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
+    void askingDroidWorkspace
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, 'permissionMode-spec')
     await waitForSettingsIdle(page)
@@ -75,8 +75,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
       expect(status.unexpectedRequests).toEqual([])
       expect(status.requests.filter(request => request.stepIndex !== undefined)).toHaveLength(1)
       expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
-      const settings = await droidNativeSettingsUpdates(leapmuxServer, askingDroidWorkspace.workspaceId)
-      expect(settings.filter(update => update.interactionMode !== undefined).at(-1)?.interactionMode).toBe('spec')
+      await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'spec' }, 'latest')
 
       const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
       expect(snapshot.agentSessionId).toBe(agent.agentSessionId)

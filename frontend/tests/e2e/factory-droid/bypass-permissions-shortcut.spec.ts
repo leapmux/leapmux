@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { droidTest, expect } from '../droid-fixtures'
-import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid settings', () => {
   droidTest('applies bypass to the native session before an edit', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
@@ -14,8 +14,7 @@ droidTest.describe('Factory Droid settings', () => {
     await waitForSettingsHydrated(page)
     await applyPermissionPreset(page, 'bypass')
     await waitForSettingsIdle(page)
-    await expect.poll(async () => (await droidNativeSettingsUpdates(leapmuxServer, askingDroidWorkspace.workspaceId)).some(update =>
-      update.requestId?.startsWith('leapmux-') && update.interactionMode === 'auto' && update.autonomyLevel === 'high')).toBe(true)
+    await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: 'high' })
     await expectSettingsOptionChosen(page, 'permissionMode-auto-high')
 
     await modelScript.queue(

@@ -193,8 +193,8 @@ test.describe('Agent Settings', () => {
   })
 })
 
-claudeTest('applies native Plan instructions before and after restoring the selected mode', async ({ authenticatedClaudeWorkspace, page, leapmuxServer, modelScript }) => {
-  await exerciseNativeOption({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE, workspaceId: authenticatedClaudeWorkspace.workspaceId }, {
+claudeTest('applies native Plan instructions before and after restoring the selected mode', async ({ native }) => {
+  await exerciseNativeOption(native, {
     groupId: 'permissionMode',
     value: 'plan',
     nativeProof: (request) => {

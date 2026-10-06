@@ -1,26 +1,23 @@
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { FASTAGENT_MODE } from '../../../src/generated/contracts/fastagent-protocol'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { currentNativeAgent, nativeModelInstructionText } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeModelInstructionText, nativeOptionValue } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
-import { openSettingsMenu, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { expectSettingsOptionChosen, waitForSettingsHydrated } from '../helpers/ui'
 import { fastAgentModesTest } from './fixtures'
 import { nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent settings', () => {
-  fastAgentTest('the settings menu shows the agent mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  fastAgentTest('the settings menu shows the agent mode', async ({ authenticatedFastAgentWorkspace, page }) => {
+    void authenticatedFastAgentWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')
-
-    const group = await openSettingsMenu(page, 'permissionMode')
-    await expect(group.locator('[data-testid="permissionMode-agent"] input[type="radio"]')).toBeChecked()
+    await expectSettingsOptionChosen(page, `permissionMode-${FASTAGENT_MODE.Agent}`)
   })
 })
 
 fastAgentModesTest('selects another configured native agent before and after reload', async ({ fastAgentModesWorkspace, page, modelScript }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer: fastAgentModesWorkspace.server, workspaceId: fastAgentModesWorkspace.workspaceId })
-  expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe('reader')
+  expect(nativeOptionValue(await currentNativeAgent(context), 'permissionMode')).toBe('reader')
   const initial = await sendNativeAnswer(context, 'Reply through the initial configured reader agent.', 'The native reader agent answered.')
   expect(nativeModelInstructionText(initial)).toContain('NATIVE_FAST_AGENT_READER')
   expect(nativeModelInstructionText(initial)).not.toContain('NATIVE_FAST_AGENT_WRITER')
@@ -36,16 +33,12 @@ fastAgentModesTest('selects another configured native agent before and after rel
 })
 
 fastAgentTest.describe('Fast Agent settings apply', () => {
-  fastAgentTest('keeps the chosen agent mode after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  fastAgentTest('keeps the chosen agent mode after reload', async ({ authenticatedFastAgentWorkspace, page }) => {
+    void authenticatedFastAgentWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')
-
-    const modeGroup = await openSettingsMenu(page, 'permissionMode')
-    await expect(modeGroup.locator('[data-testid="permissionMode-agent"] input[type="radio"]')).toBeChecked()
+    await expectSettingsOptionChosen(page, `permissionMode-${FASTAGENT_MODE.Agent}`)
     await page.reload()
     await waitForSettingsHydrated(page, 'permissionMode')
-    const reloadedModeGroup = await openSettingsMenu(page, 'permissionMode')
-    await expect(reloadedModeGroup.locator('[data-testid="permissionMode-agent"] input[type="radio"]')).toBeChecked()
+    await expectSettingsOptionChosen(page, `permissionMode-${FASTAGENT_MODE.Agent}`)
   })
 })

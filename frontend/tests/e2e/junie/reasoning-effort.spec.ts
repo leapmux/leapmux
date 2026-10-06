@@ -33,13 +33,13 @@ junieTest.describe('Junie settings', () => {
       { name: 'junie-effort-language', when: { system: 'You are a language identification utility.' }, respond: { text: JSON.stringify({ iso: 'en', confidence: 1 }) } },
       { name: 'junie-effort-next-prompt', when: { user: 'Return ONLY the predicted prompt \\(max 7 tokens\\)' }, respond: { text: 'NONE' } },
     )
-    await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-effort-answer', 'The low effort model answered.')] })
+    const step = await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-effort-answer', 'The low effort model answered.')] })
     await sendMessage(page, modelScript.prompt('Reply once after the effort switch.'))
-    const status = await modelScript.waitForSteps()
+    await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
-    const request = status.requests.find(record => record.stepIndex === 0)
-    expect(request?.path).toBe('/v1/responses')
-    expect(request?.body).toMatchObject({ model: JUNIE_NATIVE_EFFORT_MODEL, reasoning: { effort: 'low' } })
+    const request = await modelScript.requestAt(step)
+    expect(request.path).toBe('/v1/responses')
+    expect(request.body).toMatchObject({ model: JUNIE_NATIVE_EFFORT_MODEL, reasoning: { effort: 'low' } })
 
     await expect.poll(async () => (await modelScript.status()).ruleMatches['junie-effort-next-prompt'] ?? 0).toBe(1)
 

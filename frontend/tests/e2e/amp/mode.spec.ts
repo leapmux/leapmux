@@ -1,11 +1,10 @@
-import type { Page } from '@playwright/test'
 import type { AmpThreadView } from '../helpers/ampSurface'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { expect } from '@playwright/test'
 import { ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectSettingsChip, offeredSettingsOptions, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * The mode choice must reach the actual native session. The browser must follow native changes and refusal limits.
@@ -21,27 +20,18 @@ async function threadIn(mockModelUrl: string, workingDir: string): Promise<AmpTh
   return threads.find(thread => thread.tree === tree)
 }
 
-/** The option ids the mode group offers. */
-async function modeOptions(page: Page): Promise<string[]> {
-  const group = await openSettingsMenu(page, 'agent_mode')
-  // Each option also holds a label element whose id ends `-label`.
-  const ids = await group.locator('[data-testid^="agent_mode-"]:not([data-testid$="-label"])').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-testid') ?? ''))
-  await closeComposerMenus(page)
-  return ids
-}
-
 ampTest('starts the thread in the mode chosen before the first message, and keeps it after', async ({ authenticatedAmpWorkspace, page, modelScript, leapmuxServer }) => {
   // Amp's default mode, and the four modes of its Dial.
   await expectSettingsChip(page, 'Medium')
-  expect(await modeOptions(page)).toEqual(['agent_mode-low', 'agent_mode-medium', 'agent_mode-high', 'agent_mode-ultra'])
+  expect(await offeredSettingsOptions(page, 'agent_mode')).toEqual(['low', 'medium', 'high', 'ultra'])
 
   await chooseSettingsOption(page, 'agent_mode-high')
   await waitForSettingsIdle(page)
   await expectSettingsChip(page, 'High')
 
-  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+  const first = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await modelScript.waitForSteps()
+  await modelScript.waitForSteps(first + 1)
   await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
 
@@ -49,7 +39,7 @@ ampTest('starts the thread in the mode chosen before the first message, and keep
   await expect.poll(async () => (await threadIn(leapmuxServer.mockModelUrl, authenticatedAmpWorkspace.workingDir))?.agentMode).toBe('high')
 
   // The thread keeps its mode, so the group offers that mode alone, and says why.
-  await expect.poll(() => modeOptions(page)).toEqual(['agent_mode-high'])
+  await expect.poll(() => offeredSettingsOptions(page, 'agent_mode')).toEqual(['high'])
   // The reason is the read-only option's tooltip.
   const group = await openSettingsMenu(page, 'agent_mode')
   await group.getByTestId('agent_mode-high').hover()
@@ -59,12 +49,12 @@ ampTest('starts the thread in the mode chosen before the first message, and keep
 
   await page.reload()
   await expectSettingsChip(page, 'High')
-  expect(await modeOptions(page)).toEqual(['agent_mode-high'])
+  expect(await offeredSettingsOptions(page, 'agent_mode')).toEqual(['high'])
 
   // The next message continues the same thread in the same mode after reload.
-  await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+  const next = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await modelScript.waitForSteps()
+  await modelScript.waitForSteps(next + 1)
   await waitForAgentIdle(page)
   const thread = await threadIn(leapmuxServer.mockModelUrl, authenticatedAmpWorkspace.workingDir)
   expect(thread?.agentMode).toBe('high')

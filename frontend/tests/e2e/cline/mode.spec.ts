@@ -13,9 +13,9 @@ clineTest.describe('Cline settings', () => {
   clineTest('moves the session between Act and Plan, and keeps the conversation', async ({ askingClineWorkspace, page, modelScript }) => {
     void askingClineWorkspace
     await waitForSettingsHydrated(page)
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const actStep = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(actStep + 1)
     await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 
@@ -23,9 +23,9 @@ clineTest.describe('Cline settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Plan')
 
-    await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+    const planStep = await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(planStep + 1)
     await waitForAgentIdle(page)
     await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
@@ -36,12 +36,12 @@ clineTest.describe('Cline settings', () => {
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Act')
 
-    await modelScript.queue({ text: 'Back in Act.' })
+    const actAgainStep = await modelScript.queue({ text: 'Back in Act.' })
     await sendMessage(page, modelScript.prompt('Reply with the words: Back in Act.'))
-    const status = await modelScript.waitForSteps()
+    await modelScript.waitForSteps(actAgainStep + 1)
     await waitForAgentIdle(page)
 
-    const [act, plan, actAgain] = [0, 1, 2].map(index => status.requests.find(request => request.stepIndex === index)?.body)
+    const [act, plan, actAgain] = await Promise.all([actStep, planStep, actAgainStep].map(async step => (await modelScript.requestAt(step)).body))
     // Act offers the editor. Plan offers the plan tool in its place.
     expect(offeredTools(act)).toContain('editor')
     expect(offeredTools(act)).not.toContain('switch_to_act_mode')

@@ -2,9 +2,8 @@ import { CODEBUDDY_EFFORT_LEVEL, CODEBUDDY_MODE } from '../../../src/generated/c
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
-import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
+import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, expectSettingsOptionChosen, openPlusMenu, openSettingsMenu, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
   codebuddyTest('switches the effort and the mode, and keeps them after a reload', async ({ authenticatedCodebuddyWorkspace, page }) => {
@@ -28,42 +27,28 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Low')
     await expectSettingsChip(page, 'Accept Edits')
-    const group = await openSettingsMenu(page, 'permissionMode')
-    await expect(group.locator(`[data-testid="permissionMode-${CODEBUDDY_MODE.AcceptEdits}"] input[type="radio"]`)).toBeChecked()
-    await closeComposerMenus(page)
+    await expectSettingsOptionChosen(page, `permissionMode-${CODEBUDDY_MODE.AcceptEdits}`)
     await openPlusMenu(page)
     await expect(settingsGroupTrigger(page, 'model')).toBeVisible()
     await closeComposerMenus(page)
   })
 
-  codebuddyTest('sends a selected effort in the next native request', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedCodebuddyWorkspace
-    await modelScript.queue({ text: 'The first effort probe answered.' })
-    await sendMessage(page, modelScript.prompt('Reply before I change effort.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    await chooseSettingsOption(page, `effort-${CODEBUDDY_EFFORT_LEVEL.Low}`)
-    await waitForSettingsIdle(page)
-    await expectSettingsChip(page, 'Low')
-    await modelScript.queue({ text: 'The low-effort probe answered.' })
-    await sendMessage(page, modelScript.prompt('Reply after I change effort.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const next = status.requests.find(request => request.stepIndex === 1)
-    expect(next?.protocol).toBe('openai-chat-completions')
-    if (!next?.body || typeof next.body !== 'object' || !('reasoning_effort' in next.body))
-      throw new Error('the CodeBuddy model request must state its selected effort')
-    expect(next.body.reasoning_effort).toBe('low')
-    expect(JSON.stringify(next.body).includes('The first effort probe answered.')).toBe(true)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
-    await exerciseRestoredNativeOption(context, {
+  codebuddyTest('sends a selected effort in the next native request', async ({ native }) => {
+    const baseline = 'The first effort probe answered.'
+    await exerciseNativeOption(native, {
       groupId: 'effort',
       value: CODEBUDDY_EFFORT_LEVEL.Low,
+      // The native session takes the effort after its first turn.
+      prepare: async () => {
+        await sendNativeAnswer(native, 'Reply before I change effort.', baseline)
+      },
       nativeProof: (request) => {
+        expect(request.protocol).toBe('openai-chat-completions')
         expect(request.body).toMatchObject({ reasoning_effort: 'low' })
+        expect(JSON.stringify(request.body)).toContain(baseline)
       },
     })
+    await expectSettingsChip(native.page, 'Low')
   })
 })
 
@@ -72,11 +57,10 @@ codebuddyTest.describe('CodeBuddy Code model switch', () => {
   // screen and in the Worker row, and it must restart nothing. The alternate mock model declares no
   // reasoning, so CodeBuddy sends no effort for it. The native proof is the model, and the kept setting
   // comes from the helper. The native session takes the argument after its first turn, as the test above does.
-  codebuddyTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
-    await exerciseModelSwitchKeepsOption(context, {
+  codebuddyTest('keeps the chosen effort after a model switch and a reload', async ({ native }) => {
+    await exerciseModelSwitchKeepsOption(native, {
       prepare: async () => {
-        await sendNativeAnswer(context, 'Reply once before the effort changes.', 'The first turn answered.')
+        await sendNativeAnswer(native, 'Reply once before the effort changes.', 'The first turn answered.')
       },
       kept: { groupId: 'effort', value: CODEBUDDY_EFFORT_LEVEL.Low },
       model: CODEBUDDY_ALT_MODEL_ID,

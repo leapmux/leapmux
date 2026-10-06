@@ -1,38 +1,34 @@
+import type { Page } from '@playwright/test'
+import type { ModelScript } from '../helpers/modelScriptFixture'
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { SeparateServerInfo } from '../process-control-fixtures'
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeProcessTest as test } from '../claude-fixtures'
-import { chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, expectSettingsOptionChosen, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, openSettingsMenu, settingsBar, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { claudeUltracodeEnabled } from './ultracodeRequest'
 
+/** The scenario context of the Claude Code agent that the separate Hub and Worker run. */
+function separateHubContext(fixtures: { page: Page, modelScript: ModelScript, separateHubWorker: SeparateServerInfo, authenticatedWorkspace: { workspaceId: string } }): ManagedNativeScenarioContext {
+  return {
+    page: fixtures.page,
+    modelScript: fixtures.modelScript,
+    leapmuxServer: fixtures.separateHubWorker,
+    provider: AgentProvider.CLAUDE_CODE,
+    workspaceId: fixtures.authenticatedWorkspace.workspaceId,
+  }
+}
+
 test.describe('Agent Settings', () => {
-  test('sends the selected effort in the next native request', async ({ authenticatedWorkspace, page, modelScript }) => {
-    void authenticatedWorkspace
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
-
-    // Select High and wait for the applied native value.
-    await chooseSettingsOption(page, 'effort-high')
-    await waitForSettingsIdle(page)
-    // Reopen the menu to verify its selected radio.
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
-    await page.keyboard.press('Escape')
-
-    await modelScript.queue({ text: 'Claude answered at high effort.' })
-    await sendMessage(page, modelScript.prompt('Reply once after the effort switch.'))
-    const status = await modelScript.waitForSteps()
-    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'high' } })
-    await expectAssistantAnswer(page, { answer: /Claude answered at high effort\./ })
-    await waitForAgentIdle(page)
-    await page.reload()
-    await waitForSettingsHydrated(page)
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
-    await page.keyboard.press('Escape')
-    await modelScript.queue({ text: 'The restored high effort reached the next Claude turn.' })
-    await sendMessage(page, modelScript.prompt('Reply once after restoring high effort.'))
-    const restored = await modelScript.waitForSteps(2)
-    expect(restored.requests.find(request => request.stepIndex === 1)?.body).toMatchObject({ output_config: { effort: 'high' } })
-    await expectAssistantAnswer(page, { answer: /The restored high effort reached the next Claude turn\./ })
+  test('sends the selected effort in the next native request', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+    await expect(settingsBar(page)).toBeVisible()
+    await exerciseNativeOption(separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+      groupId: 'effort',
+      value: 'high',
+      nativeProof: request => expect(request.body).toMatchObject({ output_config: { effort: 'high' } }),
+    })
   })
 
   test('effort hidden when haiku selected', async ({ authenticatedWorkspace, page }) => {
@@ -43,8 +39,7 @@ test.describe('Agent Settings', () => {
     const effortSubmenu = settingsGroupTrigger(page, 'effort')
     const effortChip = page.locator('[data-testid="composer-effort-trigger"]')
 
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
+    await expect((await openSettingsMenu(page, 'effort')).getByTestId('effort-high')).toBeVisible()
     await chooseSettingsOption(page, 'model-haiku')
     await expectSettingsChip(page, 'Haiku')
     await waitForSettingsIdle(page)
@@ -60,8 +55,7 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
+    await expect((await openSettingsMenu(page, 'effort')).getByTestId('effort-high')).toBeVisible()
     await page.keyboard.press('Escape')
   })
 
@@ -75,13 +69,9 @@ test.describe('Agent Settings', () => {
     // Compare the original and restored menus to prevent that change.
     const effortOptions = async (): Promise<string[]> => {
       await waitForSettingsHydrated(page)
-      await openSettingsMenu(page, 'effort')
-      await expect(page.locator('[data-testid="effort-auto"]')).toBeVisible()
-      const ids = await page.locator('[data-testid^="effort-"]:visible').evaluateAll(els =>
-        els.map(el => el.getAttribute('data-testid') ?? ''),
-      )
-      await page.keyboard.press('Escape')
-      return ids
+      const values = await offeredSettingsOptions(page, 'effort')
+      expect(values, 'a capable model offers the automatic effort').toContain('auto')
+      return values
     }
 
     const onSonnet = await effortOptions()
@@ -98,89 +88,41 @@ test.describe('Agent Settings', () => {
     expect(await effortOptions(), 'and Sonnet still does on the way back').toEqual(onSonnet)
   })
 
-  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, page, modelScript }) => {
-    void authenticatedWorkspace // fixture trigger
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
-    await chooseSettingsOption(page, 'model-sonnet')
-    await waitForSettingsIdle(page)
-
-    await openSettingsMenu(page, 'effort')
-    await expect(page.locator('[data-testid="effort-ultracode"]')).toBeVisible()
-    await page.keyboard.press('Escape')
-
+  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+    await expect(settingsBar(page)).toBeVisible()
     // The isolated native CLI supports Ultracode and applies xhigh with its harness instruction.
-    await chooseSettingsOption(page, 'effort-ultracode')
-    await waitForSettingsIdle(page)
-    await expectSettingsOptionChosen(page, 'effort-ultracode')
-
-    // A numeric marker can match the duration row. Require a distinct word in the actual answer.
-    await modelScript.queue({ text: 'PINEAPPLE' })
-    await sendMessage(page, modelScript.prompt('Reply with exactly the word PINEAPPLE and nothing else.'))
-    const first = await modelScript.waitForSteps(1)
-    const assertNative = (stepIndex: number, status: typeof first) => {
-      const request = status.requests.find(record => record.stepIndex === stepIndex)
-      expect(request?.protocol).toBe('anthropic-messages')
-      expect(request?.body).toMatchObject({ model: expect.stringMatching(/^claude-sonnet-/), output_config: { effort: 'xhigh' } })
-      if (!request)
-        throw new Error('The native Ultracode turn reached no model request.')
-      expect(claudeUltracodeEnabled(request)).toBe(true)
-    }
-    assertNative(0, first)
-    await expectAssistantAnswer(page, { answer: /\bPINEAPPLE\b/ })
-    await waitForAgentIdle(page)
-    await page.reload()
-    await waitForSettingsHydrated(page)
-    await expectSettingsOptionChosen(page, 'effort-ultracode')
-    await modelScript.queue({ text: 'ULTRACODE_RESTORED' })
-    await sendMessage(page, modelScript.prompt('Reply once after restoring Ultracode.'))
-    assertNative(1, await modelScript.waitForSteps(2))
-    await expectAssistantAnswer(page, { answer: /\bULTRACODE_RESTORED\b/ })
+    await exerciseNativeOption(separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+      groupId: 'effort',
+      value: 'ultracode',
+      prepare: async () => {
+        await chooseSettingsOption(page, 'model-sonnet')
+        await waitForSettingsIdle(page)
+      },
+      nativeProof: (request) => {
+        expect(request.protocol).toBe('anthropic-messages')
+        expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-sonnet-/), output_config: { effort: 'xhigh' } })
+        expect(claudeUltracodeEnabled(request)).toBe(true)
+      },
+    })
   })
 
   // The user changes the model alone, so the switch carries no effort. The stored tier stays when
   // the new model offers it. Opus and Sonnet both offer xhigh in the installed CLI.
-  test('a model switch keeps an effort that the new model supports', async ({ authenticatedWorkspace, page, modelScript }) => {
-    void authenticatedWorkspace // fixture trigger
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
-    const effortChecked = (tier: string) => page.locator(`[data-testid="effort-${tier}"] input[type="radio"]`)
-
-    await chooseSettingsOption(page, 'model-opus[1m]')
-    await expectSettingsChip(page, 'Opus')
-    await waitForSettingsIdle(page)
-
-    await chooseSettingsOption(page, 'effort-xhigh')
-    await waitForSettingsIdle(page)
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('xhigh')).toBeChecked()
-    await page.keyboard.press('Escape')
-
-    await chooseSettingsOption(page, 'model-sonnet')
-    await expectSettingsChip(page, 'Sonnet')
-    await waitForSettingsIdle(page)
-
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('xhigh')).toBeChecked()
-    await expect(effortChecked('medium')).not.toBeChecked()
-    await page.keyboard.press('Escape')
-
-    await modelScript.queue({ text: 'Claude answered after the model switch.' })
-    await sendMessage(page, modelScript.prompt('Reply once after switching to Sonnet.'))
-    const status = await modelScript.waitForSteps()
-    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({
-      model: expect.stringMatching(/^claude-sonnet-/),
-      output_config: { effort: 'xhigh' },
+  test('a model switch keeps an effort that the new model supports', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+    await expect(settingsBar(page)).toBeVisible()
+    await exerciseModelSwitchKeepsOption(separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+      prepare: async () => {
+        await chooseSettingsOption(page, 'model-opus[1m]')
+        await expectSettingsChip(page, 'Opus')
+        await waitForSettingsIdle(page)
+      },
+      kept: { groupId: 'effort', value: 'xhigh' },
+      model: 'sonnet',
+      nativeProof: request => expect(request.body).toMatchObject({
+        model: expect.stringMatching(/^claude-sonnet-/),
+        output_config: { effort: 'xhigh' },
+      }),
     })
-    await expectAssistantAnswer(page, { answer: /Claude answered after the model switch\./ })
-    await waitForAgentIdle(page)
-
-    // The saved selection survives a reload.
-    await page.reload()
-    await waitForSettingsHydrated(page)
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('xhigh')).toBeChecked()
-    await page.keyboard.press('Escape')
   })
 
   // Haiku offers no effort axis, so the switch to Haiku drops the tier. The switch back to Sonnet
@@ -189,16 +131,13 @@ test.describe('Agent Settings', () => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
-    const effortChecked = (tier: string) => page.locator(`[data-testid="effort-${tier}"] input[type="radio"]`)
 
     await chooseSettingsOption(page, 'model-sonnet')
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
     await chooseSettingsOption(page, 'effort-xhigh')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('xhigh')).toBeChecked()
-    await page.keyboard.press('Escape')
+    await expectSettingsOptionChosen(page, 'effort-xhigh')
 
     await chooseSettingsOption(page, 'model-haiku')
     await expectSettingsChip(page, 'Haiku')
@@ -207,16 +146,11 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('xhigh')).not.toBeChecked()
-    await expect(effortChecked('medium')).toBeChecked()
-    await page.keyboard.press('Escape')
+    // The effort menu chooses one level, so Medium also proves that Xhigh is gone.
+    await expectSettingsOptionChosen(page, 'effort-medium')
 
-    await modelScript.queue({ text: 'Claude answered after the round trip.' })
-    await sendMessage(page, modelScript.prompt('Reply once after the round trip through Haiku.'))
-    const status = await modelScript.waitForSteps()
-    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ output_config: { effort: 'medium' } })
-    await expectAssistantAnswer(page, { answer: /Claude answered after the round trip\./ })
+    const request = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLAUDE_CODE }, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
+    expect(request.body).toMatchObject({ output_config: { effort: 'medium' } })
   })
 
   // A new session pins no effort: the CLI chooses the level of its model. The menu shows that level, and a
@@ -226,7 +160,6 @@ test.describe('Agent Settings', () => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
-    const effortChecked = (tier: string) => page.locator(`[data-testid="effort-${tier}"] input[type="radio"]`)
 
     await chooseSettingsOption(page, 'model-sonnet')
     await expectSettingsChip(page, 'Sonnet')
@@ -234,26 +167,19 @@ test.describe('Agent Settings', () => {
     // Auto restarts the agent without --effort. Sonnet then runs at its own default, Medium.
     await chooseSettingsOption(page, 'effort-auto')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('medium')).toBeChecked()
-    await page.keyboard.press('Escape')
+    await expectSettingsOptionChosen(page, 'effort-medium')
 
     // Fable defaults to High, so a switch that keeps Medium differs from a switch that takes the default.
+    // The effort menu chooses one level, so Medium also proves that High is not chosen.
     await chooseSettingsOption(page, 'model-fable[1m]')
     await expectSettingsChip(page, 'Fable')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page, 'effort')
-    await expect(effortChecked('medium')).toBeChecked()
-    await expect(effortChecked('high')).not.toBeChecked()
-    await page.keyboard.press('Escape')
+    await expectSettingsOptionChosen(page, 'effort-medium')
 
-    await modelScript.queue({ text: 'Claude answered on Fable.' })
-    await sendMessage(page, modelScript.prompt('Reply once after the switch to Fable.'))
-    const status = await modelScript.waitForSteps()
-    expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({
+    const request = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLAUDE_CODE }, 'Reply once after the switch to Fable.', 'Claude answered on Fable.')
+    expect(request.body).toMatchObject({
       model: expect.stringMatching(/^claude-fable-/),
       output_config: { effort: 'medium' },
     })
-    await expectAssistantAnswer(page, { answer: /Claude answered on Fable\./ })
   })
 })

@@ -1,37 +1,29 @@
 import { droidTest, expect } from '../droid-fixtures'
-import { droidNativeSettingsUpdates } from '../helpers/droidNativeSettings'
 import { DROID_MOCK_MODEL_IDS } from '../helpers/mockAgentEnvironment'
-import { exerciseModelSwitchKeepsOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
-import { chooseSettingsOption, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
+import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { chooseSettingsOption, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { expectDroidNativeSettings } from './settingsUpdates'
+
+/** The built-in model whose effort ladder both effort specs use. */
+const BUILT_IN_MODEL = 'claude-fable-5.1'
+
+/** Droid sends a built-in model to the mock through its own Anthropic route. */
+const BUILT_IN_ROUTE = '/v1/api/llm/a/v1/messages'
 
 droidTest.describe('Factory Droid settings', () => {
-  droidTest('sends a built-in model effort to the isolated mock', async ({ authenticatedDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    await waitForSettingsHydrated(page)
-    await chooseSettingsOption(page, 'model-claude-fable-5.1')
-    await waitForSettingsIdle(page)
-    await chooseSettingsOption(page, 'effort-high')
-    await waitForSettingsIdle(page)
-
-    await expect.poll(async () => (await droidNativeSettingsUpdates(leapmuxServer, authenticatedDroidWorkspace.workspaceId)).some(update =>
-      update.requestId?.startsWith('leapmux-') && update.modelId === 'claude-fable-5.1' && update.reasoningEffort === 'high')).toBe(true)
-    await expectSettingsOptionChosen(page, 'effort-high')
-
-    await modelScript.queue({ text: 'Droid answered at high effort.' })
-    await sendMessage(page, modelScript.prompt('Reply once after the effort switch.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const request = status.requests.find(record => record.stepIndex === 0)
-    expect(request?.path).toBe('/v1/api/llm/a/v1/messages')
-    expect(request?.body).toMatchObject({ model: 'claude-fable-5.1', output_config: { effort: 'high' } })
-
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId })
-    await exerciseRestoredNativeOption(context, {
+  droidTest('sends a built-in model effort to the isolated mock', async ({ native, page }) => {
+    await exerciseNativeOption(native, {
       groupId: 'effort',
       value: 'high',
-      nativeProof: (request) => {
-        expect(request.body).toMatchObject({ model: 'claude-fable-5.1', output_config: { effort: 'high' } })
-        expect(request.path).toBe('/v1/api/llm/a/v1/messages')
+      prepare: async () => {
+        await waitForSettingsHydrated(page)
+        await chooseSettingsOption(page, `model-${BUILT_IN_MODEL}`)
+        await waitForSettingsIdle(page)
+      },
+      nativeProof: async (request) => {
+        expect(request.path).toBe(BUILT_IN_ROUTE)
+        expect(request.body).toMatchObject({ model: BUILT_IN_MODEL, output_config: { effort: 'high' } })
+        await expectDroidNativeSettings(native, { modelId: BUILT_IN_MODEL, reasoningEffort: 'high' })
       },
     })
 
@@ -42,18 +34,17 @@ droidTest.describe('Factory Droid settings', () => {
 
 droidTest.describe('Factory Droid model switch', () => {
   // The native session keeps the effort when the new model supports it. The two built-in models share the ladder.
-  droidTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId })
-    await exerciseModelSwitchKeepsOption(context, {
+  droidTest('keeps the chosen effort after a model switch and a reload', async ({ native, page }) => {
+    await exerciseModelSwitchKeepsOption(native, {
       prepare: async () => {
         await waitForSettingsHydrated(page)
-        await chooseSettingsOption(page, 'model-claude-fable-5.1')
+        await chooseSettingsOption(page, `model-${BUILT_IN_MODEL}`)
         await waitForSettingsIdle(page)
       },
       kept: { groupId: 'effort', value: 'low' },
       model: 'claude-opus-5',
       nativeProof: (request) => {
-        expect(request.path).toBe('/v1/api/llm/a/v1/messages')
+        expect(request.path).toBe(BUILT_IN_ROUTE)
         expect(request.body).toMatchObject({ model: 'claude-opus-5', output_config: { effort: 'low' } })
       },
     })

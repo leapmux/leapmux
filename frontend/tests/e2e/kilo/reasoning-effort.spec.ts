@@ -1,17 +1,17 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption } from '../helpers/nativeSettings'
 import { kiloTest } from '../kilo-fixtures'
-import { exercisePlanAndEffort } from './settingsScenario'
+import { exercisePlanAndEffort } from '../opencode/settingsScenario'
+import { KILO_PLAN_REMINDER } from './scenarios'
 
-kiloTest('keeps its Plan mode and effort after a turn and reload', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
-  await exercisePlanAndEffort({ page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }, 'effort')
+kiloTest('keeps its Plan mode and effort after a turn and reload', async ({ native }) => {
+  await exercisePlanAndEffort(native, 'effort', KILO_PLAN_REMINDER)
 })
 
 // Kilo resets the effort to a variant of the new model on each model write. Both models offer high.
-kiloTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
-  await exerciseModelSwitchKeepsOption({ page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }, {
+kiloTest('keeps the chosen effort after a model switch and a reload', async ({ native }) => {
+  await exerciseModelSwitchKeepsOption(native, {
     kept: { groupId: 'effort', value: 'high' },
     model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.pi}`,
     nativeProof: (request) => {

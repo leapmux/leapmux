@@ -1,14 +1,19 @@
 import { expect } from '@playwright/test'
 
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { isObject } from '../../../src/lib/jsonPick'
 import { KIRO_MOCK_MODELS } from '../helpers/kiroSurface'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { nativeLastStepBody } from '../helpers/nativeScenario'
-import { chooseSettingsOption, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { chooseSettingsOption, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { kiroTest } from '../kiro-fixtures'
 
 const [EFFORT_MODEL, PLAIN_MODEL] = KIRO_MOCK_MODELS
+
+/** The body of a Kiro request, which the mock records as an object. */
+function requestBody(body: unknown): Record<string, unknown> {
+  if (!isObject(body))
+    throw new Error('The native Kiro request has no object body.')
+  return body
+}
 
 /** The model a Kiro turn states, in its current message. */
 function requestModel(body: Record<string, unknown>): unknown {
@@ -17,9 +22,7 @@ function requestModel(body: Record<string, unknown>): unknown {
 }
 
 kiroTest.describe('Kiro settings', () => {
-  kiroTest('switches the effort, the mode and the model for the next prompt, and keeps them after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  kiroTest('switches the effort, the mode and the model for the next prompt, and keeps them after reload', async ({ native, page }) => {
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Default')
     // The open request stated the effort, which differs from the model's own default.
@@ -32,11 +35,7 @@ kiroTest.describe('Kiro settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Plan')
 
-    await modelScript.queue({ text: 'SETTINGS_APPLIED' })
-    await sendMessage(page, modelScript.prompt('Describe the plan in one word.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const planned = nativeLastStepBody((await modelScript.status()).requests)
+    const planned = requestBody((await sendNativeAnswer(native, 'Describe the plan in one word.', 'SETTINGS_APPLIED')).body)
     expect(planned.agentMode).toBe('plan')
     expect(planned.additionalModelRequestFields).toEqual({ output_config: { effort: 'high' } })
     expect(requestModel(planned)).toBe(EFFORT_MODEL!.modelId)
@@ -45,11 +44,7 @@ kiroTest.describe('Kiro settings', () => {
     await chooseSettingsOption(page, `model-${PLAIN_MODEL!.modelId}`)
     await waitForSettingsIdle(page)
     await expectNoSettingsChip(page, 'High')
-    await modelScript.queue({ text: 'MODEL_SWITCHED' })
-    await sendMessage(page, modelScript.prompt('Answer with the other model.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const switched = nativeLastStepBody((await modelScript.status()).requests)
+    const switched = requestBody((await sendNativeAnswer(native, 'Answer with the other model.', 'MODEL_SWITCHED')).body)
     expect(requestModel(switched)).toBe(PLAIN_MODEL!.modelId)
     expect(switched).not.toHaveProperty('additionalModelRequestFields')
 
@@ -58,7 +53,7 @@ kiroTest.describe('Kiro settings', () => {
     await expectSettingsChip(page, 'Plan')
     await expectSettingsOptionChosen(page, `model-${PLAIN_MODEL!.modelId}`)
     await expectNoSettingsChip(page, 'High')
-    const restored = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.KIRO }, 'Reply after restoring the selected native settings.', 'The restored Kiro settings answered.')
+    const restored = await sendNativeAnswer(native, 'Reply after restoring the selected native settings.', 'The restored Kiro settings answered.')
     expect(restored.body).toHaveProperty('agentMode', 'plan')
     expect(restored.body).toHaveProperty('conversationState.currentMessage.userInputMessage.modelId', PLAIN_MODEL!.modelId)
     expect(restored.body).not.toHaveProperty('additionalModelRequestFields')

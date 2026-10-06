@@ -4,56 +4,49 @@ import { expect } from '@playwright/test'
 import { GOOSE_MODE } from '../../../src/generated/contracts/goose-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { gooseTest } from '../goose-fixtures'
-import { currentNativeAgent } from '../helpers/nativeScenario'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { currentNativeAgent, nativeOptionValue } from '../helpers/nativeScenario'
+import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
-gooseTest('smart mode asks before a removal and auto mode runs it', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
+gooseTest('smart mode asks before a removal and auto mode runs it', async ({ native, authenticatedGooseWorkspace }) => {
+  const { page, modelScript } = native
   const workingDir = authenticatedGooseWorkspace.workingDir
-  if (!workingDir)
-    throw new Error('The Goose workspace has no working directory.')
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId, provider: AgentProvider.GOOSE }
   for (const phase of ['before-reload', 'after-reload']) {
     const marker = join(workingDir, `goose-mode-marker-${phase}.txt`)
+    const removal = `rm -f ${basename(marker)} && printf 'goose-mode-%s' "$((40 + 2))"`
     writeFileSync(marker, 'keep this file\n')
     await chooseSettingsOption(page, `permissionMode-${GOOSE_MODE.SmartApprove}`)
     await waitForSettingsIdle(page)
     if (phase === 'after-reload')
       await page.reload()
     await expectSettingsOptionChosen(page, `permissionMode-${GOOSE_MODE.SmartApprove}`)
-    expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe(GOOSE_MODE.SmartApprove)
-    const start = (await modelScript.status()).stepCount
-    const smartCall = `goose-smart-remove-${phase}`
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GOOSE, smartCall, `rm -f ${basename(marker)} && printf 'goose-mode-%s' "$((40 + 2))"`)] },
-      { text: 'The Smart check ended.' },
-    )
-    await sendMessage(page, modelScript.prompt('Try the scripted removal under Smart Approve.'))
-    await modelScript.waitForSteps(start + 1)
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText(basename(marker))
-    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
-    expect(existsSync(marker)).toBe(true)
+    expect(nativeOptionValue(await currentNativeAgent(native), 'permissionMode')).toBe(GOOSE_MODE.SmartApprove)
+    await exerciseNativePermissionDecision(native, {
+      toolCall: bashToolCall(AgentProvider.GOOSE, `goose-smart-remove-${phase}`, removal),
+      decision: 'deny',
+      beforeDecision: banner => expect(banner).toContainText(basename(marker)),
+      nativeProof: () => expect(existsSync(marker)).toBe(true),
+    })
+
     await applyPermissionPreset(page, 'bypass')
     await waitForSettingsIdle(page)
     if (phase === 'after-reload')
       await page.reload()
     await expectSettingsOptionChosen(page, `permissionMode-${GOOSE_MODE.Auto}`)
-    expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe(GOOSE_MODE.Auto)
+    expect(nativeOptionValue(await currentNativeAgent(native), 'permissionMode')).toBe(GOOSE_MODE.Auto)
+    // Auto mode runs the removal without a banner, so the scenario answers no control.
     const autoCall = `goose-auto-remove-${phase}`
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GOOSE, autoCall, `rm -f ${basename(marker)} && printf 'goose-mode-%s' "$((40 + 2))"`)] },
+    const autoStep = await modelScript.queue(
+      { toolCalls: [bashToolCall(AgentProvider.GOOSE, autoCall, removal)] },
       { text: 'The Auto check ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted removal under Auto.'))
-    const status = await modelScript.waitForSteps(start + 4)
+    await modelScript.waitForSteps(autoStep + 2)
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     expect(existsSync(marker)).toBe(false)
-    const result = nativeToolResult(status.requests.find(request => request.stepIndex === start + 3), autoCall)
-    expect(result).toContain('goose-mode-42')
+    expect(await nativeToolResultAt(modelScript, autoStep + 1, autoCall)).toContain('goose-mode-42')
   }
 })

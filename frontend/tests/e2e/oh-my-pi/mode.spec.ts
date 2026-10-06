@@ -6,8 +6,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
-ohMyPiTest('applies the native approval mode through a restart and a reload', async ({ authenticatedOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }
+ohMyPiTest('applies the native approval mode through a restart and a reload', async ({ native, page }) => {
   await chooseSettingsOption(page, 'permissionMode-always-ask')
   await waitForSettingsIdle(page)
   for (const reload of [false, true]) {
@@ -16,7 +15,7 @@ ohMyPiTest('applies the native approval mode through a restart and a reload', as
       await waitForSettingsHydrated(page)
     }
     await expectSettingsOptionChosen(page, 'permissionMode-always-ask')
-    await exerciseNativePermissionDecision(context, {
+    await exerciseNativePermissionDecision(native, {
       toolCall: bashToolCall(AgentProvider.OH_MY_PI, `native-mode-${reload}`, 'printf "NATIVEAPPROVAL%s\\n" "$((40 + 2))"'),
       decision: 'allow',
       beforeDecision: banner => expect(banner).toContainText('NATIVEAPPROVAL'),

@@ -1,12 +1,12 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { CODEX_OPTION } from '../../../src/generated/contracts/codex-protocol'
 import { codexTest } from '../codex-fixtures'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 
-codexTest('applies and restores the selected native collaboration mode', async ({ authenticatedCodexWorkspace, page, leapmuxServer, modelScript }) => {
-  await exerciseNativeOption({ page, modelScript, leapmuxServer, provider: AgentProvider.CODEX, workspaceId: authenticatedCodexWorkspace.workspaceId }, {
-    groupId: 'collaboration_mode',
+codexTest('applies and restores the selected native collaboration mode', async ({ native }) => {
+  await exerciseNativeOption(native, {
+    groupId: CODEX_OPTION.CollaborationMode,
     value: 'plan',
     nativeProof: (request) => {
       expect(request.protocol).toBe('openai-responses')

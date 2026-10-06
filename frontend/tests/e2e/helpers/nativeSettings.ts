@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
@@ -5,7 +6,8 @@ import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from './nativeConversation'
 import { currentNativeAgent, expectNativeOptionValue, nativeAgentById, nativeOptionGroup, nativeOptionValue } from './nativeScenario'
-import { chooseSettingsOption, expectSettingsOptionChosen, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
+import { uniqueMarker } from './shellArguments'
+import { chooseSettingsOption, expectSettingsOptionChosen, offeredSettingsOptions, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
 interface NativeOptionProof {
   groupId: string
@@ -38,7 +40,7 @@ export async function exerciseRestoredNativeOption(context: ManagedNativeScenari
   await waitForNativeSettingsHydrated(context.page)
   await expectSettingsOptionChosen(context.page, `${options.groupId}-${options.value}`)
   await expectNativeOptionValue(context, options.groupId, options.value)
-  const next = await sendNativeAnswer(context, 'Reply once after restoring the selected native setting.', 'The restored native setting reached the next turn.')
+  const next = await sendNativeAnswer(context, 'Reply once after restoring the selected native setting.', `The restored native setting reached the next turn: ${uniqueMarker('RESTORED')}.`)
   await options.nativeProof(next)
 }
 
@@ -59,7 +61,7 @@ export async function exerciseNativeOption(
   await chooseSettingsOption(context.page, optionId)
   await waitForSettingsIdle(context.page)
   await expectSettingsOptionChosen(context.page, optionId)
-  const first = await sendNativeAnswer(context, 'Reply once with the selected native setting.', 'The selected native setting reached this turn.')
+  const first = await sendNativeAnswer(context, 'Reply once with the selected native setting.', `The selected native setting reached this turn: ${uniqueMarker('SELECTED')}.`)
   await options.nativeProof(first)
   await exerciseRestoredNativeOption(context, options)
 }
@@ -96,9 +98,66 @@ export async function exerciseModelSwitchKeepsOption(
   await expectSettingsOptionChosen(context.page, modelId)
   await expectSettingsOptionChosen(context.page, keptId)
   await waitForNativeOptionApplied(context, options.kept.groupId, options.kept.value)
-  const first = await sendNativeAnswer(context, 'Reply once after the model switch.', 'The kept setting reached the new model.')
+  const first = await sendNativeAnswer(context, 'Reply once after the model switch.', `The kept setting reached the new model: ${uniqueMarker('KEPT')}.`)
   await options.nativeProof(first)
   await exerciseRestoredNativeOption(context, { groupId: options.kept.groupId, value: options.kept.value, nativeProof: options.nativeProof })
+}
+
+/**
+ * How one step of {@link exerciseNativeOptionSequence} reaches its value:
+ * - `default`: the session starts with the value, so the step changes nothing.
+ * - `choose`: the step chooses the value in the settings menu.
+ * - `reload`: the step reloads the page, so the value comes from the stored state.
+ */
+export interface NativeOptionStep {
+  value: string
+  via: 'default' | 'choose' | 'reload'
+}
+
+/**
+ * Drive one option group through a sequence of values, and prove each step in its next actual native request.
+ * Each step requires its value as the chosen option before its turn. The proof receives the step and its index, so a
+ * proof can compare a request with an earlier one.
+ */
+export async function exerciseNativeOptionSequence(
+  context: ManagedNativeScenarioContext,
+  options: {
+    groupId: string
+    steps: readonly NativeOptionStep[]
+    nativeProof: (request: MockModelRequestRecord, step: NativeOptionStep, index: number) => void | Promise<void>
+  },
+): Promise<void> {
+  if (options.steps.length === 0)
+    throw new Error('A native option sequence needs at least one step.')
+  // Each answer is unique to its sequence, so a later sequence of the same test cannot match an earlier bubble.
+  const marker = uniqueMarker('OPTIONSTEP')
+  await waitForNativeSettingsHydrated(context.page)
+  for (const [index, step] of options.steps.entries()) {
+    const optionId = `${options.groupId}-${step.value}`
+    if (step.via === 'reload') {
+      await context.page.reload()
+      await waitForNativeSettingsHydrated(context.page)
+    }
+    else if (step.via === 'choose') {
+      await chooseSettingsOption(context.page, optionId)
+      await waitForSettingsIdle(context.page)
+    }
+    await expectSettingsOptionChosen(context.page, optionId)
+    const request = await sendNativeAnswer(context, `Reply once at ${options.groupId} step ${index}.`, `The ${options.groupId} step ${index} answered: ${marker}.`)
+    await options.nativeProof(request, step, index)
+  }
+}
+
+/**
+ * Require the settings menu of `groupId` to offer exactly `values`, in any order.
+ * Use it where a contract or the provider states the set. A value that the provider adds later fails the check, which
+ * is the purpose of a menu check.
+ */
+export async function expectSettingsOptionsOffered(page: Page, groupId: string, values: readonly string[]): Promise<void> {
+  if (values.length === 0)
+    throw new Error(`The ${groupId} menu check needs at least one value.`)
+  const offered = await offeredSettingsOptions(page, groupId)
+  expect([...offered].sort(), `the values that the ${groupId} menu offers`).toEqual([...values].sort())
 }
 
 /** Keep a coupled mode and effort while the provider checks its actual native requests. */
@@ -112,14 +171,14 @@ export async function exerciseNativePlanWithEffort(
     nativePlanProof: (request: MockModelRequestRecord) => void | Promise<void>
   },
 ): Promise<void> {
-  const build = await sendNativeAnswer(context, 'Reply once before the native Plan settings change.', 'Settings applied.')
+  const build = await sendNativeAnswer(context, 'Reply once before the native Plan settings change.', `The build turn answered: ${uniqueMarker('BUILD')}.`)
   await options.nativeBuildProof(build)
   await chooseSettingsOption(context.page, `${options.effort.groupId}-${options.effort.value}`)
   await chooseSettingsOption(context.page, `${options.mode.groupId}-${options.mode.value}`)
   await waitForSettingsIdle(context.page)
   await expectSettingsOptionChosen(context.page, `${options.effort.groupId}-${options.effort.value}`)
   await expectSettingsOptionChosen(context.page, `${options.mode.groupId}-${options.mode.value}`)
-  const selected = await sendNativeAnswer(context, 'Reply once after the native Plan settings change.', 'Settings applied.')
+  const selected = await sendNativeAnswer(context, 'Reply once after the native Plan settings change.', `The Plan settings applied: ${uniqueMarker('PLAN')}.`)
   await options.nativePlanProof(selected)
   await exerciseRestoredNativeOption(context, { ...options[options.restore], nativeProof: options.nativePlanProof })
   await expectSettingsOptionChosen(context.page, `${options.effort.groupId}-${options.effort.value}`)

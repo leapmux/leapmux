@@ -1,29 +1,36 @@
+import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { exerciseNativeOptionSequence } from '../helpers/nativeSettings'
 import { kimiTest } from '../kimi-fixtures'
 import { kimiModelContextText } from './modelContextText'
 
-kimiTest('applies independent swarm mode to native context and preserves it after reload', async ({ authenticatedKimiWorkspace, page, modelScript, leapmuxServer }) => {
-  // The reader joins the raw message text: the generic JSON reader escapes the
-  // quotes of the native reminder, so `You are now in "agent swarm" mode.`
-  // would never match.
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKimiWorkspace.workspaceId, provider: AgentProvider.KIMI_CODE, readModelContext: kimiModelContextText }
-  await waitForSettingsHydrated(page)
-  await chooseSettingsOption(page, 'swarmMode-on')
-  await waitForSettingsIdle(page)
-  const enabled = await sendNativeAnswer(context, 'Reply once under the current independent setting.', 'The enabled native setting reached the model.')
-  expect(kimiModelContextText(enabled)).toContain('You are now in "agent swarm" mode.')
-  await page.reload()
-  await waitForSettingsHydrated(page)
-  await expectSettingsOptionChosen(page, 'swarmMode-on')
-  const restored = await sendNativeAnswer(context, 'Reply once after restoring this setting.', 'The restored native setting reached the model.')
-  expect(kimiModelContextText(restored)).toContain('You are now in "agent swarm" mode.')
-  await chooseSettingsOption(page, 'swarmMode-off')
-  await waitForSettingsIdle(page)
-  const disabled = await sendNativeAnswer(context, 'Reply once after changing this independent setting.', 'The disabled native setting reached the model.')
-  const exitReminder = 'Swarm Mode has ended.'
-  expect(kimiModelContextText(disabled).split(exitReminder).length).toBeGreaterThan(kimiModelContextText(restored).split(exitReminder).length)
-  await expectSettingsOptionChosen(page, 'swarmMode-off')
+/** The reminder that Kimi Code puts into the context while swarm mode is on. */
+const SWARM_REMINDER = 'You are now in "agent swarm" mode.'
+
+/** The reminder that Kimi Code puts into the context when swarm mode ends. */
+const SWARM_EXIT_REMINDER = 'Swarm Mode has ended.'
+
+kimiTest('applies independent swarm mode to native context and preserves it after reload', async ({ native }) => {
+  // The context reader joins the raw message text: the generic JSON reader escapes the quotes of the native
+  // reminder, so the swarm reminder would never match.
+  let restored: MockModelRequestRecord | undefined
+  await exerciseNativeOptionSequence(native, {
+    groupId: 'swarmMode',
+    steps: [
+      { value: 'on', via: 'choose' },
+      { value: 'on', via: 'reload' },
+      { value: 'off', via: 'choose' },
+    ],
+    nativeProof: (request, step) => {
+      if (step.value === 'on') {
+        expect(kimiModelContextText(request)).toContain(SWARM_REMINDER)
+        restored = request
+        return
+      }
+      if (!restored)
+        throw new Error('The swarm-mode sequence ended swarm mode before a turn in swarm mode.')
+      // The turn after the change holds one exit reminder more than the turn before it.
+      expect(kimiModelContextText(request).split(SWARM_EXIT_REMINDER).length).toBeGreaterThan(kimiModelContextText(restored).split(SWARM_EXIT_REMINDER).length)
+    },
+  })
 })

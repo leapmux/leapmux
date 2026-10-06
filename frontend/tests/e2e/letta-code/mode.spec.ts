@@ -1,22 +1,20 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
+import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, closeComposerMenus, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectNoControlBanner, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expect, lettaTest } from '../letta-fixtures'
+import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code modes', () => {
   lettaTest('the mode menu lists Standard, Accept Edits, Unrestricted and Strict', async ({ authenticatedLettaWorkspace, page }) => {
     void authenticatedLettaWorkspace
     await waitForSettingsHydrated(page)
-
-    const mode = await openSettingsMenu(page, 'permissionMode')
-    await expect(mode.locator('[data-testid="permissionMode-standard"] input[type="radio"]')).toBeVisible()
-    await expect(mode.locator('[data-testid="permissionMode-acceptEdits"] input[type="radio"]')).toBeVisible()
-    await expect(mode.locator('[data-testid="permissionMode-unrestricted"] input[type="radio"]')).toBeVisible()
-    await expect(mode.locator('[data-testid="permissionMode-strict"] input[type="radio"]')).toBeVisible()
-    await closeComposerMenus(page)
+    await expectSettingsOptionsOffered(page, 'permissionMode', Object.values(LETTA_MODE))
   })
 
   lettaTest('a mode change reaches the chip and survives a reload', async ({ authenticatedLettaWorkspace, page }) => {
@@ -36,39 +34,34 @@ lettaTest.describe('Letta Code modes', () => {
     await expectSettingsChip(page, 'Accept Edits')
   })
 
-  lettaTest('asks in Standard and runs a write in Unrestricted', async ({ askingLettaWorkspace, page, modelScript }) => {
+  lettaTest('asks in Standard and runs a write in Unrestricted', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
     const file = join(askingLettaWorkspace.workingDir, 'letta-mode-proof.txt')
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Standard')
 
-    await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.LETTA, 'standard-mode-write', { path: file, content: 'standard\n' })] },
-      { text: 'The Standard decision was recorded.' },
-    )
-    await sendMessage(page, modelScript.prompt('Try the requested write in Standard mode.'))
-    await modelScript.waitForSteps(1)
-    await waitForControlBanner(page)
-    expect(existsSync(file)).toBe(false)
-    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-    await modelScript.waitForSteps(2)
-    await waitForAgentIdle(page)
-    expect(existsSync(file)).toBe(false)
+    await exerciseNativePermissionDecision(context, {
+      toolCall: writeToolCall(AgentProvider.LETTA, 'standard-mode-write', { path: file, content: 'standard\n' }),
+      decision: 'deny',
+      beforeDecision: () => expect(existsSync(file)).toBe(false),
+      nativeProof: () => expect(existsSync(file)).toBe(false),
+    })
     await expectNoControlBanner(page)
 
     await chooseSettingsOption(page, 'permissionMode-unrestricted')
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Unrestricted')
-    await modelScript.queue(
+    // Unrestricted runs the write without a banner, so the scenario answers no control.
+    const unrestrictedStep = await modelScript.queue(
       { toolCalls: [writeToolCall(AgentProvider.LETTA, 'unrestricted-mode-write', { path: file, content: 'unrestricted\n' })] },
       { text: 'The Unrestricted write finished.' },
     )
     await sendMessage(page, modelScript.prompt('Write the proof file without asking.'))
-    const status = await modelScript.waitForSteps(4)
+    await modelScript.waitForSteps(unrestrictedStep + 2)
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     expect(readFileSync(file, 'utf8')).toBe('unrestricted\n')
-    expect(nativeToolResult(status.requests.find(request => request.stepIndex === 3), 'unrestricted-mode-write'))
-      .toContain('letta-mode-proof.txt')
+    expect(await nativeToolResultAt(modelScript, unrestrictedStep + 1, 'unrestricted-mode-write')).toContain('letta-mode-proof.txt')
   })
 })
 
@@ -76,9 +69,9 @@ lettaTest.describe('Letta Code settings', () => {
   lettaTest('applies a permission-mode change to the session', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
     void authenticatedLettaWorkspace
     await waitForSettingsHydrated(page)
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const step = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
     await expectAssistantAnswer(page)
 

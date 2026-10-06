@@ -1,19 +1,17 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import { DIRAC_MODE } from '../../../src/generated/contracts/dirac-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
-import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
+import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
-import { chooseSettingsOption, expectSettingsChip, openSettingsMenu, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 diracTest.describe('Dirac settings', () => {
-  diracTest('the mode menu lists Plan and Act', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  diracTest('the mode menu lists Plan and Act', async ({ authenticatedDiracWorkspace, page }) => {
+    void authenticatedDiracWorkspace
     await waitForSettingsHydrated(page)
-
-    const group = await openSettingsMenu(page, 'permissionMode')
-    await expect(group.locator('[data-testid="permissionMode-act"] input[type="radio"]')).toBeChecked()
-    await expect(group.locator('[data-testid="permissionMode-plan"] input[type="radio"]')).toBeVisible()
+    await expectSettingsOptionsOffered(page, 'permissionMode', Object.values(DIRAC_MODE))
+    await expectSettingsOptionChosen(page, `permissionMode-${DIRAC_MODE.Act}`)
   })
 })
 
@@ -28,9 +26,8 @@ diracTest.describe('Dirac settings apply', () => {
     return typeof details?.text === 'string' ? details.text : ''
   }
 
-  diracTest('sends plan and act modes in successive native requests', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  diracTest('sends plan and act modes in successive native requests', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
+    void authenticatedDiracWorkspace
     await waitForSettingsHydrated(page)
 
     await chooseSettingsOption(page, 'permissionMode-plan')
@@ -42,11 +39,11 @@ diracTest.describe('Dirac settings apply', () => {
       respond: { toolCalls: [diracRespondToolCall('dirac-act-answer', 'complete', 'The Act check ended.')] },
       once: true,
     })
-    await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-plan-answer', 'plan', 'The Plan check ended.')] })
+    const planStep = await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-plan-answer', 'plan', 'The Plan check ended.')] })
     await sendMessage(page, modelScript.prompt('Reply once in the selected mode.'))
-    const planned = await modelScript.waitForSteps(1)
-    expect(planned.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ reasoning_effort: 'high' })
-    const planDetails = nativeCurrentMode(planned.requests.find(request => request.stepIndex === 0))
+    const planned = await modelScript.requestAt(planStep)
+    expect(planned.body).toMatchObject({ reasoning_effort: 'high' })
+    const planDetails = nativeCurrentMode(planned)
     expect(planDetails).toContain('# Current Mode\nPLAN MODE')
     expect(planDetails).not.toContain('# Current Mode\nACT MODE')
 
