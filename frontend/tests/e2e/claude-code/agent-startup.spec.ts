@@ -3,11 +3,11 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
-import { withCleanup } from '../helpers/cleanup'
+import { openAgentViaAPI } from '../helpers/api'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from '../helpers/timingFixture'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, sendMessage, settingsBar } from '../helpers/ui'
+import { AGENT_TAB_SELECTOR, agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, sendMessage, settingsBar } from '../helpers/ui'
+import { withTestWorkspace } from '../helpers/workspace'
 import { nativeLaunch } from './scenarios'
 
 /** Measure native startup on a traced private Worker against the suite Hub. */
@@ -53,12 +53,7 @@ timingTest.describe('Claude Code agent open timing', () => {
 
     // Start one Claude agent before the measured opens to populate the Worker's filesystem cache.
     // Each measured open still starts a new native process and performs its handshake.
-    const workspaceId = await createWorkspaceViaAPI(
-      srv.hubUrl,
-      srv.adminToken,
-      `timing-${Date.now()}`,
-    )
-    await withCleanup(async () => {
+    await withTestWorkspace(srv, 'timing', async ({ workspaceId }) => {
       await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
       await loginViaToken(page, srv.adminToken)
       await openWorkspace(page, workspaceId)
@@ -73,7 +68,7 @@ timingTest.describe('Claude Code agent open timing', () => {
 
       for (let iter = 0; iter < ITERATIONS; iter++) {
         // Reset the marks before each iteration. Observe tab and editor creation without the delay of Playwright polling.
-        await page.evaluate(() => {
+        await page.evaluate((agentTabSelector) => {
           const w: Window & {
             __rpcMarks?: Array<unknown>
             __tabAppearedAt?: number | null
@@ -86,12 +81,12 @@ timingTest.describe('Claude Code agent open timing', () => {
           w.__tabAppearedAt = null
           w.__editorAppearedAt = null
           w.__startupOverlayGoneAt = null
-          w.__tabBaseline = document.querySelectorAll('[data-testid="tab"][data-tab-type="agent"]').length
+          w.__tabBaseline = document.querySelectorAll(agentTabSelector).length
           const priorEditor = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
           w.__tabObserver?.disconnect()
           w.__tabObserver = new MutationObserver(() => {
             if (w.__tabAppearedAt == null) {
-              const tabs = document.querySelectorAll('[data-testid="tab"][data-tab-type="agent"]')
+              const tabs = document.querySelectorAll(agentTabSelector)
               if (tabs.length > (w.__tabBaseline ?? 0))
                 w.__tabAppearedAt = performance.now()
             }
@@ -109,7 +104,7 @@ timingTest.describe('Claude Code agent open timing', () => {
             }
           })
           w.__tabObserver.observe(document.body, { childList: true, subtree: true })
-        })
+        }, AGENT_TAB_SELECTOR)
         const logsBefore = srv.logLines.length
         const tabsBefore = await agentTabs(page).count()
 
@@ -222,7 +217,7 @@ timingTest.describe('Claude Code agent open timing', () => {
       const report = parts.join('\n')
       process.stdout.write(`\n──── Claude Code agent open timing ────\n${report}\n───────────────────────────────────────\n`)
       await testInfo.attach('agent-open-timeline', { body: report, contentType: 'text/plain' })
-    }, () => deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId))
+    })
   })
 })
 
@@ -268,12 +263,7 @@ startupErrorTest.describe('Claude Code agent startup error', () => {
   startupErrorTest('shows in-tab error and rejects subsequent sends', async ({ page, failingWorker }) => {
     const srv = failingWorker.server
 
-    const workspaceId = await createWorkspaceViaAPI(
-      srv.hubUrl,
-      srv.adminToken,
-      `startup-err-${Date.now()}`,
-    )
-    await withCleanup(async () => {
+    await withTestWorkspace(srv, 'startup-err', async ({ workspaceId }) => {
       await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
       await loginViaToken(page, srv.adminToken)
       await openWorkspace(page, workspaceId)
@@ -288,6 +278,6 @@ startupErrorTest.describe('Claude Code agent startup error', () => {
       await sendMessage(page, 'hello')
       await expect(page.getByTestId('agent-input-queue')).toContainText('Failed')
       await expect(page.getByTestId('agent-input-queue')).toContainText('hello')
-    }, () => deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId))
+    })
   })
 })

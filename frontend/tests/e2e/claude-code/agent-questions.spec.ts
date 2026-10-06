@@ -4,8 +4,8 @@ import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
 import { AgentActivityState, AgentProvider, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from '../helpers/api'
-import { finishCleanup, withCleanup } from '../helpers/cleanup'
+import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from '../helpers/api'
+import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
@@ -278,55 +278,50 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
 
   claudeTest('control request on a background workspace badges its tab when returned to', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
+    // The per-test reset of the suite hub deletes both workspaces, so the test deletes neither.
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Active')
-    let ws2 = ''
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Background')
     const gate = 'claude-question-background-workspace'
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
     await withCleanup(async () => {
-      ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Background')
-      await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
-      await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
-      await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
-      await withCleanup(async () => {
-        await loginViaToken(page, adminToken)
-        await openWorkspace(page, ws2)
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, ws2)
+      await waitForWorkspaceReady(page)
+
+      const tabs = agentTabs(page)
+      await expect(tabs).toHaveCount(2)
+      // Hold the response until the other workspace becomes active. Agent 1 must retain its badge after return.
+      await tabs.first().click()
+      await askQuestions(page, modelScript, [COLOR_Q_2], { gate })
+      await tabs.nth(1).click()
+      await workspaceRowTitle(page, ws1).click()
+      await waitForWorkspaceReady(page)
+      await modelScript.releaseGate(gate)
+
+      // The sidebar must show the notification while the other workspace's tab strip stays off screen.
+      const sidebarMarker = '[data-testid="sidebar-tab-notification"]'
+      await expect(sidebarLeaves(page, ws2).locator(sidebarMarker)).toHaveCount(1)
+
+      // A folded workspace shows the notification on its own row.
+      // Its leaves remain mounted and an expanded child can retain visibility inside the clipped grid.
+      // Use data-expanded to prove the workspace's actual fold state.
+      await collapseWorkspaceRow(page, ws2)
+      await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toBeVisible()
+
+      // Return with agent 2 selected. Require agent 1's notification after its background question arrives.
+      await expect(async () => {
+        await workspaceRowTitle(page, ws2).click()
         await waitForWorkspaceReady(page)
+        expect(await tabs.first().locator('[data-testid="tab-notification"]').count()).toBe(1)
+      }).toPass()
 
-        const tabs = agentTabs(page)
-        await expect(tabs).toHaveCount(2)
-        // Hold the response until the other workspace becomes active. Agent 1 must retain its badge after return.
-        await tabs.first().click()
-        await askQuestions(page, modelScript, [COLOR_Q_2], { gate })
-        await tabs.nth(1).click()
-        await workspaceRowTitle(page, ws1).click()
-        await waitForWorkspaceReady(page)
-        await modelScript.releaseGate(gate)
-
-        // The sidebar must show the notification while the other workspace's tab strip stays off screen.
-        const sidebarMarker = '[data-testid="sidebar-tab-notification"]'
-        await expect(sidebarLeaves(page, ws2).locator(sidebarMarker)).toHaveCount(1)
-
-        // A folded workspace shows the notification on its own row.
-        // Its leaves remain mounted and an expanded child can retain visibility inside the clipped grid.
-        // Use data-expanded to prove the workspace's actual fold state.
-        await collapseWorkspaceRow(page, ws2)
-        await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toBeVisible()
-
-        // Return with agent 2 selected. Require agent 1's notification after its background question arrives.
-        await expect(async () => {
-          await workspaceRowTitle(page, ws2).click()
-          await waitForWorkspaceReady(page)
-          expect(await tabs.first().locator('[data-testid="tab-notification"]').count()).toBe(1)
-        }).toPass()
-
-        // Activating the workspace expands it. The notification returns from its workspace row to its own leaf.
-        await expect(workspaceRow(page, ws2)).toHaveAttribute('data-expanded', 'true')
-        await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toHaveCount(0)
-        await expect(sidebarLeaves(page, ws2).locator(sidebarMarker)).toHaveCount(1)
-      }, () => modelScript.releaseGateIfHeld(gate).then(() => {}))
-    }, () => finishCleanup([
-      deleteWorkspaceViaAPI(hubUrl, adminToken, ws1),
-      ws2 ? deleteWorkspaceViaAPI(hubUrl, adminToken, ws2) : Promise.resolve(),
-    ]))
+      // Activating the workspace expands it. The notification returns from its workspace row to its own leaf.
+      await expect(workspaceRow(page, ws2)).toHaveAttribute('data-expanded', 'true')
+      await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toHaveCount(0)
+      await expect(sidebarLeaves(page, ws2).locator(sidebarMarker)).toHaveCount(1)
+    }, () => modelScript.releaseGateIfHeld(gate).then(() => {}))
   })
 })
 
