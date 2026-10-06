@@ -1,8 +1,8 @@
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { exerciseAllowThenFeedbackRejection } from '../helpers/nativePermission'
 import { expectSettingsOptionChosen, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build control requests', () => {
   // Grok's `ask` mode asks before a shell command writes a file. It permits `touch` and `mkdir`, so the commands of

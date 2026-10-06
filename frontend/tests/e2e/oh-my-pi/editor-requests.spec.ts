@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { answerControl, controlBanner, openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
-import { OH_MY_PI_AGENT, ohMyPiTest } from '../ohmypi-fixtures'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { ohMyPiTest } from '../ohmypi-fixtures'
+import { OH_MY_PI_AGENT } from './scenarios'
 
 const PREFILL = 'Initial line\nSecond line'
 const EDITOR_CASES = [
@@ -20,7 +20,7 @@ const EDITOR_CASES = [
 
 for (const scenario of EDITOR_CASES) {
   ohMyPiTest(scenario.title, async ({ authenticatedEmptyWorkspace, page, leapmuxServer }) => {
-    const workingDir = createTestDirectory('omp-native-editor-')
+    const workingDir = newProviderWorkingDir(OH_MY_PI_AGENT, 'omp-native-editor-')
     const log = join(workingDir, 'native-editor-reply.json')
     const extensionDirectory = join(workingDir, '.omp', 'extensions')
     mkdirSync(extensionDirectory, { recursive: true })
@@ -54,7 +54,7 @@ export default function(pi) {
       await expect(editor).toHaveValue(scenario.value)
     }
     if ('remount' in scenario) {
-      const { agentId: keeperId } = await openProviderAgent(server, authenticatedEmptyWorkspace.workspaceId, OH_MY_PI_AGENT, { workingDir: createTestDirectory('omp-editor-keeper-') })
+      const { agentId: keeperId } = await openProviderAgent(server, authenticatedEmptyWorkspace.workspaceId, OH_MY_PI_AGENT, { directoryPrefix: 'omp-editor-keeper-' })
       await tabById(page, keeperId).click()
       await tabById(page, agentId).click()
       await expect(editor).toHaveValue('')

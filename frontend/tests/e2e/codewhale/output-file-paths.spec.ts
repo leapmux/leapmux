@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { CODEWHALE_AGENT, codewhaleTest, expect } from '../codewhale-fixtures'
+import { codewhaleTest, expect } from '../codewhale-fixtures'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
@@ -9,18 +9,17 @@ import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { codewhaleBashModelMatches } from './bashModelOutput'
 import { codewhaleMcpToolResult } from './mcpToolResult'
 import { readCodewhaleNativeOutput } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { CODEWHALE_AGENT, nativeContext } from './scenarios'
 
 codewhaleTest('keeps the native MCP output path and exact preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const directory = createTestDirectory('codewhale-native-mcp-output-path-')
+  const directory = newProviderWorkingDir(CODEWHALE_AGENT, 'codewhale-native-mcp-output-path-')
   const generated = codewhaleMcpToolResult(computedNativeToolOutput({ lineCount: 8000, padding: 30 }), { approvedByUser: true })
   const receiptLog = join(directory, 'native-mcp-result-receipts.json')
   const server = writeMcpResultServer(directory, { receiptLog, inspectContent: generated.nativeResult.content })
@@ -50,7 +49,7 @@ codewhaleTest('keeps the native MCP output path and exact preview after reload',
 
 codewhaleTest('keeps the native Bash output path and limit after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openProviderAgent(leapmuxServer, context.workspaceId, CODEWHALE_AGENT, { workingDir: createTestDirectory('codewhale-native-bash-cap-') })
+  await openProviderAgent(leapmuxServer, context.workspaceId, CODEWHALE_AGENT, { directoryPrefix: 'codewhale-native-bash-cap-' })
   await openWorkspace(page, context.workspaceId)
   await captureNativeToolOutput(context, testInfo, {
     output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),

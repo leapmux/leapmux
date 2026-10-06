@@ -9,16 +9,16 @@ import { exerciseNativeToolWrite } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { expectNoControlBanner, messageBubbles, openWorkspace } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 piTest('preserves complete native MCP arguments without an adapter permission dialog', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-native-mcp-permission-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-permission-')
   const input = { query: 'x'.repeat(900), limit: 0, tail: 'END_MCP_ARGUMENTS' }
   const receiptLog = join(directory, 'native-mcp-receipt.json')
   const server = writeMcpFormServer(directory, 'permission-server.mjs', { expectedEchoArguments: input, receiptLog })

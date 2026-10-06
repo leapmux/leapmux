@@ -12,15 +12,15 @@ import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { deepseekHarnessRunCodeToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { withDeepseekHarnessMcp } from './mcpScenarios'
 import { deepseekHarnessCanonicalMcpProjection, deepseekHarnessMcpResultMessage } from './mcpToolResult'
 import { deepseekHarnessToolResultText } from './nativeToolResultText'
-import { nativeContext } from './scenarios'
+import { DEEPSEEK_HARNESS_AGENT, nativeContext } from './scenarios'
 
 deepseekHarnessTest('uses real native MCP results and preserves failure state after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const directory = createTestDirectory('deepseek-mcp-results-')
+  const directory = newProviderWorkingDir(DEEPSEEK_HARNESS_AGENT, 'deepseek-mcp-results-')
   const server = writeMcpResultServer(directory, { receiptLog: join(directory, 'receipts.json') })
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await withDeepseekHarnessMcp(context, { server, workingDir: directory }, async (privateContext) => {
@@ -39,7 +39,7 @@ deepseekHarnessTest('uses real native MCP results and preserves failure state af
 
 deepseekHarnessTest('preserves the computed canonical native MCP result while removing private MCP metadata', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const directory = createTestDirectory('deepseek-mcp-canonical-')
+  const directory = newProviderWorkingDir(DEEPSEEK_HARNESS_AGENT, 'deepseek-mcp-canonical-')
   const receiptLog = join(directory, 'receipts.json')
   const server = writeMcpResultServer(directory, { receiptLog, includeNullable: true })
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })

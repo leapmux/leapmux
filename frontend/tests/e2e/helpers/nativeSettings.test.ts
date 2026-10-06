@@ -51,6 +51,7 @@ const context = {
   page: { reload } as unknown as Page,
   modelScript: {} as never,
   provider: AgentProvider.CODEX,
+  providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
   leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
   workspaceId: 'workspace',
 } satisfies ManagedNativeScenarioContext

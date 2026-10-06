@@ -2,7 +2,7 @@ import type { ClaudeWorkflowLaunch } from './codeExecution'
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLAUDE_AGENT, claudeTest, expect } from '../claude-fixtures'
+import { claudeTest, expect } from '../claude-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -21,7 +21,7 @@ import { nativeContext } from './scenarios'
 
 claudeTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const catalogRequest = await openNativeCatalogTurn(context, CLAUDE_AGENT, { directoryPrefix: 'native-workflow-code-' })
+  const catalogRequest = await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-' })
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')
   await testInfo.attach('claude-workflow-catalog', { body: JSON.stringify(catalogRequest, null, 2), contentType: 'application/json' })
   const agent = await currentNativeAgent(context)

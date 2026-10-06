@@ -54,6 +54,8 @@ interface ProviderTestObject {
   readonly scenarioDirectory: string
   /** The workspace that the `native` fixture reads its workspace ID from. */
   readonly nativeWorkspace: string
+  /** The `ProviderAgent` that opens that workspace. The scenario module of the provider directory exports it. */
+  readonly agentName: string
   /** The member name of the `AgentProvider` that the `ProviderAgent` of that workspace opens. */
   readonly providerName: string
 }
@@ -63,6 +65,9 @@ interface ProviderTestObject {
  *
  * Importing a fixture file runs `base.extend` of Playwright outside a Playwright run, so the guard reads the source
  * and imports only the scenario module, which holds no fixture.
+ *
+ * The scenario module holds the `ProviderAgent` of its provider, because its `nativeContext` builds the context from
+ * that agent. A fixture file that declares an agent of its own states the same rule a second time.
  */
 function providerTestObjects(): ProviderTestObject[] {
   const files = readdirSync(import.meta.dirname).filter(name => name.endsWith('-fixtures.ts')).sort()
@@ -71,19 +76,26 @@ function providerTestObjects(): ProviderTestObject[] {
     const source = readFileSync(join(import.meta.dirname, file), 'utf-8')
     if (!source.includes('cliSkipFixture('))
       continue
-    const scenarioImport = /^import \{ nativeContext \} from '\.\/([\w-]+)\/scenarios'$/m.exec(source)
+    const scenarioImport = /^import \{ ([\w, ]+) \} from '\.\/([\w-]+)\/scenarios'$/m.exec(source)
+    const scenarioNames = scenarioImport?.[1]?.split(', ') ?? []
     const nativeFixture = /^ {2}native: async \(\{ page, modelScript, leapmuxServer, (\w+) \}, use\) => \{\n {4}await use\(await nativeContext\(\{ page, modelScript, leapmuxServer, workspaceId: (\w+)\.workspaceId \}\)\)\n {2}\},$/m.exec(source)
-    if (!scenarioImport || !nativeFixture)
+    if (!scenarioImport || !scenarioNames.includes('nativeContext') || !nativeFixture)
       throw new Error(`${file} builds no native fixture from the nativeContext of its provider directory`)
+    if (/^export const \w+: ProviderAgent = /m.test(source))
+      throw new Error(`${file} declares a ProviderAgent, which the scenario module of its provider directory holds`)
     if (nativeFixture[1] !== nativeFixture[2])
       throw new Error(`${file} asks for ${nativeFixture[1]} but reads the workspace ID of ${nativeFixture[2]}`)
     const workspace = new RegExp(`^ {2}${nativeFixture[1]}: authenticatedAgentWorkspace\\(\\s*(?:\\{\\s*\\.\\.\\.)?(\\w+)\\b`, 'm').exec(source)
     if (!workspace)
       throw new Error(`${file} does not open ${nativeFixture[1]} through authenticatedAgentWorkspace`)
-    const agent = new RegExp(`^export const ${workspace[1]}: ProviderAgent = \\{ provider: AgentProvider\\.(\\w+),`, 'm').exec(source)
+    const scenarioDirectory = scenarioImport[2]!
+    if (!scenarioNames.includes(workspace[1]!))
+      throw new Error(`${file} opens ${nativeFixture[1]} with ${workspace[1]}, which it does not import from ${scenarioDirectory}/scenarios.ts`)
+    const scenarioSource = readFileSync(join(import.meta.dirname, scenarioDirectory, 'scenarios.ts'), 'utf-8')
+    const agent = new RegExp(`^export const ${workspace[1]}: ProviderAgent = \\{ provider: AgentProvider\\.(\\w+),`, 'm').exec(scenarioSource)
     if (!agent)
-      throw new Error(`${file} declares no ProviderAgent named ${workspace[1]}`)
-    objects.push({ file, scenarioDirectory: scenarioImport[1]!, nativeWorkspace: nativeFixture[1]!, providerName: agent[1]! })
+      throw new Error(`${scenarioDirectory}/scenarios.ts declares no ProviderAgent named ${workspace[1]}`)
+    objects.push({ file, scenarioDirectory, nativeWorkspace: nativeFixture[1]!, agentName: workspace[1]!, providerName: agent[1]! })
   }
   return objects
 }
@@ -114,9 +126,12 @@ describe('provider test objects', () => {
 
   it('builds each native fixture through the nativeContext of the provider that its workspace opens', async () => {
     for (const object of objects) {
-      const scenarios = await import(`./${object.scenarioDirectory}/scenarios.ts`) as { nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext> }
+      const scenarios = await import(`./${object.scenarioDirectory}/scenarios.ts`) as Record<string, unknown> & { nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext> }
       const context = await scenarios.nativeContext(UNIT_FIXTURES)
       expect(AgentProvider[context.provider], object.file).toBe(object.providerName)
+      // A helper that opens a new native agent creates its working directory by the rule of this agent.
+      expect(context.providerAgent, object.file).toBe(scenarios[object.agentName])
+      expect(context.providerAgent.provider, object.file).toBe(context.provider)
       expect(context.page, object.file).toBe(UNIT_FIXTURES.page)
       expect(context.modelScript, object.file).toBe(UNIT_FIXTURES.modelScript)
       expect(context.leapmuxServer, object.file).toBe(UNIT_FIXTURES.leapmuxServer)

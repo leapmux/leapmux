@@ -3,7 +3,6 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { GEMINI_AGENT } from '../gemini-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -11,6 +10,7 @@ import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
+import { GEMINI_AGENT } from './scenarios'
 
 /** Reload the actual MCP settings in a new native agent and restore their exact bytes. */
 export async function withGeminiMcp(context: ManagedNativeScenarioContext, server: McpProbeServer, use: () => Promise<void>): Promise<void> {

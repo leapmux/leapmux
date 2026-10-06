@@ -4,8 +4,8 @@ import { kiroUserText } from '../helpers/kiroSurface'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { expectSettingsChip, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-import { nativeContext } from './scenarios'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro control requests', () => {
   // Kiro offers its question tool in a spec mode alone, and a spec mode first

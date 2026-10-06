@@ -4,7 +4,8 @@ import { junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT } from './scenarios'
 
 junieTest.describe('Junie subagents and background tasks', () => {
   const PROVIDER = AgentProvider.JUNIE

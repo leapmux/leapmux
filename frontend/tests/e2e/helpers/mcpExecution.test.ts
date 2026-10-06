@@ -68,11 +68,13 @@ function passingLocator(name: string): Locator {
 /** How a Claude Code agent opens in these tests: in a fresh directory of the run. */
 const claude: ProviderAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'claude-e2e' }
 
-function context(provider = AgentProvider.CLAUDE_CODE): ManagedNativeScenarioContext {
+/** The scenario context of an agent of `provider` that opens by the rule of `providerAgent`. */
+function context(provider = AgentProvider.CLAUDE_CODE, providerAgent: ProviderAgent = { ...claude, provider }): ManagedNativeScenarioContext {
   return {
     page: {} as Page,
     modelScript: {} as ModelScript,
     provider,
+    providerAgent,
     workspaceId: 'workspace',
     leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker' },
   }
@@ -170,7 +172,6 @@ describe('withNativeMcpFormAgent', () => {
     writeFileSync(run.configurationPath, '{"kept":true}')
     const seen: string[] = []
     await withNativeMcpFormAgent(context(), {
-      providerAgent: claude,
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
       configuration: server => ({ servers: { [server.name]: { command: server.command, args: server.args } } }),
@@ -192,7 +193,6 @@ describe('withNativeMcpFormAgent', () => {
     mkdirSync(dirname(run.configurationPath), { recursive: true })
     writeFileSync(run.configurationPath, 'original')
     await expect(withNativeMcpFormAgent(context(), {
-      providerAgent: claude,
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
       configuration: () => ({}),
@@ -209,8 +209,7 @@ describe('withNativeMcpFormAgent', () => {
       return repository
     })
     const receipts: string[] = []
-    await withNativeMcpFormAgent(context(), {
-      providerAgent: { ...claude, workingDir },
+    await withNativeMcpFormAgent(context(AgentProvider.CLAUDE_CODE, { ...claude, workingDir }), {
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
       configuration: () => ({}),
@@ -226,8 +225,7 @@ describe('withNativeMcpFormAgent', () => {
     writeFileSync(run.configurationPath, 'original')
     const workingDir = vi.fn(() => run.scratch)
     const use = vi.fn()
-    await expect(withNativeMcpFormAgent(context(), {
-      providerAgent: { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir },
+    await expect(withNativeMcpFormAgent(context(AgentProvider.CLAUDE_CODE, { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir }), {
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
       configuration: () => ({}),

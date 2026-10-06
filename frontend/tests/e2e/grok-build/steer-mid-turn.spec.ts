@@ -1,8 +1,8 @@
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
   grokTest('steers a queued message into the active turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

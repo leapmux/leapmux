@@ -1,12 +1,16 @@
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
+import type { NativeContextFixtures } from './nativeScenario'
+import type { ProviderAgent } from './workspace'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeLocator } from '~/test-support/fakeLocator'
-import { AgentInfoSchema, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   currentNativeAgent,
   expectNativeOptionValue,
+  managedNativeContext,
   nativeAgentById,
   nativeAgentsByIds,
   nativeLastStepBody,
@@ -31,6 +35,33 @@ vi.mock('./api', () => ({ getTestChannel: async () => workerChannel }))
 
 beforeEach(() => {
   workerChannel.callWorker.mockReset()
+})
+
+describe('managedNativeContext', () => {
+  const fixtures: NativeContextFixtures = {
+    page: {} as Page,
+    modelScript: {} as ModelScript,
+    leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker' },
+    workspaceId: 'workspace',
+  }
+  const kiro: ProviderAgent = { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: prefix => `/run/${prefix}repo` }
+
+  it('takes the provider from the agent of the provider, and keeps that agent and every fixture', () => {
+    expect(managedNativeContext(fixtures, kiro)).toEqual({ ...fixtures, provider: AgentProvider.KIRO, providerAgent: kiro })
+    expect(managedNativeContext(fixtures, kiro).providerAgent).toBe(kiro)
+  })
+
+  it('adds the fields of the native protocol, and keeps a falsy value that the protocol states', () => {
+    const readModelContext = () => ''
+    const context = managedNativeContext(fixtures, kiro, { readModelContext, answerToolNames: [] })
+    expect(context.readModelContext).toBe(readModelContext)
+    expect(context.answerToolNames).toEqual([])
+    expect(context.provider).toBe(AgentProvider.KIRO)
+  })
+
+  it('adds no protocol field that the provider does not state', () => {
+    expect(Object.keys(managedNativeContext(fixtures, kiro)).sort()).toEqual(['leapmuxServer', 'modelScript', 'page', 'provider', 'providerAgent', 'workspaceId'])
+  })
 })
 
 describe('nativeScenarioModelContextText', () => {

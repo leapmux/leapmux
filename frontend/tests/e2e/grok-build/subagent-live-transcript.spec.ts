@@ -1,9 +1,10 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { grokChildTurn } from './childScenario'
+import { GROK_AGENT } from './scenarios'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.

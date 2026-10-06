@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { AMP_AGENT, AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
+import { AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
@@ -15,7 +15,7 @@ import { openWorkspace } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
 import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
-import { nativeContext } from './scenarios'
+import { AMP_AGENT, nativeContext } from './scenarios'
 
 ampTest('loads private native configuration and calls only the suite mock', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }, testInfo) => {
   void authenticatedAmpWorkspace

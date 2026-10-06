@@ -6,7 +6,8 @@ import { expectRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT } from './scenarios'
 
 const KIRO = AgentProvider.KIRO
 

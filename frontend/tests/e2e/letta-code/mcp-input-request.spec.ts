@@ -1,9 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -12,19 +9,19 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelToolNames, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { lettaMcpCliToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, expectNoControlBanner, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { lettaTest } from '../letta-fixtures'
 import { mcpLettaTest, withRegisteredLettaMcp } from './fixtures'
 import { exerciseLettaMcpCatalog } from './mcpScenario'
-import { nativeContext } from './scenarios'
+import { LETTA_AGENT, nativeContext } from './scenarios'
 
 lettaTest('offers no project MCP input route in the actual native tool catalog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const workingDir = createTestDirectory('letta-code-project-form-')
+  const workingDir = newProviderWorkingDir(LETTA_AGENT, 'letta-code-project-form-')
   const receiptLog = join(workingDir, 'project-form-receipt.json')
   const server = writeMcpFormServer(workingDir, 'project-form.mjs', { receiptLog })
   writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.LETTA))
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, LETTA_AGENT, { workingDir })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await tabById(page, agentId).click()
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

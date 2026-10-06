@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { CODEWHALE_AGENT, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -9,7 +9,7 @@ import { nativeContext } from './scenarios'
 
 codewhaleTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openNativeAgent(context, CODEWHALE_AGENT, { directoryPrefix: 'native-code-execution-' })
+  await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
   const start = await modelScript.queue({ toolCalls: [codewhaleToolSearchToolCall('discover-native-executor', 'execute_tools')] }, { text: 'The native executor schema is loaded.' })
   await sendMessage(page, modelScript.prompt('Discover the native execute_tools schema.'))
   await modelScript.waitForSteps(start + 2)

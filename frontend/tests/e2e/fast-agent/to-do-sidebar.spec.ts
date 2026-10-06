@@ -1,7 +1,8 @@
-import { FAST_AGENT_AGENT, fastAgentTest, expect as fastExpect } from '../fastagent-fixtures'
+import { fastAgentTest, expect as fastExpect } from '../fastagent-fixtures'
 import { goalsAndTodosSection } from '../helpers/goalsAndTodos'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
+import { FAST_AGENT_AGENT } from './scenarios'
 
 fastAgentTest.describe('Fast Agent to-do support', () => {
   fastAgentTest('offers no native to-do command or tool in the launched coding agent', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

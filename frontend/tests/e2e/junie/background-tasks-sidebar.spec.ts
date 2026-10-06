@@ -7,8 +7,8 @@ import { backgroundBashToolCall, junieAnswerToolCall } from '../helpers/provider
 import { expectRunningChildCompletes } from '../helpers/runningChildProof'
 import { answerControl, assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
-import { runningChild } from './scenarios'
+import { expect, junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT, runningChild } from './scenarios'
 
 junieTest.describe('Junie subagents and background tasks', () => {
   const PROVIDER = AgentProvider.JUNIE

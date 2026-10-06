@@ -1,14 +1,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build tool execution', () => {
   // Always Approve, so no permission request stands between the scripted calls

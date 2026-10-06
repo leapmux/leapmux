@@ -4,8 +4,9 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
 import { KIRO_CHILD_AGENT, kiroChildTurn } from './childScenario'
+import { KIRO_AGENT } from './scenarios'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.

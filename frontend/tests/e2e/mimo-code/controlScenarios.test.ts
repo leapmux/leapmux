@@ -19,6 +19,7 @@ vi.mock('../helpers/nativeScenario', async (importOriginal) => {
 const scratchRoot = resolve(process.cwd(), '../.tmp')
 const context: ManagedNativeScenarioContext = {
   provider: AgentProvider.MIMO_CODE,
+  providerAgent: { provider: AgentProvider.MIMO_CODE, prefix: 'native-e2e' },
   workspaceId: 'mimo-control-unit',
   leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
   get page(): Page { throw new Error('Planning the MiMo control deletion must not access the browser.') },

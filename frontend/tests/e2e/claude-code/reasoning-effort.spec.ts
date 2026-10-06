@@ -8,23 +8,23 @@ import { claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, openSettingsMenu, settingsBar, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 import { claudeUltracodeEnabled } from './ultracodeRequest'
 
 /** The scenario context of the Claude Code agent that the separate Hub and Worker run. */
-function separateHubContext(fixtures: { page: Page, modelScript: ModelScript, separateHubWorker: SeparateServerInfo, authenticatedWorkspace: { workspaceId: string } }): ManagedNativeScenarioContext {
-  return {
+async function separateHubContext(fixtures: { page: Page, modelScript: ModelScript, separateHubWorker: SeparateServerInfo, authenticatedWorkspace: { workspaceId: string } }): Promise<ManagedNativeScenarioContext> {
+  return nativeContext({
     page: fixtures.page,
     modelScript: fixtures.modelScript,
     leapmuxServer: fixtures.separateHubWorker,
-    provider: AgentProvider.CLAUDE_CODE,
     workspaceId: fixtures.authenticatedWorkspace.workspaceId,
-  }
+  })
 }
 
 test.describe('Agent Settings', () => {
   test('sends the selected effort in the next native request', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
     await expect(settingsBar(page)).toBeVisible()
-    await exerciseNativeOption(separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+    await exerciseNativeOption(await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
       groupId: 'effort',
       value: 'high',
       nativeProof: request => expect(request.body).toMatchObject({ output_config: { effort: 'high' } }),
@@ -91,7 +91,7 @@ test.describe('Agent Settings', () => {
   test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
     await expect(settingsBar(page)).toBeVisible()
     // The isolated native CLI supports Ultracode and applies xhigh with its harness instruction.
-    await exerciseNativeOption(separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+    await exerciseNativeOption(await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
       groupId: 'effort',
       value: 'ultracode',
       prepare: async () => {
@@ -110,7 +110,7 @@ test.describe('Agent Settings', () => {
   // the new model offers it. Opus and Sonnet both offer xhigh in the installed CLI.
   test('a model switch keeps an effort that the new model supports', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
     await expect(settingsBar(page)).toBeVisible()
-    await exerciseModelSwitchKeepsOption(separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+    await exerciseModelSwitchKeepsOption(await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
       prepare: async () => {
         await chooseSettingsOption(page, 'model-opus[1m]')
         await expectSettingsChip(page, 'Opus')

@@ -90,6 +90,7 @@ function fixture(status = AgentStatus.ACTIVE) {
   })
   const context: ManagedNativeScenarioContext = {
     provider: agent.agentProvider,
+    providerAgent: { provider: agent.agentProvider, prefix: 'native-e2e' },
     workspaceId: 'resume-workspace',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: agent.workerId, agentEnv: { GEMINI_CLI_HOME: home } },
     page: Object.assign({} as Page, {

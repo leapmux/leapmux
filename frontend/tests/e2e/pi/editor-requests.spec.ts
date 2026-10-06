@@ -4,10 +4,11 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { openAgentViaAPI } from '../helpers/api'
 import { piEditorProbeToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { readEntry, storageKeys } from '../helpers/storage'
 import { composerEditor, controlBanner, controlButton, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
+import { PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 for (const scenario of [
@@ -19,7 +20,7 @@ for (const scenario of [
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     await page.setViewportSize({ width: 780, height: 1000 })
-    const directory = createTestDirectory('pi-editor-control-')
+    const directory = newProviderWorkingDir(PI_AGENT, 'pi-editor-control-')
     const receipt = join(directory, 'editor-receipt.txt')
     const providerPID = join(directory, 'provider.pid')
     await withMockPiModel(directory, leapmuxServer, async (settings) => {

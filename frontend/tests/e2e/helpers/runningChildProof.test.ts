@@ -330,6 +330,7 @@ describe('profiledChildOptions', () => {
   function context(): ManagedNativeScenarioContext {
     return {
       provider: AgentProvider.KILO,
+      providerAgent: { provider: AgentProvider.KILO, prefix: 'native-e2e' },
       workspaceId: 'profiled-child',
       modelScript: Object.assign({} as ModelScript, { prompt: (text: string) => `${text}\nMARKED` }),
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },

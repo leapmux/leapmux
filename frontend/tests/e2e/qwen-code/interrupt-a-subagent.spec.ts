@@ -3,7 +3,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
+import { QWEN_AGENT } from './scenarios'
 
 /**
  * The child tab interrupts only its actual native child. The parent must remain operational.

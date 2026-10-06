@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { qwenWorkflowToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectOpaqueNativeWorkflowResult } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
+import { nativeContext, QWEN_AGENT } from './scenarios'
 
 qwenTest.describe('Qwen Code workflow grouping', () => {
   qwenTest('shows one workflow row after its native child answers', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
@@ -34,7 +34,7 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
     await expectOpaqueNativeWorkflowResult(
-      { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE },
+      await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }),
       { ruleNames: ['the workflow child answers'], heading: 'Workflow' },
     )
   })
@@ -43,7 +43,7 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
 qwenTest('keeps two actual native workflow units inside one opaque workflow row', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const children = [
     { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.'), answer: 'FIRSTNATIVEWORKUNIT' },
     { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.'), answer: 'SECONDNATIVEWORKUNIT' },

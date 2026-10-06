@@ -2,8 +2,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
 import { kiroChildTurn } from './childScenario'
+import { KIRO_AGENT } from './scenarios'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.

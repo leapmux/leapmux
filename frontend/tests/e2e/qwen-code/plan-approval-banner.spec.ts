@@ -15,7 +15,8 @@ import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { answerPlanReview, assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
+import { QWEN_AGENT } from './scenarios'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 

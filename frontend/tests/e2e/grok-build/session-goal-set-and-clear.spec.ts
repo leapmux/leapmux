@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
+import { GROK_AGENT } from './scenarios'
 
 grokTest.describe('Grok Build session goal', () => {
   grokTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

@@ -10,19 +10,19 @@ import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piCodemodeToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { activateNativeCodemode } from './codemodeConfiguration'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 piTest('keeps the native codemode output path and exact preview after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-output-path-feature-codemode-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-output-path-feature-codemode-')
   const output = computedNativeToolOutput()
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
@@ -46,7 +46,7 @@ piTest('keeps the native codemode output path and exact preview after reload', a
 })
 
 piTest('keeps the native real MCP output path and exact preview after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-output-path-feature-mcp-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-output-path-feature-mcp-')
   const receiptLog = join(directory, 'native-output-path-mcp-receipt.json')
   const server = writeMcpResultServer(directory, { receiptLog }).script
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { result_probe: { command: process.execPath, args: [server] } })

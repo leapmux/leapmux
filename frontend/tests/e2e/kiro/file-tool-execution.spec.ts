@@ -7,8 +7,8 @@ import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../hel
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-import { nativeContext } from './scenarios'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro tool execution', () => {
   kiroTest('reads, edits and writes a file, runs a command, and keeps a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

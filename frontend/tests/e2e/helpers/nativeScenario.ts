@@ -3,6 +3,7 @@ import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '../../../sr
 import type { ServerInfo } from '../fixtures'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
+import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
 import { AgentStatus, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
@@ -53,14 +54,46 @@ export interface ManagedNativeScenarioContext extends NativeScenarioContext {
   leapmuxServer: Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId'>
     & Partial<Pick<ServerInfo, 'agentEnv' | 'adminUserId' | 'mockModelUrl'>>
   workspaceId: string
+  /**
+   * How an agent of `provider` opens: its prefix, and the rule that creates its working directory. Its own `provider`
+   * field holds the same value as `provider`. A helper that opens a new native agent creates the working directory by
+   * this rule (`newNativeWorkingDir` in `./nativeAgentOpen.ts`). A provider that reads configuration from the git
+   * repository around its directory then opens in a repository of its own.
+   */
+  providerAgent: ProviderAgent
 }
 
 /**
  * The fixtures that the `nativeContext` of a provider directory builds its context from.
- * The provider sets every other field: `provider`, and each of `textStep`, `answerToolNames`, `readToolResult`, and
- * `readModelContext` that its native protocol needs.
+ * The provider supplies every other field through {@link managedNativeContext}: its `ProviderAgent`, and the fields
+ * of {@link NativeProtocol} that its native protocol needs.
  */
 export type NativeContextFixtures = Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'leapmuxServer' | 'workspaceId'>
+
+/**
+ * The fields of a scenario context that the native protocol of a provider states:
+ *
+ * - `textStep`.
+ * - `answerToolNames`.
+ * - `readToolResult`.
+ * - `readModelContext`.
+ * - `readConversationTurns`.
+ *
+ * A provider states only the fields that its protocol needs.
+ */
+export type NativeProtocol = Omit<NativeScenarioContext, 'page' | 'modelScript' | 'provider'>
+
+/**
+ * Build the managed scenario context of the provider of `providerAgent`, for the `nativeContext` of a provider
+ * directory. The context takes its `provider` from `providerAgent`, so the two cannot differ.
+ */
+export function managedNativeContext(
+  fixtures: NativeContextFixtures,
+  providerAgent: ProviderAgent,
+  protocol: NativeProtocol = {},
+): ManagedNativeScenarioContext {
+  return { ...fixtures, ...protocol, provider: providerAgent.provider, providerAgent }
+}
 
 /** Build a native answer while keeping provider decisions at the call site. */
 export function nativeTextStep(context: NativeScenarioContext, text: string): MockModelStep {

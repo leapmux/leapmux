@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { COMMAND_CODE_AGENT, commandCodeTest, expect } from '../command-code-fixtures'
+import { commandCodeTest, expect } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpProbeServer } from '../helpers/mcpProbeServer'
@@ -14,7 +14,7 @@ import { expectNoControlBanner, sendMessage } from '../helpers/ui'
 import { newProviderWorkingDir } from '../helpers/workspace'
 import { createMcpCloseControl } from './mcpCloseControl'
 import { withCommandCodeMcp } from './mcpScenarios'
-import { nativeContext } from './scenarios'
+import { COMMAND_CODE_AGENT, nativeContext } from './scenarios'
 
 commandCodeTest('ignores the actual unsupported MCP input request and ends its tool after a controlled server close', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

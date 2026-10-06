@@ -17,7 +17,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { CODEWHALE_AGENT, nativeContext } from './scenarios'
 
 codewhaleTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask', classify: codewhaleExtractControl })
@@ -32,7 +32,7 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
     workerName: 'Codewhale project configuration',
     env: { LEAPMUX_CODEWHALE_DEFAULT_EFFORT: '' },
   }, async ({ server }) => {
-    await withAgentWorkspace(server, { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-project-config' }, async ({ workspaceId }) => {
+    await withAgentWorkspace(server, { ...CODEWHALE_AGENT, prefix: 'codewhale-project-config' }, async ({ workspaceId }) => {
       await openWorkspace(page, workspaceId)
       const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
       const baselineAgent = await currentNativeAgent(context)
@@ -115,7 +115,7 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
       workerName: 'Codewhale global configuration control',
       env: { LEAPMUX_CODEWHALE_DEFAULT_EFFORT: '', CODEWHALE_CONFIG_PATH: globalConfig },
     }, async ({ server }) => {
-      await withAgentWorkspace(server, { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-global-config' }, async ({ workspaceId }) => {
+      await withAgentWorkspace(server, { ...CODEWHALE_AGENT, prefix: 'codewhale-global-config' }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
         const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
         expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'effort')?.currentValue).toBe('auto')

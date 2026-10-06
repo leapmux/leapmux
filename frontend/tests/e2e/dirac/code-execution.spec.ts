@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { expect } from '@playwright/test'
-import { DIRAC_AGENT, diracTest } from '../dirac-fixtures'
+import { diracTest } from '../dirac-fixtures'
 import { nativeCodeExecutionSchema, openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -14,7 +14,7 @@ import { nativeContext } from './scenarios'
 
 diracTest('executes native scripts with computed, failed, and empty output after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const catalog = await openNativeCatalogTurn(context, DIRAC_AGENT, { directoryPrefix: 'dirac-native-script-' })
+  const catalog = await openNativeCatalogTurn(context, { directoryPrefix: 'dirac-native-script-' })
   nativeCodeExecutionSchema(catalog, 'execute_command', { script: 'string', language: 'string' })
   const agent = await currentNativeAgent(context)
   const marker = uniqueMarker('DIRACSCRIPT')

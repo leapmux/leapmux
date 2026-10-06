@@ -301,7 +301,7 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
         body: { messages: [{ role: 'tool', tool_call_id: trip.resultCallId, content: trip.body }] },
       }),
     } as unknown as ModelScript
-    return { page, modelScript, provider: AgentProvider.GOOSE, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '', ...(adminUserId === undefined ? {} : { adminUserId }) } }
+    return { page, modelScript, provider: AgentProvider.GOOSE, providerAgent: { provider: AgentProvider.GOOSE, prefix: 'native-e2e' }, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '', ...(adminUserId === undefined ? {} : { adminUserId }) } }
   }
 
   it('approves the tool, fills the form, and submits it, and returns the request after the call', async () => {

@@ -1,12 +1,13 @@
 import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
 import { grokChildTurn } from './childScenario'
+import { GROK_AGENT } from './scenarios'
 
 grokTest.describe('Grok Build workflow grouping', () => {
   grokTest('groups a native Rhai workflow with its child', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

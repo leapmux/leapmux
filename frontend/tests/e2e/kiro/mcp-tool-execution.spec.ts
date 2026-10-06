@@ -6,9 +6,9 @@ import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
 import { writeKiroProjectMcpServers } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest('runs the actual project MCP tool and receives its native service result', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const directory = createTestDirectory('kiro-mcp-echo-')

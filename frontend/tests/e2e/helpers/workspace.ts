@@ -64,7 +64,12 @@ type WorkspaceServer = WorkspaceHub & AgentServer
 
 /**
  * How the agents of one provider open in the E2E suite.
- * A provider fixture file states it once, and both its workspace fixtures and `openProviderAgent` read it.
+ * The scenario module of the provider directory (`<provider>/scenarios.ts`) states it once. These read it:
+ *
+ * - The workspace fixtures of the provider fixture file.
+ * - The scenario context that `managedNativeContext` builds (`./nativeScenario.ts`). Each helper that opens a native
+ *   agent of the context reads it there (`newNativeWorkingDir` in `./nativeAgentOpen.ts`).
+ * - `openProviderAgent` and `newProviderWorkingDir`.
  */
 export interface ProviderAgent {
   provider: AgentProvider

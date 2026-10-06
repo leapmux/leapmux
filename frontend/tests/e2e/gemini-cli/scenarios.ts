@@ -1,12 +1,13 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { ProviderAgent } from '../helpers/workspace'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { currentNativeAgent, nativeModelLastUserText } from '../helpers/nativeScenario'
+import { currentNativeAgent, managedNativeContext, nativeModelLastUserText } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
@@ -14,9 +15,12 @@ import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { exerciseCompactAsModelText } from '../helpers/unsupportedCompaction'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
+/** How a Gemini CLI agent opens. */
+export const GEMINI_AGENT: ProviderAgent = { provider: AgentProvider.GEMINI_CLI, prefix: 'gemini-e2e' }
+
 /** Build the scenario context of Gemini CLI. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.GEMINI_CLI }
+  return managedNativeContext(fixtures, GEMINI_AGENT)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

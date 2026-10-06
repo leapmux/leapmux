@@ -63,6 +63,7 @@ vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider,
 const scratchRoot = resolve(process.cwd(), '../.tmp')
 const context: ManagedNativeScenarioContext = {
   provider: AgentProvider.CLAUDE_CODE,
+  providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' },
   workspaceId: 'native-permission-unit',
   leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
   get page(): Page { throw new Error('The native permission plan must not access the browser.') },
@@ -190,7 +191,7 @@ function flowContext(): { context: ManagedNativeScenarioContext, request: MockMo
     },
   } as unknown as ModelScript
   // The shared context throws on a browser or model access, so a spread of it would throw. Copy its plain fields.
-  return { context: { provider: context.provider, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }, request }
+  return { context: { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }, request }
 }
 
 describe('exerciseNativePermissionDecision', () => {
@@ -335,7 +336,7 @@ describe('exerciseAllowThenFeedbackRejection', () => {
         return { protocol: 'anthropic-messages', path: '/v1/messages', body }
       },
     } as unknown as ModelScript
-    return { provider: context.provider, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }
+    return { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }
   }
 
   afterEach(() => {

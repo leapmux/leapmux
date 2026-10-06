@@ -1,12 +1,17 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseConversationContext } from '../helpers/nativeConversation'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+
+/** How a Claude Code agent opens. */
+export const CLAUDE_AGENT: ProviderAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'claude-e2e' }
 
 /** Build the scenario context of Claude Code. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.CLAUDE_CODE }
+  return managedNativeContext(fixtures, CLAUDE_AGENT)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

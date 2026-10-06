@@ -1,22 +1,18 @@
 /**
  * Junie e2e test fixtures.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_RESPONSES_MODEL } from './helpers/mockAgentEnvironment'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { JUNIE_HOUSEKEEPING_RULES } from './junie/housekeeping'
-import { nativeContext } from './junie/scenarios'
+import { JUNIE_AGENT, nativeContext } from './junie/scenarios'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const JUNIE_E2E_SKIP_REASON: string | null = missingBinaryReason('junie', 'Junie E2E requires a junie CLI on PATH')
-
-/** How a Junie agent opens. */
-export const JUNIE_AGENT: ProviderAgent = { provider: AgentProvider.JUNIE, prefix: 'junie-e2e' }
 
 export const junieTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedJunieWorkspace: AgentWorkspace

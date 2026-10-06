@@ -8,14 +8,14 @@ import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, piMcpResourceToolCall, readToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { expectDecodedImageInBubble, expectMcpToolImage, expectPngInRequest, expectToolRowImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
 import { chatScrollContainer, openWorkspace, toolCallRow } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
-import { nativeContext } from './scenarios'
+import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 piTest('shows the picture returned by Read', async ({ native, authenticatedPiWorkspace }) => {
@@ -30,7 +30,7 @@ piTest('shows the picture returned by Read', async ({ native, authenticatedPiWor
 })
 
 piTest('shows one decoded native MCP image and resource image after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-native-mcp-images-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-images-')
   const imageName = writeToolImage(directory, 'native-pi-mcp')
   const image = writeMcpImageServer(directory, imageName)
   const resource = writeMcpResultServer(directory, { receiptLog: join(directory, 'resource-receipt.json'), imagePath: join(directory, imageName) }).script

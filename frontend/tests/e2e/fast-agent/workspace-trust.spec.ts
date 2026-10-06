@@ -7,7 +7,7 @@ import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-import { createGitRepo } from '../helpers/worktree'
+import { ensureGitRepositoryRoot } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
 fastAgentTest('starts with a real project configuration and no native workspace trust barrier', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -15,7 +15,7 @@ fastAgentTest('starts with a real project configuration and no native workspace 
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: ({ directory }) => {
-        createGitRepo(directory, '.')
+        ensureGitRepositoryRoot(directory)
         const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'workspace-mcp-receipt.json') })
         writeFileSync(join(directory, 'fast-agent.yaml'), `mcp:\n  servers:\n    trust_probe:\n      command: ${JSON.stringify(process.execPath)}\n      args: [${JSON.stringify(script)}]\n`)
       },

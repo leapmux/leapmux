@@ -1,18 +1,23 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { HeldNativeChild } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { gitRepositoryWorkingDir } from '../helpers/worktree'
+
+/** How a Command Code agent opens. Its working directory is the root of a git repository of its own. */
+export const COMMAND_CODE_AGENT: ProviderAgent = { provider: AgentProvider.COMMAND_CODE, prefix: 'command-code-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** Build the scenario context of Command Code. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.COMMAND_CODE }
+  return managedNativeContext(fixtures, COMMAND_CODE_AGENT)
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {

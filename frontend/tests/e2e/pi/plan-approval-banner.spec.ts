@@ -5,13 +5,13 @@ import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
+import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeAgentById, nativeModelInstructionText } from '../helpers/nativeScenario'
 import { onlyObservedNativeControl, readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { answerPlanReview, controlBanner, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 import { exercisePiFreshPlanSession } from './planScenario'
@@ -29,7 +29,7 @@ piTest('plan-approval-banner: tracks a fresh Pi implementation session after pla
 // with the plan-mode contract and without the Normal-mode contract that an exit adds.
 piTest('rejects the native Pi plan review and keeps planning in the same session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-plan-stay-'), agentOpenOptions(context.provider))
+  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, newNativeWorkingDir(context, 'renderer-pi-plan-stay-'), agentOpenOptions(context.provider))
   await retryUntilPass(async () => {
     expect((await nativeAgentById(context, agentId))?.agentSessionId ?? '', 'the Worker starts the native session of the new agent').not.toBe('')
   })

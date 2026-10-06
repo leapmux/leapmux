@@ -1,11 +1,11 @@
 import { existsSync } from 'node:fs'
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, writeToolImage } from '../helpers/toolImages'
 import { answerControl, openWorkspace, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { FAST_AGENT_AGENT, nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent images in tool results', () => {
   fastAgentTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

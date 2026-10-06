@@ -1,9 +1,14 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { ampToolResultReader } from './toolResult'
+
+/** How an Amp agent opens. */
+export const AMP_AGENT: ProviderAgent = { provider: AgentProvider.AMP, prefix: 'amp-e2e' }
 
 /**
  * Build the scenario context of Amp, with every field that its native protocol needs.
@@ -11,7 +16,7 @@ import { ampToolResultReader } from './toolResult'
  * result through that thread.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  const context: ManagedNativeScenarioContext = { ...fixtures, provider: AgentProvider.AMP }
+  const context = managedNativeContext(fixtures, AMP_AGENT)
   context.readToolResult = ampToolResultReader(context)
   return context
 }

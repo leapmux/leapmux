@@ -35,6 +35,7 @@ describe('runningChild', () => {
     }
     const context: ManagedNativeScenarioContext = {
       provider: AgentProvider.LETTA,
+      providerAgent: { provider: AgentProvider.LETTA, prefix: 'native-e2e' },
       modelScript,
       workspaceId: 'unit-letta-workspace',
       get page(): never {

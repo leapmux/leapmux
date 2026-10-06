@@ -1,9 +1,9 @@
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { exerciseThinkingRows } from '../helpers/thinkingRows'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { FAST_AGENT_AGENT, nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent thinking and context usage', () => {
   fastAgentTest('draws the reasoning in a thought band', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

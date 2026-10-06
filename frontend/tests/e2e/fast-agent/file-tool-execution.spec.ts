@@ -1,12 +1,12 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { exerciseFileToolExecution, expectFileDiff } from '../helpers/nativeToolExecution'
 import { bashToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { answerControl, expectNoControlBanner, openWorkspace, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { FAST_AGENT_AGENT, nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent tool execution', () => {
   fastAgentTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

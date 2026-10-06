@@ -2,8 +2,8 @@ import { expect } from '@playwright/test'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
-import { nativeContext } from './scenarios'
+import { qwenTest } from '../qwen-fixtures'
+import { nativeContext, QWEN_AGENT } from './scenarios'
 
 qwenTest.describe('Qwen Code control requests', () => {
   qwenTest('answers a question through its own reply field', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

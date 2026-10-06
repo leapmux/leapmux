@@ -5,14 +5,13 @@ import { invokeNativeMcpTool, withNativeMcpFormAgent } from '../helpers/mcpExecu
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
 import { nativeContext } from './scenarios'
 
 qwenTest('returns the actual native MCP unsupported-method reply without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const configurationPath = join(leapmuxServer.agentEnv.QWEN_HOME!, 'settings.json')
   await withNativeMcpFormAgent(context, {
-    providerAgent: QWEN_AGENT,
     directoryPrefix: 'qwen-native-mcp-refusal-',
     configurationPath,
     configuration: (server) => {

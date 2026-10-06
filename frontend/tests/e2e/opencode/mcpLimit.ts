@@ -11,9 +11,9 @@ import { openAgentViaAPI } from '../helpers/api'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { assertMcpServerName } from '../helpers/mcpProbeServer'
+import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
 import { withNativeStartupWorker } from '../helpers/nativeStartupWorker'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 
@@ -41,7 +41,8 @@ export async function exerciseOpencodeMcpInputLimit(
   if (!original)
     throw new Error('The native MCP limit requires its isolated inline configuration.')
   const launch = resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: options.binaryName, holdWhen: ['acp'] })
-  const directory = createTestDirectory('opencode-family-mcp-limit-')
+  // The agent works in the directory of its form server, which follows the rule of the provider of the context.
+  const directory = newNativeWorkingDir(context, 'opencode-family-mcp-limit-')
   const receiptLog = join(directory, 'native-mcp-receipt.json')
   const server = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
   const configuration = opencodeMcpServerConfiguration(original, server)

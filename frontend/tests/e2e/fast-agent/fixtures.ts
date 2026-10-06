@@ -2,13 +2,13 @@ import type { ServerInfo } from '../fixtures'
 import type { WorkspaceFixture } from '../helpers/workspace'
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { fastAgentTest } from '../fastagent-fixtures'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
+import { FAST_AGENT_AGENT } from './scenarios'
 
 interface FastAgentModesWorkspace extends WorkspaceFixture {
   server: ServerInfo
@@ -33,7 +33,7 @@ export const fastAgentModesTest = fastAgentTest.extend<{ fastAgentModesWorkspace
       env: { FAST_AGENT_HOME: home },
     }, async ({ server }) => {
       await withAgentWorkspace(server, {
-        provider: AgentProvider.FAST_AGENT,
+        ...FAST_AGENT_AGENT,
         prefix: 'fast-agent-modes',
         openOptions: { optionValues: { permissionMode: 'reader' } },
       }, async (workspace) => {

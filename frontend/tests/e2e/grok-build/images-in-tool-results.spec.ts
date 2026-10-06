@@ -1,14 +1,14 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
 import { answerControl, expectNoControlBanner, expectSettingsOptionChosen, openWorkspace, waitForControlBanner } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build images in tool results', () => {
   // Always Approve lets the scripted calls run without permission requests. LeapMux owns this option because Grok does not report it.

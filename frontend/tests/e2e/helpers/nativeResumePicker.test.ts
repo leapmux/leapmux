@@ -232,7 +232,7 @@ function pickerFixtures(): ResumePickerFixtures {
 function nativeContext(fields: Partial<ManagedNativeScenarioContext> = {}): ResumePickerNativeContext {
   return async (fixtures) => {
     picker.events.push(`native-context:${fixtures.workspaceId}`)
-    return { ...fixtures, provider: AgentProvider.CODEX, ...fields }
+    return { ...fixtures, provider: AgentProvider.CODEX, providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' }, ...fields }
   }
 }
 

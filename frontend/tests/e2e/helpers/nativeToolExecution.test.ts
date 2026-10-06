@@ -835,6 +835,7 @@ describe('exerciseShellToolExecution', () => {
     const context: ManagedNativeScenarioContext = {
       page: guardedBrowserHandle<Page>({}),
       provider: AgentProvider.MIMO_CODE,
+      providerAgent: { provider: AgentProvider.MIMO_CODE, prefix: 'native-e2e' },
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
       workspaceId: 'shell-unit',
       modelScript: {

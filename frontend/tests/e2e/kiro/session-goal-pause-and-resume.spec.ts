@@ -20,9 +20,9 @@ import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
 import { kiroGoalCancellation, kiroGoalExecutionId, kiroGoalSessionId, readKiroGoalMessages } from './goalReceipt'
-import { nativeContext } from './scenarios'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 /** The word of the reason that Kiro states when a goal reaches its round limit. */
 const KIRO_ROUND_LIMIT_WORD = 'maxIterations'

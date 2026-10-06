@@ -1,9 +1,14 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { cursorModelTurns } from './modelTurns'
+
+/** How a Cursor agent opens. */
+export const CURSOR_AGENT: ProviderAgent = { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e' }
 
 /**
  * Build the scenario context of Cursor, with every field that its native protocol needs.
@@ -11,7 +16,7 @@ import { cursorModelTurns } from './modelTurns'
  * holds.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.CURSOR, readConversationTurns: cursorModelTurns }
+  return managedNativeContext(fixtures, CURSOR_AGENT, { readConversationTurns: cursorModelTurns })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

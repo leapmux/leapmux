@@ -1,8 +1,8 @@
 import { exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
-import { nativeContext } from './scenarios'
+import { expect, junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie questions', () => {
   junieTest('ask_user raises a permission-shaped choice', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

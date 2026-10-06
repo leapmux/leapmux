@@ -3,9 +3,9 @@ import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { listProcesses, withDescendants } from '../helpers/processTree'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
 import { kiroEngineProcesses, kiroRunProcesses } from './processOwnership'
-import { nativeContext } from './scenarios'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('kiro process lifetime', () => {
   kiroTest('stops the whole process tree when the agent closes', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

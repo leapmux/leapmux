@@ -1,24 +1,22 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { writeMcpNameFormServer } from '../helpers/mcpNameFormServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { answerControl, assistantBubbles, expectNoControlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
-import { createGitRepo } from '../helpers/worktree'
-import { nativeContext } from './scenarios'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
   // A repository that holds its own MCP server is one Grok asks about before it
   // loads anything from it. Trusting it loads the server, and the server's form
   // then round-trips through Grok's own elicitation request.
   grokTest('trusts a repository, loads its MCP server and answers the server\'s form', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const repository = createGitRepo(createTestDirectory('grok-trust-'), 'repo')
+    const repository = newProviderWorkingDir(GROK_AGENT, 'grok-trust-')
     const name = 'grok-e2e'
     const server = writeMcpNameFormServer(repository, { serverName: 'form_probe', expectedName: name })
     writeFileSync(join(repository, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))

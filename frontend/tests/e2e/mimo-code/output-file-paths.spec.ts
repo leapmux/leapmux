@@ -10,18 +10,17 @@ import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { presentPreviewMarkers, proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
-import { expect, MIMO_AGENT, mimoTest } from '../mimo-fixtures'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { expect, mimoTest } from '../mimo-fixtures'
 import { controlledMiMoOutputFileProducer } from './controlledOutputProducer'
 import { readMiMoNativeOutput } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { MIMO_AGENT, nativeContext } from './scenarios'
 
 /** Prove native file paths and the original preview for both producer lifecycles. */
 async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo: TestInfo, mode: 'quick-exit' | 'observed-size') {
   const { page, leapmuxServer } = context
-  const workingDir = createTestDirectory('native-output-path-mimo-')
+  const workingDir = newProviderWorkingDir(MIMO_AGENT, 'native-output-path-mimo-')
   const { agentId: openedAgentId } = await openProviderAgent(leapmuxServer, context.workspaceId, MIMO_AGENT, { workingDir })
   await openWorkspace(page, context.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })

@@ -8,8 +8,8 @@ import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../hel
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
-import { nativeContext } from './scenarios'
+import { qwenTest } from '../qwen-fixtures'
+import { nativeContext, QWEN_AGENT } from './scenarios'
 
 qwenTest.describe('Qwen Code tool execution', () => {
   // YOLO, so no permission request stands between the scripted calls and the

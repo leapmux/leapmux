@@ -1,9 +1,10 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { grokChildTurn } from './childScenario'
+import { GROK_AGENT } from './scenarios'
 
 /**
  * The child tab interrupts only its actual native child. The parent must remain operational.

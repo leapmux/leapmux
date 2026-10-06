@@ -19,9 +19,10 @@ import { isAlive } from '../helpers/processTree'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
-import { withTestWorkspace } from '../helpers/workspace'
+import { newProviderWorkingDir, withTestWorkspace } from '../helpers/workspace'
 import { lettaTest } from '../letta-fixtures'
 import { configureLettaMcp } from './mcpConfiguration'
+import { LETTA_AGENT } from './scenarios'
 
 export interface PrivateMcpLettaWorkspace extends WorkspaceFixture {
   server: ServerInfo
@@ -68,7 +69,7 @@ export const mcpLettaTest = lettaTest.extend<{ privateMcpLettaWorkspace: Private
         },
       }, async ({ server }) => {
         await withTestWorkspace(server, 'letta-mcp-private', async (workspace) => {
-          const workingDir = createTestDirectory('letta-mcp-native-wd-')
+          const workingDir = newProviderWorkingDir(LETTA_AGENT, 'letta-mcp-native-wd-')
           const agentId = await openMcpLettaAgent(server, workspace.workspaceId, workingDir)
           await loginViaToken(page, server.adminToken)
           await openWorkspace(page, workspace.workspaceId)

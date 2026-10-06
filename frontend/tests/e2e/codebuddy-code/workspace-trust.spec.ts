@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-import { createGitRepo } from '../helpers/worktree'
+import { ensureGitRepositoryRoot } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
 codebuddyTest('starts with a real project configuration and no native workspace trust barrier', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -13,7 +13,7 @@ codebuddyTest('starts with a real project configuration and no native workspace 
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: ({ directory }) => {
-        createGitRepo(directory, '.')
+        ensureGitRepositoryRoot(directory)
         // The hook writes this file before it reads stdin, so a hook that ran leaves the file even when it received no JSON.
         const executed = join(directory, 'workspace-configuration-marker')
         const program = join(directory, 'workspace-hook.cjs')

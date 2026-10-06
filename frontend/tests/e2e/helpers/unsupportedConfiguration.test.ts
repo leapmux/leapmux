@@ -58,7 +58,7 @@ function fakeContext() {
       live.events.push('reload')
     },
   } as unknown as Page
-  return { page, modelScript: {} as never, provider: AgentProvider.PI, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: 'workspace' }
+  return { page, modelScript: {} as never, provider: AgentProvider.PI, providerAgent: { provider: AgentProvider.PI, prefix: 'native-e2e' }, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: 'workspace' }
 }
 
 const MODEL_ONLY = [{ id: 'model', label: 'Model' }]

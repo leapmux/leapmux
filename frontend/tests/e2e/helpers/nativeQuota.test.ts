@@ -143,6 +143,7 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<Mock
           page,
           modelScript: script,
           provider: AgentProvider.GITHUB_COPILOT,
+          providerAgent: { provider: AgentProvider.GITHUB_COPILOT, prefix: 'native-e2e' },
           workspaceId: 'quota-unit-workspace',
           leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused-token', workerId: 'unused-worker' },
         }

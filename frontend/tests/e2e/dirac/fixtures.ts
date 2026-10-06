@@ -16,8 +16,9 @@ import { withNativeWorker } from '../helpers/nativeWorker'
 import { isAlive } from '../helpers/processTree'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace } from '../helpers/ui'
-import { withTestWorkspace } from '../helpers/workspace'
+import { newProviderWorkingDir, withTestWorkspace } from '../helpers/workspace'
 import { readDiracMcpSessionObservation, writeDiracMcpWrapper } from './mcpConfiguration'
+import { DIRAC_AGENT } from './scenarios'
 
 interface AnthropicDiracWorkspace extends WorkspaceFixture {
   server: ServerInfo
@@ -56,7 +57,7 @@ export const anthropicDiracTest = diracTest.extend<{
       },
     }, async ({ server }) => {
       await withTestWorkspace(server, 'dirac-anthropic', async (workspace) => {
-        const workingDir = createTestDirectory('dirac-anthropic-wd-')
+        const workingDir = newProviderWorkingDir(DIRAC_AGENT, 'dirac-anthropic-wd-')
         const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, {
           agentProvider: AgentProvider.DIRAC,
           model: anthropicModel,
@@ -105,7 +106,7 @@ export const mcpDiracTest = diracTest.extend<{ configuredMcpDiracWorkspace: Conf
         },
       }, async ({ server }) => {
         await withTestWorkspace(server, 'dirac-mcp-private', async (workspace) => {
-          const workingDir = createTestDirectory('dirac-mcp-native-wd-')
+          const workingDir = newProviderWorkingDir(DIRAC_AGENT, 'dirac-mcp-native-wd-')
           const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC))
           await loginViaToken(page, server.adminToken)
           await openWorkspace(page, workspace.workspaceId)

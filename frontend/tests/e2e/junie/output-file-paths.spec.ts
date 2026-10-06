@@ -9,19 +9,18 @@ import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput, nativeOutputFileCommand } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { expect, junieTest } from '../junie-fixtures'
 import { waitForJunieOutputFilePaths } from './outputFilePathReadiness'
 import { junieNativeNoticePath, readJunieNativeOutputPaths } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 import { junieNativeOutputFileCallId } from './toolCallIdentity'
 
 junieTest('keeps the exact native command preview and pointer-only file path after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const workingDirectory = createTestDirectory('native-path-junie-')
+  const workingDirectory = newProviderWorkingDir(JUNIE_AGENT, 'native-path-junie-')
   await openProviderAgent(leapmuxServer, context.workspaceId, JUNIE_AGENT, { workingDir: workingDirectory, optionValues: { brave_mode: 'on' } })
   await openWorkspace(page, context.workspaceId)
   const gate = `junie-native-path-final-${randomUUID()}`

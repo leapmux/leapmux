@@ -1,13 +1,12 @@
 import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { getGlobalState } from '../helpers/server'
 import { loginViaToken, openWorkspace } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { DROID_AGENT, nativeContext } from './scenarios'
 
 /**
  * Register `server` in the private Factory home, then run `use` in a new Droid workspace whose agent starts with it.
@@ -27,7 +26,7 @@ export async function withDroidMcpWorkspace(
     content: JSON.stringify(mcpServersConfig(options.server)),
     runDir: getGlobalState().tmpDir,
   }, async () => {
-    await withAgentWorkspace(fixtures.leapmuxServer, { provider: AgentProvider.DROID, prefix: options.prefix }, async (workspace) => {
+    await withAgentWorkspace(fixtures.leapmuxServer, { ...DROID_AGENT, prefix: options.prefix }, async (workspace) => {
       await loginViaToken(fixtures.page, fixtures.leapmuxServer.adminToken)
       await openWorkspace(fixtures.page, workspace.workspaceId)
       await use(await nativeContext({ ...fixtures, workspaceId: workspace.workspaceId }))

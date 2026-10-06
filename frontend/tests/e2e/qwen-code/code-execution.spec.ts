@@ -4,7 +4,7 @@ import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { getGlobalState } from '../helpers/server'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
 import { nativeContext } from './scenarios'
 
 qwenTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -13,7 +13,7 @@ qwenTest('runs native code and retains computed output and script errors after r
   const content = JSON.stringify({ ...settings, tools: { ...settings.tools, codeModeOnly: true } })
   await withNativeConfigurationFile({ path: config, content, runDir: getGlobalState().tmpDir }, async () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, QWEN_AGENT, { directoryPrefix: 'native-code-execution-' })
+    await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {
         nativeCodeExecutionSchema(request, 'exec', { source: 'string' })

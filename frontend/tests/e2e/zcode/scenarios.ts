@@ -1,11 +1,16 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset } from '../helpers/ui'
 
+/** How a ZCode agent opens. */
+export const ZCODE_AGENT: ProviderAgent = { provider: AgentProvider.ZCODE, prefix: 'zcode-e2e' }
+
 /** Build the scenario context of ZCode. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.ZCODE }
+  return managedNativeContext(fixtures, ZCODE_AGENT)
 }
 
 /**

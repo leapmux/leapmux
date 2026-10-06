@@ -13,6 +13,7 @@ import { AgentInputState, AgentStatus, ListAgentInputQueueRequestSchema, ListAge
 import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from './api'
+import { newNativeWorkingDir } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
 import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
 import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
@@ -21,7 +22,6 @@ import { withNativeStartupWorker } from './nativeStartupWorker'
 import { isAlive, listProcesses } from './processTree'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
-import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { RELEASE_POLL_MS } from './toolOutputControl'
@@ -308,7 +308,7 @@ export async function exerciseSessionResume(
   const originalAnswerRows = await countOriginalAnswerRows(context, before.id, texts)
   const originalAnswerBubbles = await assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }).count()
   const server = context.leapmuxServer
-  const keeper = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-resume-keeper-'), {
+  const keeper = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, newNativeWorkingDir(context, 'native-resume-keeper-'), {
     ...agentOpenOptions(context.provider),
     title: 'Native resume keeper',
   })
@@ -336,7 +336,10 @@ export async function exerciseSessionResume(
   return { ...texts, request: resumedRequest }
 }
 
-/** Prove queued startup input or a real launch failure behind a native release boundary. */
+/**
+ * Prove queued startup input or a real launch failure behind a native release boundary.
+ * The agent opens on a private Worker, in a new working directory by the rule of the provider of the context.
+ */
 export async function exerciseAgentStartup(
   context: ManagedNativeScenarioContext,
   options: {
@@ -344,7 +347,6 @@ export async function exerciseAgentStartup(
     failed?: boolean
     prompt?: string
     answer?: string
-    workingDir?: string
     onReleased?: (context: ManagedNativeScenarioContext) => Promise<void>
     workerEnvironment?: (wrapper: NativeStartupWrapper) => NodeJS.ProcessEnv
   },
@@ -359,7 +361,7 @@ export async function exerciseAgentStartup(
   await withNativeStartupWorker(context, options.launch, { failRuntime: options.failed ?? false, ...(options.workerEnvironment ? { workerEnvironment: options.workerEnvironment } : {}) }, async (workerId, wrapper) => {
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
     const server = privateContext.leapmuxServer
-    const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, workerId, context.workspaceId, options.workingDir ?? createTestDirectory('native-startup-workspace-'), {
+    const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, workerId, context.workspaceId, newNativeWorkingDir(context, 'native-startup-workspace-'), {
       ...agentOpenOptions(context.provider),
       title: 'Controlled native startup',
     })

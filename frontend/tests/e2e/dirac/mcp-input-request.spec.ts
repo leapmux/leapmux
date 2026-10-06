@@ -1,27 +1,24 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, openWorkspace, tabById } from '../helpers/ui'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { mcpDiracTest } from './fixtures'
 import { readDiracMcpSessionObservation } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { DIRAC_AGENT, nativeContext } from './scenarios'
 
 diracTest('offers no project MCP input route in the actual native tool catalog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const workingDir = createTestDirectory('dirac-project-form-')
+  const workingDir = newProviderWorkingDir(DIRAC_AGENT, 'dirac-project-form-')
   const receiptLog = join(workingDir, 'project-form-receipt.json')
   const server = writeMcpFormServer(workingDir, 'project-form.mjs', { receiptLog })
   writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC))
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, { workingDir })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await tabById(page, agentId).click()
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

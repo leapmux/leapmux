@@ -5,16 +5,21 @@ import type { ModelScript } from './modelScriptFixture'
 import type { InterruptTurnOptions, NativeResumeEvidence } from './nativeLifecycle'
 import type { NativeResumeIdentity, NativeResumeTexts } from './nativeResume'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { NativeStartupWrapper } from './nativeStartupWrapper'
+import type { NativeWorker } from './nativeWorker'
+import type { ProviderAgent } from './workspace'
 import { Buffer } from 'node:buffer'
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
-import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
+import { agentOpenOptions } from '../agentSettings'
+import { exerciseAgentStartup, exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
 import { stopProcess } from './process'
+import { gitRepositoryWorkingDir } from './worktree'
 
 const resume = vi.hoisted(() => ({
   events: [] as string[],
@@ -23,13 +28,14 @@ const resume = vi.hoisted(() => ({
   priorSessionId: '1df17a24-50da-4090-a7e9-87b38feec450',
   send: vi.fn<(context: ManagedNativeScenarioContext, prompt: string, answer: string) => Promise<MockModelRequestRecord>>(),
   current: vi.fn<(context: ManagedNativeScenarioContext) => Promise<AgentInfo>>(),
-  open: vi.fn<() => Promise<string>>(),
+  open: vi.fn<typeof import('./api').openAgentViaAPI>(),
   close: vi.fn<() => Promise<{ failureMessage: string }>>(),
   directory: vi.fn<(prefix: string) => string>(),
   picker: vi.fn<(page: Page, options: { provider: AgentProvider, workingDir: string, sessionId: string }) => Promise<void>>(),
   countRows: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalAnswer'>) => Promise<number>>(),
   reopen: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, stored: NativeResumeIdentity, earlierAgentIds: readonly string[]) => Promise<AgentInfo>>(),
   conversation: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalPrompt' | 'originalAnswer' | 'resumedAnswer'>, originalAnswerRows: number) => Promise<void>>(),
+  startupWorker: vi.fn<typeof import('./nativeStartupWorker').withNativeStartupWorker>(),
 }))
 
 vi.mock('./api', async importOriginal => ({
@@ -55,6 +61,11 @@ vi.mock('./nativeResume', async importOriginal => ({
 vi.mock('./runDirectory', async importOriginal => ({
   ...await importOriginal<typeof import('./runDirectory')>(),
   createTestDirectory: resume.directory,
+}))
+// The controlled startup Worker is a real process. This file proves only where the startup scenario opens its agent.
+vi.mock('./nativeStartupWorker', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeStartupWorker')>(),
+  withNativeStartupWorker: resume.startupWorker,
 }))
 vi.mock('./workerTabs', async importOriginal => ({
   ...await importOriginal<typeof import('./workerTabs')>(),
@@ -151,7 +162,26 @@ function deferred() {
   return { promise, resolve }
 }
 
-function scenario() {
+/** How a Codex agent opens in these tests: in a fresh directory of the run, which `createTestDirectory` creates. */
+const CODEX: ProviderAgent = { provider: AgentProvider.CODEX, prefix: 'codex-e2e' }
+
+/** The directory where a test that creates real directories keeps them. Each such test removes its own. */
+const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
+
+/** Make a private run directory, and register it for removal after the test. */
+function scratchRun(directories: string[], prefix: string): string {
+  mkdirSync(SCRATCH_ROOT, { recursive: true })
+  const directory = mkdtempSync(join(SCRATCH_ROOT, prefix))
+  directories.push(directory)
+  return directory
+}
+
+/** The root of the git work tree around `directory`, as git reports it. */
+function gitTopLevel(directory: string): string {
+  return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, encoding: 'utf8' }).trim()
+}
+
+function scenario(providerAgent: ProviderAgent = CODEX) {
   const prior = create(AgentInfoSchema, {
     id: 'original-worker-agent',
     workerId: 'resume-unit-worker',
@@ -169,6 +199,7 @@ function scenario() {
   const context: ManagedNativeScenarioContext = {
     page,
     provider: AgentProvider.CODEX,
+    providerAgent,
     workspaceId: 'resume-unit-workspace',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: prior.workerId },
     get modelScript(): ModelScript { throw new Error('The resume unit fixture must not access a model.') },
@@ -261,11 +292,41 @@ async function holdEvidence(phase: ResumePhase) {
 }
 
 describe('exerciseSessionResume', () => {
+  const directories: string[] = []
+
   beforeEach(() => {
     vi.resetAllMocks()
     resume.events.length = 0
     resume.userRows.length = 0
     resume.assistantRows.length = 0
+  })
+
+  afterEach(() => {
+    for (const directory of directories.splice(0))
+      rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('opens the keeper with the pinned settings in a fresh directory of the run for a provider with no rule', async () => {
+    const { context } = scenario()
+    await exerciseSessionResume(context, options())
+    expect(resume.directory).toHaveBeenCalledExactlyOnceWith('native-resume-keeper-')
+    expect(resume.open).toHaveBeenCalledExactlyOnceWith('http://unused.invalid', 'controlled-token', 'resume-unit-worker', 'resume-unit-workspace', '/controlled/native-resume-keeper-', {
+      ...agentOpenOptions(AgentProvider.CODEX),
+      title: 'Native resume keeper',
+    })
+  })
+
+  it('opens the keeper of a provider with a git rule in the root of a git repository of its own', async () => {
+    const run = scratchRun(directories, 'native-resume-keeper-rule-')
+    const { context } = scenario({ ...CODEX, workingDir: gitRepositoryWorkingDir })
+    resume.directory.mockImplementation(prefix => mkdtempSync(join(run, prefix)))
+    await exerciseSessionResume(context, options())
+    const keeperDir = resume.open.mock.calls[0]?.[4]
+    if (keeperDir === undefined)
+      throw new Error('The keeper opened in no stated directory.')
+    expect(basename(dirname(keeperDir))).toMatch(/^native-resume-keeper-/)
+    // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.
+    expect(gitTopLevel(keeperDir)).toBe(realpathSync(keeperDir))
   })
 
   it('keeps the existing operation sequence when evidence is absent', async () => {
@@ -534,8 +595,69 @@ describe('exerciseSessionResume', () => {
   })
 })
 
+describe('exerciseAgentStartup', () => {
+  const directories: string[] = []
+  const launch = { binaryName: 'native-agent', executable: '/private/native-agent' }
+  /** The rest of the scenario drives a browser, so the open of the agent ends it in these tests. */
+  const opened = new Error('The unit test ends the controlled startup at the agent open.')
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    resume.open.mockRejectedValue(opened)
+    resume.startupWorker.mockImplementation(async (_context, _launch, _options, use) => {
+      await use('private-startup-worker', {} as NativeStartupWrapper, {} as NativeWorker<ManagedNativeScenarioContext['leapmuxServer']>)
+    })
+  })
+
+  afterEach(() => {
+    for (const directory of directories.splice(0))
+      rmSync(directory, { recursive: true, force: true })
+  })
+
+  /**
+   * A context of `providerAgent`. A failed startup queues no answer, so the scenario must not read the model.
+   * The model script is a proxy, not a getter, because the scenario copies the context with a spread, which reads
+   * each getter.
+   */
+  function startupContext(providerAgent: ProviderAgent): ManagedNativeScenarioContext {
+    const modelScript = new Proxy({}, {
+      get: () => { throw new Error('A failed startup must not access a model.') },
+    }) as ModelScript
+    return {
+      page: {} as Page,
+      provider: providerAgent.provider,
+      providerAgent,
+      workspaceId: 'startup-unit-workspace',
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'suite-worker' },
+      modelScript,
+    }
+  }
+
+  it('opens the startup agent of a provider with a git rule in the root of a git repository of its own', async () => {
+    const run = scratchRun(directories, 'native-startup-rule-')
+    resume.directory.mockImplementation(prefix => mkdtempSync(join(run, prefix)))
+    const qoder: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: gitRepositoryWorkingDir }
+    await expect(exerciseAgentStartup(startupContext(qoder), { launch, failed: true })).rejects.toBe(opened)
+    expect(resume.open).toHaveBeenCalledOnce()
+    const [hubUrl, adminToken, workerId, workspaceId, workingDir, request] = resume.open.mock.calls[0] ?? []
+    expect([hubUrl, adminToken, workerId, workspaceId]).toEqual(['http://unused.invalid', 'controlled-token', 'private-startup-worker', 'startup-unit-workspace'])
+    expect(request).toEqual({ ...agentOpenOptions(AgentProvider.QODER), title: 'Controlled native startup' })
+    if (workingDir === undefined)
+      throw new Error('The startup agent opened in no stated directory.')
+    expect(basename(dirname(workingDir))).toMatch(/^native-startup-workspace-/)
+    // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.
+    expect(gitTopLevel(workingDir)).toBe(realpathSync(workingDir))
+  })
+
+  it('opens the startup agent of a provider with no rule in a fresh directory of the run', async () => {
+    resume.directory.mockImplementation(prefix => `/controlled/${prefix}`)
+    await expect(exerciseAgentStartup(startupContext(CODEX), { launch, failed: true })).rejects.toBe(opened)
+    expect(resume.directory).toHaveBeenCalledExactlyOnceWith('native-startup-workspace-')
+    expect(resume.open.mock.calls[0]?.[4]).toBe('/controlled/native-startup-workspace-')
+  })
+})
+
 describe('heldToolScript', () => {
-  const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
   /** A deep working directory, longer than the ones the E2E run creates. */
   const deepWorkingDir = `/${'deep-directory-segment/'.repeat(6)}native-e2e-wd-AbCdEf`
   const marker = '0123456789abcdef0123456789abcdef'

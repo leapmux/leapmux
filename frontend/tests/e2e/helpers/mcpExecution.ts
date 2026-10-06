@@ -1,20 +1,18 @@
 import type { McpProbeServer } from './mcpProbeServer'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
-import type { ProviderAgent } from './workspace'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { MCP_ECHO_SERVER_NAME } from './mcpEchoServer'
 import { writeMcpFormServer } from './mcpFormServer'
 import { readMcpServerReceipt, waitForMcpToolListed } from './mcpServerReceipt'
-import { openNativeAgent, requireOwnProviderAgent } from './nativeAgentOpen'
+import { newNativeWorkingDir, openNativeAgent } from './nativeAgentOpen'
 import { withNativeConfigurationFile } from './nativeConfigurationFile'
 import { nativeToolOutcome } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { mcpToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
 import { applyPermissionPreset, assistantBubbles } from './ui'
-import { newProviderWorkingDir } from './workspace'
 
 /** One native MCP tool call: the server and tool that the agent calls, the call ID, and the arguments. */
 export interface NativeMcpToolCall {
@@ -71,9 +69,10 @@ export async function exerciseMcpEcho(context: NativeScenarioContext, value: str
 
 /** Where a provider reads its MCP servers, and how the file registers one server. */
 export interface NativeMcpFormAgentOptions {
-  /** How an agent of the provider opens. The new working directory follows the rule of the provider. */
-  providerAgent: ProviderAgent
-  /** The prefix of the new working directory of the agent. The probe server and its receipt live there too. */
+  /**
+   * The prefix of the new working directory of the agent, which follows the rule of the provider of the context. The
+   * probe server and its receipt live there too.
+   */
   directoryPrefix: string
   /** The native MCP configuration file, which the agent reads when it starts. */
   configurationPath: string
@@ -90,7 +89,8 @@ export interface NativeMcpFormProbe {
 /**
  * Register the probe form server for an agent of `context.provider`, and run `use`:
  *
- * - Write the server and its receipt into a new working directory, which follows the rule of the provider.
+ * - Write the server and its receipt into a new working directory, which follows the rule of the provider of the
+ *   context (`newNativeWorkingDir`).
  * - Register the server in the native MCP configuration.
  * - Open the agent in that directory with the bypass preset.
  *
@@ -103,13 +103,12 @@ export async function withNativeMcpFormAgent(
   options: NativeMcpFormAgentOptions,
   use: (probe: NativeMcpFormProbe) => Promise<void>,
 ): Promise<void> {
-  requireOwnProviderAgent(context, options.providerAgent)
-  const workingDir = newProviderWorkingDir(options.providerAgent, options.directoryPrefix)
+  const workingDir = newNativeWorkingDir(context, options.directoryPrefix)
   const receiptLog = join(workingDir, 'native-mcp-receipt.json')
   const server = writeMcpFormServer(workingDir, 'native-form-server.mjs', { receiptLog })
   const content = JSON.stringify(options.configuration(server))
   await withNativeConfigurationFile({ path: options.configurationPath, content, runDir: getGlobalState().tmpDir }, async () => {
-    await openNativeAgent(context, options.providerAgent, { workingDir })
+    await openNativeAgent(context, { workingDir })
     await applyPermissionPreset(context.page, 'bypass')
     await use({ server, receiptLog })
   })

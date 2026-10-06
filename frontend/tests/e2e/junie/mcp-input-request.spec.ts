@@ -6,10 +6,10 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { openProviderAgent } from '../helpers/workspace'
-import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
+import { expect as junieExpect, junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
 import { writeJunieMcpConfig } from './mcpConfig'
-import { nativeContext } from './scenarios'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie MCP input form', () => {
   junieTest('declines a local MCP form request without opening a browser form', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {

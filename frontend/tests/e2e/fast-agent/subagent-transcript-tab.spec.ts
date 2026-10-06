@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { reopenFromSessionPicker } from '../helpers/nativeResume'
 import { nativeAgentById } from '../helpers/nativeScenario'
@@ -14,6 +14,7 @@ import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 import { allowReadIfAsked } from './readPermission'
+import { FAST_AGENT_AGENT } from './scenarios'
 
 fastAgentTest.describe('Fast Agent subagent transcript', () => {
   const PROVIDER = AgentProvider.FAST_AGENT

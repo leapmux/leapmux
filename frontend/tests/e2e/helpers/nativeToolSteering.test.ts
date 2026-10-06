@@ -174,6 +174,7 @@ function context(script: ReturnType<typeof fakeScript>['script']): ManagedNative
     page: { locator: (selector: string) => fake(selector) } as unknown as Page,
     modelScript: script as unknown as ModelScript,
     provider: AgentProvider.OPENCODE,
+    providerAgent: { provider: AgentProvider.OPENCODE, prefix: 'native-e2e' },
     workspaceId: 'steer-workspace',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused-token', workerId: 'unused-worker' },
   }

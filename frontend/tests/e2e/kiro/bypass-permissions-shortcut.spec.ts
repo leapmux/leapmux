@@ -4,8 +4,8 @@ import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { expectPermissionShortcuts, expectSettingsOptionChosen, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-import { nativeContext } from './scenarios'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro settings', () => {
   // Kiro has no preset between its own rules and every call, so Smart has no match.

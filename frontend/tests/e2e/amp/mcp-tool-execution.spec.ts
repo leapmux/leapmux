@@ -1,20 +1,19 @@
 import { execFileSync } from 'node:child_process'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AMP_AGENT, AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
+import { AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { ampMcpSettings, ampSettingsPath } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { AMP_AGENT, nativeContext } from './scenarios'
 
 ampTest.describe('Amp MCP tool execution', () => {
   ampTest('runs an isolated MCP echo tool through the local executor', async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }) => {
-    const workingDir = createTestDirectory('amp-mcp-echo-')
+    const workingDir = newProviderWorkingDir(AMP_AGENT, 'amp-mcp-echo-')
     const server = writeMcpEchoServer(workingDir)
     const config = ampSettingsPath(leapmuxServer.agentEnv)
     const content = JSON.stringify(ampMcpSettings(config, server))

@@ -9,7 +9,8 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, assistantBubbles, enterControlFeedback, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, toolCallRow, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
+import { QWEN_AGENT } from './scenarios'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 

@@ -3,8 +3,8 @@ import { kiroSwitchToExecutionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { expectNoPlanReview } from '../helpers/unsupportedPlanMode'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-import { nativeContext } from './scenarios'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 import { kiroToolResult } from './toolResult'
 
 kiroTest('hands the actual native plan to execution without a plan review banner', async ({ page, modelScript, leapmuxServer, authenticatedEmptyWorkspace }) => {

@@ -4,8 +4,8 @@ import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowWithoutImage, runToolImageTurn } from '../helpers/toolImages'
 import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
-import { nativeContext } from './scenarios'
+import { qwenTest } from '../qwen-fixtures'
+import { nativeContext, QWEN_AGENT } from './scenarios'
 
 qwenTest.describe('Qwen Code tool execution', () => {
   qwenTest('shows the native image overview without an inline image', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

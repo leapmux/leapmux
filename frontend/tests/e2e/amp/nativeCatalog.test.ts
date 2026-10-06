@@ -216,6 +216,7 @@ function catalogFixture(options: {
     page,
     modelScript: script,
     provider: AgentProvider.AMP,
+    providerAgent: { provider: AgentProvider.AMP, prefix: 'native-e2e' },
     workspaceId: 'actual-workspace',
     leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'actual-worker', agentEnv: { HOME: directory, AMP_URL: 'http://unit.invalid', AMP_API_KEY: 'private-test-key' } },
   }

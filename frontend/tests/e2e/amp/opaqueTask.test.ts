@@ -144,7 +144,7 @@ function fakeContext(): ManagedNativeScenarioContext {
       return { protocol: 'anthropic-messages', path: '/v1/messages', stepIndex, body: fake.childReport }
     },
   })
-  return { page, modelScript, provider: AgentProvider.AMP, workspaceId: 'amp-opaque', leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  return { page, modelScript, provider: AgentProvider.AMP, providerAgent: { provider: AgentProvider.AMP, prefix: 'native-e2e' }, workspaceId: 'amp-opaque', leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
 }
 
 const OPEN_LOG = ['rule', 'queue 2', 'send', 'gate', 'snapshot amp-parent']

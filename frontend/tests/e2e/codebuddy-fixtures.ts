@@ -11,21 +11,16 @@
  * The mock MUST stream SSE: CodeBuddy always sends `stream:true`, and a plain
  * JSON completion is dropped with `error_during_execution`.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { CODEBUDDY_MODE } from '../../src/generated/contracts/codebuddy-protocol'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeContext } from './codebuddy-code/scenarios'
+import { CODEBUDDY_AGENT, nativeContext } from './codebuddy-code/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const CODEBUDDY_E2E_SKIP_REASON: string | null = missingBinaryReason('codebuddy', 'CodeBuddy E2E requires the codebuddy CLI on PATH (https://cnb.cool/codebuddy/codebuddy-code)')
-
-/** How a CodeBuddy agent opens. Its working directory is the root of a git repository of its own. */
-export const CODEBUDDY_AGENT: ProviderAgent = { provider: AgentProvider.CODEBUDDY, prefix: 'codebuddy-e2e', workingDir: gitRepositoryWorkingDir }
 
 /**
  * The agent opens in Bypass Permissions, which answers every tool call at once.

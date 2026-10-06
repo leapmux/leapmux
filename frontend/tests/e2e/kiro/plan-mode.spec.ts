@@ -2,7 +2,8 @@ import { expect } from '@playwright/test'
 import { kiroSwitchToExecutionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT } from './scenarios'
 
 kiroTest.describe('Kiro settings', () => {
   // Kiro's Plan mode ends through `switch_to_execution`, which raises no approval.

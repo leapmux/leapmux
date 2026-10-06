@@ -1,14 +1,13 @@
 import { expect } from '@playwright/test'
 import { exerciseQuestionAnswer } from '../helpers/nativeQuestion'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { controlButton, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { ZCODE_AGENT, zcodeTest } from '../zcode-fixtures'
-import { nativeContext } from './scenarios'
+import { zcodeTest } from '../zcode-fixtures'
+import { nativeContext, ZCODE_AGENT } from './scenarios'
 
 zcodeTest('renders ZCode native question descriptions and selects an answer', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   await page.setViewportSize({ width: 600, height: 900 })
-  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: createTestDirectory('renderer-zcode-question-') })
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { directoryPrefix: 'renderer-zcode-question-' })
   const diagram = '┌────────┐\n│ sample │\n└────────┘'
   await page.reload()
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

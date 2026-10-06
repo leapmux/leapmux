@@ -1,18 +1,13 @@
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { DEEPSEEK_HARNESS_MODE, DEEPSEEK_HARNESS_OPTION, DEEPSEEK_HARNESS_PERMISSION_PRESET } from '../../src/generated/contracts/deepseek-harness-protocol'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeContext } from './deepseek-harness/scenarios'
+import { DEEPSEEK_HARNESS_AGENT, nativeContext } from './deepseek-harness/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DEEPSEEK_HARNESS_E2E_SKIP_REASON: string | null = missingBinaryReason('dsh', 'DeepSeek Harness E2E requires the native dsh executable.')
-
-/** How a DeepSeek Harness agent opens. Its working directory is the root of a git repository of its own. */
-export const DEEPSEEK_HARNESS_AGENT: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** The option values of an Act agent with one permission preset. */
 function actWith(permissions: string) {

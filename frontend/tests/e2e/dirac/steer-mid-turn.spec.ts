@@ -1,8 +1,8 @@
-import { DIRAC_AGENT, diracTest } from '../dirac-fixtures'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { DIRAC_AGENT, nativeContext } from './scenarios'
 
 diracTest.describe('Dirac model and steering', () => {
   // Dirac takes the steering message as a native whisper into the active turn. Its answer goes through its respond

@@ -1,17 +1,15 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { chatScrollContainer, openWorkspace, sendMessage } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { reasonixTest } from '../reasonix-fixtures'
 import { exerciseReasonixSpawnTranscript } from './childScenario'
+import { REASONIX_AGENT } from './scenarios'
 
 reasonixTest('renders Reasonix read-only reports without interpreting quoted status text', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const provider = AgentProvider.REASONIX
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-readonly-agent-'), agentOpenOptions(provider))
+  const { provider } = REASONIX_AGENT
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, REASONIX_AGENT, { directoryPrefix: 'renderer-readonly-agent-' })
   // The quoted status is the point of the test: a report that only talks about
   // a failed outcome must not read as a failed outcome. The child completes,
   // and its answer quotes the sentence. Thus the status of the child and the

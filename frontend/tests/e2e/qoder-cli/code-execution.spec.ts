@@ -16,13 +16,13 @@ import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { sendMessage } from '../helpers/ui'
-import { expect, QODER_AGENT, qoderTest } from '../qoder-fixtures'
+import { expect, qoderTest } from '../qoder-fixtures'
 import { qoderWorkflowDiagnosticJson, qoderWorkflowLaunch, qoderWorkflowModelOutcome, qoderWorkflowOutput } from './codeExecution'
 import { nativeContext } from './scenarios'
 
 qoderTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const catalogRequest = await openNativeCatalogTurn(context, QODER_AGENT, { directoryPrefix: 'native-workflow-code-' })
+  const catalogRequest = await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-' })
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')
   await testInfo.attach('qoder-workflow-catalog', { body: JSON.stringify(catalogRequest, null, 2), contentType: 'application/json' })
   const agent = await currentNativeAgent(context)

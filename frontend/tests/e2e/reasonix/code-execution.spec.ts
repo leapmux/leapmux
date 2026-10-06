@@ -6,13 +6,13 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { reasonixInspectCapabilityToolCall, reasonixListCapabilitiesToolCall } from '../helpers/providerToolCalls'
-import { REASONIX_AGENT, reasonixTest } from '../reasonix-fixtures'
+import { reasonixTest } from '../reasonix-fixtures'
 import { nativeContext } from './scenarios'
 import { assertReasonixCapabilityInspection, assertReasonixCoreCatalog, parseReasonixCapabilities } from './toolCatalog'
 
 reasonixTest('confirms the code executor is absent from the complete native core and deferred catalog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const request = await openNativeCatalogTurn(context, REASONIX_AGENT)
+  const request = await openNativeCatalogTurn(context)
   assertReasonixCoreCatalog(request)
   const agent = await currentNativeAgent(context)
   const query = async (calls: MockModelToolCall[]) => {

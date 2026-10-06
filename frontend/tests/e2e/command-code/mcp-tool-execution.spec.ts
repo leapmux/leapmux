@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { COMMAND_CODE_AGENT, commandCodeTest, expect } from '../command-code-fixtures'
+import { commandCodeTest, expect } from '../command-code-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -7,7 +7,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { messageContents } from '../helpers/ui'
 import { newProviderWorkingDir } from '../helpers/workspace'
 import { withCommandCodeMcp } from './mcpScenarios'
-import { nativeContext } from './scenarios'
+import { COMMAND_CODE_AGENT, nativeContext } from './scenarios'
 
 commandCodeTest('calls the real native MCP server and uses its result in the next model request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

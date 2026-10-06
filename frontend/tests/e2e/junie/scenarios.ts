@@ -1,9 +1,10 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeTextStep } from '../helpers/nativeScenario'
+import { managedNativeContext, nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { JUNIE_ANSWER_TOOL, junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
@@ -11,20 +12,21 @@ import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { junieModelTurns } from './modelTurns'
 
+/** How a Junie agent opens. */
+export const JUNIE_AGENT: ProviderAgent = { provider: AgentProvider.JUNIE, prefix: 'junie-e2e' }
+
 /**
  * Build the scenario context of Junie, with every field that its native protocol needs.
  * Junie answers through its `answer` tool, so each answer is that call, and a turn with only that call has no tool row.
  * The Junie test object registers the housekeeping rules of every test (`junie-fixtures.ts`), so the context registers none.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return {
-    ...fixtures,
-    provider: AgentProvider.JUNIE,
+  return managedNativeContext(fixtures, JUNIE_AGENT, {
     textStep: (text: string) => ({ toolCalls: [junieAnswerToolCall(`junie-answer-${randomUUID()}`, text)] }),
     answerToolNames: [JUNIE_ANSWER_TOOL],
     // Junie compresses the prior exchange into its previous_issue row, and the reader splits it back into turns.
     readConversationTurns: junieModelTurns,
-  }
+  })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

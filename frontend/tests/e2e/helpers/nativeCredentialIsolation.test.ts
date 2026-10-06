@@ -157,6 +157,7 @@ describe('exerciseCredentialIsolation with private directories', () => {
     mkdirSync(home)
     const context: ManagedNativeScenarioContext = {
       provider: AgentProvider.CLAUDE_CODE,
+      providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' },
       workspaceId: 'credential-workspace',
       page: {} as Page,
       modelScript: {} as ModelScript,

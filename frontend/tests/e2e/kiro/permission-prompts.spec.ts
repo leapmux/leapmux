@@ -8,8 +8,8 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, assistantBubbles, controlActions, expectNoControlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-import { nativeContext } from './scenarios'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 const PROVIDER = AgentProvider.KIRO
 

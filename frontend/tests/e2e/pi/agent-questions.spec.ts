@@ -1,14 +1,13 @@
 import { expect } from '@playwright/test'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, chatScrollContainer, controlButton, focusComposer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { PI_AGENT, piTest } from '../pi-fixtures'
-import { nativeContext } from './scenarios'
+import { piTest } from '../pi-fixtures'
+import { nativeContext, PI_AGENT } from './scenarios'
 
 for (const answerKind of ['custom', 'selected']) {
   piTest(`delivers a ${answerKind} answer to the real Pi question extension`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, PI_AGENT, { workingDir: createTestDirectory('renderer-pi-custom-') })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, PI_AGENT, { directoryPrefix: 'renderer-pi-custom-' })
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

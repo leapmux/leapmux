@@ -7,21 +7,21 @@ import { readMcpCallArguments, readMcpCallExchange } from '../helpers/mcpServerR
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall, piCodemodeToolCall, piMcpResourceToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { activateNativeCodemode } from './codemodeConfiguration'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 piTest('keeps the native real MCP output path and preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const directory = createTestDirectory('renderer-pi-full-output-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'renderer-pi-full-output-')
   const outputFile = `${Array.from({ length: 3000 }, (_, index) => `full-output-line-${index}`).join('\n')}\nPI_OUTPUT_FILE_RECOVERED`
   const receiptLog = join(directory, 'full-output-receipt.json')
   const resultServer = writeMcpResultServer(directory, { receiptLog })
@@ -64,7 +64,7 @@ piTest('keeps the native real MCP output path and preview after reload', async (
 })
 
 piTest('uses complete native MCP structured results, failed results, and resources', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-native-mcp-results-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-results-')
   const receiptLog = join(directory, 'native-result-receipt.json')
   const server = writeMcpResultServer(directory, { receiptLog })
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })

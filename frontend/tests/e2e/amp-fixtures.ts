@@ -1,8 +1,7 @@
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { AMP_PERMISSION_MODE } from '../../src/generated/contracts/amp-protocol'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeContext } from './amp/scenarios'
+import { AMP_AGENT, nativeContext } from './amp/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -17,9 +16,6 @@ import { cliSkipFixture } from './provider-fixture-factory'
  * and its login under that HOME on every start. See `helpers/binaryOnPath.ts`.
  */
 export const AMP_E2E_SKIP_REASON: string | null = missingBinaryReason('amp', 'Amp E2E requires the amp CLI on PATH (https://ampcode.com)')
-
-/** How an Amp agent opens. */
-export const AMP_AGENT: ProviderAgent = { provider: AgentProvider.AMP, prefix: 'amp-e2e' }
 
 /**
  * The agent opens in Allow All, which answers every tool call at once.

@@ -1,14 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { CREDENTIAL_STORE_SHIM_LOG, MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { junieAnswerToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace, sendMessage } from '../helpers/ui'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { expect, junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT } from './scenarios'
 
 junieTest.describe('native credential isolation', () => {
   junieTest.skip(process.platform !== 'darwin', 'the system keychain probe exists on macOS')
@@ -21,8 +19,8 @@ junieTest.describe('native credential isolation', () => {
     const count = () => existsSync(logPath) ? readFileSync(logPath, 'utf8').split('\n').filter(Boolean).length : 0
     const before = count()
 
-    const workingDir = createTestDirectory('junie-credential-stub-')
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.JUNIE))
+    const workingDir = newProviderWorkingDir(JUNIE_AGENT, 'junie-credential-stub-')
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { workingDir })
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const step = await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-credential-answer', 'The isolated turn completed.')] })

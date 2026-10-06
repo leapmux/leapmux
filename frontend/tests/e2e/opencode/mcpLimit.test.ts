@@ -1,6 +1,44 @@
-import { describe, expect, it } from 'vitest'
+import type { Page } from '@playwright/test'
+import type { ModelScript } from '../helpers/modelScriptFixture'
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { NativeStartupWrapper } from '../helpers/nativeStartupWrapper'
+import type { NativeWorker } from '../helpers/nativeWorker'
+import type { ProviderAgent } from '../helpers/workspace'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import process from 'node:process'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { agentOpenOptions } from '../agentSettings'
 import { mcpProbeServer } from '../helpers/mcpProbeServer'
-import { opencodeMcpServerConfiguration } from './mcpLimit'
+import { exerciseOpencodeMcpInputLimit, opencodeMcpServerConfiguration } from './mcpLimit'
+
+/** The calls that the mocked Worker, launch, and agent open receive. */
+const limit = vi.hoisted(() => ({
+  /** The run directory of the current test, where a fresh directory of the run lands. */
+  run: '',
+  open: vi.fn<typeof import('../helpers/api').openAgentViaAPI>(),
+  startupWorker: vi.fn<typeof import('../helpers/nativeStartupWorker').withNativeStartupWorker>(),
+}))
+
+vi.mock('../helpers/api', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/api')>(),
+  openAgentViaAPI: limit.open,
+}))
+vi.mock('../helpers/runDirectory', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/runDirectory')>(),
+  createTestDirectory: (prefix: string) => mkdtempSync(join(limit.run, prefix)),
+}))
+// The controlled startup Worker is a real process. These tests prove only where the scenario opens its agent.
+vi.mock('../helpers/nativeStartupWorker', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/nativeStartupWorker')>(),
+  withNativeStartupWorker: limit.startupWorker,
+}))
+// The launch names an executable that no test machine needs.
+vi.mock('../helpers/nativeStartupWrapper', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/nativeStartupWrapper')>(),
+  resolveNativeStartupLaunch: () => ({ binaryName: 'opencode', executable: '/private/opencode', holdWhen: ['acp'] }),
+}))
 
 describe('opencodeMcpServerConfiguration', () => {
   it('adds the server under its own name and keeps zero and false provider values', () => {
@@ -31,5 +69,46 @@ describe('opencodeMcpServerConfiguration', () => {
   it('refuses an incomplete server command', () => {
     const server = { ...mcpProbeServer('form_probe', '/run/form.mjs'), args: ['/run/form.mjs', ''] }
     expect(() => opencodeMcpServerConfiguration('{"provider":{}}', server)).toThrow('executable command')
+  })
+})
+
+describe('exerciseOpencodeMcpInputLimit', () => {
+  const scratchRoot = resolve(process.cwd(), '../.tmp')
+  /** The rest of the scenario drives a browser, so the open of the agent ends it in these tests. */
+  const opened = new Error('The unit test ends the MCP limit scenario at the agent open.')
+
+  beforeEach(() => {
+    mkdirSync(scratchRoot, { recursive: true })
+    limit.run = mkdtempSync(join(scratchRoot, 'opencode-mcp-limit-'))
+    limit.open.mockReset().mockRejectedValue(opened)
+    limit.startupWorker.mockReset().mockImplementation(async (_context, _launch, _options, use) => {
+      await use('private-limit-worker', {} as NativeStartupWrapper, {} as NativeWorker<ManagedNativeScenarioContext['leapmuxServer']>)
+    })
+  })
+
+  afterEach(() => {
+    rmSync(limit.run, { recursive: true, force: true })
+  })
+
+  it('opens the agent in the working directory that the rule of the provider creates, beside the form server', async () => {
+    const workingDir = vi.fn((prefix: string) => mkdtempSync(join(limit.run, `${prefix}rule-`)))
+    const providerAgent: ProviderAgent = { provider: AgentProvider.OPENCODE, prefix: 'opencode-e2e', workingDir }
+    const context: ManagedNativeScenarioContext = {
+      page: {} as Page,
+      modelScript: {} as ModelScript,
+      provider: AgentProvider.OPENCODE,
+      providerAgent,
+      workspaceId: 'limit-workspace',
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'suite-worker', agentEnv: { OPENCODE_CONFIG_CONTENT: '{"provider":{}}' } },
+    }
+    await expect(exerciseOpencodeMcpInputLimit(context, { binaryName: 'opencode', configurationVariable: 'OPENCODE_CONFIG_CONTENT' })).rejects.toBe(opened)
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('opencode-family-mcp-limit-')
+    const directory = workingDir.mock.results[0]?.value
+    if (typeof directory !== 'string')
+      throw new Error('The rule of the provider created no directory.')
+    expect(limit.open).toHaveBeenCalledExactlyOnceWith('http://unused.invalid', 'controlled-token', 'private-limit-worker', 'limit-workspace', directory, agentOpenOptions(AgentProvider.OPENCODE))
+    expect(existsSync(join(directory, 'form-server.mjs'))).toBe(true)
+    const environment = limit.startupWorker.mock.calls[0]?.[2].workerEnvironment?.({} as NativeStartupWrapper)
+    expect(environment?.OPENCODE_CONFIG_CONTENT).toContain(JSON.stringify(join(directory, 'form-server.mjs')))
   })
 })

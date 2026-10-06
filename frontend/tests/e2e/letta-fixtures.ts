@@ -17,22 +17,18 @@
  * `helpers/mockAgentEnvironment.ts` puts the real install directory first on
  * PATH. See `helpers/binaryOnPath.ts`.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { LETTA_MODE } from '../../src/generated/contracts/letta-protocol'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from './helpers/mockAgentEnvironment'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { LETTA_TITLE_RULE } from './letta-code/housekeeping'
-import { nativeContext } from './letta-code/scenarios'
+import { LETTA_AGENT, nativeContext } from './letta-code/scenarios'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const LETTA_E2E_SKIP_REASON: string | null = missingBinaryReason('letta', 'Letta Code E2E requires the letta CLI on PATH (https://docs.letta.com/letta-code)')
-
-/** How a Letta Code agent opens. */
-export const LETTA_AGENT: ProviderAgent = { provider: AgentProvider.LETTA, prefix: 'letta-e2e' }
 
 /**
  * The agent opens in Unrestricted, which answers every tool call at once.

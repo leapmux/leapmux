@@ -1,17 +1,16 @@
 import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { AgentGoalStatus, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
+import { AgentGoalStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, goalsAndTodosSection, openGoalMenu, pauseResumeClearGoal, scriptedObjective, setGoal, submitGoal } from '../helpers/goalsAndTodos'
 import { SCENARIO_MARKER } from '../helpers/mockModelScript'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { controlActions, controlBanner, expectNoControlBanner, openWorkspace, tabById, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
+import { PI_AGENT } from './scenarios'
 
 /**
  * Approve Pi's confirmation of a goal clear.
@@ -52,8 +51,8 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
   const secondGate = `pi-panel-resumed-${crypto.randomUUID()}`
   const start = await modelScript.queue({ text: 'The first native goal turn ended.', gate: firstGate }, { text: 'The resumed native goal turn ended.', gate: secondGate })
   await withCleanup(async () => {
-    const provider = AgentProvider.PI
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-goal-'), agentOpenOptions(provider))
+    const { provider } = PI_AGENT
+    const { agentId } = await openProviderAgent(leapmuxServer, context.workspaceId, PI_AGENT, { directoryPrefix: 'renderer-pi-goal-' })
     await page.reload()
     await openWorkspace(page, context.workspaceId)
     const tab = visibleOnly(tabById(page, agentId)).first()

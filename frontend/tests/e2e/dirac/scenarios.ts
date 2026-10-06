@@ -2,9 +2,10 @@ import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeTextStep } from '../helpers/nativeScenario'
+import { managedNativeContext, nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
@@ -12,12 +13,15 @@ import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { diracChildResultRule } from './childResult'
 
+/** How a Dirac agent opens. */
+export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefix: 'dirac-e2e' }
+
 /**
  * Build the scenario context of Dirac, with every field that its native protocol needs.
  * A Dirac turn ends only when the model calls `respond` with `operation: "complete"`, so each answer is that call.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.DIRAC, textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }) }
+  return managedNativeContext(fixtures, DIRAC_AGENT, { textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }) })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

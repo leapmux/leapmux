@@ -3,7 +3,6 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { COMMAND_CODE_AGENT } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -11,6 +10,7 @@ import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
+import { COMMAND_CODE_AGENT } from './scenarios'
 
 /**
  * Run `run` in a real Command Code session that loads one native MCP server:

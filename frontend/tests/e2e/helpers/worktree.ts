@@ -92,6 +92,20 @@ export function gitRepositoryWorkingDir(prefix: string): string {
 }
 
 /**
+ * Make `dir` the root of a git repository of its own, as `createGitRepo` makes one, unless it is the root of a work
+ * tree already. A `.git` entry marks that root: a directory for a repository, and a file for a linked worktree.
+ *
+ * A project that a scenario prepares needs a root of its own when its provider reads the project configuration up to
+ * the repository root. The rule of some providers makes each working directory such a root already
+ * (`gitRepositoryWorkingDir`), and a second `createGitRepo` there fails, because its README commit has nothing to
+ * commit.
+ */
+export function ensureGitRepositoryRoot(dir: string): void {
+  if (!existsSync(join(dir, '.git')))
+    createGitRepo(dir, '.')
+}
+
+/**
  * Create a bare repository as a remote, and a clone of it whose `main` holds one pushed commit, so the clone's
  * branch has an upstream. The bare repository is `<dataDir>/<name>-bare`, and the clone is `<dataDir>/<name>`.
  * Both carry the pinned settings.

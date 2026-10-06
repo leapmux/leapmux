@@ -5,8 +5,6 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -14,10 +12,10 @@ import { bashToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { hubSpawnEnv } from '../helpers/server'
 import { answerControl, controlActions, controlButton, enterControlFeedback, expectNoControlBanner, messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 import { mimoTest } from '../mimo-fixtures'
-import { nativeContext } from './scenarios'
+import { MIMO_AGENT, nativeContext } from './scenarios'
 
 interface Server {
   hubUrl: string
@@ -31,9 +29,9 @@ interface Server {
  * A deletion raises the native `bash_delete` request. The file's presence proves whether the command ran.
  */
 async function openAgentWithFile(page: Page, server: Server, workspace: WorkspaceFixture, prefix: string): Promise<string> {
-  const directory = createTestDirectory(prefix)
+  const directory = newProviderWorkingDir(MIMO_AGENT, prefix)
   writeFileSync(join(directory, 'doomed.txt'), 'delete me\n')
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, directory, agentOpenOptions(AgentProvider.MIMO_CODE))
+  await openProviderAgent(server, workspace.workspaceId, MIMO_AGENT, { workingDir: directory })
   await openWorkspace(page, workspace.workspaceId)
   return join(directory, 'doomed.txt')
 }
@@ -127,7 +125,7 @@ mimoTest.describe('MiMo Code permission requests', () => {
       }
     })()
     expect(outsideProbe).toBeNull()
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.MIMO_CODE))
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, MIMO_AGENT, { workingDir })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     try {
       writeFileSync(join(outside, 'first.txt'), 'FIRST_OUTSIDE_FILE\n')

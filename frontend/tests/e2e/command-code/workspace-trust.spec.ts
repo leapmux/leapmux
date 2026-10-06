@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { commandCodeTest, expect } from '../command-code-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-import { createGitRepo } from '../helpers/worktree'
+import { ensureGitRepositoryRoot } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('keeps the actual untrusted project mod unloaded without a native trust dialog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -11,7 +11,7 @@ commandCodeTest('keeps the actual untrusted project mod unloaded without a nativ
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: ({ directory }) => {
-        createGitRepo(directory, '.')
+        ensureGitRepositoryRoot(directory)
         const executed = join(directory, 'native-project-mod-executed')
         const mods = join(directory, '.commandcode', 'mods')
         mkdirSync(mods, { recursive: true })

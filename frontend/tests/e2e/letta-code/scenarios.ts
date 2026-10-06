@@ -1,18 +1,23 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildRuleId, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
+
+/** How a Letta Code agent opens. */
+export const LETTA_AGENT: ProviderAgent = { provider: AgentProvider.LETTA, prefix: 'letta-e2e' }
 
 /**
  * Build the scenario context of Letta Code, with every field that its native protocol needs.
  * The Letta test object registers the title rule of every test (`letta-fixtures.ts`), so the context registers none.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.LETTA }
+  return managedNativeContext(fixtures, LETTA_AGENT)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

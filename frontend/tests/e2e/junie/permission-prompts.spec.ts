@@ -4,8 +4,8 @@ import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
-import { nativeContext } from './scenarios'
+import { expect, junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie control requests', () => {
   junieTest('an allowed command runs, and its output reaches the chat', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

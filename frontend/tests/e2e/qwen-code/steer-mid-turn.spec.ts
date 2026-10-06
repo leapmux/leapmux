@@ -1,8 +1,8 @@
 import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
-import { nativeContext } from './scenarios'
+import { qwenTest } from '../qwen-fixtures'
+import { nativeContext, QWEN_AGENT } from './scenarios'
 
 qwenTest.describe('Qwen Code settings and goal', () => {
   qwenTest('steers a queued message into the active turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

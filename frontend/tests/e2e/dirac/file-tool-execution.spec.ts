@@ -1,11 +1,11 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { exerciseFileToolExecution, expectFileDiff, runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { bashToolCall, diracEditAnchorCapture, editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { DIRAC_AGENT, nativeContext } from './scenarios'
 
 diracTest.describe('Dirac tool execution', () => {
   diracTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

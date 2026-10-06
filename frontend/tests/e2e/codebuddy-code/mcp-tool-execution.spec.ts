@@ -1,4 +1,4 @@
-import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, expect } from '../codebuddy-fixtures'
+import { CODEBUDDY_BYPASS, codebuddyTest, expect } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -6,7 +6,7 @@ import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/prov
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { withCodebuddyUserMcpServer } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { CODEBUDDY_AGENT, nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
   codebuddyTest('executes a disposable MCP tool through the native server', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {

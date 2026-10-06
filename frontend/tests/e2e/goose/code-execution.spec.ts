@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { GOOSE_AGENT, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
@@ -14,7 +14,7 @@ gooseTest('runs native code and retains computed output and script errors after 
   const content = readFileSync(config, 'utf8').replace('extensions:\n', 'extensions:\n  code_execution:\n    enabled: true\n    type: platform\n    name: code_execution\n')
   await withNativeConfigurationFile({ path: config, content, runDir: getGlobalState().tmpDir }, async () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, GOOSE_AGENT, { directoryPrefix: 'native-code-execution-' })
+    await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {
         nativeCodeExecutionSchema(request, 'execute_typescript', { code: 'string' })

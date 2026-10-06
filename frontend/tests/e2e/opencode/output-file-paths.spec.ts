@@ -1,16 +1,15 @@
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { OPENCODE_AGENT, opencodeTest } from '../opencode-fixtures'
+import { opencodeTest } from '../opencode-fixtures'
 import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { nativeContext, OPENCODE_AGENT } from './scenarios'
 
 opencodeTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openProviderAgent(leapmuxServer, context.workspaceId, OPENCODE_AGENT, { workingDir: createTestDirectory('native-output-path-opencode-') })
+  await openProviderAgent(leapmuxServer, context.workspaceId, OPENCODE_AGENT, { directoryPrefix: 'native-output-path-opencode-' })
   await openWorkspace(page, context.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   await captureNativeToolOutput(context, testInfo, {

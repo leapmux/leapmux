@@ -100,7 +100,7 @@ function shortcutContext(preset: 'smart' | 'bypass'): ManagedNativeScenarioConte
       }
     },
   } as unknown as ModelScript
-  return { page, modelScript, provider: AgentProvider.CLAUDE_CODE, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' } }
+  return { page, modelScript, provider: AgentProvider.CLAUDE_CODE, providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' }, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' } }
 }
 
 describe('exerciseBypassPermissions', () => {

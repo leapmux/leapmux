@@ -4,21 +4,17 @@
  * A Dirac turn ends only when the model calls `respond` with `operation: "complete"`,
  * so every scripted turn must queue a tool call, not text.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeContext } from './dirac/scenarios'
+import { DIRAC_AGENT, nativeContext } from './dirac/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DIRAC_E2E_SKIP_REASON: string | null = missingBinaryReason('dirac', 'Dirac E2E requires a dirac CLI on PATH')
-
-/** How a Dirac agent opens. */
-export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefix: 'dirac-e2e' }
 
 /** The asking workspace opens its agent only after the isolated Dirac home turns automatic approval off. */
 const askingDiracWorkspace = authenticatedAgentWorkspace({ ...DIRAC_AGENT, prefix: 'dirac-e2e-ask' })

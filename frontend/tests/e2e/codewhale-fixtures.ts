@@ -7,10 +7,9 @@
  * binary behind the `codewhale` npm wrapper when the wrapper downloaded it, and
  * the wrapper otherwise, so the wrapper on PATH is what the skip check asks for.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeContext } from './codewhale/scenarios'
+import { CODEWHALE_AGENT, nativeContext } from './codewhale/scenarios'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -56,9 +55,6 @@ export const CODEWHALE_E2E_SKIP_REASON: string | null = CODEWHALE.path === null
  * alone, so the worker cannot close the job's row until something else states it.
  */
 export const CODEWHALE_SERVES_JOB_ROUTES: boolean = INSTALL.version !== null && (INSTALL.version[0] > 0 || INSTALL.version[1] >= 10)
-
-/** How a Codewhale agent opens. */
-export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-e2e' }
 
 export const codewhaleTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedCodewhaleWorkspace: AgentWorkspace

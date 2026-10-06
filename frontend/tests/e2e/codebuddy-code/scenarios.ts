@@ -1,14 +1,20 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
+import { gitRepositoryWorkingDir } from '../helpers/worktree'
+
+/** How a CodeBuddy agent opens. Its working directory is the root of a git repository of its own. */
+export const CODEBUDDY_AGENT: ProviderAgent = { provider: AgentProvider.CODEBUDDY, prefix: 'codebuddy-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** Build the scenario context of CodeBuddy Code. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.CODEBUDDY }
+  return managedNativeContext(fixtures, CODEBUDDY_AGENT)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

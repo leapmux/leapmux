@@ -10,13 +10,13 @@ import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { writeToolImage } from '../helpers/toolImages'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { withDeepseekHarnessMcp } from './mcpScenarios'
 import { proveDeepseekHarnessMixedMcpOutput } from './mcpToolResult'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { DEEPSEEK_HARNESS_AGENT, nativeContext } from './scenarios'
 
 deepseekHarnessTest('keeps native output paths and the exact inline preview after reload', async ({ native }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
@@ -55,7 +55,7 @@ deepseekHarnessTest('keeps native output paths and the exact inline preview afte
 
 for (const layout of ['omitted-middle-image', 'retained-end-images'] as const) {
   deepseekHarnessTest(`keeps native MCP preview paths and image order after reload for ${layout}`, async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-    const directory = createTestDirectory('deepseek-mcp-paths-')
+    const directory = newProviderWorkingDir(DEEPSEEK_HARNESS_AGENT, 'deepseek-mcp-paths-')
     const imagePath = join(directory, writeToolImage(directory, layout))
     const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
     const image: McpResultContent = { type: 'image', path: imagePath }

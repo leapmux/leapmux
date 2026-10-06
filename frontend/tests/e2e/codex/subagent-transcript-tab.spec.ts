@@ -1,25 +1,25 @@
-import { expect } from '@playwright/test'
 /**
  * Codex subagent lifecycle and transcript routing.
  *
  * Covers: the V2 activity-based registry row, its readable title, a child tab
  * with an isolated read-only transcript and exact completion.
  */
+import { expect } from '@playwright/test'
 import { extractItem } from '../../../src/components/chat/providers/codex/extractors/item'
-import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { agentOpenOptions } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
-import { getTestChannel, openAgentViaAPI } from '../helpers/api'
+import { getTestChannel } from '../helpers/api'
 import { stepRequest } from '../helpers/mockModelScript'
 import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexWaitAgentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { expectNoRegistryRows, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById } from '../helpers/ui'
 import { expectReadOnlySubagentReason } from '../helpers/unsupportedSubagent'
+import { openProviderAgent } from '../helpers/workspace'
+import { CODEX_AGENT } from './scenarios'
 
 codexTest.describe('codex subagent lifecycle', () => {
   codexTest('opens and isolates a V2 subagent transcript', async ({ native }) => {
@@ -100,8 +100,7 @@ codexTest.describe('codex subagent lifecycle', () => {
 
 codexTest.describe('provider tool rendering', () => {
   codexTest('reveals messages after an empty Codex wait result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const provider = AgentProvider.CODEX
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-empty-codex-wait-'), agentOpenOptions(provider))
+    const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEX_AGENT, { directoryPrefix: 'renderer-empty-codex-wait-' })
     // The native wait emits a completed agent item with no receivers or states.
     // Its model result reports the timeout. The empty agent item must reveal later rows.
     const callId = 'empty-wait'

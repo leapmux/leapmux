@@ -6,19 +6,19 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piCodemodeToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { activateNativeCodemode } from './codemodeConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
-import { nativeContext } from './scenarios'
+import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 piTest('keeps the native codemode output path and preview without an MCP call after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const directory = createTestDirectory('pi-native-codemode-full-output-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-codemode-full-output-')
   const output = `${Array.from({ length: 3000 }, (_, index) => `codemode-line-${index}`).join('\n')}\nNATIVE_CODEMODE_COMPLETE`
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
@@ -47,7 +47,7 @@ piTest('keeps the native codemode output path and preview without an MCP call af
 })
 
 piTest('keeps empty native codemode output and a real nested file read after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-native-codemode-boundaries-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-codemode-boundaries-')
   const file = join(directory, 'native-codemode-read.txt')
   const value = `NATIVE_CODEMODE_READ_${crypto.randomUUID()}`
   writeFileSync(file, value)
@@ -102,7 +102,7 @@ piTest('keeps empty native codemode output and a real nested file read after rel
 })
 
 piTest('keeps the native codemode script failure and exact failed status after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-native-codemode-failure-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-codemode-failure-')
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })

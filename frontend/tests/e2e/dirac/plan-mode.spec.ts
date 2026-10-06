@@ -1,4 +1,4 @@
-import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
+import { diracTest, expect } from '../dirac-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -9,6 +9,7 @@ import { PLAN_REVIEW_BUTTON_TEST_IDS } from '../helpers/unsupportedPlanMode'
 import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
 import { withDiracPlanReadiness } from './planReadiness'
+import { DIRAC_AGENT } from './scenarios'
 
 diracTest.describe('Dirac plan mode', () => {
   diracTest('the plan card resolves at the next prompt and raises no approval', async ({ page, authenticatedEmptyWorkspace, approvalDisabledDiracHome, leapmuxServer, modelScript }, testInfo) => {

@@ -319,7 +319,7 @@ function startGoal(serverURL: string, script: ModelScript, profile: AgentProfile
     releaseGate,
   }
   const helper = exerciseNativeGoalPauseAndResume(
-    { page: fakePage(), modelScript: observed, provider: profile.provider, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: '' },
+    { page: fakePage(), modelScript: observed, provider: profile.provider, providerAgent: { provider: profile.provider, prefix: 'native-e2e' }, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: '' },
     { pauseTiming: profile.pause, pausedProof: async () => {} },
   )
   return { helper, agent, script: observed, rules, releaseGate }

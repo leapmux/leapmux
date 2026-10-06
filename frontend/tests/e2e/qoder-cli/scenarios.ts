@@ -2,15 +2,21 @@ import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
+import { gitRepositoryWorkingDir } from '../helpers/worktree'
+
+/** How a Qoder agent opens. Its working directory is the root of a git repository of its own. */
+export const QODER_AGENT: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** Build the scenario context of Qoder CLI. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.QODER }
+  return managedNativeContext(fixtures, QODER_AGENT)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

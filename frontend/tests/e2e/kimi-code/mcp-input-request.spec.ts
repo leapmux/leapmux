@@ -3,14 +3,13 @@ import { invokeNativeMcpTool, withNativeMcpFormAgent } from '../helpers/mcpExecu
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
-import { KIMI_AGENT, kimiTest } from '../kimi-fixtures'
+import { kimiTest } from '../kimi-fixtures'
 import { nativeContext } from './scenarios'
 
 kimiTest('returns the actual native MCP unsupported-method reply without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const configurationPath = join(leapmuxServer.agentEnv.KIMI_CODE_HOME!, 'mcp.json')
   await withNativeMcpFormAgent(context, {
-    providerAgent: KIMI_AGENT,
     directoryPrefix: 'kimi-native-mcp-refusal-',
     configurationPath,
     configuration: server => mcpServersConfig(server),

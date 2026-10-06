@@ -1,12 +1,11 @@
-import { CLAUDE_AGENT, claudeTest } from '../claude-fixtures'
+import { claudeTest } from '../claude-fixtures'
 import { exerciseNativeQuotaHeaders } from '../helpers/nativeQuota'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { exerciseRateLimitWindow, nearLimitRateLimits } from '../helpers/rateLimit'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace } from '../helpers/ui'
 import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'
 import { openProviderAgent, withTestWorkspace } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { CLAUDE_AGENT, nativeContext } from './scenarios'
 
 claudeTest.describe('Claude Code rate-limit state', () => {
   claudeTest('a subscriber sees the model warning after a reload', async ({ page, leapmuxServer, modelScript }) => {
@@ -30,7 +29,7 @@ claudeTest.describe('Claude Code rate-limit state', () => {
     }, async ({ server }) => {
       await withTestWorkspace(server, 'claude-rate-limit', async ({ workspaceId }) => {
         await openProviderAgent(server, workspaceId, CLAUDE_AGENT, {
-          workingDir: createTestDirectory('claude-subscriber-wd-'),
+          directoryPrefix: 'claude-subscriber-wd-',
           optionValues: { permissionMode: 'default' },
         })
         await loginViaToken(page, server.adminToken)

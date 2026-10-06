@@ -7,7 +7,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, outsideFileWriteOperation } from '../helpers/nativeWorkspaceTrustLimit'
 import { codexEscalatedCommandToolCall } from '../helpers/providerToolCalls'
-import { createGitRepo } from '../helpers/worktree'
+import { ensureGitRepositoryRoot } from '../helpers/worktree'
 
 codexTest('classifies an actual native permission and confirms the absent workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, {
@@ -24,7 +24,7 @@ for (const sandboxPolicy of ['read-only', 'danger-full-access']) {
       projectConfiguration: {
         prepare: ({ directory, marker }) => {
           // A separate repository keeps earlier parent-project trust decisions outside this project root.
-          createGitRepo(directory, '.')
+          ensureGitRepositoryRoot(directory)
           const configuration = join(directory, '.codex', 'config.toml')
           mkdirSync(dirname(configuration), { recursive: true })
           writeFileSync(configuration, `developer_instructions = ${JSON.stringify(marker)}\n`)

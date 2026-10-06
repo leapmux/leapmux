@@ -1,13 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { writeMcpPermissionServer } from '../helpers/mcpPermissionServer'
 import { exerciseNativePermissionDecision, expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall, mcpToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { expectNoControlBanner, messageBubbles, messageContents, openWorkspace, toolCallRow, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { connectNativeMcp } from './mcpScenarios'
-import { nativeContext } from './scenarios'
+import { FAST_AGENT_AGENT, nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent control requests', () => {
   fastAgentTest('runs a shell command after the reader allows it', async ({ native }) => {

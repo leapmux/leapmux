@@ -10,17 +10,17 @@ import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt, waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
-import { nativeContext } from './scenarios'
+import { newProviderWorkingDir } from '../helpers/workspace'
+import { CODEX_AGENT, nativeContext } from './scenarios'
 
 codexTest('executes the native MCP echo tool and preserves its argument refusal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const codexHome = leapmuxServer.agentEnv?.CODEX_HOME
   if (!codexHome)
     throw new Error('The native MCP scenario requires the isolated Codex home.')
   assertPrivateNativePath(codexHome, getGlobalState().tmpDir)
-  const directory = createTestDirectory('codex-mcp-execution-')
+  const directory = newProviderWorkingDir(CODEX_AGENT, 'codex-mcp-execution-')
   const receiptLog = join(directory, 'native-receipt.json')
   // The Codex configuration of the run starts this form server. The test replaces its script with one that records a
   // receipt and checks the echo arguments, and restores the script after the test.

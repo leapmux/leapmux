@@ -1,17 +1,22 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
+import type { ProviderAgent } from '../helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { currentNativeAgent, managedNativeContext, nativeAgentById } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { gitRepositoryWorkingDir } from '../helpers/worktree'
 import { finishDeepseekHarnessChild, waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { registerDeepseekHarnessChildReport } from './childReportRegistration'
 import { deepseekHarnessModelContextText } from './modelContextText'
+
+/** How a DeepSeek Harness agent opens. Its working directory is the root of a git repository of its own. */
+export const DEEPSEEK_HARNESS_AGENT: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: gitRepositoryWorkingDir }
 
 /**
  * Build the scenario context of DeepSeek Harness, with every field that its native protocol needs.
@@ -19,7 +24,7 @@ import { deepseekHarnessModelContextText } from './modelContextText'
  * of the native Anthropic Messages request.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.DEEPSEEK_HARNESS, readModelContext: deepseekHarnessModelContextText }
+  return managedNativeContext(fixtures, DEEPSEEK_HARNESS_AGENT, { readModelContext: deepseekHarnessModelContextText })
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {

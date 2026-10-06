@@ -49,6 +49,7 @@ function workerFixture() {
   mkdirSync(home)
   const context: ManagedNativeScenarioContext = {
     provider: AgentProvider.CODEX,
+    providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
     workspaceId: 'controlled-startup-workspace',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'suite-worker', agentEnv: { HOME: home, PATH: process.env.PATH ?? '' } },
     get page(): Page { throw new Error('The startup wrapper unit must not access a browser.') },

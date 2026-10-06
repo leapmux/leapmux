@@ -9,10 +9,10 @@ import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
+import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 
@@ -25,7 +25,7 @@ export function zcodeMcpConnectFrame(requestId: string, workingDir: string): str
 
 /** Prove the installed client's actual MCP form refusal through its native project configuration. */
 export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioContext): Promise<void> {
-  const directory = createTestDirectory('zcode-native-mcp-')
+  const directory = newNativeWorkingDir(context, 'zcode-native-mcp-')
   const receiptLog = join(directory, 'mcp-receipt.json')
   const formServer = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
   mkdirSync(join(directory, '.zcode'))

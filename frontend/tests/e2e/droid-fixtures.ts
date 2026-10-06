@@ -16,22 +16,18 @@
  * with the developer's own HOME, and Droid writes into `~/.factory` on every
  * start. See `helpers/binaryOnPath.ts`.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { DROID_TITLE_RULE } from './factory-droid/housekeeping'
-import { nativeContext } from './factory-droid/scenarios'
+import { DROID_AGENT, nativeContext } from './factory-droid/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid', 'Factory Droid E2E requires the droid CLI on PATH (https://docs.factory.ai/)')
-
-/** How a Factory Droid agent opens. */
-export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefix: 'droid-e2e' }
 
 /**
  * The agent opens in Auto (High), which answers every tool call at once.

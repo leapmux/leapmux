@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { CLINE_AGENT, clineTest } from '../cline-fixtures'
+import { clineTest } from '../cline-fixtures'
 import { invokeNativeMcpTool, withNativeMcpFormAgent } from '../helpers/mcpExecution'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { expectUnansweredMcpInput } from '../helpers/unsupportedMcpInput'
@@ -25,7 +25,6 @@ clineTest('times out an MCP input request that the native client never answers, 
   // Cline reads a failed tool call as the output `{ error: <message> }`, so the context reads the error alone.
   const context = { ...await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }), readToolResult: clineToolError }
   await withNativeMcpFormAgent(context, {
-    providerAgent: CLINE_AGENT,
     directoryPrefix: 'cline-native-mcp-unanswered-',
     configurationPath: join(leapmuxServer.agentEnv.CLINE_DATA_DIR!, 'settings', 'cline_mcp_settings.json'),
     configuration: server => ({ mcpServers: { [server.name]: { transport: { type: 'stdio', command: server.command, args: server.args }, timeout: MCP_TIMEOUT_SECONDS } } }),

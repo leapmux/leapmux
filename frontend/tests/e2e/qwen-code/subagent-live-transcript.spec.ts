@@ -3,7 +3,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
+import { qwenTest } from '../qwen-fixtures'
+import { QWEN_AGENT } from './scenarios'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.

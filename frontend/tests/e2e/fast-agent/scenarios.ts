@@ -1,15 +1,20 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { HeldNativeChild, NativeChildScriptContext, RunningChildOptions } from '../helpers/runningChildProof'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
+/** How a Fast Agent agent opens. */
+export const FAST_AGENT_AGENT: ProviderAgent = { provider: AgentProvider.FAST_AGENT, prefix: 'fastagent-e2e' }
+
 /** Build the scenario context of Fast Agent. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.FAST_AGENT }
+  return managedNativeContext(fixtures, FAST_AGENT_AGENT)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

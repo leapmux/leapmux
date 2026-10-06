@@ -2,12 +2,12 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { GROK_AGENT } from '../grok-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { controlButton, expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { GROK_AGENT } from './scenarios'
 
 /** Open an actual project MCP server through Grok's native trust decision. */
 export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext, decision: 'allow' | 'deny'): Promise<{ workingDir: string, receiptLog: string }> {

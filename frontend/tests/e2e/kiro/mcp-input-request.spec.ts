@@ -6,9 +6,9 @@ import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { answerControl, assistantBubbles, expectNoControlBanner, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
 import { writeKiroProjectMcpServers } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro control requests', () => {
   // A workspace MCP server's form round-trips through Kiro's own elicitation request.

@@ -5,13 +5,12 @@
  * `helpers/mockAgentEnvironment.ts` writes to `KIMI_CODE_HOME`, never a Kimi
  * account.
  */
-import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { nativeContext } from './kimi-code/scenarios'
+import { KIMI_AGENT, nativeContext } from './kimi-code/scenarios'
 import { computeKimiE2ESkipReason, KIMI_MISSING_REASON } from './kimi-install'
 import { cliSkipFixture } from './provider-fixture-factory'
 
@@ -24,9 +23,6 @@ const KIMI = lookupBinary('kimi', KIMI_MISSING_REASON)
 export const KIMI_E2E_SKIP_REASON: string | null = KIMI.path === null
   ? KIMI.skipReason
   : computeKimiE2ESkipReason(versionOutput(KIMI.path) ?? '')
-
-/** How a Kimi Code agent opens. */
-export const KIMI_AGENT: ProviderAgent = { provider: AgentProvider.KIMI_CODE, prefix: 'kimi-e2e' }
 
 export const kimiTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedKimiWorkspace: AgentWorkspace

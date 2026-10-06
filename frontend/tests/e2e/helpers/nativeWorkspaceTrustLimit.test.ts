@@ -4,17 +4,26 @@ import type { ModelScript } from './modelScriptFixture'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProjectMcpServer } from './nativeWorkspaceTrustLimit'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import type { ProviderAgent } from './workspace'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { agentOpenOptions } from '../agentSettings'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
+import { gitRepositoryWorkingDir } from './worktree'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
 
 /** The calls that the mocked browser, permission, and repository helpers receive, in order. */
-const calls = vi.hoisted(() => ({ events: [] as string[], request: undefined as unknown, proof: undefined as unknown }))
+const calls = vi.hoisted(() => ({
+  events: [] as string[],
+  request: undefined as unknown,
+  proof: undefined as unknown,
+  open: vi.fn<typeof import('./api').openAgentViaAPI>(),
+}))
 
 /** The private run directory that `createTestDirectory` creates its directories in. */
 const run = vi.hoisted(() => ({ tmpDir: '' }))
@@ -27,6 +36,19 @@ vi.mock('@playwright/test', async (importOriginal) => {
 vi.mock('./server', async importOriginal => ({
   ...await importOriginal<typeof import('./server')>(),
   getGlobalState: () => ({ tmpDir: run.tmpDir }),
+}))
+
+vi.mock('./api', async importOriginal => ({
+  ...await importOriginal<typeof import('./api')>(),
+  openAgentViaAPI: calls.open,
+}))
+
+// `expectNoNativeStartupControl` has its own cases in `./nativeControlObservation.test.ts`. Here it only starts the agent.
+vi.mock('./nativeControlObservation', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeControlObservation')>(),
+  expectNoNativeStartupControl: async (_context: unknown, options: { start: () => Promise<void> }) => {
+    await options.start()
+  },
 }))
 
 vi.mock('./ui', async (importOriginal) => {
@@ -57,11 +79,11 @@ vi.mock('./mcpServerReceipt', async importOriginal => ({
   },
 }))
 
+// `ensureGitRepositoryRoot` has its own cases in `./worktree.test.ts`. The real `gitRepositoryWorkingDir` stays.
 vi.mock('./worktree', async importOriginal => ({
   ...await importOriginal<typeof import('./worktree')>(),
-  createGitRepo: (directory: string, name: string) => {
-    calls.events.push(`repository ${name} ${existsSync(join(directory, 'AGENTS.md')) ? 'after' : 'before'} the file`)
-    return join(directory, name)
+  ensureGitRepositoryRoot: (directory: string) => {
+    calls.events.push(`repository root ${existsSync(join(directory, 'AGENTS.md')) ? 'after' : 'before'} the file`)
   },
 }))
 
@@ -78,6 +100,7 @@ beforeEach(() => {
   calls.events = []
   calls.request = undefined
   calls.proof = undefined
+  calls.open.mockReset()
   mkdirSync(SCRATCH_ROOT, { recursive: true })
   run.tmpDir = mkdtempSync(join(SCRATCH_ROOT, 'workspace-trust-run-'))
 })
@@ -86,10 +109,14 @@ afterEach(() => {
   rmSync(run.tmpDir, { recursive: true, force: true })
 })
 
+/** How a Cursor agent opens in these tests: in a fresh directory of the run. */
+const CURSOR: ProviderAgent = { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e' }
+
 /** A context whose browser and model script no helper of this file may touch. */
 function detachedContext(overrides: Partial<ManagedNativeScenarioContext> = {}): ManagedNativeScenarioContext {
   return {
     provider: AgentProvider.CURSOR,
+    providerAgent: CURSOR,
     workspaceId: 'detached',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
     page: {} as Page,
@@ -109,6 +136,7 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
   it.each([undefined, {}, { projectConfiguration: {} }, { projectConfiguration: { prepare() {} } }])('rejects a missing actual configuration proof before browser access: %j', async (options) => {
     const context: ManagedNativeScenarioContext = {
       provider: AgentProvider.CURSOR,
+      providerAgent: CURSOR,
       workspaceId: 'config-boundary',
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
       get page(): Page {
@@ -129,6 +157,7 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
   ])('rejects an invalid failure proof before configuration or browser access: %j', async (startup) => {
     const context: ManagedNativeScenarioContext = {
       provider: AgentProvider.CURSOR,
+      providerAgent: CURSOR,
       workspaceId: 'failed-config-boundary',
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
       get page(): Page {
@@ -146,6 +175,42 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
       },
     }
     await expect(Reflect.apply(exerciseNativeWorkspaceTrustLimit, undefined, [context, options])).rejects.toThrow(/workspace trust startup|requires the native configuration error/)
+  })
+
+  /** The rest of the scenario drives a browser, so the open of the agent ends it in these tests. */
+  const opened = new Error('The unit test ends the trust scenario at the agent open.')
+
+  /** Run the scenario up to the agent open, and return the project directory that `prepare` received. */
+  async function preparedProject(context: ManagedNativeScenarioContext): Promise<string> {
+    calls.open.mockRejectedValue(opened)
+    const prepared: string[] = []
+    await expect(exerciseNativeWorkspaceTrustLimit(context, {
+      projectConfiguration: {
+        prepare: ({ directory }) => { prepared.push(directory) },
+        prove: async () => { throw new Error('The agent open ends the scenario before the proof.') },
+      },
+    })).rejects.toBe(opened)
+    expect(prepared).toHaveLength(1)
+    const [directory] = prepared
+    if (directory === undefined)
+      throw new Error('The scenario prepared no project directory.')
+    expect(calls.open).toHaveBeenCalledExactlyOnceWith('http://unused.invalid', 'unused', 'unused', 'detached', directory, agentOpenOptions(context.provider, {}))
+    return directory
+  }
+
+  it('prepares and opens the project of a provider with a git rule in the root of a git repository of its own', async () => {
+    const deepseek: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: gitRepositoryWorkingDir }
+    const directory = await preparedProject(detachedContext({ provider: deepseek.provider, providerAgent: deepseek }))
+    expect(basename(dirname(directory))).toMatch(/^native-workspace-trust-/)
+    // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.
+    expect(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, encoding: 'utf8' }).trim()).toBe(realpathSync(directory))
+  })
+
+  it('prepares and opens the project of a provider with no rule in a fresh directory of the run', async () => {
+    const directory = await preparedProject(detachedContext())
+    expect(dirname(directory)).toBe(run.tmpDir)
+    expect(basename(directory)).toMatch(/^native-workspace-trust-/)
+    expect(existsSync(join(directory, '.git'))).toBe(false)
   })
 })
 
@@ -214,7 +279,7 @@ describe('instructionFileConfiguration', () => {
     const directory = scratchDirectory(directories, 'instruction-file-')
     const configuration = instructionFileConfiguration('AGENTS.md', { gitRoot: true, sourceLine: path => `Instructions from: ${path}` })
     await configuration.prepare({ directory, marker: 'INSTRUCTIONMARKER' })
-    expect(calls.events).toEqual(['repository . before the file'])
+    expect(calls.events).toEqual(['repository root before the file'])
     expect(existsSync(join(directory, 'AGENTS.md'))).toBe(true)
     const project = { directory, marker: 'INSTRUCTIONMARKER', agentId: 'agent' }
     calls.request = instructionRequest('Keep INSTRUCTIONMARKER as a standing project instruction.')
@@ -248,7 +313,7 @@ describe('mcpServerProjectConfiguration', () => {
       expect(dir).toBe(directory)
       servers.push(server)
     }).prepare({ directory, marker: 'UNUSED' })
-    expect(calls.events).toEqual(['repository . before the file'])
+    expect(calls.events).toEqual(['repository root before the file'])
     expect(servers).toEqual([{ name: 'trust_probe', command: process.execPath, args: [expect.stringContaining(directory)] }])
     expect(existsSync(servers[0]!.args[0]!)).toBe(true)
   })

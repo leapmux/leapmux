@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { GROK_METHOD, GROK_MODE, GROK_PLAN_OUTCOME, GROK_REPLY_FIELD } from '../../../src/generated/contracts/grok-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { GROK_AGENT, grokTest } from '../grok-fixtures'
+import { grokTest } from '../grok-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -11,6 +11,7 @@ import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { answerPlanReview, assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
+import { GROK_AGENT } from './scenarios'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 

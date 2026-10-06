@@ -1,8 +1,8 @@
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-import { nativeContext } from './scenarios'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro interrupt, steering and process lifetime', () => {
   // The allow-all preset runs the command with no permission banner. Kiro counts its live progress in tokens

@@ -1,4 +1,4 @@
-import { AMP_AGENT, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { invokeNativeMcpTool, withNativeMcpFormAgent } from '../helpers/mcpExecution'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -10,7 +10,6 @@ ampTest('returns the actual native MCP unsupported-method reply without a browse
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const configurationPath = ampSettingsPath(leapmuxServer.agentEnv)
   await withNativeMcpFormAgent(context, {
-    providerAgent: AMP_AGENT,
     directoryPrefix: 'amp-native-mcp-refusal-',
     configurationPath,
     configuration: server => ampMcpSettings(configurationPath, server),

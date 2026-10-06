@@ -5,10 +5,10 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
+import { expect, junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
 import { writeJunieMcpConfig } from './mcpConfig'
-import { nativeContext } from './scenarios'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('native mcp tool execution', () => {
   junieTest('runs a project MCP tool through the native agent', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

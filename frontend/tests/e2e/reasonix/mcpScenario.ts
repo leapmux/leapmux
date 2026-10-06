@@ -6,7 +6,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
-import { createTestDirectory } from '../helpers/runDirectory'
+import { newNativeWorkingDir } from '../helpers/nativeAgentOpen'
 import { openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -16,7 +16,7 @@ import { nativeContext } from './scenarios'
  */
 export async function exerciseReasonixMcpForm(fixtures: NativeContextFixtures): Promise<void> {
   const context = await nativeContext(fixtures)
-  const directory = createTestDirectory('reasonix-mcp-form-')
+  const directory = newNativeWorkingDir(context, 'reasonix-mcp-form-')
   writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(writeMcpFormServer(directory, 'form-server.mjs'))))
   const { leapmuxServer } = context
   await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, directory, agentOpenOptions(context.provider, {

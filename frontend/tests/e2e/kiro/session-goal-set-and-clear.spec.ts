@@ -4,7 +4,8 @@ import { expectGoalObjective, expectGoalStatus, scriptedObjective, submitGoal } 
 import { blockGoalToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { kiroTest } from '../kiro-fixtures'
+import { KIRO_AGENT } from './scenarios'
 
 const KIRO = AgentProvider.KIRO
 

@@ -4,8 +4,8 @@ import { exerciseFileToolExecution, expectFileDiff, runNativeToolSteps } from '.
 import { bashToolCall, editToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
-import { nativeContext } from './scenarios'
+import { expect, junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie tool execution', () => {
   junieTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

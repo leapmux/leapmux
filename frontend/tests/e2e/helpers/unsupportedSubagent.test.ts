@@ -125,7 +125,7 @@ function fakeContext(): ManagedNativeScenarioContext {
       return status()
     },
   })
-  return { page, modelScript, provider: AgentProvider.KILO, workspaceId: 'unsupported-route', leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  return { page, modelScript, provider: AgentProvider.KILO, providerAgent: { provider: AgentProvider.KILO, prefix: 'native-e2e' }, workspaceId: 'unsupported-route', leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
 }
 
 /** A running child whose finish logs itself, and can make the parent report carry the refused message. */
@@ -145,6 +145,7 @@ function runningChild(): RunningNativeChild {
 function context(): ManagedNativeScenarioContext {
   return {
     provider: AgentProvider.CURSOR,
+    providerAgent: { provider: AgentProvider.CURSOR, prefix: 'native-e2e' },
     workspaceId: 'cleanup-boundary',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
     get page(): Page {

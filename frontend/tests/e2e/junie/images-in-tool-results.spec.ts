@@ -7,10 +7,10 @@ import { mcpToolCall } from '../helpers/providerToolCalls'
 import { expectPngInRequest, writeToolImage } from '../helpers/toolImages'
 import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
+import { expect as junieExpect, junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
 import { writeJunieMcpConfig } from './mcpConfig'
-import { nativeContext } from './scenarios'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie images in tool results', () => {
   junieTest('receives no image bytes in the ACP tool row after the model sees the PNG', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {

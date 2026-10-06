@@ -2,18 +2,16 @@ import type { NativeContextFixtures } from '../helpers/nativeScenario'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
-import { COPILOT_AGENT } from '../copilot-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { COPILOT_AGENT, nativeContext } from './scenarios'
 
 /**
  * Prove the MCP form of Copilot:
@@ -30,7 +28,7 @@ export async function exerciseCopilotMcpForm(fixtures: NativeContextFixtures): P
   const home = leapmuxServer.agentEnv?.COPILOT_HOME
   if (!home)
     throw new Error('The Copilot MCP form test needs the isolated Copilot home.')
-  const directory = createTestDirectory('copilot-mcp-form-')
+  const directory = newProviderWorkingDir(COPILOT_AGENT, 'copilot-mcp-form-')
   const server = writeMcpFormServer(directory, 'form-server.mjs')
   const content = JSON.stringify({ mcpServers: { [server.name]: { type: 'local', command: server.command, args: server.args, tools: ['*'] } } })
   await withNativeConfigurationFile({ path: join(home, 'mcp-config.json'), content, runDir: getGlobalState().tmpDir }, async () => {

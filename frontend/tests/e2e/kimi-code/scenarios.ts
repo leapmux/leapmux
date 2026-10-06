@@ -1,9 +1,14 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { kimiModelContextText } from './modelContextText'
+
+/** How a Kimi Code agent opens. */
+export const KIMI_AGENT: ProviderAgent = { provider: AgentProvider.KIMI_CODE, prefix: 'kimi-e2e' }
 
 /**
  * Build the scenario context of Kimi Code, with every field that its native protocol needs.
@@ -11,7 +16,7 @@ import { kimiModelContextText } from './modelContextText'
  * of each native message. That reader refuses a message whose content is not text.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.KIMI_CODE, readModelContext: kimiModelContextText }
+  return managedNativeContext(fixtures, KIMI_AGENT, { readModelContext: kimiModelContextText })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

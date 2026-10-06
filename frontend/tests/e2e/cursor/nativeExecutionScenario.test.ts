@@ -16,6 +16,7 @@ const context: ManagedNativeScenarioContext = {
   page: {} as Page,
   modelScript: {} as ModelScript,
   provider: AgentProvider.CURSOR,
+  providerAgent: { provider: AgentProvider.CURSOR, prefix: 'native-e2e' },
   workspaceId: 'workspace',
   leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'worker' },
 }

@@ -2,17 +2,17 @@ import { join } from 'node:path'
 import { openAgentViaAPI } from '../helpers/api'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
-import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
-import { nativeContext } from './scenarios'
+import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
 piTest('returns the native MCP elicitation refusal without a browser form', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  const directory = createTestDirectory('pi-native-mcp-form-')
+  const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-form-')
   const receiptLog = join(directory, 'native-form-receipt.json')
   const server = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })

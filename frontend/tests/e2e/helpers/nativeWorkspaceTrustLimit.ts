@@ -12,6 +12,7 @@ import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
 import { writeMcpEchoServer } from './mcpEchoServer'
 import { waitForMcpToolListed } from './mcpServerReceipt'
+import { newNativeWorkingDir } from './nativeAgentOpen'
 import { expectNoNativeStartupControl } from './nativeControlObservation'
 import { sendNativeAnswer } from './nativeConversation'
 import { nativeAgentById, nativeModelInstructionText } from './nativeScenario'
@@ -22,7 +23,7 @@ import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { chooseSettingsOption, tabById, waitForSettingsIdle } from './ui'
 import { exerciseUnsupportedControlThroughPermission } from './unsupportedNativeControl'
-import { createGitRepo } from './worktree'
+import { ensureGitRepositoryRoot } from './worktree'
 
 export interface NativeProjectConfiguration {
   directory: string
@@ -74,7 +75,11 @@ export function projectConfigurationWorker(
   }
 }
 
-/** Observe actual project configuration processing from native startup through its completed turn. */
+/**
+ * Observe actual project configuration processing from native startup through its completed turn.
+ * The project is a new working directory by the rule of the provider of the context (`newNativeWorkingDir`), and
+ * `projectConfiguration.prepare` writes the configuration into it before the agent opens there.
+ */
 export async function exerciseNativeWorkspaceTrustLimit(
   context: ManagedNativeScenarioContext,
   options: NativeWorkspaceTrustOptions,
@@ -85,7 +90,9 @@ export async function exerciseNativeWorkspaceTrustLimit(
     throw new Error('The workspace trust startup must be active or failed.')
   if (options.startup === 'failed' && (typeof options.startupError !== 'string' || options.startupError.trim().length === 0))
     throw new Error('The failed workspace startup requires the native configuration error.')
-  const project = { directory: createTestDirectory('native-workspace-trust-'), marker: uniqueMarker('NATIVEWORKSPACECONFIG') }
+  // The project follows the rule of the provider. A provider that reads its configuration up to the repository root
+  // then reads this project alone, and not the configuration of the LeapMux checkout around the run directory.
+  const project = { directory: newNativeWorkingDir(context, 'native-workspace-trust-'), marker: uniqueMarker('NATIVEWORKSPACECONFIG') }
   await options.projectConfiguration.prepare(project)
   const run = async (privateContext: ManagedNativeScenarioContext, wrapper?: NativeStartupWrapper) => {
     let agentId = ''
@@ -141,9 +148,9 @@ export function instructionFileConfiguration(
   fileName: string,
   options: {
     /**
-     * Make the directory the root of a git repository of its own. A provider that reads the file from each
-     * directory up to the repository root then stops at the directory, and does not also read the instructions of
-     * the LeapMux checkout around it.
+     * Make the directory the root of a git repository of its own, unless the rule of the provider made it one
+     * already (`ensureGitRepositoryRoot`). A provider that reads the file from each directory up to the repository
+     * root then stops at the directory, and does not also read the instructions of the LeapMux checkout around it.
      */
     gitRoot?: boolean
     /** The text by which the provider states the path of the file that it loaded. */
@@ -155,7 +162,7 @@ export function instructionFileConfiguration(
   return {
     prepare: ({ directory, marker }) => {
       if (options.gitRoot)
-        createGitRepo(directory, '.')
+        ensureGitRepositoryRoot(directory)
       writeFileSync(join(directory, fileName), `# Native project configuration\nKeep ${marker} as a standing project instruction.\n`)
     },
     prove: async (context, { directory, marker }) => {
@@ -182,12 +189,13 @@ const PROJECT_MCP_RECEIPT = 'workspace-mcp-receipt.json'
 /**
  * A git project that registers a private MCP echo server, and the proof that the provider started that server from
  * the project configuration: one native turn completes, and the server answered `initialize` and listed `echo`.
- * `writeConfiguration` writes the project configuration file of the provider, which starts `server`.
+ * `writeConfiguration` writes the project configuration file of the provider, which starts `server`. The project is
+ * the root of a git repository of its own, whether or not the rule of the provider made it one.
  */
 export function mcpServerProjectConfiguration(writeConfiguration: (directory: string, server: ProjectMcpServer) => void): NativeProjectConfigurationProof {
   return {
     prepare: ({ directory }) => {
-      createGitRepo(directory, '.')
+      ensureGitRepositoryRoot(directory)
       const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
       writeConfiguration(directory, { name: 'trust_probe', command: process.execPath, args: [script] })
     },
