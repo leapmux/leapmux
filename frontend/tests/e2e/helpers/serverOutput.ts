@@ -1,4 +1,6 @@
+import type { TestInfo } from '@playwright/test'
 import type { ChildProcess } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 import process from 'node:process'
 import { createProcessOutputLineDecoder } from './processOutputLines'
 
@@ -71,6 +73,18 @@ export function createServerOutput(): ServerOutput {
       })
     },
   }
+}
+
+/**
+ * Attach the server output of a failed test to its report as `server-log`.
+ * A server can fail without a browser error, and its output then explains a timeout on a browser locator.
+ * The attachment is a file, because the list reporter shows only the first line of an inline attachment.
+ * The test output directory keeps the complete file.
+ */
+export async function attachServerLog(testInfo: TestInfo, text: string): Promise<void> {
+  const path = testInfo.outputPath('server-log.txt')
+  writeFileSync(path, text)
+  await testInfo.attach('server-log', { path, contentType: 'text/plain' })
 }
 
 /** Print captured output and rethrow a setup failure that precedes test attachments. */

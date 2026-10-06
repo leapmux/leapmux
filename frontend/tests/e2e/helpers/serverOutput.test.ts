@@ -1,9 +1,12 @@
 /** Test process output, partial lines, and absolute log marks without a Hub. */
+import type { TestInfo } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { ChildProcess } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { describe, expect, it } from 'vitest'
-import { createServerOutput } from './serverOutput'
+import { describe, expect, it, vi } from 'vitest'
+import { attachServerLog, createServerOutput } from './serverOutput'
 
 /** Supply controlled streams on a real ChildProcess instance. */
 function fakeProc(): ChildProcess & { write: (s: string) => void, close: () => void } {
@@ -153,5 +156,25 @@ describe('createServerOutput', () => {
     const slice = out.since(mark).split('\n')
     expect(slice.at(-1)).toBe('[worker] line-4999')
     expect(slice.length).toBeGreaterThan(100)
+  })
+})
+
+describe('attachServerLog', () => {
+  it('writes the complete output to server-log.txt in the test output and attaches that file', async () => {
+    const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+    mkdirSync(scratch, { recursive: true })
+    const directory = mkdtempSync(join(scratch, 'server-log-attachment-'))
+    try {
+      const attach = vi.fn<TestInfo['attach']>(async () => {})
+      const testInfo = { outputPath: (...parts: string[]) => join(directory, ...parts), attach } as unknown as TestInfo
+      const text = 'first line\nsecond line\n한글 line\n'
+      await attachServerLog(testInfo, text)
+      const path = join(directory, 'server-log.txt')
+      expect(readFileSync(path, 'utf8')).toBe(text)
+      expect(attach).toHaveBeenCalledExactlyOnceWith('server-log', { path, contentType: 'text/plain' })
+    }
+    finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

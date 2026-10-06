@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
+import type { CustomizedHubSetting } from './api'
 import { execFile, spawn } from 'node:child_process'
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,6 +11,7 @@ import {
   elevateSessionViaAPI,
   getUserId,
   getWorkerId,
+  listCustomizedHubSettingsViaAPI,
   loginViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
@@ -29,6 +31,10 @@ export interface SuiteServerState {
   /** The resolved primary bind address that the hub publishes as its default URL. */
   boundHubUrl: string
   adminToken: string
+  /**
+   * The administrator user ID.
+   * Browser storage requires an account ID before addInitScript can set a preference for a page that did not sign in yet.
+   */
   adminUserId: string
   workerId: string
   newuserToken: string
@@ -43,6 +49,11 @@ export interface SuiteServerState {
    * agents reach the mock endpoint rather than the developer's real provider.
    */
   agentEnv: Record<string, string>
+  /**
+   * The hub settings that held a stored value when the hub started, before any test ran.
+   * The hub stores them itself, such as its generated captcha key. The per-test reset keeps them.
+   */
+  baselineHubSettings: CustomizedHubSetting[]
 }
 
 export interface StartedSuiteServer {
@@ -151,10 +162,12 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     await waitForHubReady(hubUrl, proc)
     const adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
     await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
-    const [adminUserId, workerId, newuserToken] = await Promise.all([
+    const [adminUserId, workerId, newuserToken, baselineHubSettings] = await Promise.all([
       getUserId(hubUrl, adminToken),
       getWorkerId(hubUrl, adminToken),
       signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com'),
+      // The setup writes no hub setting, so this list holds only what the hub stored itself.
+      listCustomizedHubSettingsViaAPI(hubUrl, adminToken),
     ])
 
     return {
@@ -170,6 +183,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
         mockModelUrl: mockModel.url,
         piAgentDir: mockAgent.piAgentDir,
         agentEnv: mockAgent.env,
+        baselineHubSettings,
       },
       stop,
     }

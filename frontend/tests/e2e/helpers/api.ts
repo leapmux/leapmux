@@ -754,16 +754,93 @@ export async function listWorkspacesViaAPI(
 }
 
 /**
- * Delete all workspaces for the authenticated user via the hub (best effort).
+ * Delete all workspaces of the authenticated user through the hub.
+ * The function starts every delete, waits for all of them, and then throws one `AggregateError` that holds each
+ * failure. `deleteWorkspaceViaAPI` accepts a workspace that is already gone and skips an offline Worker, so a failure
+ * that remains is a real fault. A workspace that the reset leaves behind changes the sidebar of a later test.
  */
 export async function deleteAllWorkspacesViaAPI(
   hubUrl: string,
   cookie: string,
 ): Promise<void> {
   const workspaces = await listWorkspacesViaAPI(hubUrl, cookie)
-  for (const ws of workspaces) {
-    await deleteWorkspaceViaAPI(hubUrl, cookie, ws.id).catch(() => {})
+  await finishCleanup(workspaces.map(workspace => deleteWorkspaceViaAPI(hubUrl, cookie, workspace.id)))
+}
+
+/** One hub setting that holds a stored value, as `ListSettings` reports it. The hub redacts each secret in `valueJson`. */
+export interface CustomizedHubSetting {
+  key: string
+  valueJson: string
+}
+
+/** List the hub settings that hold a stored value. A setting at its code default is absent from the result. */
+export async function listCustomizedHubSettingsViaAPI(hubUrl: string, cookie: string): Promise<CustomizedHubSetting[]> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/ListSettings`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: '{}',
+  })
+  if (!res.ok)
+    throw new Error(`listCustomizedHubSettingsViaAPI failed: ${res.status} ${await res.text()}`)
+  const data = await res.json() as { values?: Array<{ key?: string, valueJson?: string, customized?: boolean }> }
+  return (data.values ?? []).flatMap((value) => {
+    if (!value.customized)
+      return []
+    if (!value.key)
+      throw new Error('listCustomizedHubSettingsViaAPI received a customized setting with no key.')
+    return [{ key: value.key, valueJson: value.valueJson ?? '' }]
+  })
+}
+
+/**
+ * Compare the customized hub settings with the baseline that the hub had when it started.
+ * - `reset`: the keys that the baseline does not hold. A reset returns each one to its code default.
+ * - `changedBaseline`: the baseline keys whose stored value differs, or that lost their stored value.
+ */
+export function hubSettingsDrift(
+  current: readonly CustomizedHubSetting[],
+  baseline: readonly CustomizedHubSetting[],
+): { reset: string[], changedBaseline: string[] } {
+  const baselineValues = new Map(baseline.map(setting => [setting.key, setting.valueJson]))
+  const currentValues = new Map(current.map(setting => [setting.key, setting.valueJson]))
+  return {
+    reset: current.filter(setting => !baselineValues.has(setting.key)).map(setting => setting.key),
+    changedBaseline: baseline.filter(setting => currentValues.get(setting.key) !== setting.valueJson).map(setting => setting.key),
   }
+}
+
+/**
+ * Return each hub setting to the state that it had when the hub started.
+ *
+ * The suite shares one hub across all tests, so a setting survives its test and can change the result of the next one.
+ * The hub stores some settings itself when it starts, such as the generated captcha key, and `baseline` lists them.
+ * The function leaves a baseline setting alone, because a reset makes the hub generate a new value. It fails for a
+ * baseline setting whose stored value differs, because it cannot restore a value that the hub generated.
+ *
+ * A write to a hub setting needs an elevated session, and a test can drop the elevation of the shared session. So the
+ * function elevates the session before the reset. It resets all keys in one transaction, and it sends no write when no
+ * key needs a reset.
+ */
+export async function resetHubSettingsViaAPI(
+  hubUrl: string,
+  cookie: string,
+  options: { baseline: readonly CustomizedHubSetting[], password: string },
+): Promise<void> {
+  const { reset, changedBaseline } = hubSettingsDrift(await listCustomizedHubSettingsViaAPI(hubUrl, cookie), options.baseline)
+  if (changedBaseline.length > 0) {
+    throw new Error(`The hub settings ${changedBaseline.join(', ')} differ from their values at the start of the run. `
+      + 'The reset cannot restore a value that the hub generated, so restore it in the test that changed it.')
+  }
+  if (reset.length === 0)
+    return
+  await elevateSessionViaAPI(hubUrl, cookie, options.password)
+  const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/ResetSettings`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ keys: reset }),
+  })
+  if (!res.ok)
+    throw new Error(`resetHubSettingsViaAPI could not reset ${reset.join(', ')}: ${res.status} ${await res.text()}`)
 }
 
 /**

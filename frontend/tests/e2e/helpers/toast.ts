@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Page, TestInfo } from '@playwright/test'
 
 // ──────────────────────────────────────────────
 // Toast recording for e2e debugging
@@ -90,6 +90,26 @@ export async function installToastRecorder(page: Page) {
  */
 export async function getRecordedToasts(page: Page): Promise<RecordedToast[]> {
   return page.evaluate(() => (window as any).__recordedToasts ?? [])
+}
+
+/**
+ * Format the recorded toasts with one line for each toast: `[<ISO time>] [<variant>] <message>`.
+ * A toast with no variant reads as `info`.
+ */
+export function formatToastLog(toasts: readonly RecordedToast[]): string {
+  return toasts.map(toast => `[${new Date(toast.timestamp).toISOString()}] [${toast.variant || 'info'}] ${toast.message}`).join('\n')
+}
+
+/**
+ * Attach the toasts that the page recorded to the test report as `toast-log`.
+ * The function attaches nothing when the page recorded no toast. It also attaches nothing when the page cannot answer,
+ * as after a crash or a close, because a missing toast log must not hide the failure of the test.
+ */
+export async function attachToastLog(page: Page, testInfo: TestInfo): Promise<void> {
+  const toasts = await getRecordedToasts(page).catch(() => [])
+  if (toasts.length === 0)
+    return
+  await testInfo.attach('toast-log', { body: formatToastLog(toasts), contentType: 'text/plain' })
 }
 
 /**

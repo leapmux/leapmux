@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { ServerOutput } from './helpers/serverOutput'
 import type { WorkspaceFixture } from './helpers/workspace'
-import { rmSync, writeFileSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { test as base, expect } from '@playwright/test'
 import { agentDefaultsEnv } from './agentSettings'
@@ -30,8 +30,8 @@ import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { createTestDirectory } from './helpers/runDirectory'
 import { getGlobalState, hubSpawnEnv, hubUrlFromStateJson, waitForHubReady, waitForHubStateFile, waitForServer } from './helpers/server'
-import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
-import { getRecordedToasts, installToastRecorder } from './helpers/toast'
+import { attachServerLog, createServerOutput, reportStartupFailure } from './helpers/serverOutput'
+import { attachToastLog, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 
@@ -283,26 +283,10 @@ export const processTest = base.extend<
     const serverMark = separateHubWorker.output.mark()
     await use()
 
-    const toasts = await getRecordedToasts(page).catch(() => [])
-    if (toasts.length > 0) {
-      const toastLog = toasts.map(t =>
-        `[${new Date(t.timestamp).toISOString()}] [${t.variant || 'info'}] ${t.message}`,
-      ).join('\n')
-      await testInfo.attach('toast-log', {
-        body: toastLog,
-        contentType: 'text/plain',
-      })
-    }
-
-    // Attach recent Hub and Worker output after a failure, as ./fixtures.ts does.
-    // Both processes can fail without a browser error. Their logs explain a timeout on a browser locator.
-    // Use a file attachment. The list reporter shows only the first line of an inline attachment.
-    // The test output directory keeps the complete file.
-    if (testInfo.status !== testInfo.expectedStatus) {
-      const logPath = testInfo.outputPath('server-log.txt')
-      writeFileSync(logPath, separateHubWorker.output.since(serverMark))
-      await testInfo.attach('server-log', { path: logPath, contentType: 'text/plain' })
-    }
+    await attachToastLog(page, testInfo)
+    // Attach the recent output of the Hub and the Worker after a failure, as ./fixtures.ts does.
+    if (testInfo.status !== testInfo.expectedStatus)
+      await attachServerLog(testInfo, separateHubWorker.output.since(serverMark))
   }, { auto: true }],
 
   // Confirm the Worker connection before creating the workspace and its initial agent.

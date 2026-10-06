@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, ViewportSize } from '@playwright/test'
 import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
+import type { SuiteServerState } from './helpers/suiteServer'
 import type { WorkspaceFixture } from './helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { basename, relative } from 'node:path'
@@ -10,34 +11,22 @@ import {
   deleteAllWorkspacesViaAPI,
   openPinnedModeAgentViaAPI,
   resetAllUserSettingsViaAPI,
+  resetHubSettingsViaAPI,
+  TEST_ADMIN_PASSWORD,
 } from './helpers/api'
 import { finishCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { readMockModelDiagnostics } from './helpers/mockModelScenario'
 import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { getGlobalState } from './helpers/server'
+import { attachServerLog } from './helpers/serverOutput'
 import { markSuiteServerLog, readSuiteServerLog } from './helpers/suiteServerLog'
-import { clearRecordedToasts, getRecordedToasts, installToastRecorder } from './helpers/toast'
+import { attachToastLog, clearRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 
-export interface ServerInfo {
-  hubUrl: string
-  boundHubUrl: string
-  adminToken: string
-  /**
-   * The administrator user ID.
-   * Browser storage requires an account ID before addInitScript can set a preference for a page that did not sign in yet.
-   */
-  adminUserId: string
-  workerId: string
-  newuserToken: string
-  dataDir: string
-  serverLogPath: string
-  mockModelUrl: string
-  piAgentDir: string
-  agentEnv: Record<string, string>
-}
+/** The shared hub of the run, as global setup started it. */
+export type ServerInfo = SuiteServerState
 
 interface SharedPageState {
   context: BrowserContext
@@ -256,16 +245,22 @@ export const test = base.extend<
     await use(leapmuxServer.hubUrl)
   },
 
-  // Reset the shared account before each test creates its workspace.
-  // A failed test can leave extra workspaces or account preferences behind.
+  // Reset the shared account and the shared hub before each test creates its workspace.
+  // A failed test can leave extra workspaces, account preferences, or hub settings behind.
   // Extra workspaces change sidebar counts. Preferences can change controls
   // without a visible cause. For example, a custom terminal palette enables its
   // theme-mode control and can break a later disabled-control assertion.
+  // A hub setting reaches every later test. For example, a broken SMTP setting makes a later signup fail closed.
   // Each workspace fixture depends on this reset, so the reset cannot remove
   // a workspace that the current test creates.
+  // The three resets are independent, so they run together, and the fixture reports every failure in one error.
   hubStateReset: [async ({ leapmuxServer }, use) => {
-    await deleteAllWorkspacesViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    await resetAllUserSettingsViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)
+    const { hubUrl, adminToken, baselineHubSettings } = leapmuxServer
+    await finishCleanup([
+      deleteAllWorkspacesViaAPI(hubUrl, adminToken),
+      resetAllUserSettingsViaAPI(hubUrl, adminToken),
+      resetHubSettingsViaAPI(hubUrl, adminToken, { baseline: baselineHubSettings, password: TEST_ADMIN_PASSWORD }),
+    ])
     await use()
   }, { auto: true }],
 
@@ -303,25 +298,10 @@ export const test = base.extend<
     const serverMark = markSuiteServerLog(leapmuxServer.serverLogPath)
     await use()
 
-    // Attach the collected toasts to the test report.
-    const toasts = await getRecordedToasts(page).catch(() => [])
-    if (toasts.length > 0) {
-      const toastLog = toasts.map(t =>
-        `[${new Date(t.timestamp).toISOString()}] [${t.variant || 'info'}] ${t.message}`,
-      ).join('\n')
-      await testInfo.attach('toast-log', {
-        body: toastLog,
-        contentType: 'text/plain',
-      })
-    }
-
-    // Attach recent server output when a test fails. Otherwise, an out-of-process error can appear only as a locator timeout.
-    // Use a file attachment because the list reporter truncates inline attachments to the first line.
-    // The file under test-results retains all recent output.
+    await attachToastLog(page, testInfo)
     if (testInfo.status !== testInfo.expectedStatus) {
-      const logPath = testInfo.outputPath('server-log.txt')
-      writeFileSync(logPath, readSuiteServerLog(leapmuxServer.serverLogPath, serverMark))
-      await testInfo.attach('server-log', { path: logPath, contentType: 'text/plain' })
+      // An out-of-process error can otherwise appear only as a locator timeout.
+      await attachServerLog(testInfo, readSuiteServerLog(leapmuxServer.serverLogPath, serverMark))
 
       // Attach actual model traffic and requests that reached no scenario.
       // A native provider failure includes its HTTP status and request body.

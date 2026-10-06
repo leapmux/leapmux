@@ -2,7 +2,7 @@ import type { ChannelTransport } from '../../../src/lib/channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelManager } from '../../../src/lib/channel'
-import { API_POLL_INTERVAL_MS, closeTestChannels, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI, waitForNewOnlineWorkerViaAPI } from './api'
+import { API_POLL_INTERVAL_MS, closeTestChannels, deleteAllWorkspacesViaAPI, deleteWorkspaceViaAPI, getTestChannel, hubSettingsDrift, openAgentViaAPI, resetHubSettingsViaAPI, waitForNewOnlineWorkerViaAPI } from './api'
 import { createTestChannelManager } from './e2e-channel'
 
 vi.mock('./e2e-channel', () => ({ createTestChannelManager: vi.fn() }))
@@ -128,6 +128,150 @@ describe('workspace deletion cleanup', () => {
     callWorker.mockRejectedValueOnce(new Error('worker-a failed'))
     await expect(deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')).rejects.toBeInstanceOf(AggregateError)
     expect(callWorker).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('deleteAllWorkspacesViaAPI', () => {
+  /** Answer ListWorkspaces with `ids`, and answer each DeleteWorkspace with the status that `statuses` gives its ID. */
+  function workspaceResponses(ids: string[], statuses: Record<string, number> = {}) {
+    const deleted: string[] = []
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/ListWorkspaces'))
+        return Response.json({ workspaces: ids.map(id => ({ id })) })
+      if (url.endsWith('/DeleteWorkspace')) {
+        const { workspaceId } = JSON.parse(String(init?.body)) as { workspaceId: string }
+        deleted.push(workspaceId)
+        const status = statuses[workspaceId] ?? 200
+        return status === 200 ? Response.json({ workerTabs: [] }) : new Response(`refused ${workspaceId}`, { status })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    return { fetch, deleted }
+  }
+
+  it('deletes every workspace of the account', async () => {
+    const { deleted } = workspaceResponses(['ws-1', 'ws-2', 'ws-3'])
+    await deleteAllWorkspacesViaAPI(hubUrl, 'session')
+    expect(deleted.toSorted()).toEqual(['ws-1', 'ws-2', 'ws-3'])
+  })
+
+  it('sends no delete for an account with no workspace', async () => {
+    const { fetch } = workspaceResponses([])
+    await deleteAllWorkspacesViaAPI(hubUrl, 'session')
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('tries every delete when one fails, and reports each failure with its cause', async () => {
+    const { deleted } = workspaceResponses(['ws-1', 'ws-2', 'ws-3'], { 'ws-1': 500, 'ws-3': 503 })
+    const failure = await deleteAllWorkspacesViaAPI(hubUrl, 'session').then(() => null, (error: unknown) => error)
+    expect(deleted.toSorted()).toEqual(['ws-1', 'ws-2', 'ws-3'])
+    expect(failure).toBeInstanceOf(AggregateError)
+    const messages = (failure as AggregateError).errors.map(error => (error as Error).message)
+    expect(messages).toEqual([
+      'deleteWorkspaceViaAPI(ws-1) failed: 500 refused ws-1',
+      'deleteWorkspaceViaAPI(ws-3) failed: 503 refused ws-3',
+    ])
+  })
+
+  it('accepts a workspace that is already gone', async () => {
+    workspaceResponses(['ws-1'], { 'ws-1': 404 })
+    await expect(deleteAllWorkspacesViaAPI(hubUrl, 'session')).resolves.toBeUndefined()
+  })
+})
+
+describe('hubSettingsDrift', () => {
+  const altcha = { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>"}' }
+
+  it('resets only the customized keys that the baseline does not hold', () => {
+    const current = [altcha, { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' }, { key: 'open_app_registration', valueJson: 'true' }]
+    expect(hubSettingsDrift(current, [altcha])).toEqual({ reset: ['smtp', 'open_app_registration'], changedBaseline: [] })
+  })
+
+  it('reports nothing for a hub at its baseline', () => {
+    expect(hubSettingsDrift([altcha], [altcha])).toEqual({ reset: [], changedBaseline: [] })
+    expect(hubSettingsDrift([], [])).toEqual({ reset: [], changedBaseline: [] })
+  })
+
+  it('reports a baseline key whose stored value changed', () => {
+    const changed = { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>","max_number":10}' }
+    expect(hubSettingsDrift([changed], [altcha])).toEqual({ reset: [], changedBaseline: ['captcha.altcha'] })
+  })
+
+  it('reports a baseline key that lost its stored value', () => {
+    expect(hubSettingsDrift([], [altcha])).toEqual({ reset: [], changedBaseline: ['captcha.altcha'] })
+  })
+})
+
+describe('resetHubSettingsViaAPI', () => {
+  const altcha = { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>"}' }
+
+  /** Answer ListSettings with `values`, and record each later request with its body. */
+  function settingsResponses(values: Array<{ key: string, valueJson?: string, customized: boolean }>, failures: Record<string, number> = {}) {
+    const requests: Array<{ method: string, body: unknown }> = []
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const method = String(input).split('/').at(-1) ?? ''
+      requests.push({ method, body: JSON.parse(String(init?.body)) })
+      const status = failures[method]
+      if (status !== undefined)
+        return new Response(`refused ${method}`, { status })
+      if (method === 'ListSettings')
+        return Response.json({ values })
+      if (method === 'ElevateSession' || method === 'ResetSettings')
+        return Response.json({})
+      throw new Error(`Unexpected request: ${method}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    return requests
+  }
+
+  it('elevates the session and resets every customized key outside the baseline in one request', async () => {
+    const requests = settingsResponses([
+      { ...altcha, customized: true },
+      { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
+      { key: 'open_app_registration', valueJson: 'true', customized: true },
+      { key: 'signup_enabled', customized: false },
+    ])
+    await resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [altcha], password: 'secret' })
+    expect(requests).toEqual([
+      { method: 'ListSettings', body: {} },
+      { method: 'ElevateSession', body: { currentPassword: 'secret' } },
+      { method: 'ResetSettings', body: { keys: ['smtp', 'open_app_registration'] } },
+    ])
+  })
+
+  it('sends no write for a hub at its baseline', async () => {
+    const requests = settingsResponses([{ ...altcha, customized: true }, { key: 'smtp', customized: false }])
+    await resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [altcha], password: 'secret' })
+    expect(requests.map(request => request.method)).toEqual(['ListSettings'])
+  })
+
+  it('fails for a changed baseline setting before it writes anything', async () => {
+    const requests = settingsResponses([
+      { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>","max_number":10}', customized: true },
+      { key: 'smtp', valueJson: '{}', customized: true },
+    ])
+    await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [altcha], password: 'secret' }))
+      .rejects
+      .toThrow('The hub settings captcha.altcha differ from their values at the start of the run.')
+    expect(requests.map(request => request.method)).toEqual(['ListSettings'])
+  })
+
+  it('refuses a customized setting with no key', async () => {
+    settingsResponses([{ key: '', valueJson: '{}', customized: true }])
+    await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' }))
+      .rejects
+      .toThrow('customized setting with no key')
+  })
+
+  it.each([
+    { method: 'ListSettings', message: 'listCustomizedHubSettingsViaAPI failed: 403 refused ListSettings' },
+    { method: 'ElevateSession', message: 'elevateSessionViaAPI failed: 403 refused ElevateSession' },
+    { method: 'ResetSettings', message: 'resetHubSettingsViaAPI could not reset smtp: 403 refused ResetSettings' },
+  ])('reports a refused $method with its status and body', async ({ method, message }) => {
+    settingsResponses([{ key: 'smtp', valueJson: '{}', customized: true }], { [method]: 403 })
+    await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' })).rejects.toThrow(message)
   })
 })
 
