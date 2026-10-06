@@ -1,11 +1,12 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { qoderNativeToolResult } from './nativeToolResult'
 
 /** Read the original native result and its session-owned persistence metadata. */
-export function readQoderNativeOutput(snapshot: NativeMessageSnapshot, callId: string) {
+export function readQoderNativeOutput(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,

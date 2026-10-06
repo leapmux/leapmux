@@ -1,10 +1,11 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** Read one original native completed item and its declared filesystem path. */
-export function readCodewhaleNativeOutput(snapshot: NativeMessageSnapshot, callId: string) {
+export function readCodewhaleNativeOutput(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,

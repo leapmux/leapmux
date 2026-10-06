@@ -93,7 +93,7 @@ function nativeMcpDisplay(snapshot: NativeMessageSnapshot, callId: string): { di
   })
   const display: DeepseekHarnessRenderedMcpBlock[] = []
   let next = 0
-  for (const block of result.content) {
+  for (const block of result.blocks) {
     if (block.type === 'text' && typeof block.text === 'string' && block.text) {
       display.push(...deepseekHarnessMcpTextDisplay(block.text))
     }
@@ -142,7 +142,7 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
   expect(readMcpCallArguments(options.receiptLog)).toEqual([{ name: 'inspect', arguments: options.input }])
   const receipts: unknown = JSON.parse(readFileSync(options.receiptLog, 'utf8'))
   expect(deepseekHarnessInspectReply(receipts, options.input)).toEqual({ content: expectedContent, structuredContent: expectedStructured, _meta: { privateFixture: true } })
-  expect(receipt.content.filter(block => block.type === 'image')).toHaveLength(options.retainedImages)
+  expect(receipt.blocks.filter(block => block.type === 'image')).toHaveLength(options.retainedImages)
   expect(nativeDisplay.display.filter(block => block.type === 'image')).toHaveLength(options.expected.filter(block => block.type === 'image').length)
   expect(receipt.frame).not.toHaveProperty('_meta')
   await options.testInfo?.attach('deepseek-native-mcp-path-receipt', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId: options.callId, paths: receipt.paths, previewText: nativeDisplay.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })

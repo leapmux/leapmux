@@ -1,9 +1,10 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** Decode the flat native notification and its independent terminal UUID path. */
-export function readDroidNativeOutput(snapshot: NativeMessageSnapshot, callId: string): { paths: string[], previewText: string, frame: Record<string, unknown>, content: Uint8Array } {
+export function readDroidNativeOutput(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
   const record = readNativeToolOutputRecord(snapshot, { callId, spanId: `droid-tool-${callId}`, accepts: frame => frame.type === 'tool_result' && frame.toolUseId === callId })
   if (typeof record.frame.content !== 'string' || typeof record.frame.isError !== 'boolean')
     throw new Error('The native Droid result has no exact text or failure fields.')

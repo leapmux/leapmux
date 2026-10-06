@@ -1,24 +1,22 @@
+import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampTest, expect } from '../amp-fixtures'
 import { ampToolUseID } from '../helpers/ampSurface'
 import { ampToolResult } from '../helpers/ampToolResult'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
+import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { openWorkspace } from '../helpers/ui'
 import { ampNativeOutputLimit } from './nativeToolOutput'
 
-ampTest('records the native large shell output limit and retains its exact tail after reload', async ({ authenticatedAmpWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
+ampTest('records the native large shell output limit and retains its exact tail after reload', async ({ native }, testInfo) => {
   const before = await currentNativeAgent(native)
   if (!before.workingDir)
     throw new Error('The Amp native output proof requires a native working directory.')
@@ -52,27 +50,21 @@ ampTest('records the native large shell output limit and retains its exact tail 
       expect(retained.output).not.toContain(output.firstMarker)
       expect(retained.output).not.toContain(output.omittedMarker)
       expect(retained.output).not.toContain(output.text)
-      const originals = capture.snapshot.messages.filter(message => message.spanId === nativeId).map(nativeMessageBody)
+      const callFrames = (snapshot: NativeMessageSnapshot) => snapshot.messages.filter(message => message.spanId === nativeId).map(nativeMessageBody)
+      const originals = callFrames(capture.snapshot)
       expect(originals).not.toHaveLength(0)
-      const result = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${nativeId}"][data-tool-row-role="result"]:visible`)
-      for (const reload of [false, true]) {
-        if (reload) {
-          await page.reload()
-          await openWorkspace(page, native.workspaceId)
-        }
-        const current = await currentNativeAgent(native)
-        expect(current.id).toBe(capture.agent.id)
-        expect(current.agentSessionId).toBe(capture.agent.agentSessionId)
-        const snapshot = await readNativeMessageSnapshot(native, current.id)
-        expect(snapshot.messages.filter(message => message.spanId === nativeId).map(nativeMessageBody)).toEqual(originals)
-        await expect(result).toHaveCount(1)
-        await expandNativeResultView(result)
-        await expect(result).toContainText(output.lastMarker)
-        await expect(result).not.toContainText(output.firstMarker)
-        await expect(result).not.toContainText(output.omittedMarker)
-        await expect(result.getByTestId('tool-output-file-paths')).toHaveCount(0)
-        await copyNativeToolOutputPreview(page, result, retained.output)
-      }
+      await proveNativeToolOutputFilePaths({
+        context: native,
+        callId: nativeId,
+        previewText: retained.output,
+        previewMarkers: [output.lastMarker],
+        // Amp keeps only the tail, so the row must show neither the first line nor the middle line.
+        absentMarkers: [output.firstMarker, output.omittedMarker],
+        paths: [],
+        status: 'completed',
+        prepareView: expandNativeResultView,
+        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, callFrames, originals),
+      })
     },
   })
 })

@@ -1,17 +1,14 @@
+import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expect, fastAgentTest } from '../fastagent-fixtures'
-import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { currentNativeAgent } from '../helpers/nativeScenario'
-import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
+import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { openWorkspace } from '../helpers/ui'
 import { fastAgentTerminalOutputFileLimit } from './nativeToolOutput'
-import { nativeContext } from './scenarios'
 
-fastAgentTest('records the native client terminal output limit and retains its exact tail after reload', async ({ authenticatedFastAgentWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedFastAgentWorkspace.workspaceId })
+fastAgentTest('records the native client terminal output limit and retains its exact tail after reload', async ({ native }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   await captureNativeToolOutput(native, testInfo, {
     output,
@@ -27,26 +24,18 @@ fastAgentTest('records the native client terminal output limit and retains its e
       expect(limit.text).not.toContain(output.firstMarker)
       expect(limit.text).not.toContain(output.omittedMarker)
       expect(limit.text).toContain(output.lastMarker)
-      const originals = capture.snapshot.messages.filter(message => message.spanId === limit.callId)
-      const result = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${limit.callId}"][data-tool-row-role="result"]:visible`)
-      for (const reload of [false, true]) {
-        if (reload) {
-          await page.reload()
-          await openWorkspace(page, native.workspaceId)
-        }
-        const current = await currentNativeAgent(native)
-        expect(current.id).toBe(capture.agent.id)
-        expect(current.agentSessionId).toBe(capture.agent.agentSessionId)
-        const stored = await readNativeMessageSnapshot(native, current.id)
-        expect(stored.messages.filter(message => message.spanId === limit.callId)).toEqual(originals)
-        await expect(result).toHaveCount(1)
-        await expect(result).toHaveAttribute('data-tool-status', 'completed')
-        await expandNativeResultView(result)
-        await expect(result).toContainText(output.lastMarker)
-        await expect(result).not.toContainText(output.omittedMarker)
-        await expect(result.getByTestId('tool-output-file-paths')).toHaveCount(0)
-        await copyNativeToolOutputPreview(page, result, limit.text)
-      }
+      const callRows = (snapshot: NativeMessageSnapshot) => snapshot.messages.filter(message => message.spanId === limit.callId)
+      await proveNativeToolOutputFilePaths({
+        context: native,
+        callId: limit.callId,
+        previewText: limit.text,
+        previewMarkers: [output.lastMarker],
+        absentMarkers: [output.omittedMarker],
+        paths: [],
+        status: 'completed',
+        prepareView: expandNativeResultView,
+        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, callRows, callRows(capture.snapshot)),
+      })
     },
   })
 })

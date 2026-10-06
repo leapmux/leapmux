@@ -7,7 +7,11 @@ import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 export interface DeepseekHarnessNativeOutput extends NativeToolOutputRecord {
   paths: string[]
   previewText: string
-  content: Record<string, unknown>[]
+  /**
+   * The native content blocks of the result. `content` in a shared output receipt means the bytes of the Worker row,
+   * which `message.content` holds here.
+   */
+  blocks: Record<string, unknown>[]
   status: 'completed' | 'failed'
 }
 
@@ -24,8 +28,8 @@ export function readDeepseekHarnessNativeOutput(snapshot: NativeMessageSnapshot,
   const message = pickObject(pickObject(record.frame, 'data'), 'message')
   if (!message || typeof message.isError !== 'boolean' || !Array.isArray(message.content) || message.content.some(block => !isObject(block)))
     throw new Error('The DeepSeek native output requires exact content and failure fields.')
-  const content = message.content.filter(isObject)
-  const texts = content.filter(block => block.type === 'text').map(block => block.text)
+  const blocks = message.content.filter(isObject)
+  const texts = blocks.filter(block => block.type === 'text').map(block => block.text)
   if (texts.some(text => typeof text !== 'string'))
     throw new Error('The DeepSeek native text block has no text string.')
   const nativeText = texts.filter((text): text is string => typeof text === 'string')
@@ -48,5 +52,5 @@ export function readDeepseekHarnessNativeOutput(snapshot: NativeMessageSnapshot,
         paths.push(path)
     }
   }
-  return { ...record, paths: [...new Set(paths)], previewText, content, status: message.isError ? 'failed' : 'completed' }
+  return { ...record, paths: [...new Set(paths)], previewText, blocks, status: message.isError ? 'failed' : 'completed' }
 }

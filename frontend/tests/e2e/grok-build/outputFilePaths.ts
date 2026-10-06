@@ -1,10 +1,11 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** Decode the original native ACP result, without a complete-text supplement. */
-export function readGrokNativeOutput(snapshot: NativeMessageSnapshot, callId: string): { paths: string[], previewText: string, frame: Record<string, unknown>, content: Uint8Array } {
+export function readGrokNativeOutput(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
     spanId: callId,

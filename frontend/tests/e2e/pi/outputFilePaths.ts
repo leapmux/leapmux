@@ -8,7 +8,7 @@ import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 
 export interface PiOutputPathProof {
   callId: string
@@ -47,11 +47,18 @@ export function readPiNativeOutput(snapshot: NativeMessageSnapshot, proof: PiOut
   return { nativeResult: result, paths: [path], previewText, excerpt, frame: record.frame, content: record.message.content }
 }
 
-/** Prove the native preview and path. Read no output file. */
+/**
+ * Prove the native preview and path. Read no output file.
+ *
+ * The preview joins the codemode `details`, which list each nested call with its arguments. A nested call can take
+ * the complete output as an argument, as the MCP case does, so the preview can hold the middle line. The proof thus
+ * states no absent line, and only the excerpt of the codemode output must omit the middle line.
+ */
 export async function verifyPiOutputFilePaths(context: ManagedNativeScenarioContext, input: { callId: string, expectedText: string, omittedMarker: string }) {
   const agent = await currentNativeAgent(context)
   const proof = { callId: input.callId, toolName: PI_TOOL.Codemode, agentId: agent.id, agentSessionId: agent.agentSessionId }
-  const receipt = readPiNativeOutput(await readNativeMessageSnapshot(context, agent.id), proof)
+  const readReceipt = (snapshot: NativeMessageSnapshot) => readPiNativeOutput(snapshot, proof)
+  const receipt = readReceipt(await readNativeMessageSnapshot(context, agent.id))
   expect(receipt.excerpt).not.toContain(input.omittedMarker)
   const first = input.expectedText.split('\n', 1)[0]
   const last = input.expectedText.slice(input.expectedText.lastIndexOf('\n') + 1)
@@ -65,14 +72,6 @@ export async function verifyPiOutputFilePaths(context: ManagedNativeScenarioCont
     paths: receipt.paths,
     status: 'completed',
     prepareView: expandNativeResultView,
-    workerProof: async () => {
-      const snapshot = await readNativeMessageSnapshot(context, agent.id)
-      expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-      const current = readPiNativeOutput(snapshot, proof)
-      expect(current.frame).toEqual(receipt.frame)
-      expect(current.content).toEqual(receipt.content)
-      expect(current.paths).toEqual(receipt.paths)
-      expect(current.previewText).toBe(receipt.previewText)
-    },
+    workerProof: () => expectUnchangedNativeRecord(context, agent, readReceipt, receipt),
   })
 }

@@ -1,22 +1,19 @@
+import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { Buffer } from 'node:buffer'
 import { LETTA_DELTA_FIELD, LETTA_DELTA_KIND } from '../../../src/generated/contracts/letta-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { nativeMessageBody, readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helpers/nativeMessages'
+import { nativeMessageBody, readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { currentNativeAgent } from '../helpers/nativeScenario'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
-import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { expect, lettaTest } from '../letta-fixtures'
 import { lettaNativeFinalReturn, lettaNativeProgressReturn } from './nativeFinalReturn'
 import { lettaOutputFilePath } from './outputFilePaths'
-import { nativeContext } from './scenarios'
 
-lettaTest('keeps the native shell preview, output path, and every phase record after reload', async ({ authenticatedLettaWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId })
+lettaTest('keeps the native shell preview, output path, and every phase record after reload', async ({ native, leapmuxServer }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   await captureNativeToolOutput(native, testInfo, {
     output,
@@ -53,13 +50,25 @@ lettaTest('keeps the native shell preview, output path, and every phase record a
       expect(JSON.stringify(original)).not.toContain(output.omittedMarker)
       const path = lettaOutputFilePath(excerpt, home, capture.agent.workingDir)
       assertPrivateNativePath(path, home)
-      const originalRecord = readNativeToolOutputRecord(capture.snapshot, {
-        callId: capture.nativeCallId,
-        spanId: `letta-tool-${capture.nativeCallId}`,
-        accepts: frame => frame.id === original.id && frame[LETTA_DELTA_FIELD.ToolCallID] === capture.nativeCallId
-          && frame[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.ToolReturnMessage && !lettaNativeProgressReturn(frame)
-          && frame[LETTA_DELTA_FIELD.ToolReturn] === excerpt,
-      })
+      // The records that a reload must not change: the final return, the wire bytes of every phase record, and the
+      // stored record of the final return.
+      const readPhases = (snapshot: NativeMessageSnapshot) => {
+        const final = readNativeToolOutputRecord(snapshot, {
+          callId: capture.nativeCallId,
+          spanId: `letta-tool-${capture.nativeCallId}`,
+          accepts: frame => frame.id === original.id && frame[LETTA_DELTA_FIELD.ToolCallID] === capture.nativeCallId
+            && frame[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.ToolReturnMessage && !lettaNativeProgressReturn(frame)
+            && frame[LETTA_DELTA_FIELD.ToolReturn] === excerpt,
+        })
+        const sessionFrames = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(nativeMessageBody)
+        return {
+          finalReturn: lettaNativeFinalReturn(sessionFrames, capture.call.id, excerpt),
+          wire: recordWire(readToolRecords(snapshot.messages)),
+          final: { frame: final.frame, content: final.message.content },
+        }
+      }
+      const phases = readPhases(capture.snapshot)
+      expect(phases.final.frame).toEqual(original)
       expect(excerpt).not.toContain(output.omittedMarker)
       await testInfo.attach('letta-native-output-path-preview', { body: JSON.stringify({ path, agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, previewText: excerpt, frame: original, wire }), contentType: 'application/json' })
       expect(excerpt).toContain(output.firstMarker)
@@ -69,29 +78,11 @@ lettaTest('keeps the native shell preview, output path, and every phase record a
         callId: capture.call.id,
         previewText: excerpt,
         previewMarkers: [output.firstMarker],
+        absentMarkers: [output.omittedMarker],
         paths: [path],
         status: 'completed',
         prepareView: expandNativeResultView,
-        workerProof: async () => {
-          const current = await currentNativeAgent(native)
-          expect(current.id).toBe(capture.agent.id)
-          expect(current.agentSessionId).toBe(capture.agent.agentSessionId)
-          const snapshot = await readNativeMessageSnapshot(native, current.id)
-          const currentFrames = snapshot.messages.filter(message => message.agentSessionId === current.agentSessionId).map(nativeMessageBody)
-          expect(lettaNativeFinalReturn(currentFrames, capture.call.id, excerpt)).toEqual(original)
-          const currentRecords = readToolRecords(snapshot.messages)
-          expect(recordWire(currentRecords)).toEqual(wire)
-          const final = readNativeToolOutputRecord(snapshot, {
-            callId: capture.nativeCallId,
-            spanId: `letta-tool-${capture.nativeCallId}`,
-            accepts: frame => frame.id === original.id && frame[LETTA_DELTA_FIELD.ToolCallID] === capture.nativeCallId
-              && frame[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.ToolReturnMessage && !lettaNativeProgressReturn(frame)
-              && frame[LETTA_DELTA_FIELD.ToolReturn] === excerpt,
-          })
-          expect(final.frame).toEqual(original)
-          expect(final.message.content).toEqual(originalRecord.message.content)
-          expect(lettaOutputFilePath(excerpt, home, capture.agent.workingDir)).toBe(path)
-        },
+        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, readPhases, phases),
       })
     },
   })

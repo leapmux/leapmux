@@ -1,21 +1,17 @@
+import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { diracTest, expect } from '../dirac-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { currentNativeAgent } from '../helpers/nativeScenario'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
-import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { diracScriptReceipt } from './codeExecution'
 import { diracNativeOutputPaths, diracOutputFileFrames } from './outputFilePaths'
-import { nativeContext } from './scenarios'
 
-diracTest('keeps the native script limit and its retained preview after reload', async ({ authenticatedDiracWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
+diracTest('keeps the native script limit and its retained preview after reload', async ({ native, leapmuxServer }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   const source = `${output.source}\nprocess.stdout.write(completeOutput)`
   await captureNativeToolOutput(native, testInfo, {
@@ -37,32 +33,27 @@ diracTest('keeps the native script limit and its retained preview after reload',
         throw new Error('The native Dirac case requires its private runtime directory.')
       const pointer = diracNativeOutputPaths(frames, source, temporaryDir)
       expect(pointer.callId).toBe(receipt.callId)
+      // The script receipt, the output pointer, and the frames that give both.
+      const readScript = (snapshot: NativeMessageSnapshot) => {
+        const stored = diracOutputFileFrames(snapshot)
+        return { receipt: diracScriptReceipt(stored, source), pointer: diracNativeOutputPaths(stored, source, temporaryDir), frames: stored }
+      }
       await proveNativeToolOutputFilePaths({
         context: native,
         callId: pointer.callId,
         previewText: pointer.previewText,
         previewMarkers: [output.firstMarker, output.lastMarker],
+        absentMarkers: [output.omittedMarker],
         paths: pointer.paths,
         status: 'completed',
         prepareView: expandNativeResultView,
-        workerProof: async () => {
-          const current = await currentNativeAgent(native)
-          expect(current.id).toBe(capture.agent.id)
-          expect(current.agentSessionId).toBe(capture.agent.agentSessionId)
-          const snapshot = await readNativeMessageSnapshot(native, current.id)
-          const storedFrames = diracOutputFileFrames(snapshot)
-          expect(diracScriptReceipt(storedFrames, source)).toEqual(receipt)
-          expect(diracNativeOutputPaths(storedFrames, source, temporaryDir)).toEqual(pointer)
-          expect(storedFrames).toEqual(frames)
-        },
+        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, readScript, { receipt, pointer, frames }),
       })
     },
   })
 })
 
-diracTest('keeps the generated native log path and exact preview Copy after reload', async ({ authenticatedDiracWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
+diracTest('keeps the generated native log path and exact preview Copy after reload', async ({ native, leapmuxServer }, testInfo) => {
   const temporaryDir = leapmuxServer.agentEnv.TMPDIR
   if (!temporaryDir || leapmuxServer.agentEnv.TEMP !== temporaryDir || leapmuxServer.agentEnv.TMP !== temporaryDir)
     throw new Error('The native Dirac output requires one isolated runtime temp directory.')
@@ -86,23 +77,21 @@ diracTest('keeps the generated native log path and exact preview Copy after relo
       assertPrivateNativePath(receipt.paths[0]!, temporaryDir)
       expect(nativeToolResult(capture.request, capture.call.id)).toContain(receipt.paths[0]!)
       await testInfo.attach('dirac-native-output-path-receipt', { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, receipt, frames }), contentType: 'application/json' })
+      // The output pointer and the frames that give it.
+      const readPointer = (snapshot: NativeMessageSnapshot) => {
+        const stored = diracOutputFileFrames(snapshot)
+        return { receipt: diracNativeOutputPaths(stored, source, temporaryDir), frames: stored }
+      }
       await proveNativeToolOutputFilePaths({
         context: native,
         callId: capture.nativeCallId,
         previewText: receipt.previewText,
         previewMarkers: [output.firstMarker, output.lastMarker],
+        absentMarkers: [output.omittedMarker],
         paths: receipt.paths,
         status: 'completed',
         prepareView: expandNativeResultView,
-        workerProof: async () => {
-          const current = await currentNativeAgent(native)
-          expect(current.id).toBe(capture.agent.id)
-          expect(current.agentSessionId).toBe(capture.agent.agentSessionId)
-          const snapshot = await readNativeMessageSnapshot(native, current.id)
-          const storedFrames = diracOutputFileFrames(snapshot)
-          expect(diracNativeOutputPaths(storedFrames, source, temporaryDir)).toEqual(receipt)
-          expect(storedFrames).toEqual(frames)
-        },
+        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, readPointer, { receipt, frames }),
       })
     },
   })

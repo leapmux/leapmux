@@ -1,12 +1,11 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { copilotTest, expect } from '../copilot-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody } from '../helpers/nativeMessages'
 import { resolveNativeProcessOwnership } from '../helpers/nativeProcessOwnership'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { currentNativeAgent } from '../helpers/nativeScenario'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
-import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
@@ -14,20 +13,23 @@ import { getGlobalState } from '../helpers/server'
 import { applyPermissionPreset } from '../helpers/ui'
 import { copilotNativeOutputPaths, copilotNativePreview, copilotOutputFileCreatorPid } from './outputFilePaths'
 
-copilotTest('keeps the native shell file path, creator owner, and exact preview Copy after reload', async ({ authenticatedCopilotWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedCopilotWorkspace.workspaceId, provider: AgentProvider.GITHUB_COPILOT }
+copilotTest('keeps the native shell file path, creator owner, and exact preview Copy after reload', async ({ native, leapmuxServer }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   await captureNativeToolOutput(native, testInfo, {
     output,
     callId: 'native-github-copilot-output-path',
-    prepare: () => applyPermissionPreset(page, 'bypass'),
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
     proof: async (capture) => {
-      const originals = capture.snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId && message.spanId === capture.nativeCallId)
-      const frames = originals.map(nativeMessageBody)
+      // The original rows of the call: their frames, their bytes, and the receipt that the frames give.
+      const readCall = (snapshot: NativeMessageSnapshot) => {
+        const rows = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId && message.spanId === capture.nativeCallId)
+        const frames = rows.map(nativeMessageBody)
+        return { frames, contents: rows.map(row => row.content), receipt: copilotNativeOutputPaths(frames, capture.nativeCallId, capture.agent.agentSessionId) }
+      }
+      const original = readCall(capture.snapshot)
+      const { frames, receipt } = original
       expect(frames.length).toBeGreaterThan(0)
       expect(JSON.stringify(frames)).not.toContain(output.omittedMarker)
-      const receipt = copilotNativeOutputPaths(frames, capture.nativeCallId, capture.agent.agentSessionId)
       const { path, excerpt } = receipt
       const creatorPid = copilotOutputFileCreatorPid(path)
       const rows = listProcesses()
@@ -65,19 +67,11 @@ copilotTest('keeps the native shell file path, creator owner, and exact preview 
         callId: capture.nativeCallId,
         previewText,
         previewMarkers: [output.firstMarker],
+        absentMarkers: [output.omittedMarker],
         paths: [path],
         status: 'completed',
         prepareView: expandNativeResultView,
-        workerProof: async () => {
-          const current = await currentNativeAgent(native)
-          expect(current.id).toBe(capture.agent.id)
-          expect(current.agentSessionId).toBe(capture.agent.agentSessionId)
-          const snapshot = await readNativeMessageSnapshot(native, current.id)
-          const rows = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId && message.spanId === capture.nativeCallId)
-          expect(rows.map(nativeMessageBody)).toEqual(frames)
-          expect(rows.map(row => row.content)).toEqual(originals.map(row => row.content))
-          expect(copilotNativeOutputPaths(rows.map(nativeMessageBody), capture.nativeCallId, capture.agent.agentSessionId)).toEqual(receipt)
-        },
+        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, readCall, original),
       })
     },
   })

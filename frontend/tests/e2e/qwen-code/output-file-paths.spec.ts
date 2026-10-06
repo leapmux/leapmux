@@ -1,4 +1,3 @@
-import type { Locator, Page } from '@playwright/test'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { QwenOutputPathReceipt } from './outputFilePaths'
@@ -13,8 +12,8 @@ import { parseMessageContent } from '../../../src/lib/messageParser'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { currentNativeAgent, nativeAgentById, nativeTextStep } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
 import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -22,10 +21,11 @@ import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { createTestDirectory } from '../helpers/runDirectory'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { openWorkspace, readAttachedWithArgument, sendMessage } from '../helpers/ui'
+import { openWorkspace, readAttachedWithArgument, sendMessage, toolCallRow } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 import { qwenModelOutputPath, qwenOutputPathCommand, qwenOutputPathReceipt } from './outputFilePaths'
+import { nativeContext } from './scenarios'
 
 function messageProof(message: AgentChatMessage) {
   return {
@@ -62,13 +62,6 @@ function resultReceipt(messages: readonly AgentChatMessage[], callId: string, se
   return { receipt: qwenOutputPathReceipt(result.frame), message: result.message }
 }
 
-async function resultView(page: Page, callId: string): Promise<Locator> {
-  const escaped = await page.evaluate(id => CSS.escape(id), callId)
-  const result = page.locator(`[data-testid="message-bubble"][data-tool-call-id=${escaped}][data-tool-row-role="result"]:visible`)
-  await expect(result).toHaveCount(1)
-  return result
-}
-
 async function provePathsAndPreview(
   context: ManagedNativeScenarioContext,
   ownerId: string,
@@ -102,7 +95,8 @@ async function provePathsAndPreview(
     const current = resultReceipt(snapshot.messages, expected.receipt.callId, sessionId)
     expect(current.receipt).toEqual(expected.receipt)
     expect(messageProof(current.message)).toEqual(messageProof(expected.message))
-    const result = await resultView(context.page, expected.receipt.callId)
+    const result = toolCallRow(context.page, expected.receipt.callId)
+    await expect(result).toHaveCount(1)
     await expect(result).toHaveAttribute('data-tool-status', expected.receipt.status)
     const paths = result.getByTestId('tool-output-file-paths')
     await expect(paths).toBeVisible()
@@ -115,45 +109,42 @@ async function provePathsAndPreview(
 }
 
 for (const exitCode of [0, 7]) {
-  qwenTest(exitCode === 0 ? 'keeps native root output paths and the original inline preview after removal and reload' : 'keeps native failed output paths and the original failure preview after removal and reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-    await openProviderAgent(leapmuxServer, native.workspaceId, QWEN_AGENT, { workingDir: createTestDirectory('native-output-path-qwen-') })
-    await openWorkspace(page, native.workspaceId)
-    const owner = await currentNativeAgent(native)
+  qwenTest(exitCode === 0 ? 'keeps native root output paths and the original inline preview after removal and reload' : 'keeps native failed output paths and the original failure preview after removal and reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await openProviderAgent(leapmuxServer, context.workspaceId, QWEN_AGENT, { workingDir: createTestDirectory('native-output-path-qwen-') })
+    await openWorkspace(page, context.workspaceId)
+    const owner = await currentNativeAgent(context)
     const generated = qwenOutputPathCommand(uniqueMarker('NATIVEOUTPUTPATH'), exitCode)
     const callId = `native-output-path-${exitCode}`
-    const step = (await modelScript.status()).stepCount
-    await modelScript.queue({ toolCalls: [bashToolCall(native.provider, callId, generated.command)] }, nativeTextStep(native, 'The native output path command ended.'))
-    await sendMessage(page, modelScript.prompt('Run the native output path command once.'))
-    await waitForNativeToolSteps(native, step + 2)
-    const status = await modelScript.status()
-    const request = status.requests.find(item => item.stepIndex === step + 1)
-    if (!request || request.mockCredential?.accepted !== true)
+    const { resultRequest: request } = await runNativeToolTurn(context, {
+      toolCalls: [bashToolCall(context.provider, callId, generated.command)],
+      prompt: 'Run the native output path command once.',
+      answer: 'The native output path command ended.',
+    })
+    if (request.mockCredential?.accepted !== true)
       throw new Error('The native Qwen command requires its exact isolated model result.')
     const modelPath = qwenModelOutputPath(nativeToolResult(request, callId))
-    const current = await nativeAgentById(native, owner.id)
+    const current = await nativeAgentById(context, owner.id)
     if (!current || !current.agentSessionId || current.workingDir !== owner.workingDir
       || (owner.agentSessionId !== '' && current.agentSessionId !== owner.agentSessionId)) {
       throw new Error('The native Qwen command changed its Worker owner.')
     }
-    const snapshot = await readNativeMessageSnapshot(native, owner.id)
+    const snapshot = await readNativeMessageSnapshot(context, owner.id)
     const expected = resultReceipt(snapshot.messages, callId, current.agentSessionId)
     expect(expected.receipt.paths).toEqual([modelPath])
     expect(expected.receipt.exitCode).toBe(exitCode)
     expect(expected.receipt.status).toBe(exitCode === 0 ? 'completed' : 'failed')
     await testInfo.attach('qwen-native-output-path-receipt', { body: JSON.stringify({ agentId: owner.id, sessionId: current.agentSessionId, receipt: expected.receipt, original: messageProof(expected.message) }), contentType: 'application/json' })
-    await provePathsAndPreview(native, owner.id, current.agentSessionId, expected, generated)
+    await provePathsAndPreview(context, owner.id, current.agentSessionId, expected, generated)
   })
 }
 
 for (const background of [false, true]) {
-  qwenTest(background ? 'keeps native background child paths and the original preview after removal and reload' : 'keeps native foreground child paths and the original preview after removal and reload', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-    await openProviderAgent(leapmuxServer, native.workspaceId, QWEN_AGENT, { workingDir: createTestDirectory('native-output-path-qwen-child-'), optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
-    await openWorkspace(page, native.workspaceId)
-    const initialRoot = await currentNativeAgent(native)
+  qwenTest(background ? 'keeps native background child paths and the original preview after removal and reload' : 'keeps native foreground child paths and the original preview after removal and reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await openProviderAgent(leapmuxServer, context.workspaceId, QWEN_AGENT, { workingDir: createTestDirectory('native-output-path-qwen-child-'), optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    await openWorkspace(page, context.workspaceId)
+    const initialRoot = await currentNativeAgent(context)
     const generated = qwenOutputPathCommand(uniqueMarker('NATIVEOUTPUTPATH'))
     const childTask = `CHILD_NATIVE_OUTPUT_PATH_${background ? 'BACKGROUND' : 'FOREGROUND'}`
     const spawnId = background ? 'spawn-native-output-path-background' : 'spawn-native-output-path-foreground'
@@ -161,11 +152,11 @@ for (const background of [false, true]) {
     const commandRule = 'the native child runs its output path command'
     const finishedRule = 'the native child reports its output path'
     await modelScript.rule(
-      { name: commandRule, when: { user: childTask }, respond: { toolCalls: [bashToolCall(native.provider, callId, generated.command)] }, once: true },
+      { name: commandRule, when: { user: childTask }, respond: { toolCalls: [bashToolCall(context.provider, callId, generated.command)] }, once: true },
       { name: finishedRule, when: { body: callId }, respond: { text: 'The native child command ended.' }, once: true },
     )
     await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(native.provider, spawnId, { description: 'Run the native output path command', prompt: modelScript.prompt(`${childTask}. Run the scripted shell command once.`), background })] },
+      { toolCalls: [spawnSubagentToolCall(context.provider, spawnId, { description: 'Run the native output path command', prompt: modelScript.prompt(`${childTask}. Run the scripted shell command once.`), background })] },
       { text: background ? 'The native child runs in the background.' : 'The native foreground child ended.' },
       ...(background ? [{ text: 'The native background child ended.' }] : []),
     )
@@ -173,13 +164,13 @@ for (const background of [false, true]) {
     await modelScript.waitForSteps()
     const row = await requireRegistryRow(page)
     await expectRowBecomesFinal(page, row)
-    const root = await nativeAgentById(native, initialRoot.id)
+    const root = await nativeAgentById(context, initialRoot.id)
     if (!root || !root.agentSessionId || root.workingDir !== initialRoot.workingDir
       || (initialRoot.agentSessionId !== '' && root.agentSessionId !== initialRoot.agentSessionId)) {
       throw new Error('The native child changed its root owner.')
     }
     const childId = await openChildTabFromRow(page, row)
-    const child = await nativeAgentById(native, childId)
+    const child = await nativeAgentById(context, childId)
     if (!child || child.parentAgentId !== root.id || child.rootAgentId !== root.id || child.spawnSpanId !== spawnId || child.agentSessionId !== root.agentSessionId)
       throw new Error('The native Qwen child has another parent, session, or spawn.')
     const status = await modelScript.status()
@@ -191,11 +182,11 @@ for (const background of [false, true]) {
     if (!request || request.mockCredential?.accepted !== true)
       throw new Error('The native child requires its exact isolated model result.')
     const modelPath = qwenModelOutputPath(nativeToolResult(request, callId))
-    const snapshot = await readNativeMessageSnapshot(native, childId)
+    const snapshot = await readNativeMessageSnapshot(context, childId)
     const expected = resultReceipt(snapshot.messages, callId, root.agentSessionId)
     expect(expected.receipt.paths).toEqual([modelPath])
     expect(expected.receipt.status).toBe('completed')
     await testInfo.attach('qwen-native-child-output-path-receipt', { body: JSON.stringify({ rootId: root.id, childId, parentId: child.parentAgentId, spawnId, sessionId: root.agentSessionId, receipt: expected.receipt, original: messageProof(expected.message) }), contentType: 'application/json' })
-    await provePathsAndPreview(native, childId, root.agentSessionId, expected, generated)
+    await provePathsAndPreview(context, childId, root.agentSessionId, expected, generated)
   })
 }

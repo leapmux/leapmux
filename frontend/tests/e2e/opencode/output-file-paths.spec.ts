@@ -1,20 +1,23 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
+import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { OPENCODE_AGENT, opencodeTest } from '../opencode-fixtures'
-import { proveOpenCodeOutputFilePaths } from './outputFilePathsScenario'
+import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from './outputFilePaths'
+import { nativeContext } from './scenarios'
 
-opencodeTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.OPENCODE }
-  await openProviderAgent(leapmuxServer, native.workspaceId, OPENCODE_AGENT, { workingDir: createTestDirectory('native-output-path-opencode-') })
-  await openWorkspace(page, native.workspaceId)
-  await captureNativeToolOutput(native, testInfo, {
-    output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),
+opencodeTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await openProviderAgent(leapmuxServer, context.workspaceId, OPENCODE_AGENT, { workingDir: createTestDirectory('native-output-path-opencode-') })
+  await openWorkspace(page, context.workspaceId)
+  const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
+  await captureNativeToolOutput(context, testInfo, {
+    output,
     callId: 'native-output-path',
-    proof: capture => proveOpenCodeOutputFilePaths(capture, testInfo),
+    // OpenCode ends its output reader when the process exits, so the preview can hold any tail window of the output.
+    // The marker check accepts any line of it, and the absence check uses the first line, which no tail window holds.
+    proof: capture => proveNativeOutputReceipt(capture, testInfo, readOpenCodeNativeOutput, openCodeTailWindowMarkers(output)),
   })
 })

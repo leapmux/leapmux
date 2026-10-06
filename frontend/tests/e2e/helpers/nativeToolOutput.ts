@@ -42,10 +42,18 @@ export function computedNativeToolOutput(options: { prefix?: string, lineCount?:
   return { source, text: lines.join('\n'), firstMarker: lines[0]!, omittedMarker: lines[middle]!, lastMarker, lineMarker: `${prefix}-line-` }
 }
 
-/** Clear the clipboard and require the original native preview from Copy. */
+/** The browser permissions that the Copy proof needs to write and read the clipboard. */
+const CLIPBOARD_PERMISSIONS: readonly string[] = ['clipboard-read', 'clipboard-write']
+
+/**
+ * Clear the clipboard and require the original native preview from Copy.
+ * The proof grants the clipboard permissions to the context of the page first, so a caller cannot forget them.
+ * The page reset between tests (`resetSharedPage`) clears the permissions again.
+ */
 export async function copyNativeToolOutputPreview(page: Page, result: Locator, expectedText: string): Promise<void> {
   if (!expectedText)
     throw new Error('The native tool output Copy proof requires nonempty native preview text.')
+  await page.context().grantPermissions([...CLIPBOARD_PERMISSIONS])
   await page.evaluate(async sentinel => navigator.clipboard.writeText(sentinel), `CLIPBOARD${randomUUID()}`)
   const view = result.locator('..')
   await view.hover()
