@@ -1,82 +1,55 @@
-import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI, openPinnedModeAgentViaAPI } from '../helpers/api'
+import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
+import { withCleanup } from '../helpers/cleanup'
 import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSessionRow, openStoredSessionRow, sessionMenu, sessionMenuTrigger } from '../helpers/nativeResume'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI } from '../helpers/worktree'
-import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
+import { restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
+import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from './workerRestart'
 
 test.describe('worker restart thinking indicator', () => {
   test('should hide thinking indicator when worker goes offline during agent turn', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Thinking Indicator Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Thinking Indicator Test' }, async () => {
+      // The test stops the worker, so the worker restarts after the test, also when it fails.
+      await withCleanup(async () => {
+        // Start a turn and hold it open. The test stops the worker while the
+        // agent waits, so the answer must not arrive first: against the mock
+        // endpoint an unheld turn finishes in milliseconds, and the indicator
+        // would be gone before the assertion below ran.
+        const step = await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
+        await sendMessage(page, modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
+        await modelScript.waitForSteps(step + 1)
 
-      // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
+        // Wait for the thinking indicator while the agent works.
+        const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
+        await expect(thinkingIndicator).toBeVisible()
 
-      // Start a turn and hold it open. The test stops the worker while the
-      // agent waits, so the answer must not arrive first: against the mock
-      // endpoint an unheld turn finishes in milliseconds, and the indicator
-      // would be gone before the assertion below ran.
-      await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
-      await modelScript.waitForSteps(1)
+        // Stop the worker while agent is working
+        await stopWorker(separateHubWorker)
+        await waitForWorkerOffline(separateHubWorker)
 
-      // Wait for the thinking indicator while the agent works.
-      const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      await expect(thinkingIndicator).toBeVisible()
+        // Thinking indicator should disappear (agent status becomes INACTIVE)
+        await expect(thinkingIndicator).not.toBeVisible()
 
-      // Stop the worker while agent is working
-      await stopWorker(separateHubWorker)
-      await waitForWorkerOffline(separateHubWorker)
-
-      // Thinking indicator should disappear (agent status becomes INACTIVE)
-      await expect(thinkingIndicator).not.toBeVisible()
-
-      // Interrupt button should also disappear
-      const interruptButton = page.locator('[data-testid="interrupt-button"]')
-      await expect(interruptButton).not.toBeVisible()
-    }
-    finally {
-      await restartWorker(separateHubWorker).catch(() => { })
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+        // Interrupt button should also disappear
+        const interruptButton = page.locator('[data-testid="interrupt-button"]')
+        await expect(interruptButton).not.toBeVisible()
+      }, () => restartWorker(separateHubWorker))
+    })
   })
 
   test('should resume agent after worker restart and new message', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent Resume Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Agent Resume Test' }, async () => {
       // Send a message and wait for a response
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
 
       // Wait for the assistant's response
-      await expectAssistantAnswer(page)
-      await waitForAgentIdle(page)
+      await expectAnswerAndTurnEnd(page)
 
       // Stop the worker
       await stopWorker(separateHubWorker)
@@ -97,31 +70,18 @@ test.describe('worker restart thinking indicator', () => {
       // so it records even a short indicator before the answer streams.
       const sawThinking = await thinkingIndicatorShownDuring(page, async () => {
         await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-        await editor.click()
-        await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-        await page.keyboard.press('Meta+Enter')
+        await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
         await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
       })
       expect(sawThinking).toBe(true)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 })
 
 test.describe('Full Hub+Worker Restart', () => {
   test('should preserve chat history after hub and worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Full Restart Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Full Restart Test' }, async ({ workspaceId }) => {
+      const editor = composerEditor(page)
       await expect(editor).toBeVisible()
 
       // This specification tests persistence across a restart. The dedicated
@@ -130,10 +90,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
       // Step 1: Send a message and wait for a response
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
 
       // Wait for the assistant's response containing "6912"
       await expectAssistantAnswer(page)
@@ -165,9 +122,7 @@ test.describe('Full Hub+Worker Restart', () => {
       // ("3333") must not be a substring of the first ("6912"), otherwise this
       // wait would match the leftover first-turn bubble instead of the new one.
       await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
+      await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
 
       // Wait for the assistant's response containing "3333"
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
@@ -181,23 +136,13 @@ test.describe('Full Hub+Worker Restart', () => {
       // own turn.
       await expectAssistantAnswer(page)
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 
   test('should preserve agent tab after clicking it post-restart', async ({ separateHubWorker, page }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Tab Click Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Restart Tab Click Test' }, async ({ workspaceId }) => {
       // Verify the agent tab is visible
-      const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+      const agentTab = agentTabs(page)
       await expect(agentTab).toHaveCount(1)
 
       // Stop worker and hub
@@ -219,7 +164,7 @@ test.describe('Full Hub+Worker Restart', () => {
       // remove it because the WatchEvents catch-up phase reported INACTIVE
       // status before message replay completed.
       await agentTab.click()
-      await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+      await expect(composerEditor(page)).toBeVisible()
       await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
       await expect(agentTab).toHaveCount(1)
 
@@ -228,33 +173,17 @@ test.describe('Full Hub+Worker Restart', () => {
       // which sidebarLeaves reads.
       const treeLeaf = sidebarLeaves(page, workspaceId).filter({ visible: true })
       await expect(treeLeaf).toHaveCount(1)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 
   test('should not show thinking indicator after full restart during active turn', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Restart Thinking Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Restart Thinking Test' }, async ({ workspaceId }) => {
       // Start a turn and hold it open, so the hub and worker stop while the
       // agent is genuinely mid-turn. An unheld turn against the mock endpoint
       // finishes in milliseconds and the restart would find nothing active.
-      await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
-      await modelScript.waitForSteps(1)
+      const step = await modelScript.queue({ text: 'An essay.', delayMs: 60_000 })
+      await sendMessage(page, modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
+      await modelScript.waitForSteps(step + 1)
 
       // Wait for the thinking indicator or streaming to appear (agent is processing)
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
@@ -272,43 +201,24 @@ test.describe('Full Hub+Worker Restart', () => {
       // Reload to establish fresh connections to the restarted hub. The app
       // restores the workspace from browser storage — there is no URL to carry it.
       await reopenWorkspace(page, workspaceId)
-      await expect(editor).toBeVisible()
+      await expect(composerEditor(page)).toBeVisible()
 
       // Thinking indicator should NOT be visible — stale ACTIVE agents
       // are closed on hub startup so the frontend sees INACTIVE status.
       await expect(thinkingIndicator).not.toBeVisible()
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 })
 
 test.describe('Settings and /clear after Worker restart', () => {
   test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Worker Restart Settings Test')
-    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Worker Restart Settings Test', pinnedMode: true }, async () => {
       // Step 1: Send a message and wait for a response (agent starts)
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await editor.click()
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
 
       // Wait for the assistant's response containing "6912"
-      await expectAssistantAnswer(page)
-      await waitForAgentIdle(page)
+      await expectAnswerAndTurnEnd(page)
 
       // Step 2: Restart the Worker (stop + start). All persistent data
       // (workspaces, agents, messages) is stored on the Worker's SQLite DB,
@@ -322,96 +232,51 @@ test.describe('Settings and /clear after Worker restart', () => {
       await expectUserMessage(page, '1234 + 5678')
       await expectAssistantAnswer(page)
 
-      // Helper: wait for a notification bubble to contain the expected text.
+      // Wait for a notification bubble to contain the expected text.
       const waitForNotification = (text: string) =>
         expect(visibleOnly(page.getByText(text))).toBeVisible()
 
-      // Helper: wait for the settings loading spinner to disappear.
-      const waitForSettingsIdle = () =>
-        expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
-
       // Step 3: Change permission mode (Default → Plan Mode)
-      await openSettingsMenu(page, 'permissionMode')
-      await page.locator('[data-testid="permissionMode-plan"]').click()
+      await chooseSettingsOption(page, 'permissionMode-plan')
 
       await expectSettingsChip(page, 'Plan')
-      await waitForNotification('Mode (Default \u2192 Plan Mode)')
-      await waitForSettingsIdle()
+      await waitForNotification('Mode (Default → Plan Mode)')
+      await waitForSettingsIdle(page)
 
       // Step 4: Change effort (Medium → High; the e2e catalog sets Medium).
       // Must happen before switching to Haiku, which hides the effort section.
-      await openSettingsMenu(page, 'effort')
-      await page.locator('[data-testid="effort-high"]').click()
+      await chooseSettingsOption(page, 'effort-high')
 
-      await waitForNotification('Effort (Medium \u2192 High)')
-      await waitForSettingsIdle()
+      await waitForNotification('Effort (Medium → High)')
+      await waitForSettingsIdle(page)
 
       // Step 5: Change model (Sonnet → Haiku)
-      await openSettingsMenu(page, 'model')
-      await page.locator('[data-testid="model-haiku"]').click()
+      await chooseSettingsOption(page, 'model-haiku')
 
-      await waitForNotification('Model (Sonnet \u2192 Haiku)')
+      await waitForNotification('Model (Sonnet → Haiku)')
 
       // Step 6: Send /clear
-      await editor.click()
-      await page.keyboard.type('/clear')
-      await page.keyboard.press('Meta+Enter')
+      await sendMessage(page, '/clear')
 
       await waitForNotification('Context cleared')
 
       // Verify no "Failed to deliver" messages appeared
       const failedMessages = messageBubbles(page).filter({ hasText: 'Failed to deliver' })
       await expect(failedMessages).toHaveCount(0)
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 })
 
 test.describe('Agent Session Resume', () => {
-  /**
-   * Wait for the first answer, and then for the end of its turn, before a test
-   * stops the worker.
-   *
-   * The answer's text reaches the page before the turn ends. A worker that stops
-   * inside that window leaves the input queue's turn open, and the worker's
-   * restart then pauses the queue as interrupted. The next message then waits in
-   * the paused queue and never reaches the agent.
-   */
-  async function expectAnswerAndTurnEnd(page: Page) {
-    await expectAssistantAnswer(page)
-    await waitForAgentIdle(page)
-  }
-
-  async function waitForWorkerConnection(page: Page, connected: boolean) {
-    const status = page.getByTestId('section-header-workers').locator('[data-status="connected"]')
-    if (connected)
-      await expect(status).not.toHaveCount(0)
-    else
-      await expect(status).toHaveCount(0)
-  }
-
   test('should resume the agent process on worker restart without a message', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Eager Resume')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Eager Resume' }, async ({ workspaceId }) => {
+      const { hubUrl, adminToken, workerId } = separateHubWorker
 
       // One exchange is what gets the CLI to report a session id, which is the
       // filter the boot-time sweep applies: a tab whose agent never ran has
       // nothing to restore and is deliberately left cold.
-      await editor.click()
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
       await expectAnswerAndTurnEnd(page)
 
       await stopWorker(separateHubWorker)
@@ -430,31 +295,14 @@ test.describe('Agent Session Resume', () => {
         const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
         return agents.map(a => a.status)
       }).toEqual([AgentStatus.ACTIVE])
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 
   test('should deliver control request after worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Request Restart')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Control Request Restart' }, async () => {
       // Send a message and wait for response (establishes session)
-      await editor.click()
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
       await expectAnswerAndTurnEnd(page)
 
       // Stop the worker and wait for the browser connection to change twice.
@@ -464,7 +312,7 @@ test.describe('Agent Session Resume', () => {
       await waitForWorkerConnection(page, true)
 
       // Wait for editor to be visible (worker reconnected)
-      await expect(editor).toBeVisible()
+      await expect(composerEditor(page)).toBeVisible()
 
       // Switch permission mode to Plan Mode via the settings menu
       await chooseSettingsOption(page, 'permissionMode-plan')
@@ -472,31 +320,14 @@ test.describe('Agent Session Resume', () => {
       // Verify the mode chip shows Plan Mode — confirms the control request was
       // delivered after the agent was transparently restarted
       await expectSettingsChip(page, 'Plan Mode')
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 
   test('should handle interrupt after worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    await ensureWorkerOnline(separateHubWorker)
-    const { hubUrl, adminToken, workerId } = separateHubWorker
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Interrupt Restart')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    try {
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // Wait for agent tab and editor
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await expect(editor).toBeVisible()
-
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Interrupt Restart' }, async () => {
       // Send a message and wait for response (establishes session)
-      await editor.click()
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await page.keyboard.type(modelScript.prompt(ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
-      await expect(editor).toHaveText('')
+      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
       await expectAnswerAndTurnEnd(page)
 
       // Stop the worker and wait for the browser connection to change twice.
@@ -506,36 +337,31 @@ test.describe('Agent Session Resume', () => {
       await waitForWorkerConnection(page, true)
 
       // Wait for editor to be visible (worker reconnected)
-      await expect(editor).toBeVisible()
+      await expect(composerEditor(page)).toBeVisible()
 
       // Send another message to confirm agent is alive after restart
-      await editor.click()
       await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-      await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-      await page.keyboard.press('Meta+Enter')
+      await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
 
       // Wait for response — verifies normal operation post-restart
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-    }
-    finally {
-      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => { })
-    }
+    })
   })
 })
 
 test.describe('Agent Settings', () => {
   test.describe('worker restart', () => {
     test('settings restored after worker restart', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+      const editor = composerEditor(page)
       await expect(editor).toBeVisible()
 
       const trigger = settingsBar(page)
       await expect(trigger).toBeVisible()
 
       // Send a message to establish a session ID.
-      await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+      const warmup = await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
       await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-      await modelScript.waitForSteps(1)
+      await modelScript.waitForSteps(warmup + 1)
 
       // Wait for a response (ensures init message and session ID are stored)
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
@@ -558,9 +384,9 @@ test.describe('Agent Settings', () => {
       await expect(editor).toBeVisible()
 
       // Send a message to trigger agent re-launch via ensureAgentActive
-      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+      const relaunch = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
       await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-      await modelScript.waitForSteps(2)
+      await modelScript.waitForSteps(relaunch + 1)
 
       // 6912 only appears in this response (the warmup answered 3333), so scanning
       // all bubbles for it is robust to the trailing "Took Ns" meta bubble that
