@@ -2,6 +2,7 @@ import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
 import { sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { expect } from '../qoder-fixtures'
+
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseCompletedManualCompaction(context: NativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
@@ -20,12 +21,12 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   for (let turn = 0; turn < 4; turn++) {
     // Qoder compares the new history with reported input tokens. The mock's
     // default one-token count makes a real summary look larger than its source.
-    await modelScript.queue({
+    const step = await modelScript.queue({
       text: turn === 0 ? olderAnswer : `Recent task answer ${turn}.`,
       usage: { inputTokens: 6000 + turn * 500, outputTokens: turn === 0 ? 5000 : 50 },
     })
     await sendMessage(page, modelScript.prompt(`Record Qoder task turn ${turn}.`))
-    await modelScript.waitForSteps(turn + 1)
+    await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
   }
 
@@ -34,22 +35,22 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   await waitForAgentIdle(page)
   await expectCompactionNotice(page)
 
-  await modelScript.queue({ text: 'The compacted task continued.' })
+  const next = await modelScript.queue({ text: 'The compacted task continued.' })
   await sendMessage(page, modelScript.prompt('Continue after the native compaction.'))
-  const status = await modelScript.waitForSteps()
+  await modelScript.waitForSteps(next + 1)
   await waitForAgentIdle(page)
-  const next = status.requests.find(request => request.stepIndex === 4)
-  expect(JSON.stringify(next?.body)).toContain(summaryMarker)
-  expect(JSON.stringify(next?.body)).not.toContain(oldMarker)
+  const nextBody = JSON.stringify((await modelScript.requestAt(next)).body)
+  expect(nextBody).toContain(summaryMarker)
+  expect(nextBody).not.toContain(oldMarker)
 }
 
 /** Exercise the actual native compaction path and preserve its context assertions. */
 export async function exerciseFailedManualCompaction(context: NativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
 
-  await modelScript.queue({ text: 'Ready to compact.' })
+  const step = await modelScript.queue({ text: 'Ready to compact.' })
   await sendMessage(page, modelScript.prompt('Reply once, then I will compact.'))
-  await modelScript.waitForSteps()
+  await modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(page)
 
   await modelScript.fallback({ text: 'Earlier work summarized.' })

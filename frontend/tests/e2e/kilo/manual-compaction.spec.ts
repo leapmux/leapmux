@@ -1,7 +1,7 @@
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { kiloTest } from '../kilo-fixtures'
+import { OPENCODE_COMPACTION } from '../opencode/compactionScenario'
 
-kiloTest('compacts a scripted conversation on request', async ({ authenticatedKiloWorkspace, page, modelScript }) => {
-  void authenticatedKiloWorkspace
-  await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Create a new anchored summary from the conversation history' })
+kiloTest('compacts a scripted conversation on request', async ({ native }) => {
+  await exerciseNativeCompaction(native, OPENCODE_COMPACTION)
 })

@@ -4,15 +4,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { isObject, pickString } from '../../../src/lib/jsonPick'
-import { compactionNoticeRow } from '../helpers/compaction'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeModelLastUserText } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
-import { uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { exerciseCompactAsModelText } from '../helpers/unsupportedCompaction'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
 /** Build the scenario context of Gemini CLI. Its native protocol needs no field beyond the provider. */
@@ -28,38 +25,29 @@ export async function exerciseGeminiAutoEditWrite(context: ManagedNativeScenario
   const callId = `gemini-autoedit-${marker}`
   const content = `GEMINI_AUTOEDIT_${marker}\n`
   expect(existsSync(path)).toBe(false)
-  const start = (await context.modelScript.status()).stepCount
   const answer = 'The native automatic file write completed.'
+  let start: number | undefined
   await expectNoNativeControl(context, { relatedProof: async () => {
-    await context.modelScript.queue({ toolCalls: [writeToolCall(context.provider, callId, { path, content })] }, { text: answer })
+    start = await context.modelScript.queue({ toolCalls: [writeToolCall(context.provider, callId, { path, content })] }, { text: answer })
     await sendMessage(context.page, context.modelScript.prompt('Create the file through the native automatic file tool.'))
     await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
     expect(readFileSync(path, 'utf8')).toBe(content)
     await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
   }, testId: 'control-banner' })
-  const request = (await context.modelScript.status()).requests.find(row => row.stepIndex === start + 1)
-  expect(nativeToolResult(request, callId)).toContain(`Successfully created and wrote to new file: ${path}.`)
+  if (start === undefined)
+    throw new Error('The native automatic file write queued no step.')
+  expect(nativeToolResult(await context.modelScript.requestAt(start + 1), callId)).toContain(`Successfully created and wrote to new file: ${path}.`)
 }
 
-/** Prove the installed ACP command catalog does not compact this conversation. */
+/**
+ * Prove the installed ACP command catalog does not compact this conversation.
+ * Gemini CLI sends the command alone as the last user text of its Google model request.
+ */
 export async function exerciseNativeCompactCommandLimit(context: ManagedNativeScenarioContext): Promise<void> {
-  const marker = uniqueMarker('GEMINICOMPACT')
-  await sendNativeAnswer(context, `Preserve ${marker} in the native conversation.`, `The native context contains ${marker}.`)
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ text: 'The native compact command reached the model as text.' })
-  await sendMessage(context.page, '/compact')
-  const status = await context.modelScript.waitForSteps(start + 1)
-  await waitForAgentIdle(context.page)
-  const request = status.requests.find(row => row.stepIndex === start)
-  if (!request || !isObject(request.body) || !Array.isArray(request.body.contents))
-    throw new Error('The native compact command reached no Google model request.')
-  const last = request.body.contents.filter(isObject).filter(row => row.role === 'user').at(-1)
-  const parts = Array.isArray(last?.parts) ? last.parts.filter(isObject) : []
-  expect(parts.map(part => pickString(part, 'text')).join('')).toBe('/compact')
-  expect(JSON.stringify(request.body)).toContain(marker)
-  await expect(compactionNoticeRow(context.page)).toHaveCount(0)
-  await expect(assistantBubbles(context.page).filter({ hasText: 'The native compact command reached the model as text.' })).toBeVisible()
+  const { request } = await exerciseCompactAsModelText(context)
+  expect(request.protocol).toBe('google-generative-language')
+  expect(nativeModelLastUserText(request)).toBe('/compact')
 }
 
 /** The related proof of a missing-setting cell: the native model answers one marked prompt. */

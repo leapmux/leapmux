@@ -1,9 +1,8 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { grokTest } from '../grok-fixtures'
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { expectNoCompactionNotice } from '../helpers/unsupportedCompaction'
+import { GROK_COMPACTION } from './compactionScenario'
 
-grokTest('proves native context compaction without a completed compaction notice', async ({ page, modelScript, leapmuxServer, authenticatedGrokWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGrokWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }
-  await expectNoCompactionNotice(context, { relatedProof: () => exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Your task is to produce a faithful, concise summary of the conversation so far' }) })
+grokTest('proves native context compaction without a completed compaction notice', async ({ native }) => {
+  await expectNoCompactionNotice(native, { relatedProof: () => exerciseNativeCompaction(native, GROK_COMPACTION) })
 })

@@ -1,9 +1,9 @@
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { mimoTest } from '../mimo-fixtures'
+import { MIMO_COMPACTION } from './compactionScenario'
 
 mimoTest.describe('MiMo Code basic chat', () => {
-  mimoTest('compacts a scripted conversation on request', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
-    await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Write a continuation summary that will allow you' })
+  mimoTest('compacts a scripted conversation on request', async ({ native }) => {
+    await exerciseNativeCompaction(native, MIMO_COMPACTION)
   })
 })

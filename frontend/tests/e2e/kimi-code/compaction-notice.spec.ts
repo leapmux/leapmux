@@ -1,13 +1,9 @@
-import { expect } from '@playwright/test'
-import { compactionNoticeRow } from '../helpers/compaction'
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { kimiTest } from '../kimi-fixtures'
+import { KIMI_COMPACTION } from './compactionScenario'
 
-kimiTest('shows the actual native completed compaction notice and preserves it after reload', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
-  void authenticatedKimiWorkspace
-  await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'You are about to run out of context' })
-  const notice = compactionNoticeRow(page)
-  await expect(notice).toBeVisible()
-  await page.reload()
-  await expect(notice).toBeVisible()
+kimiTest('shows the actual native completed compaction notice and preserves it after reload', async ({ native }) => {
+  await exerciseNativeCompaction(native, KIMI_COMPACTION)
+  await expectCompactionNoticeAfterReload(native.page)
 })

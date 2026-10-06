@@ -11,12 +11,12 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   const summaryMarker = 'DROID_COMPACT_SUMMARY_MARKER'
   const olderAnswer = Array.from({ length: 300 }, (_, index) => `${oldMarker} item ${index}: detail ${index * 7}.`).join(' ')
   for (let turn = 0; turn < 4; turn++) {
-    await modelScript.queue({ text: turn === 0 ? olderAnswer : `Recent task answer ${turn}.` })
+    const step = await modelScript.queue({ text: turn === 0 ? olderAnswer : `Recent task answer ${turn}.` })
     await sendMessage(page, modelScript.prompt(`Record Droid task turn ${turn}.`))
-    const prior = await modelScript.waitForSteps(turn + 1)
+    await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
     if (turn === 3)
-      expect(JSON.stringify(prior.requests.find(request => request.stepIndex === turn)?.body)).toContain(oldMarker)
+      expect(JSON.stringify((await modelScript.requestAt(step)).body)).toContain(oldMarker)
   }
   await expect(assistantBubbles(page).filter({ hasText: 'Recent task answer 3.' })).toBeVisible()
 
@@ -31,11 +31,11 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   await expectCompactionNotice(page)
   await expect(messageBubbles(page).filter({ hasText: 'settings_updated' })).toHaveCount(0)
 
-  await modelScript.queue({ text: 'The compacted Droid session continued.' })
+  const next = await modelScript.queue({ text: 'The compacted Droid session continued.' })
   await sendMessage(page, modelScript.prompt('Continue after manual compaction.'))
-  const continued = await modelScript.waitForSteps(5)
+  await modelScript.waitForSteps(next + 1)
   await waitForAgentIdle(page)
-  const nextBody = JSON.stringify(continued.requests.find(request => request.stepIndex === 4)?.body)
+  const nextBody = JSON.stringify((await modelScript.requestAt(next)).body)
   expect(nextBody).toContain(summaryMarker)
   expect(nextBody).not.toContain(oldMarker)
 }

@@ -1,13 +1,8 @@
-import { expect } from '@playwright/test'
-import { compactionNoticeRow } from '../helpers/compaction'
+import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
 import { qoderTest } from '../qoder-fixtures'
 import { exerciseCompletedManualCompaction } from './compactionScenarios'
-import { nativeContext } from './scenarios'
 
-qoderTest('keeps the completed native compaction status after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
-  await exerciseCompletedManualCompaction(context)
-  await expect(compactionNoticeRow(page)).toBeVisible()
-  await page.reload()
-  await expect(compactionNoticeRow(page)).toBeVisible()
+qoderTest('keeps the completed native compaction status after reload', async ({ native }) => {
+  await exerciseCompletedManualCompaction(native)
+  await expectCompactionNoticeAfterReload(native.page)
 })

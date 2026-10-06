@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { chatScrollContainer } from './ui'
+import { chatScrollContainer, waitForAgentIdle } from './ui'
 
 /**
  * The compaction notice row.
@@ -26,4 +26,21 @@ export function compactionNoticeRow(page: Page): Locator {
 /** Assert the transcript draws the compaction notice. */
 export async function expectCompactionNotice(page: Page): Promise<void> {
   await expect(compactionNoticeRow(page)).toBeVisible()
+}
+
+/**
+ * Require the compaction notice, reload, and require it again from the stored transcript.
+ * With `detail`, the notice row must also show that text both times, such as the trigger that the event states.
+ * After the reload, the check waits for the idle agent, so a replay of the stored transcript has ended.
+ */
+export async function expectCompactionNoticeAfterReload(page: Page, options: { detail?: string } = {}): Promise<void> {
+  for (const reload of [false, true]) {
+    if (reload) {
+      await page.reload()
+      await waitForAgentIdle(page)
+    }
+    await expectCompactionNotice(page)
+    if (options.detail !== undefined)
+      await expect(compactionNoticeRow(page)).toContainText(options.detail)
+  }
 }

@@ -1,7 +1,7 @@
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
 import { opencodeTest } from '../opencode-fixtures'
+import { OPENCODE_COMPACTION } from './compactionScenario'
 
-opencodeTest('compacts a scripted conversation on request', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
-  void authenticatedOpencodeWorkspace
-  await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Create a new anchored summary from the conversation history' })
+opencodeTest('compacts a scripted conversation on request', async ({ native }) => {
+  await exerciseNativeCompaction(native, OPENCODE_COMPACTION)
 })

@@ -1,9 +1,9 @@
 import { grokTest } from '../grok-fixtures'
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
+import { GROK_COMPACTION } from './compactionScenario'
 
 grokTest.describe('Grok Build Basic Chat', () => {
-  grokTest('compacts a scripted conversation on request', async ({ authenticatedGrokWorkspace, page, modelScript }) => {
-    void authenticatedGrokWorkspace
-    await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'Your task is to produce a faithful, concise summary of the conversation so far' })
+  grokTest('compacts a scripted conversation on request', async ({ native }) => {
+    await exerciseNativeCompaction(native, GROK_COMPACTION)
   })
 })

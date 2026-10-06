@@ -1,20 +1,9 @@
-import { expect } from '@playwright/test'
 import { codewhaleTest } from '../codewhale-fixtures'
-import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
-import { exerciseManualCompaction } from '../helpers/manualCompaction'
+import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
+import { exerciseNativeCompaction } from '../helpers/manualCompaction'
+import { CODEWHALE_COMPACTION } from './compactionScenario'
 
-/**
- * Codewhale 0.10.0 ends a compaction with `item.completed` for a `context_compaction`
- * item. The item states "Compaction complete: ..." as its summary, and the event states
- * `auto: false` for a manual compaction. The transcript draws that item as the completed
- * notice, with the trigger that the event states.
- */
-codewhaleTest('shows a completed native compaction notice and retains it after reload', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-  void authenticatedCodewhaleWorkspace
-  await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'You are performing a context checkpoint compaction' })
-  await expectCompactionNotice(page)
-  await expect(compactionNoticeRow(page)).toContainText('manual')
-  await page.reload()
-  await expectCompactionNotice(page)
-  await expect(compactionNoticeRow(page)).toContainText('manual')
+codewhaleTest('shows a completed native compaction notice and retains it after reload', async ({ native }) => {
+  await exerciseNativeCompaction(native, CODEWHALE_COMPACTION)
+  await expectCompactionNoticeAfterReload(native.page, { detail: 'manual' })
 })

@@ -17,15 +17,11 @@ export async function exerciseCommandCodeCompaction(context: ManagedNativeScenar
     await sendNativeAnswer(context, index === 0 ? `Keep ${old} in the old task.` : recent ? `Recent native task ${'padding '.repeat(18000)}` : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`, { entry: recent ? 'insert' : 'type' })
   }
   const summary = `COMMANDCODESUMMARY${marker}`
-  const start = (await context.modelScript.status()).stepCount
-  await context.modelScript.queue({ text: summary })
+  const start = await context.modelScript.queue({ text: summary })
   await sendMessage(context.page, '/compact')
-  const status = await context.modelScript.waitForSteps(start + 1)
-  const request = status.requests.find(record => record.stepIndex === start)
-  if (!request)
-    throw new Error('The native compactor sent no model request.')
-  expect(nativeModelContextText(request)).toContain(old)
+  await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)
+  expect(nativeModelContextText(await context.modelScript.requestAt(start))).toContain(old)
   await expectCompactionNotice(context.page)
   const next = await sendNativeAnswer(context, 'Continue after native compaction.', 'The native compacted task continued.')
   expect(nativeModelContextText(next)).toContain(summary)
