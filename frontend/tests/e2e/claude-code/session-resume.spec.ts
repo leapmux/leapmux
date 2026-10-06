@@ -400,10 +400,6 @@ test.describe('Agent Settings', () => {
   })
 })
 
-// From the app's own declaration, so the row's wording and this locator cannot
-// drift. `false`: the Claude provider's session is an id, not a file path.
-const TYPE_A_HANDLE_ROW = typeAHandleLabel(false)
-
 claudeTest.describe('Session picker in the New Agent dialog', () => {
   claudeTest('offers a closed session, hides the open one, and resumes what was picked', async ({
     page,
@@ -506,9 +502,12 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
 
     // The route into the text box is a menu row, so the route out is a button
     // on the field. Without it a mistaken pick held the user in the text box
-    // for as long as the dialog stayed open.
+    // for as long as the dialog stayed open. The row label comes from the app's
+    // own declaration, so the wording and this locator cannot drift. `false`:
+    // the Claude provider's session is an id, not a file path, so only that
+    // form of the label is correct here.
     await (await openSessionMenu(dialog))
-      .getByRole('menuitemradio', { name: TYPE_A_HANDLE_ROW })
+      .getByRole('menuitemradio', { name: typeAHandleLabel(false) })
       .click()
     await expect(dialog.getByPlaceholder(/^Session ID/)).toBeVisible()
     await dialog.getByTestId('session-field-pick-from-list').click()
