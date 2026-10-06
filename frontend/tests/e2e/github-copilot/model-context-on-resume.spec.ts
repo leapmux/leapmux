@@ -9,7 +9,6 @@ const label = 'Copilot'
 copilotTest('restores old Worker rows and native model context after reopening', async ({ page, leapmuxServer, modelScript }) => {
   await resumePickerScenario({ page, leapmuxServer, modelScript }, nativeContext, {
     label,
-    assertConversationBubbles: true,
     subjectOptionValues: { [OPTION_ID_PERMISSION_MODE]: COPILOT_PERMISSION_MODE.Manual },
   })
 })

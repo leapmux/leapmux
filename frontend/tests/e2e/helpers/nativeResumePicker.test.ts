@@ -34,6 +34,10 @@ const picker = vi.hoisted(() => ({
   conversation: [] as { agentId: string, originalAnswerRows: number, originalAnswerBubbles: number | undefined }[],
   /** The refusal of the close that waits for the Worker, when a test states one. */
   closeRefusal: undefined as Error | undefined,
+  /** How many bubbles the page draws for each answer of a turn, in turn order. A turn with no entry draws one. */
+  bubblesPerAnswer: [] as number[],
+  /** Whether a model request restates the earlier answers. A provider that keeps its history on a service does not. */
+  historyInBody: true,
 }))
 
 vi.mock('./api', () => ({
@@ -108,6 +112,7 @@ function rows(texts: () => readonly string[], filters: readonly string[] = []) {
     readCount: () => matching().length,
     count: async () => matching().length,
     filter: ({ hasText }: { hasText: string }) => rows(texts, [...filters, hasText]),
+    first: () => ({ resumePickerProbe: 'first-row', readCount: () => Math.min(1, matching().length) }),
   }
 }
 
@@ -124,7 +129,7 @@ vi.mock('./ui', () => ({
     picker.userRows.push(prompt)
     // The model server records the request when the prompt arrives.
     const stepIndex = picker.requests.length
-    const answers = picker.queued.slice(0, stepIndex).map(step => step.text)
+    const answers = picker.historyInBody ? picker.queued.slice(0, stepIndex).map(step => step.text) : []
     picker.requests.push({ protocol: 'openai-responses', path: '/v1/responses', stepIndex, body: { prompts: [...picker.sent], answers } })
   },
   waitForAgentIdle: async (_page: Page, timeoutMs?: number) => {
@@ -134,7 +139,9 @@ vi.mock('./ui', () => ({
     const request = picker.requests.at(-1)
     const step = picker.queued[picker.requests.length - 1]
     if (request && step?.text !== undefined) {
-      picker.assistantRows.push(step.text)
+      const bubbles = picker.bubblesPerAnswer[picker.requests.length - 1] ?? 1
+      for (let bubble = 0; bubble < bubbles; bubble++)
+        picker.assistantRows.push(step.text)
       request.body = { ...(request.body as object), stated: `after-turn:${request.stepIndex}` }
     }
   },
@@ -163,6 +170,12 @@ vi.mock('@playwright/test', async (importOriginal) => {
           throw new Error('The picker fixture holds no count for this locator.')
         picker.events.push(`count:${expected}`)
         expect(readCount()).toBe(expected)
+      },
+      toBeVisible: async () => {
+        if (!readCount || value.resumePickerProbe !== 'first-row')
+          throw new Error('The picker fixture checks the visibility of a first row only.')
+        picker.events.push('visible')
+        expect(readCount()).toBe(1)
       },
     }
   }
@@ -244,11 +257,6 @@ function nativeContext(fields: Partial<ManagedNativeScenarioContext> = {}): Resu
   }
 }
 
-/** A text step that changes the original answer, so the resumed request body cannot repeat it. */
-function unrelatedOriginalAnswer(text: string): MockModelStep {
-  return { text: text.startsWith('RESUMEANSWER') ? 'unrelated answer' : text }
-}
-
 function run(options: Partial<ResumePickerOptions> = {}, fields: Partial<ManagedNativeScenarioContext> = {}) {
   return resumePickerScenario(pickerFixtures(), nativeContext(fields), { label: 'Unit', ...options })
 }
@@ -266,6 +274,8 @@ beforeEach(() => {
   picker.reopens.length = 0
   picker.emptySessionReads = 0
   picker.closeRefusal = undefined
+  picker.bubblesPerAnswer = []
+  picker.historyInBody = true
 })
 
 describe('resumePickerScenario', () => {
@@ -285,6 +295,8 @@ describe('resumePickerScenario', () => {
       'send:Keep',
       'steps:1',
       'idle',
+      'count:1',
+      'visible',
       'list-agents',
       'count-rows:subject-agent',
       `close:${SUBJECT_ID}`,
@@ -298,6 +310,7 @@ describe('resumePickerScenario', () => {
       'idle',
       'request-at:1',
       expect.stringMatching(/^context:/),
+      'count:1',
       `conversation:${REOPENED_ID}`,
     ])
     expect(result.request.stepIndex).toBe(1)
@@ -367,13 +380,16 @@ describe('resumePickerScenario', () => {
   it('does not run the resumed provider assertion when the original answer is absent from the request body', async () => {
     const providerAssertion = vi.fn()
     // A request body that never repeats the original answer fails the default proof before the provider assertion.
-    await expect(run({ onResumedRequest: providerAssertion }, { textStep: unrelatedOriginalAnswer })).rejects.toThrow()
+    picker.historyInBody = false
+    await expect(run({ onResumedRequest: providerAssertion })).rejects.toThrow()
+    expect(picker.events).toContain('request-at:1')
     expect(providerAssertion).not.toHaveBeenCalled()
   })
 
   it('accepts a request body without the original answer when the provider keeps its history on a service', async () => {
     const seen = vi.fn()
-    await run({ resumedBodyHoldsOriginalAnswer: false, onResumedRequest: seen }, { textStep: unrelatedOriginalAnswer })
+    picker.historyInBody = false
+    await run({ resumedBodyHoldsOriginalAnswer: false, onResumedRequest: seen })
     expect(seen).toHaveBeenCalledOnce()
   })
 
@@ -416,18 +432,30 @@ describe('resumePickerScenario', () => {
   })
 
   describe('conversation bubbles', () => {
-    it('checks no bubble count before the close by default', async () => {
+    it('checks one original prompt bubble and a drawn original answer before the close', async () => {
       await run()
       const close = picker.events.indexOf(`close:${SUBJECT_ID}`)
-      expect(picker.events.slice(0, close).filter(event => event.startsWith('count:'))).toEqual([])
+      expect(picker.events.slice(picker.events.indexOf('idle'), close).filter(event => event.startsWith('count:') || event === 'visible')).toEqual(['count:1', 'visible'])
     })
 
-    it('checks the original prompt and answer bubble after the first turn and one resumed answer bubble after the second', async () => {
-      await run({ assertConversationBubbles: true })
-      const close = picker.events.indexOf(`close:${SUBJECT_ID}`)
-      expect(picker.events.slice(0, close).filter(event => event.startsWith('count:'))).toEqual(['count:1', 'count:1'])
+    it('fails before the close when the live transcript draws no original answer', async () => {
+      picker.bubblesPerAnswer = [0]
+      await expect(run()).rejects.toThrow()
+      expect(picker.events).not.toContain(`close:${SUBJECT_ID}`)
+    })
+
+    it('requires the resumed answer to draw as many bubbles as the original answer drew', async () => {
+      picker.bubblesPerAnswer = [3, 3]
+      await run()
       const afterResume = picker.events.slice(picker.events.indexOf('steps:2'))
-      expect(afterResume.filter(event => event.startsWith('count:'))).toEqual(['count:1'])
+      expect(afterResume.filter(event => event.startsWith('count:'))).toEqual(['count:3'])
+      expect(picker.conversation).toEqual([{ agentId: REOPENED_ID, originalAnswerRows: 2, originalAnswerBubbles: 3 }])
+    })
+
+    it('fails when the resumed answer draws another number of bubbles than the original answer', async () => {
+      picker.bubblesPerAnswer = [2, 1]
+      await expect(run()).rejects.toThrow()
+      expect(picker.events).not.toContain(`conversation:${REOPENED_ID}`)
     })
 
     it('passes the pre-close bubble count and the stored row count to the conversation proof', async () => {

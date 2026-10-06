@@ -15,7 +15,6 @@ cursorTest('restores old Worker rows and native model context after reopening', 
   let firstConversationId: string | undefined
   await resumePickerScenario({ page, leapmuxServer, modelScript }, nativeContext, {
     label,
-    assertConversationBubbles: true,
     resumedBodyHoldsOriginalAnswer: false,
     onFirstTurn: (request) => {
       firstConversationId = cursorConversationId(request.body)

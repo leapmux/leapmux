@@ -34,12 +34,6 @@ export interface ResumePickerOptions {
   readonly sessionList?: StoredSessionList
   /** Option values for the subject agent, over the provider defaults the scenario already applies. */
   readonly subjectOptionValues?: Record<string, string>
-  /**
-   * Also assert the original turn's one prompt and answer bubble right after it ends, and exactly one resumed
-   * answer bubble after the continued turn. Absent by default: the Worker-row proofs in `expectResumedConversation`
-   * already cover the reopened transcript.
-   */
-  readonly assertConversationBubbles?: boolean
   /** Inspect the request of the original turn right after its model answer, before the turn ends. */
   readonly onFirstTurn?: (request: MockModelRequestRecord) => void | Promise<void>
   /** Assert provider-specific facts about the request that consumed the resumed prompt. */
@@ -94,10 +88,8 @@ export async function resumePickerScenario(
   const firstStatus = await modelScript.waitForSteps(originalStep + 1)
   await options.onFirstTurn?.(stepRequest(firstStatus, originalStep))
   await waitForAgentIdle(page)
-  if (options.assertConversationBubbles) {
-    await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
-    await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer })).toHaveCount(1)
-  }
+  await expect(userBubbles(page).filter({ hasText: texts.originalPrompt }), 'The live transcript draws the original prompt once.').toHaveCount(1)
+  await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer }).first(), 'The live transcript draws the original answer.').toBeVisible()
   const sessionId = await retryUntilPass(async () => {
     const stored = (await nativeAgentById(context, subjectId))?.agentSessionId ?? ''
     expect(stored, 'the Worker stores the native session of the first turn').not.toBe('')
@@ -105,8 +97,9 @@ export async function resumePickerScenario(
   })
   const originalAnswerRows = await countOriginalAnswerRows(context, subjectId, texts)
   // What the live transcript drew before the close is what the reopened one must
-  // draw again: an answer tool can store the answer in rows that render no
-  // bubble, so the page count is its own number, not the row count.
+  // draw again, and what the live resumed answer must draw: an answer tool can
+  // store the answer in rows that render no bubble, or in several rows that each
+  // render one, so the page count is its own number, not the row count.
   const originalAnswerBubbles = await assistantBubbles(page).filter({ hasText: texts.originalAnswer }).count()
   await closeNativeAgentAndWait(context, subjectId)
 
@@ -126,8 +119,8 @@ export async function resumePickerScenario(
     expect(JSON.stringify(resumed.body)).toContain(texts.originalAnswer)
   await options.onResumedRequest?.(resumed)
   expectNativeResumeContext((context.readConversationTurns ?? nativeModelConversationTurns)(resumed), texts)
-  if (options.assertConversationBubbles)
-    await expect(assistantBubbles(page).filter({ hasText: texts.resumedAnswer })).toHaveCount(1)
+  // The resumed answer comes from the same answer step as the original one, so it draws the same number of bubbles.
+  await expect(assistantBubbles(page).filter({ hasText: texts.resumedAnswer }), 'The resumed answer draws as many bubbles as the original answer.').toHaveCount(originalAnswerBubbles)
   await expectResumedConversation(context, reopened.id, texts, originalAnswerRows, originalAnswerBubbles)
   return { ...texts, request: resumed }
 }
