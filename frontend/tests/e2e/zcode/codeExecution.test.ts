@@ -33,16 +33,16 @@ describe('zcodeWorkflowCompletion', () => {
     expect(zcodeWorkflowCompletion(output('errored', ''), runId).text).toBe('')
   })
   it.each([
-    output().replace('<owned_by_this_session>true', '<owned_by_this_session>false'),
-    output().replace(`<run_id>${runId}`, '<run_id>other'),
-    output().replace('<status>completed', '<status>running'),
-    output().replace('<result>\nanswer42\n</result>', ''),
-    `${output()}<run_id>other</run_id>`,
-    `${output()}<status>errored</status>`,
-    `${output()}<error code="DriverError">contradictory</error>`,
-    output('errored', 'failure').replace('<error code="DriverError">failure</error>', ''),
-  ])('rejects an incomplete, repeated, or foreign final result', (text) => {
-    expect(() => zcodeWorkflowCompletion(text, runId)).toThrow()
+    [output().replace('<owned_by_this_session>true', '<owned_by_this_session>false'), 'The native ZCode result belongs to another run or session.'],
+    [output().replace(`<run_id>${runId}`, '<run_id>other'), 'The native ZCode result belongs to another run or session.'],
+    [output().replace('<status>completed', '<status>running'), 'The native ZCode script has no completed result or execution error.'],
+    [output().replace('<result>\nanswer42\n</result>', ''), 'The native ZCode script has no exact final output.'],
+    [`${output()}<run_id>other</run_id>`, 'The native ZCode workflow repeats its run_id field.'],
+    [`${output()}<status>errored</status>`, 'The native ZCode workflow repeats its status field.'],
+    [`${output()}<error code="DriverError">contradictory</error>`, 'The native ZCode script has no exact final output.'],
+    [output('errored', 'failure').replace('<error code="DriverError">failure</error>', ''), 'The native ZCode script has no exact execution error.'],
+  ])('rejects an incomplete, repeated, or foreign final result', (text, error) => {
+    expect(() => zcodeWorkflowCompletion(text, runId)).toThrow(error)
   })
 })
 

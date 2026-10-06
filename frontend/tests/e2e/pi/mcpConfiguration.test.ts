@@ -48,7 +48,7 @@ describe('writePiMcpConfiguration', () => {
     mkdirSync(project)
     const target = join(outside, 'absent-mcp.json')
     symlinkSync(target, join(project, 'mcp.json'))
-    expect(() => writePiMcpConfiguration(runDir, runDir, { probe: { command: process.execPath, args: [] } })).toThrow()
+    expect(() => writePiMcpConfiguration(runDir, runDir, { probe: { command: process.execPath, args: [] } })).toThrow('The private native path must not be a symbolic link, which could point outside the E2E run.')
     expect(existsSync(target)).toBe(false)
   })
 })

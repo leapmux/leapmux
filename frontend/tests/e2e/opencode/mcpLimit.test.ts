@@ -63,8 +63,13 @@ describe('opencodeMcpServerConfiguration', () => {
     expect(JSON.parse(configuration).mcp.form_probe.command).toEqual([server.command, '/run/form.mjs'])
   })
 
-  it.each(['null', '{}', '{"provider":{},"mcp":[]}', '{invalid'])('refuses the invalid native configuration %s', (configuration) => {
-    expect(() => opencodeMcpServerConfiguration(configuration, mcpProbeServer('form_probe', '/run/form.mjs'))).toThrow()
+  it.each([
+    ['null', 'The native MCP limit requires an existing isolated provider configuration.'],
+    ['{}', 'The native MCP limit requires an existing isolated provider configuration.'],
+    ['{"provider":{},"mcp":[]}', 'The native MCP configuration must contain a server object.'],
+    ['{invalid', SyntaxError],
+  ] as const)('refuses the invalid native configuration %s', (configuration, error) => {
+    expect(() => opencodeMcpServerConfiguration(configuration, mcpProbeServer('form_probe', '/run/form.mjs'))).toThrow(error)
   })
 
   it('refuses an incomplete server command', () => {

@@ -84,6 +84,9 @@ describe('readKimiNativeHeader', () => {
 })
 
 describe('parseKimiCompleteCatalog', () => {
+  const NO_ENVELOPE = 'The native Kimi catalog reply lacks a successful complete registry envelope.'
+  const NO_BUILTIN_INVENTORY = 'The native Kimi registry has no builtin inventory or repeats a tool identity.'
+
   it('keeps every active and inactive registration, its null schema, and its exact source', () => {
     const input = [tool(), tool({ name: 'Read', active: false }), tool({ name: 'native_출력', source: 'mcp', mcp_server_id: 'server-한글' }), tool({ name: 'SkillTool', source: 'skill' })]
     expect(parseKimiCompleteCatalog(envelope(input))).toEqual(input)
@@ -91,16 +94,16 @@ describe('parseKimiCompleteCatalog', () => {
   })
 
   it.each([
-    null,
-    {},
-    { ...envelope(), code: 7 },
-    { ...envelope(), request_id: '' },
-    { ...envelope(), data: {} },
-    envelope([]),
-    envelope([tool({ source: 'skill' })]),
-    envelope([tool(), tool()]),
-  ])('rejects an incomplete or failed native registry reply: %j', (input) => {
-    expect(() => parseKimiCompleteCatalog(input)).toThrow()
+    [null, NO_ENVELOPE],
+    [{}, NO_ENVELOPE],
+    [{ ...envelope(), code: 7 }, NO_ENVELOPE],
+    [{ ...envelope(), request_id: '' }, NO_ENVELOPE],
+    [{ ...envelope(), data: {} }, NO_ENVELOPE],
+    [envelope([]), NO_BUILTIN_INVENTORY],
+    [envelope([tool({ source: 'skill' })]), NO_BUILTIN_INVENTORY],
+    [envelope([tool(), tool()]), NO_BUILTIN_INVENTORY],
+  ])('rejects an incomplete or failed native registry reply: %j', (input, error) => {
+    expect(() => parseKimiCompleteCatalog(input)).toThrow(error)
   })
 
   it.each([
@@ -118,6 +121,10 @@ describe('parseKimiCompleteCatalog', () => {
   })
 })
 
+/** The reasons that the ready-line parser gives for a refusal. The receipt parser reads its token and origin the same way. */
+const INVALID_READY_LINE = 'The native Kimi ready line has an invalid shape.'
+const NOT_LOOPBACK = 'The native Kimi catalog server must use its private loopback origin.'
+
 describe('parseKimiCatalogReadyLine', () => {
   it('reads the exact loopback origin and opaque token from a native ready line', () => {
     expect(parseKimiCatalogReadyLine('Kimi server: http://127.0.0.1:43125/#token=native_한글')).toEqual({ origin: 'http://127.0.0.1:43125', token: 'native_한글' })
@@ -126,15 +133,15 @@ describe('parseKimiCatalogReadyLine', () => {
   })
 
   it.each([
-    'Kimi server: http://127.0.0.1:43125/',
-    'Kimi server: http://127.0.0.1:43125/#token=',
-    'Kimi server: http://127.0.0.1:43125/#token=private token',
-    'Kimi server: http://external.example:43125/#token=secret',
-    'Kimi server: http://user:password@127.0.0.1:43125/#token=secret',
-    'Kimi server: http://127.0.0.1:0/#token=secret',
-    'Kimi server: https://127.0.0.1:43125/#token=secret',
-  ])('rejects a malformed or unowned native origin without exposing the bearer token', (line) => {
-    expect(() => parseKimiCatalogReadyLine(line)).toThrow()
+    ['Kimi server: http://127.0.0.1:43125/', INVALID_READY_LINE],
+    ['Kimi server: http://127.0.0.1:43125/#token=', INVALID_READY_LINE],
+    ['Kimi server: http://127.0.0.1:43125/#token=private token', INVALID_READY_LINE],
+    ['Kimi server: http://external.example:43125/#token=secret', NOT_LOOPBACK],
+    ['Kimi server: http://user:password@127.0.0.1:43125/#token=secret', NOT_LOOPBACK],
+    ['Kimi server: http://127.0.0.1:0/#token=secret', NOT_LOOPBACK],
+    ['Kimi server: https://127.0.0.1:43125/#token=secret', INVALID_READY_LINE],
+  ])('rejects a malformed or unowned native origin without exposing the bearer token', (line, reason) => {
+    expect(() => parseKimiCatalogReadyLine(line)).toThrow(reason)
     try {
       parseKimiCatalogReadyLine(line)
     }
@@ -157,23 +164,25 @@ describe('parseKimiCatalogReceipt', () => {
     expect(parseKimiCatalogReceipt(receipt(), launch)).toEqual(receipt())
   })
 
+  const INVALID_IDENTITY = 'The Kimi native catalog receipt has an invalid process or capture identity.'
+
   it.each([
-    { nonce: 'wrong-nonce' },
-    { executable: '/other/kimi' },
-    { nativePid: 0 },
-    { nativePid: -1 },
-    { nativePid: 1.5 },
-    { nativePid: Number.MAX_SAFE_INTEGER + 1 },
-    { nativePid: 20 },
-    { wrapperPid: 0 },
-    { workingDir: '' },
-    { home: '' },
-    { token: '' },
-    { token: 'invalid token' },
-    { origin: 'http://external.example:43125' },
-    { argv: ['web', '--host', '127.0.0.1'] },
-  ])('rejects an incomplete or changed native capture identity: %j', (change) => {
-    expect(() => parseKimiCatalogReceipt(receipt(change), launch)).toThrow()
+    [{ nonce: 'wrong-nonce' }, INVALID_IDENTITY],
+    [{ executable: '/other/kimi' }, INVALID_IDENTITY],
+    [{ nativePid: 0 }, INVALID_IDENTITY],
+    [{ nativePid: -1 }, INVALID_IDENTITY],
+    [{ nativePid: 1.5 }, INVALID_IDENTITY],
+    [{ nativePid: Number.MAX_SAFE_INTEGER + 1 }, INVALID_IDENTITY],
+    [{ nativePid: 20 }, INVALID_IDENTITY],
+    [{ wrapperPid: 0 }, INVALID_IDENTITY],
+    [{ workingDir: '' }, INVALID_IDENTITY],
+    [{ home: '' }, INVALID_IDENTITY],
+    [{ token: '' }, INVALID_IDENTITY],
+    [{ token: 'invalid token' }, INVALID_READY_LINE],
+    [{ origin: 'http://external.example:43125' }, NOT_LOOPBACK],
+    [{ argv: ['web', '--host', '127.0.0.1'] }, 'The Kimi native catalog receipt does not identify the actual Worker server invocation.'],
+  ])('rejects an incomplete or changed native capture identity: %j', (change, reason) => {
+    expect(() => parseKimiCatalogReceipt(receipt(change), launch)).toThrow(reason)
   })
 })
 
@@ -230,17 +239,17 @@ describe('assertKimiCatalogOwnership', () => {
 
   it('rejects another native executable at the captured PID', async () => {
     const rows = processRows.map(row => row.pid === 30 ? { ...row, executable: '/native/unrelated-runtime', command: '/native/unrelated-runtime web' } : row)
-    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow()
+    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow('The captured Kimi native child or wrapper has another physical executable.')
   })
 
   it('rejects a native process command that omits the exact captured CLI script', async () => {
     const rows = processRows.map(row => row.pid === 30 ? { ...row, command: 'node /native/unrelated-kimi.mjs web' } : row)
-    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow()
+    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow('The captured Kimi native CLI has another process title or exact command.')
   })
 
   it('rejects another wrapper command under the same private Worker', async () => {
     const rows = processRows.map(row => row.pid === 20 ? { ...row, command: 'node unrelated-capture.cjs' } : row)
-    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow()
+    await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow('The captured Kimi ready wrapper has another exact process command.')
   })
 
   it('rejects another physical executable even when both process commands match', async () => {
@@ -305,7 +314,7 @@ describe('assertKimiShellCatalog', () => {
     { tools: [tool({ source: 'mcp' })] },
     { tools: [tool(), tool({ name: 'unknown', source: 'skill' })] },
   ])('rejects an empty, inactive-shell, or external tool inventory: %j', ({ tools }) => {
-    expect(() => assertKimiShellCatalog(tools)).toThrow()
+    expect(() => assertKimiShellCatalog(tools)).toThrow('The full native Kimi registry contains an unaudited capability or lacks its actual active shell tool.')
   })
 })
 
@@ -380,7 +389,7 @@ describe('createKimiCatalogCapture', () => {
   it('fails when an absolute Node interpreter does not exist', () => {
     const script = join(directory, 'missing-interpreter-native-cli.mjs')
     writeFileSync(script, `#!${join(directory, 'missing', 'node')}\nNative script body.\n`, { mode: 0o700 })
-    expect(() => createKimiCatalogCapture(join(directory, 'missing-interpreter-wrapper'), { binaryName: 'kimi', executable: script })).toThrow()
+    expect(() => createKimiCatalogCapture(join(directory, 'missing-interpreter-wrapper'), { binaryName: 'kimi', executable: script })).toThrow(expect.objectContaining({ code: 'ENOENT' }))
   })
 
   it('forwards actual input and split UTF-8 output and writes a private atomic native receipt', async () => {
@@ -429,7 +438,7 @@ process.stdin.once('data', data => {
     await once(current.child.stdout, 'data')
     const actual = parseKimiCatalogReceipt(JSON.parse(readFileSync(current.capture.receiptPath, 'utf8')), current.capture)
     await stopProcess(current.child)
-    expect(() => process.kill(actual.nativePid, 0)).toThrow()
+    expect(() => process.kill(actual.nativePid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
     expect(current.child.exitCode !== null || current.child.signalCode !== null).toBe(true)
   })
 

@@ -214,7 +214,7 @@ describe('readLettaMcpCliReceipt', () => {
   it.each(['{', `${JSON.stringify(receipt)}\n${JSON.stringify(receipt)}\n`])('rejects partial or duplicate serialized receipts: %j', (bytes) => {
     const path = join(directory, 'receipt.json')
     writeFileSync(path, bytes)
-    expect(() => readLettaMcpCliReceipt(path, nativeResult, identity)).toThrow()
+    expect(() => readLettaMcpCliReceipt(path, nativeResult, identity)).toThrow(SyntaxError)
   })
   it('rejects a receipt symlink instead of reading another file', () => {
     const original = writeReceipt(receipt)

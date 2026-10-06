@@ -35,18 +35,18 @@ describe('droidCompleteToolCatalog', () => {
   })
 
   it.each([
-    { tools: [] },
-    { tools: [descriptor('Execute'), descriptor('Execute')] },
-    { tools: [{ name: 'Execute', description: 'Shell' }] },
-    { tools: [descriptor('Execute')], content: reminder(['Execute']) },
-    { tools: [descriptor('Execute')], content: reminder(['tool', 'tool']) },
-    { tools: [descriptor('Execute')], content: reminder(['tool']).replace('</system-reminder>', '') },
-    { tools: [descriptor('Execute')], content: reminder(['tool']).replace('<system-reminder>', '<other>') },
-    { tools: [descriptor('Execute')], content: reminder(['tool']).replace('schemas may be omitted from the current tool list', 'A partial tool list') },
-    { tools: [descriptor('Execute')], content: reminder(['tool']).replace('select:<name>[,<name>...]', 'keyword search') },
-    { tools: [descriptor('Execute')], content: reminder(['tool']) + reminder(['other']) },
-  ])('rejects an incomplete or ambiguous inventory: %j', ({ tools, content }) => {
-    expect(() => droidCompleteToolCatalog(request(tools, content))).toThrow()
+    [{ tools: [] }, 'The native Droid request contains no current tool inventory.'],
+    [{ tools: [descriptor('Execute'), descriptor('Execute')] }, 'The native Droid catalog contains duplicate tool names.'],
+    [{ tools: [{ name: 'Execute', description: 'Shell' }] }, 'The native Droid catalog contains an incomplete tool descriptor.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['Execute']) }, 'The native Droid current and deferred inventories contain a duplicate tool.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['tool', 'tool']) }, 'The native Droid current and deferred inventories contain a duplicate tool.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['tool']).replace('</system-reminder>', '') }, 'The native Droid deferred inventory is truncated or has invalid delimiters.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['tool']).replace('<system-reminder>', '<other>') }, 'The native Droid deferred inventory is truncated or has invalid delimiters.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['tool']).replace('schemas may be omitted from the current tool list', 'A partial tool list') }, 'The native Droid deferred inventory lacks its native completeness statement.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['tool']).replace('select:<name>[,<name>...]', 'keyword search') }, 'The native Droid deferred inventory lacks its native completeness statement.'],
+    [{ tools: [descriptor('Execute')], content: reminder(['tool']) + reminder(['other']) }, 'The native Droid request contains multiple deferred inventories.'],
+  ])('rejects an incomplete or ambiguous inventory: %j', ({ tools, content }: { tools: unknown, content?: string }, error: string) => {
+    expect(() => droidCompleteToolCatalog(request(tools, content))).toThrow(error)
   })
 
   it('rejects a tool entry that is not an object', () => {
@@ -89,7 +89,13 @@ describe('droidLoadedToolSchemas', () => {
     expect(droidLoadedToolSchemas(before(), after, ['native_runner'])[0]?.inputSchema).toEqual({ type: 'object', properties: { source: { type: 'string' } } })
   })
 
-  it.each([{ selected: [] }, { selected: ['missing'] }, { selected: ['native_runner', 'native_runner'] }, { selected: ['native_runner'] }])('rejects an absent or uncorrelated schema receipt: %j', ({ selected }) => {
-    expect(() => droidLoadedToolSchemas(before(), before(), selected)).toThrow()
+  const NOT_DISTINCT = 'The Droid schema receipt requires distinct announced deferred names.'
+  it.each([
+    [{ selected: [] }, NOT_DISTINCT],
+    [{ selected: ['missing'] }, NOT_DISTINCT],
+    [{ selected: ['native_runner', 'native_runner'] }, NOT_DISTINCT],
+    [{ selected: ['native_runner'] }, 'The native Droid search supplied no loaded schema for native_runner.'],
+  ])('rejects an absent or uncorrelated schema receipt: %j', ({ selected }, error) => {
+    expect(() => droidLoadedToolSchemas(before(), before(), selected)).toThrow(error)
   })
 })

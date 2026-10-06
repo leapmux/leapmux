@@ -184,14 +184,15 @@ describe('configuredMcpDiracWorkspace', () => {
     expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(privateServer, 'private-workspace', directory, agentOpenOptions(AgentProvider.DIRAC))
   })
 
+  // Playwright's `expect` fails with the values that it compared, which identify the check that refused the receipt.
   it.each([
-    ['another working directory', () => observation('/elsewhere')],
-    ['another native session', () => observation(directory, 'foreign-session')],
-  ])('does not yield the workspace when the session receipt states %s', async (_case, observed) => {
+    ['another working directory', () => observation('/elsewhere'), { actual: expect.objectContaining({ cwd: '/elsewhere' }) }],
+    ['another native session', () => observation(directory, 'foreign-session'), { actual: 'foreign-session', expected: 'native-session' }],
+  ])('does not yield the workspace when the session receipt states %s', async (_case, observed, matcherResult) => {
     runWorkspace({ setup })
     vi.mocked(readDiracMcpSessionObservation).mockReturnValue(observed())
     const use = vi.fn(async () => {})
-    await expect(fixture('configuredMcpDiracWorkspace')({ page: {}, leapmuxServer }, use)).rejects.toThrow()
+    await expect(fixture('configuredMcpDiracWorkspace')({ page: {}, leapmuxServer }, use)).rejects.toMatchObject({ matcherResult })
     expect(use).not.toHaveBeenCalled()
   })
 })

@@ -59,7 +59,7 @@ describe('parseCodebuddyReplDiscovery', () => {
   it('rejects an absent schema, duplicate schemas, invalid JSON, and incomplete result bytes', () => {
     expect(() => parseCodebuddyReplDiscovery('Found 1 tool(s). Use DeferExecuteTool to invoke them.\n\n## REPL\nNo parameters.')).toThrow('unique')
     expect(() => parseCodebuddyReplDiscovery(`${receipt()}\n\nParameters:\n\`\`\`json\n{}\n\`\`\``)).toThrow('unique')
-    expect(() => parseCodebuddyReplDiscovery(receipt().replace('"object"', 'broken'))).toThrow()
+    expect(() => parseCodebuddyReplDiscovery(receipt().replace('"object"', 'broken'))).toThrow(SyntaxError)
     expect(() => parseCodebuddyReplDiscovery(receipt().slice(0, -1))).toThrow('unique')
   })
 })

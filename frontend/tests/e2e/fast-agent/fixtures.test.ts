@@ -56,7 +56,7 @@ describe('prepareFastAgentModes', () => {
   })
 
   it('refuses a suite home with no mock configuration', () => {
-    expect(() => prepareFastAgentModes(directory, join(directory, 'absent-home'))).toThrow()
+    expect(() => prepareFastAgentModes(directory, join(directory, 'absent-home'))).toThrow(expect.objectContaining({ code: 'ENOENT' }))
   })
 })
 

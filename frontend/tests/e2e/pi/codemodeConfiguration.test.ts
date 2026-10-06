@@ -59,7 +59,7 @@ describe('activateNativeCodemode', () => {
     mkdirSync(extensions, { recursive: true })
     const target = join(outside, 'absent-native-codemode.ts')
     symlinkSync(target, join(extensions, 'native-codemode.ts'))
-    expect(() => activateNativeCodemode(directory, directory)).toThrow()
+    expect(() => activateNativeCodemode(directory, directory)).toThrow('The private native path must not be a symbolic link, which could point outside the E2E run.')
     expect(existsSync(target)).toBe(false)
   })
 })

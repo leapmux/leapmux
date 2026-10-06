@@ -244,13 +244,14 @@ describe('privateMcpLettaWorkspace', () => {
     expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'private-workspace', server: privateServer, runDirectory: directory, workingDir: '/private/wd', ...setup })
   })
 
+  // Playwright's `expect` fails with the values that it compared, which identify the check that refused the agent.
   it.each([
-    ['another provider', { agentProvider: AgentProvider.CLAUDE_CODE }],
-    ['no native conversation', { agentSessionId: '' }],
-    ['another permission mode', { optionGroups: [permissionMode('default')] }],
-  ])('does not yield the workspace of an agent with %s', async (_case, agent) => {
+    ['another provider', { agentProvider: AgentProvider.CLAUDE_CODE }, { actual: AgentProvider.CLAUDE_CODE, expected: AgentProvider.LETTA }],
+    ['no native conversation', { agentSessionId: '' }, { actual: '', expected: '' }],
+    ['another permission mode', { optionGroups: [permissionMode('default')] }, { actual: 'default', expected: LETTA_MODE.Unrestricted }],
+  ])('does not yield the workspace of an agent with %s', async (_case, agent, matcherResult) => {
     const use = vi.fn(async () => {})
-    await expect(runFixture({ optionGroups: [permissionMode(LETTA_MODE.Unrestricted)], ...agent }, use)).rejects.toThrow()
+    await expect(runFixture({ optionGroups: [permissionMode(LETTA_MODE.Unrestricted)], ...agent }, use)).rejects.toMatchObject({ matcherResult })
     expect(use).not.toHaveBeenCalled()
   })
 })

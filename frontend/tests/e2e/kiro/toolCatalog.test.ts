@@ -50,15 +50,16 @@ describe('kiroActiveToolCatalog', () => {
     expect(() => kiroActiveToolCatalog(request([tool('execute_bash'), tool(name)]))).toThrow('deferred discovery path')
   })
 
+  // Each row is a pair, so `%j` formats the `{ tools }` object alone, and the reason stays out of the title.
   it.each([
-    [],
-    [tool('execute_bash'), tool('execute_bash')],
-    [{ toolSpecification: { name: 'execute_bash' } }],
-    [{ toolSpecification: { name: 'execute_bash', description: '', inputSchema: { json: { type: 'array', properties: {} } } } }],
-    [{ toolSpecification: { name: '', description: '', inputSchema: { json: { type: 'object', properties: {} } } } }],
-    [{ toolSpecification: { name: 'execute_bash', description: null, inputSchema: { json: { type: 'object', properties: {} } } } }],
-  ].map(tools => ({ tools })))('rejects an incomplete active inventory %j', ({ tools }) => {
-    expect(() => kiroActiveToolCatalog(request(tools))).toThrow()
+    [{ tools: [] }, 'The native Kiro request contains no tool catalog.'],
+    [{ tools: [tool('execute_bash'), tool('execute_bash')] }, 'The native Kiro active catalog contains duplicate tool identities.'],
+    [{ tools: [{ toolSpecification: { name: 'execute_bash' } }] }, 'The native Kiro active catalog contains an incomplete descriptor.'],
+    [{ tools: [{ toolSpecification: { name: 'execute_bash', description: '', inputSchema: { json: { type: 'array', properties: {} } } } }] }, 'The native Kiro active catalog contains an incomplete descriptor.'],
+    [{ tools: [{ toolSpecification: { name: '', description: '', inputSchema: { json: { type: 'object', properties: {} } } } }] }, 'The native Kiro active catalog contains an incomplete descriptor.'],
+    [{ tools: [{ toolSpecification: { name: 'execute_bash', description: null, inputSchema: { json: { type: 'object', properties: {} } } } }] }, 'The native Kiro active catalog contains an incomplete descriptor.'],
+  ])('rejects an incomplete active inventory %j', ({ tools }, error) => {
+    expect(() => kiroActiveToolCatalog(request(tools))).toThrow(error)
   })
 
   it('rejects another model protocol with an imitated Kiro body', () => {
@@ -107,7 +108,12 @@ describe('assertKiroActiveCatalog', () => {
     expect(() => assertKiroActiveCatalog(tools)).toThrow('required string input')
   })
 
-  it.each([[], [tool('execute_bash', {})], [...catalog(), catalog()[0]!], [...catalog(), tool('mcp_uncontrolled_echo', { value: { type: 'string' } })]].map(tools => ({ tools })))('rejects an incomplete or uncorrelated inventory %j', ({ tools }) => {
-    expect(() => assertKiroActiveCatalog(tools)).toThrow()
+  it.each([
+    [{ tools: [] }, 'The native Kiro active inventory must not be empty.'],
+    [{ tools: [tool('execute_bash', {})] }, 'The native Kiro tool execute_bash lacks its required string input.'],
+    [{ tools: [...catalog(), catalog()[0]!] }, 'The native Kiro active inventory contains duplicate identities.'],
+    [{ tools: [...catalog(), tool('mcp_uncontrolled_echo', { value: { type: 'string' } })] }, 'The native Kiro tool mcp_uncontrolled_echo has no audited active descriptor.'],
+  ])('rejects an incomplete or uncorrelated inventory %j', ({ tools }, error) => {
+    expect(() => assertKiroActiveCatalog(tools)).toThrow(error)
   })
 })

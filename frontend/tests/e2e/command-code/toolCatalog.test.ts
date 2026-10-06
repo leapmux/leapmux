@@ -13,12 +13,12 @@ describe('commandCodeToolCatalog', () => {
   })
 
   it.each([
-    'No additional tool descriptor block.',
-    '# Additional tools\nYou HAVE the 2 tools below\n- task_create{subject: string}: Create a task.',
-    '# Additional tools\nYou HAVE the 2 tools below\n- task_create{subject: string}: Create a task.\n- task_create{subject: string}: Repeated task.',
-    '# Additional tools\nYou HAVE the 1 tools below\n- shell_command{command: string}: Repeated attached tool.',
-  ])('rejects incomplete or repeated native descriptors', (system) => {
-    expect(() => commandCodeToolCatalog(request(system))).toThrow()
+    ['No additional tool descriptor block.', 'The Command Code deferred catalog is absent or incomplete.'],
+    ['# Additional tools\nYou HAVE the 2 tools below\n- task_create{subject: string}: Create a task.', 'The Command Code deferred catalog is absent or incomplete.'],
+    ['# Additional tools\nYou HAVE the 2 tools below\n- task_create{subject: string}: Create a task.\n- task_create{subject: string}: Repeated task.', 'The Command Code deferred catalog is absent or incomplete.'],
+    ['# Additional tools\nYou HAVE the 1 tools below\n- shell_command{command: string}: Repeated attached tool.', 'The native Command Code catalog repeats an attached tool.'],
+  ])('rejects incomplete or repeated native descriptors', (system, error) => {
+    expect(() => commandCodeToolCatalog(request(system))).toThrow(error)
   })
 })
 

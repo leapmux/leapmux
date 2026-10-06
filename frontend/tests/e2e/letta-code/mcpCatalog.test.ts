@@ -25,10 +25,14 @@ function capturedReceipt(overrides: Partial<LettaMcpCliReceipt> = {}): LettaMcpC
   }
 }
 
+// The reasons that the parser gives for a refusal. Stdout that is not one JSON value fails its parse with a SyntaxError.
+const NO_NAMED_TOOLS = 'The native Letta MCP catalog must contain named tools and their schemas.'
+const UNSUCCESSFUL = 'The native Letta MCP catalog requires a successful CLI receipt.'
+
 describe('parseLettaMcpCatalog', () => {
   it('rejects the obsolete prefix in native CLI stdout', () => {
     const tools = [{ name: 'mcp__echo_probe__echo', inputSchema: { type: 'object', required: ['value'], properties: { value: { type: 'string' } } } }]
-    expect(() => parseLettaMcpCatalog(capturedReceipt({ stdout: `Exit code: 0\n${JSON.stringify(tools, null, 2)}\n` }))).toThrow()
+    expect(() => parseLettaMcpCatalog(capturedReceipt({ stdout: `Exit code: 0\n${JSON.stringify(tools, null, 2)}\n` }))).toThrow(SyntaxError)
   })
   it('reads the captured successful native stdout and preserves its separate stderr warning', () => {
     const receipt = capturedReceipt()
@@ -40,28 +44,36 @@ describe('parseLettaMcpCatalog', () => {
     expect(parseLettaMcpCatalog(capturedReceipt({ stdout: JSON.stringify(tools), stderr: '[{"name":"wrong"}]' }))).toEqual(tools)
   })
   it.each([
-    { stdout: '' },
-    { stdout: '[]' },
-    { stdout: 'null' },
-    { stdout: '[{"name":"echo"}]' },
-    { stdout: '[{"name":"","inputSchema":{}}]' },
-    { stdout: '[{"name":"echo","inputSchema":null}]' },
-    { stdout: '[{"name":"echo","inputSchema":[]}]' },
-    { stdout: '[' },
-    { stdout: `${JSON.stringify(capturedTools)}\n${capturedWarning}` },
-    { stdout: `${JSON.stringify(capturedTools)}\n${JSON.stringify(capturedTools)}` },
-    { stdout: '', stderr: JSON.stringify(capturedTools) },
-    { exitCode: null },
-    { exitCode: -1 },
-    { exitCode: 2 },
-    { exitCode: 255 },
-    { signal: 'SIGTERM', exitCode: null },
-    { signal: 'SIGTERM', exitCode: 0 },
-    { spawnError: 'spawn /private/native/letta ENOENT', exitCode: 0 },
-  ] satisfies Partial<LettaMcpCliReceipt>[])('rejects an unsuccessful or incomplete native stdout receipt: %j', (overrides) => {
-    expect(() => parseLettaMcpCatalog(capturedReceipt(overrides))).toThrow()
+    [{ stdout: '' }, SyntaxError],
+    [{ stdout: '[]' }, NO_NAMED_TOOLS],
+    [{ stdout: 'null' }, NO_NAMED_TOOLS],
+    [{ stdout: '[{"name":"echo"}]' }, NO_NAMED_TOOLS],
+    [{ stdout: '[{"name":"","inputSchema":{}}]' }, NO_NAMED_TOOLS],
+    [{ stdout: '[{"name":"echo","inputSchema":null}]' }, NO_NAMED_TOOLS],
+    [{ stdout: '[{"name":"echo","inputSchema":[]}]' }, NO_NAMED_TOOLS],
+    [{ stdout: '[' }, SyntaxError],
+    [{ stdout: `${JSON.stringify(capturedTools)}\n${capturedWarning}` }, SyntaxError],
+    [{ stdout: `${JSON.stringify(capturedTools)}\n${JSON.stringify(capturedTools)}` }, SyntaxError],
+    [{ stdout: '', stderr: JSON.stringify(capturedTools) }, SyntaxError],
+    [{ exitCode: null }, UNSUCCESSFUL],
+    [{ exitCode: -1 }, UNSUCCESSFUL],
+    [{ exitCode: 2 }, UNSUCCESSFUL],
+    [{ exitCode: 255 }, UNSUCCESSFUL],
+    [{ signal: 'SIGTERM', exitCode: null }, UNSUCCESSFUL],
+    [{ signal: 'SIGTERM', exitCode: 0 }, UNSUCCESSFUL],
+    [{ spawnError: 'spawn /private/native/letta ENOENT', exitCode: 0 }, UNSUCCESSFUL],
+  ] satisfies Array<[Partial<LettaMcpCliReceipt>, string | SyntaxErrorConstructor]>)('rejects an unsuccessful or incomplete native stdout receipt: %j', (overrides, error) => {
+    expect(() => parseLettaMcpCatalog(capturedReceipt(overrides))).toThrow(error)
   })
-  it.each(['', '[]', 'Exit code: 2\n[]', 'Exit code: 0\n[]', 'Exit code: 0\nnull', 'Exit code: 0\n[{"name":"echo"}]', 'Exit code: 0\n{'])('rejects a failed or incomplete native catalog: %j', (result) => {
-    expect(() => parseLettaMcpCatalog(capturedReceipt({ stdout: result }))).toThrow()
+  it.each([
+    ['', SyntaxError],
+    ['[]', NO_NAMED_TOOLS],
+    ['Exit code: 2\n[]', SyntaxError],
+    ['Exit code: 0\n[]', SyntaxError],
+    ['Exit code: 0\nnull', SyntaxError],
+    ['Exit code: 0\n[{"name":"echo"}]', SyntaxError],
+    ['Exit code: 0\n{', SyntaxError],
+  ] as const)('rejects a failed or incomplete native catalog: %j', (result, error) => {
+    expect(() => parseLettaMcpCatalog(capturedReceipt({ stdout: result }))).toThrow(error)
   })
 })

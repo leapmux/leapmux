@@ -101,7 +101,8 @@ describe('createMiMoControlDeletion', () => {
 
   it('refuses a proof when the file still exists', async () => {
     const plan = await createMiMoControlDeletion(context, 'editor')
-    // The proof throws at once or rejects, whichever the plan type allows.
-    await expect((async () => plan.nativeProof(resultRecord(plan.toolCall.id, 'NATIVECONTROL42\n')))()).rejects.toThrow()
+    // The proof throws at once or rejects, whichever the plan type allows. Playwright's `expect` fails with the values
+    // that it compared: the file must be gone.
+    await expect((async () => plan.nativeProof(resultRecord(plan.toolCall.id, 'NATIVECONTROL42\n')))()).rejects.toMatchObject({ matcherResult: { actual: true, expected: false } })
   })
 })

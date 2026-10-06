@@ -75,7 +75,7 @@ describe('qoderWorkflowLaunch', () => {
     const value = { session_id: 'session', message: { content: [{ type: 'tool_result', tool_use_id: 'call' }] }, tool_use_result: { payload: JSON.stringify({ status: 'async_launched', ...launch }) } }
     expect(qoderWorkflowLaunch({ ...value, session_id: '' }, 'call')).toBeUndefined()
     expect(qoderWorkflowLaunch({ ...value, tool_use_result: { payload: JSON.stringify({ status: 'async_launched', ...launch, taskId: 'wf-', runId: 'wf_' }) } }, 'call')).toBeUndefined()
-    expect(() => qoderWorkflowLaunch({ ...value, tool_use_result: { payload: '{' } }, 'call')).toThrow()
+    expect(() => qoderWorkflowLaunch({ ...value, tool_use_result: { payload: '{' } }, 'call')).toThrow(SyntaxError)
   })
 })
 

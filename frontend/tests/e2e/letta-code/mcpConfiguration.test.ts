@@ -33,8 +33,15 @@ describe('lettaConversationPath', () => {
 })
 
 describe('parseLettaConversation', () => {
-  it.each([undefined, null, [], '', { id: 'other', agent_id: 'agent-native' }, { id: 'conversation-native' }])('rejects an invalid native conversation record: %j', (value) => {
-    expect(() => parseLettaConversation(value, 'conversation-native', directory)).toThrow()
+  it.each([
+    [undefined, 'The stored native Letta conversation ID does not match the requested session.'],
+    [null, 'The stored native Letta conversation ID does not match the requested session.'],
+    [[], 'The stored native Letta conversation ID does not match the requested session.'],
+    ['', 'The stored native Letta conversation ID does not match the requested session.'],
+    [{ id: 'other', agent_id: 'agent-native' }, 'The stored native Letta conversation ID does not match the requested session.'],
+    [{ id: 'conversation-native' }, 'The stored native Letta conversation must identify its agent.'],
+  ])('rejects an invalid native conversation record: %j', (value, error) => {
+    expect(() => parseLettaConversation(value, 'conversation-native', directory)).toThrow(error)
   })
   it.each(['', ' ', '\nagent-native', 'agent-native '])('rejects an empty or altered native agent ID: %j', (agent_id) => {
     expect(() => parseLettaConversation({ id: 'conversation-native', agent_id }, 'conversation-native', directory)).toThrow('identify its agent')
@@ -80,8 +87,14 @@ describe('setLettaMcpSettings', () => {
     const entry = { agentId: identity.agentId, baseUrl: identity.baseUrl }
     expect(() => setLettaMcpSettings({ agents: [entry, entry] }, identity, [server])).toThrow('duplicate')
   })
-  it.each([null, [], '', { agents: null }, { agents: [null] }])('rejects malformed settings: %j', (value) => {
-    expect(() => setLettaMcpSettings(value, identity, [server])).toThrow()
+  it.each([
+    [null, 'The native Letta settings must be an object.'],
+    [[], 'The native Letta settings must be an object.'],
+    ['', 'The native Letta settings must be an object.'],
+    [{ agents: null }, 'The native Letta agents settings must be an array of objects.'],
+    [{ agents: [null] }, 'The native Letta agents settings must be an array of objects.'],
+  ])('rejects malformed settings: %j', (value, error) => {
+    expect(() => setLettaMcpSettings(value, identity, [server])).toThrow(error)
   })
   it('rejects duplicate servers and a relative executable', () => {
     expect(() => setLettaMcpSettings({}, identity, [server, server])).toThrow('unique name')
@@ -116,11 +129,11 @@ describe('configureLettaMcp', () => {
     changed.restore()
     expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ nativeExtra: false, agents: [], laterSetting: 0 })
   })
-  it.each(['{', 'null'])('rejects malformed stored conversation bytes without changing settings: %j', (bytes) => {
+  it.each([['{', SyntaxError], ['null', 'The stored native Letta conversation ID does not match the requested session.']] as const)('rejects malformed stored conversation bytes without changing settings: %j', (bytes, error) => {
     const { options, settings, path } = configuration()
     const before = readFileSync(settings, 'utf8')
     writeFileSync(path, bytes)
-    expect(() => configureLettaMcp(options)).toThrow()
+    expect(() => configureLettaMcp(options)).toThrow(error)
     expect(readFileSync(settings, 'utf8')).toBe(before)
   })
   it('rejects settings that resolve outside the private HOME', () => {

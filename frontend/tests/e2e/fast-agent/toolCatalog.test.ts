@@ -121,7 +121,7 @@ describe('parseFastAgentToolSchema', () => {
     const reply = schemaReply('execute', { type: 'object' })
     expect(() => parseFastAgentToolSchema('# Tool schema: execute\n', 'execute')).toThrow('unique')
     expect(() => parseFastAgentToolSchema(`${reply}\n${reply}`, 'execute')).toThrow('unique')
-    expect(() => parseFastAgentToolSchema(reply.replace('{\n  "type": "object"\n}', '{broken'), 'execute')).toThrow()
+    expect(() => parseFastAgentToolSchema(reply.replace('{\n  "type": "object"\n}', '{broken'), 'execute')).toThrow(SyntaxError)
   })
 })
 

@@ -52,8 +52,18 @@ describe('claudeUltracodeEnabled', () => {
   })
 
   it('rejects absent empty and malformed native instructions', () => {
-    for (const body of [null, [], {}, { messages: null }, { messages: [] }, { messages: [null] }, { messages: [{ role: 'system', content: null }] }, { messages: [{ role: 'system', content: [{ type: 'text' }] }] }, { messages: [{ role: 'system', content: '' }] }])
-      expect(() => claudeUltracodeEnabled({ protocol: 'anthropic-messages', body })).toThrow()
+    for (const [body, error] of [
+      [null, 'The Ultracode proof requires an actual native Claude model request.'],
+      [[], 'The Ultracode proof requires an actual native Claude model request.'],
+      [{}, 'The native Ultracode request contains no message array.'],
+      [{ messages: null }, 'The native Ultracode request contains no message array.'],
+      [{ messages: [] }, 'The native Ultracode request contains no system text.'],
+      [{ messages: [null] }, 'The native Ultracode request contains an invalid message.'],
+      [{ messages: [{ role: 'system', content: null }] }, 'The native Claude system instruction has invalid content.'],
+      [{ messages: [{ role: 'system', content: [{ type: 'text' }] }] }, 'The native Claude system text block contains no text.'],
+      [{ messages: [{ role: 'system', content: '' }] }, 'The native Ultracode request contains no system text.'],
+    ] as const)
+      expect(() => claudeUltracodeEnabled({ protocol: 'anthropic-messages', body }), JSON.stringify(body)).toThrow(error)
     expect(() => claudeUltracodeEnabled({ protocol: 'openai-responses', body: { system: ON, messages: [] } })).toThrow('native Claude')
   })
 })

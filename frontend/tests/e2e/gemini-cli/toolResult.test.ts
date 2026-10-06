@@ -37,29 +37,33 @@ describe('readGeminiToolOutput', () => {
   })
 
   it('rejects another call instead of selecting a repeated tool name', () => {
-    expect(() => readGeminiToolOutput(request({ output: 'NATIVE_OUTPUT' }), 'missing-call')).toThrow()
+    expect(() => readGeminiToolOutput(request({ output: 'NATIVE_OUTPUT' }), 'missing-call')).toThrow('The native request contains 0 results for missing-call.')
   })
 
   it('rejects a model-role result instead of treating it as native tool output', () => {
     const record: MockModelRequestRecord = { protocol: 'google-generative-language', path: '/mock', body: { contents: [{ role: 'model', parts: [{ functionResponse: { id: 'native-call', response: { output: 'MODEL_ONLY_OUTPUT' } } }] }] } }
-    expect(() => readGeminiToolOutput(record, 'native-call')).toThrow()
+    expect(() => readGeminiToolOutput(record, 'native-call')).toThrow('The native request contains 0 results for native-call.')
   })
 
-  it.each([undefined, null, false, 0, '', '{"output":"SCALAR_JSON_IMITATION"}', [], {}, { output: null }, { output: false }, { output: 0 }, { output: [] }, { error: 'Native tool failed' }].map(response => [response]))('rejects an absent or malformed output: %j', (response) => {
-    expect(() => readGeminiToolOutput(request(response), 'native-call')).toThrow()
+  it.each([
+    ...[undefined, null].map((response): [unknown, string] => [response, 'The native result for native-call has no content.']),
+    ...[false, 0, '', '{"output":"SCALAR_JSON_IMITATION"}', [], {}, { output: null }, { output: false }, { output: 0 }, { output: [] }, { error: 'Native tool failed' }]
+      .map((response): [unknown, string] => [response, 'The native Gemini response has no string output.']),
+  ])('rejects an absent or malformed output: %j', (response, error) => {
+    expect(() => readGeminiToolOutput(request(response), 'native-call')).toThrow(error)
   })
 
   it.each([null, {}, { contents: false }, { contents: [{ role: 'user', parts: false }] }])('rejects malformed native request content: %j', (body) => {
-    expect(() => readGeminiToolOutput({ protocol: 'google-generative-language', path: '/mock', body }, 'native-call')).toThrow()
+    expect(() => readGeminiToolOutput({ protocol: 'google-generative-language', path: '/mock', body }, 'native-call')).toThrow('The native request contains 0 results for native-call.')
   })
 
   it('rejects duplicated native call results', () => {
     const result = { functionResponse: { id: 'native-call', response: { output: 'NATIVE_OUTPUT' } } }
-    expect(() => readGeminiToolOutput({ protocol: 'google-generative-language', path: '/mock', body: { contents: [{ role: 'user', parts: [result, result] }] } }, 'native-call')).toThrow()
+    expect(() => readGeminiToolOutput({ protocol: 'google-generative-language', path: '/mock', body: { contents: [{ role: 'user', parts: [result, result] }] } }, 'native-call')).toThrow('The native request contains 2 results for native-call.')
   })
 
   it('rejects absent requests and another model protocol', () => {
-    expect(() => readGeminiToolOutput(undefined, 'native-call')).toThrow()
-    expect(() => readGeminiToolOutput({ protocol: 'openai-chat-completions', path: '/mock', body: { messages: [{ role: 'tool', tool_call_id: 'native-call', content: 'OTHER_PROTOCOL_OUTPUT' }] } }, 'native-call')).toThrow()
+    expect(() => readGeminiToolOutput(undefined, 'native-call')).toThrow('The Gemini tool result requires its native Google request.')
+    expect(() => readGeminiToolOutput({ protocol: 'openai-chat-completions', path: '/mock', body: { messages: [{ role: 'tool', tool_call_id: 'native-call', content: 'OTHER_PROTOCOL_OUTPUT' }] } }, 'native-call')).toThrow('The Gemini tool result requires its native Google request.')
   })
 })

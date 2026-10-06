@@ -210,13 +210,14 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
 
   it('fails when the saved task links a child agent', async () => {
     fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.COMPLETED, childAgentId: 'amp-child' }]
-    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toThrow()
+    // Playwright's `expect` fails with the values that it compared: the child link must be empty.
+    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
     expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
   })
 
   it('fails when the registry saves more than one task', async () => {
     fake.savedTasks = [...fake.savedTasks, { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.COMPLETED, childAgentId: '' }]
-    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toThrow()
+    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { name: 'toHaveLength', pass: false } })
     expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
   })
 
@@ -225,14 +226,14 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
     let proved = false
     await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {
       proved = true
-    })).rejects.toThrow()
+    })).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
     expect(proved).toBe(false)
     expect(fake.log).toEqual(['rule', 'queue 2', 'send', 'gate', 'release'])
   })
 
   it('releases the gate and runs no proof when the Worker task links a child agent', async () => {
     fake.runningTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: 'amp-child' }]
-    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toThrow()
+    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
     expect(fake.log).toEqual([...OPEN_LOG, 'release'])
   })
 })

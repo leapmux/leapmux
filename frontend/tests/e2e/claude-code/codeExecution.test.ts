@@ -38,8 +38,8 @@ describe('claudeWorkflowModelOutcome', () => {
 
   it('rejects running status, malformed JSON, and truncated native result text', () => {
     expect(() => claudeWorkflowModelOutcome([modelNotification('running')], launch)).toThrow('final native outcome')
-    expect(() => claudeWorkflowModelOutcome([modelNotification('completed', '{')], launch)).toThrow()
-    expect(() => claudeWorkflowModelOutcome([modelNotification('completed', '... (truncated)')], launch)).toThrow()
+    expect(() => claudeWorkflowModelOutcome([modelNotification('completed', '{')], launch)).toThrow(SyntaxError)
+    expect(() => claudeWorkflowModelOutcome([modelNotification('completed', '... (truncated)')], launch)).toThrow(SyntaxError)
   })
 })
 
@@ -85,7 +85,7 @@ describe('claudeWorkflowOutputFile', () => {
     expect(claudeWorkflowOutputFile('Native diagnostic text', 'failed')).toEqual({})
     expect(() => claudeWorkflowOutputFile('', 'completed')).toThrow('completed')
     expect(claudeWorkflowOutputFile('{"result":"MARKER42"}', 'completed')).toEqual({ result: 'MARKER42' })
-    expect(() => claudeWorkflowOutputFile('{', 'completed')).toThrow()
+    expect(() => claudeWorkflowOutputFile('{', 'completed')).toThrow(SyntaxError)
   })
 })
 

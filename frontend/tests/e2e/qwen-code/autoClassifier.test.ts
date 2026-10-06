@@ -54,7 +54,9 @@ describe('expectQwenCanceledTool', () => {
   })
 
   it('refuses a failed update with another text', () => {
-    expect(() => expectQwenCanceledTool(snapshot(canceled('The write failed.')), toolCall)).toThrow()
+    // The content check fails with the content that the update states.
+    expect(() => expectQwenCanceledTool(snapshot(canceled('The write failed.')), toolCall))
+      .toThrow(expect.objectContaining({ actual: [{ type: 'content', content: { type: 'text', text: 'The write failed.' } }] }))
   })
 
   it('refuses an update that completed the tool', () => {

@@ -137,6 +137,7 @@ describe('waitForWorkerConnection', () => {
 
   it('fails while the browser still shows the Worker as connected', async () => {
     steps.connected = 1
-    await expect(waitForWorkerConnection(page, false)).rejects.toThrow()
+    // The count of connected Worker statuses fails: one where the wait requires none.
+    await expect(waitForWorkerConnection(page, false)).rejects.toThrow('expected 1 to be +0')
   })
 })

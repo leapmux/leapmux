@@ -344,8 +344,19 @@ describe('ampExecutorToolNames', () => {
     expect(ampExecutorToolNames(JSON.stringify([{ name: 'shell_command', source: 'built-in', description: 'Execute a command.' }]))).toEqual(['shell_command'])
   })
 
-  it.each(['[]', '{}', 'null', '[null]', '[{}]', '[{"name":"","source":"built-in"}]', '[{"name":" ","source":"built-in"}]', '[{"name":"shell_command","source":" "}]', '[{"name":"shell_command"}]', 'not-json'])('refuses an absent or malformed native catalog: %s', (text) => {
-    expect(() => ampExecutorToolNames(text)).toThrow()
+  it.each([
+    ['[]', 'The native Amp executor catalog must contain tools.'],
+    ['{}', 'The native Amp executor catalog must contain tools.'],
+    ['null', 'The native Amp executor catalog must contain tools.'],
+    ['[null]', 'The native Amp executor catalog contains an invalid tool.'],
+    ['[{}]', 'The native Amp executor catalog contains an invalid tool.'],
+    ['[{"name":"","source":"built-in"}]', 'The native Amp executor catalog contains an invalid tool.'],
+    ['[{"name":" ","source":"built-in"}]', 'The native Amp executor catalog contains an invalid tool.'],
+    ['[{"name":"shell_command","source":" "}]', 'The native Amp executor catalog contains an invalid tool.'],
+    ['[{"name":"shell_command"}]', 'The native Amp executor catalog contains an invalid tool.'],
+    ['not-json', SyntaxError],
+  ] as const)('refuses an absent or malformed native catalog: %s', (text, error) => {
+    expect(() => ampExecutorToolNames(text)).toThrow(error)
   })
 })
 
@@ -731,7 +742,7 @@ describe('ampWorkspaceMcpConfiguration', () => {
   })
 
   it('refuses invalid JSON, a scalar list, and an empty server identity', () => {
-    expect(() => ampWorkspaceMcpConfiguration('{broken', 'project_probe')).toThrow()
+    expect(() => ampWorkspaceMcpConfiguration('{broken', 'project_probe')).toThrow(SyntaxError)
     expect(() => ampWorkspaceMcpConfiguration('{}', 'project_probe')).toThrow('array')
     expect(() => ampWorkspaceMcpConfiguration(JSON.stringify([entry]), ' ')).toThrow('server name')
   })

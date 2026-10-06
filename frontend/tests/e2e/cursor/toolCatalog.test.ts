@@ -16,7 +16,11 @@ describe('cursorToolCasesFromBundle', () => {
       .toContain('code_execution_tool_call')
   })
 
-  it.each(['', bundle('Other|1 input 9'), bundle('ToolCall|19 task_tool_call #14 tool|19 task_tool_call #14 tool')])('refuses missing or repeated tool definitions: %s', (source) => {
-    expect(() => cursorToolCasesFromBundle(source)).toThrow()
+  it.each([
+    ['', 'The installed Cursor bundle has no unique native ToolCall schema.'],
+    [bundle('Other|1 input 9'), 'The installed Cursor bundle has no unique native ToolCall schema.'],
+    [bundle('ToolCall|19 task_tool_call #14 tool|19 task_tool_call #14 tool'), 'The installed Cursor tool schema is empty or repeats a case.'],
+  ])('refuses missing or repeated tool definitions: %s', (source, error) => {
+    expect(() => cursorToolCasesFromBundle(source)).toThrow(error)
   })
 })

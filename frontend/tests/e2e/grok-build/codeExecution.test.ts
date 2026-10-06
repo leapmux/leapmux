@@ -44,7 +44,7 @@ describe('grokWorkflowLaunch', () => {
     { value: { type: 'Workflow', run_id: 'wf-1', task_id: 'other', name: 'code', script_path: launch.scriptPath } },
     { value: { type: 'Workflow', run_id: 'wf-1', task_id: 'wf-1', name: 'code', script_path: 'relative' } },
   ])('rejects an incomplete native launch', ({ value }) => {
-    expect(() => grokWorkflowLaunch(frames(value), 'launch')).toThrow()
+    expect(() => grokWorkflowLaunch(frames(value), 'launch')).toThrow('The native Grok workflow launch has no exact run or script identity.')
   })
   it('rejects another call and repeated final launch records', () => {
     const native = frames({ type: 'Workflow', run_id: launch.runId, task_id: launch.runId, name: launch.name, script_path: launch.scriptPath })
@@ -64,15 +64,15 @@ describe('grokWorkflowCompletion', () => {
     expect(grokWorkflowCompletion(manifest('active', 'earlier'), launch)).toBeNull()
   })
   it.each([
-    { version: 3 },
-    { script_revision: -1 },
-    { state: { ...manifest('complete', 'answer').state, run_id: 'other' } },
-    { state: { ...manifest('complete', 'answer').state, name: 'other' } },
-    { state: { ...manifest('complete', 'answer').state, status: 'cancelled' } },
-    { state: { ...manifest('complete', 'answer').state, history: [] } },
-    { state: { ...manifest('failed', 'answer').state, history: [{ event: 'workflow_failed', detail: 'other' }] } },
-  ])('rejects another run or an invalid final record', (changed) => {
-    expect(() => grokWorkflowCompletion({ ...manifest('complete', 'answer'), ...changed }, launch)).toThrow()
+    [{ version: 3 }, 'The native Grok workflow manifest is invalid.'],
+    [{ script_revision: -1 }, 'The native Grok workflow manifest is invalid.'],
+    [{ state: { ...manifest('complete', 'answer').state, run_id: 'other' } }, 'The native Grok workflow manifest belongs to another run.'],
+    [{ state: { ...manifest('complete', 'answer').state, name: 'other' } }, 'The native Grok workflow manifest belongs to another run.'],
+    [{ state: { ...manifest('complete', 'answer').state, status: 'cancelled' } }, 'The native Grok workflow did not complete or fail.'],
+    [{ state: { ...manifest('complete', 'answer').state, history: [] } }, 'The native Grok workflow requires one exact completion event.'],
+    [{ state: { ...manifest('failed', 'answer').state, history: [{ event: 'workflow_failed', detail: 'other' }] } }, 'The native Grok workflow has no matching final output.'],
+  ])('rejects another run or an invalid final record', (changed, error) => {
+    expect(() => grokWorkflowCompletion({ ...manifest('complete', 'answer'), ...changed }, launch)).toThrow(error)
   })
 })
 
@@ -181,9 +181,9 @@ describe('readGrokWorkflowManifest', () => {
     writeFileSync(path, JSON.stringify(manifest('complete', 'answer42')))
     expect(readGrokWorkflowManifest(path)).toEqual(manifest('complete', 'answer42'))
     writeFileSync(path, '{')
-    expect(() => readGrokWorkflowManifest(path)).toThrow()
+    expect(() => readGrokWorkflowManifest(path)).toThrow(SyntaxError)
     rmSync(path)
-    expect(() => readGrokWorkflowManifest(path)).toThrow()
+    expect(() => readGrokWorkflowManifest(path)).toThrow(expect.objectContaining({ code: 'ENOENT' }))
   })
   it('rejects a large native file and a symbolic full tool output', () => {
     const root = createDirectory('grok-full-output-unit-')
@@ -192,7 +192,9 @@ describe('readGrokWorkflowManifest', () => {
     expect(() => readGrokWorkflowManifest(path)).toThrow('file limit')
     const link = join(root, 'link.json')
     symlinkSync(path, link)
-    expect(() => readGrokWorkflowManifest(link)).toThrow()
+    // POSIX opens the manifest with O_NOFOLLOW, so the link itself fails with ELOOP. Windows has no O_NOFOLLOW: the
+    // open follows the link to the large file, and only the size check refuses it.
+    expect(() => readGrokWorkflowManifest(link)).toThrow(process.platform === 'win32' ? 'file limit' : expect.objectContaining({ code: 'ELOOP' }))
   })
 })
 

@@ -49,7 +49,7 @@ describe('CopilotCatalogFrames', () => {
 
   it('rejects invalid UTF-8 rather than replacing bytes in a native tool name', () => {
     const body = Buffer.concat([Buffer.from('{"result":{"tools":[{"name":"'), Buffer.from([0xC3, 0x28]), Buffer.from('"}]}}')])
-    expect(() => new CopilotCatalogFrames().push(Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`), body]))).toThrow()
+    expect(() => new CopilotCatalogFrames().push(Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`), body]))).toThrow('not valid for encoding utf-8')
   })
 
   it('requires complete bytes when a stream ends and accepts an empty completed buffer', () => {
@@ -66,8 +66,14 @@ describe('copilotCatalogNames', () => {
     expect(copilotCatalogNames({ tools: [{ name: 'read' }, { name: 'bash', deferLoading: true }] })).toEqual(['read', 'bash'])
   })
 
-  it.each([null, {}, { tools: [] }, { tools: [{}] }, { tools: [{ name: 'read' }, { name: 'read' }] }])('refuses an incomplete or ambiguous native inventory: %j', (value) => {
-    expect(() => copilotCatalogNames(value)).toThrow()
+  it.each([
+    [null, 'The complete native Copilot catalog contains no tools.'],
+    [{}, 'The complete native Copilot catalog contains no tools.'],
+    [{ tools: [] }, 'The complete native Copilot catalog contains no tools.'],
+    [{ tools: [{}] }, 'The complete native Copilot catalog contains an invalid tool.'],
+    [{ tools: [{ name: 'read' }, { name: 'read' }] }, 'The complete native Copilot catalog repeats a tool.'],
+  ])('refuses an incomplete or ambiguous native inventory: %j', (value, error) => {
+    expect(() => copilotCatalogNames(value)).toThrow(error)
   })
 })
 
@@ -170,7 +176,7 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
   })
 
   it('rejects a matching native reply with no result', async () => {
-    await expect(queryFixture('process.stdout.write(packet({ jsonrpc: \'2.0\', id: request.id }));').query).rejects.toThrow()
+    await expect(queryFixture('process.stdout.write(packet({ jsonrpc: \'2.0\', id: request.id }));').query).rejects.toThrow('The native Copilot catalog frame has an invalid JSON-RPC envelope.')
   })
 
   it('rejects duplicate matching success replies in one actual stdout write', async () => {
@@ -182,7 +188,7 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
   })
 
   it('rejects malformed JSON instead of accepting native output', async () => {
-    await expect(queryFixture('const body = Buffer.from(\'{broken\'); process.stdout.write(Buffer.concat([Buffer.from(\'Content-Length: \' + body.length + \'\\r\\n\\r\\n\'), body]));').query).rejects.toThrow()
+    await expect(queryFixture('const body = Buffer.from(\'{broken\'); process.stdout.write(Buffer.concat([Buffer.from(\'Content-Length: \' + body.length + \'\\r\\n\\r\\n\'), body]));').query).rejects.toThrow(SyntaxError)
   })
 
   it('rejects valid success followed by malformed bytes in the same actual stdout write', async () => {

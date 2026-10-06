@@ -20,6 +20,11 @@ const context: ManagedNativeScenarioContext = {
   workspaceId: 'workspace',
   leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'worker' },
 }
+/**
+ * The refusal of a call with no single completed result in the current session. The reader counts those results with
+ * Playwright's `toHaveLength`, and Playwright's `expect` fails with the name of its matcher.
+ */
+const NOT_ONE_RESULT = { matcherResult: { name: 'toHaveLength', pass: false } }
 function result(id = 'current-result', session = 'current-session', rawOutput: unknown = { stdout: 'ACTUAL_OUTPUT' }) {
   return makeMessage({ id, seq: 1n, spanId: 'native-call', agentSessionId: session, content: rawContent({ toolCallId: 'native-call', status: 'completed', rawOutput }) })
 }
@@ -51,7 +56,7 @@ describe('cursorNativeToolOutput', () => {
 
   it('refuses a stale-session result even when its native call ID matches', async () => {
     calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [result('stale-result', 'old-session', { stdout: 'STALE_OUTPUT' })] }))
-    await expect(cursorNativeToolOutput(context, 'native-call')).rejects.toThrow()
+    await expect(cursorNativeToolOutput(context, 'native-call')).rejects.toMatchObject(NOT_ONE_RESULT)
   })
 
   it('selects the current result without treating a stale same-call result as a duplicate', async () => {
@@ -75,7 +80,7 @@ describe('cursorNativeToolOutput', () => {
     const duplicate = result('duplicate')
     duplicate.seq = 2n
     calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [result(), duplicate] }))
-    await expect(cursorNativeToolOutput(context, 'native-call')).rejects.toThrow()
+    await expect(cursorNativeToolOutput(context, 'native-call')).rejects.toMatchObject(NOT_ONE_RESULT)
   })
 
   it.each([
@@ -87,6 +92,6 @@ describe('cursorNativeToolOutput', () => {
     const source = result()
     source.content = encoder.encode(JSON.stringify(body))
     calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [source] }))
-    await expect(cursorNativeToolOutput(context, 'native-call')).rejects.toThrow()
+    await expect(cursorNativeToolOutput(context, 'native-call')).rejects.toMatchObject(NOT_ONE_RESULT)
   })
 })
