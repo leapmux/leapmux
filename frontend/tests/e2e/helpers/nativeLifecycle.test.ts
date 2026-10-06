@@ -383,6 +383,13 @@ describe('exerciseSessionResume', () => {
     expect(resume.reopen).not.toHaveBeenCalled()
   })
 
+  it('returns the request of the original turn beside the resumed request', async () => {
+    const { context, resumedRequest } = scenario()
+    const result = await exerciseSessionResume(context, options())
+    expect(result.originalRequest).toEqual({ protocol: 'openai-responses', path: '/v1/responses', body: { turn: 'original' } })
+    expect(result.request).toBe(resumedRequest)
+  })
+
   it('returns one set of marked texts with the actual resumed request', async () => {
     const { context, resumedRequest } = scenario()
     const result = await exerciseSessionResume(context, options())

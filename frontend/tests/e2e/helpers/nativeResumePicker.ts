@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type { AgentOpenOptions } from '../agentSettings'
 import type { ServerInfo } from '../fixtures'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
@@ -47,6 +48,44 @@ export interface ResumePickerOptions {
   readonly resumedBodyHoldsOriginalAnswer?: boolean
 }
 
+/** The two agents of a picker resume flow, and the directory of the subject. */
+export interface ResumeSubject {
+  workspaceId: string
+  keeperId: string
+  subjectId: string
+  subjectDir: string
+}
+
+/**
+ * Open the two agents of a picker resume flow in a new workspace, sign the page in, and select the subject:
+ *
+ * - The keeper keeps the workspace open after the subject closes. It opens with the Worker default.
+ * - The subject is the agent whose stored session the flow reopens. It opens with the options that `subjectOptions`
+ *   returns, or with the Worker default when the flow states none. The callback runs after the workspace exists and
+ *   before either agent opens, so a flow can build a context for the workspace there.
+ *
+ * Each agent works in a git repository of its own, so the picker of the subject directory lists the subject's
+ * sessions alone. The flow selects the subject by its tab, because the tab that the app selects on load is not the
+ * contract of the flow.
+ */
+export async function openResumeSubject(
+  fixtures: ResumePickerFixtures,
+  options: { label: string, subjectOptions?: (workspaceId: string) => AgentOpenOptions | Promise<AgentOpenOptions> },
+): Promise<ResumeSubject> {
+  const { page } = fixtures
+  const { hubUrl, adminToken, workerId, dataDir } = fixtures.leapmuxServer
+  const keeperDir = createGitRepo(dataDir, `resume-keeper-${crypto.randomUUID()}`)
+  const subjectDir = createGitRepo(dataDir, `resume-subject-${crypto.randomUUID()}`)
+  const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `${options.label} resume ${crypto.randomUUID()}`)
+  const subjectOptions = await options.subjectOptions?.(workspaceId)
+  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
+  const subjectId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, { ...subjectOptions, title: 'Subject' })
+  await loginViaToken(page, adminToken)
+  await openWorkspace(page, workspaceId)
+  await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
+  return { workspaceId, keeperId, subjectId, subjectDir }
+}
+
 /**
  * Run the whole stored-session picker resume scenario for one provider, and prove these conditions:
  *
@@ -68,20 +107,19 @@ export async function resumePickerScenario(
   options: ResumePickerOptions,
 ): Promise<NativeResumeResult> {
   const { page, modelScript } = fixtures
-  const { hubUrl, adminToken, workerId, dataDir } = fixtures.leapmuxServer
-  const keeperDir = createGitRepo(dataDir, `resume-keeper-${crypto.randomUUID()}`)
-  const subjectDir = createGitRepo(dataDir, `resume-subject-${crypto.randomUUID()}`)
-  const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `${options.label} resume ${crypto.randomUUID()}`)
-  const context = await nativeContext({ page, modelScript, leapmuxServer: fixtures.leapmuxServer, workspaceId })
-  const provider = context.provider
-  const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
-  const subjectId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, {
-    ...agentOpenOptions(provider, options.subjectOptionValues ? { optionValues: options.subjectOptionValues } : {}),
-    title: 'Subject',
+  // The provider context needs the workspace, and the subject opens with the defaults of its provider.
+  let built: ManagedNativeScenarioContext | undefined
+  const { keeperId, subjectId, subjectDir } = await openResumeSubject(fixtures, {
+    label: options.label,
+    subjectOptions: async (workspaceId) => {
+      built = await nativeContext({ page, modelScript, leapmuxServer: fixtures.leapmuxServer, workspaceId })
+      return agentOpenOptions(built.provider, options.subjectOptionValues ? { optionValues: options.subjectOptionValues } : {})
+    },
   })
-  await loginViaToken(page, adminToken)
-  await openWorkspace(page, workspaceId)
-  await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
+  if (!built)
+    throw new Error('The picker resume scenario built no provider context.')
+  const context = built
+  const provider = context.provider
   const texts = nativeResumeTexts()
   const originalStep = await modelScript.queue(nativeTextStep(context, texts.originalAnswer))
   await sendMessage(page, modelScript.prompt(texts.originalPrompt))
@@ -90,6 +128,8 @@ export async function resumePickerScenario(
   await waitForAgentIdle(page)
   await expect(userBubbles(page).filter({ hasText: texts.originalPrompt }), 'The live transcript draws the original prompt once.').toHaveCount(1)
   await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer }).first(), 'The live transcript draws the original answer.').toBeVisible()
+  // Read the record after the turn, for the same reason as the resumed request below.
+  const originalRequest = await modelScript.requestAt(originalStep)
   const sessionId = await retryUntilPass(async () => {
     const stored = (await nativeAgentById(context, subjectId))?.agentSessionId ?? ''
     expect(stored, 'the Worker stores the native session of the first turn').not.toBe('')
@@ -122,5 +162,5 @@ export async function resumePickerScenario(
   // The resumed answer comes from the same answer step as the original one, so it draws the same number of bubbles.
   await expect(assistantBubbles(page).filter({ hasText: texts.resumedAnswer }), 'The resumed answer draws as many bubbles as the original answer.').toHaveCount(originalAnswerBubbles)
   await expectResumedConversation(context, reopened.id, texts, originalAnswerRows, originalAnswerBubbles)
-  return { ...texts, request: resumed }
+  return { ...texts, originalRequest, request: resumed }
 }

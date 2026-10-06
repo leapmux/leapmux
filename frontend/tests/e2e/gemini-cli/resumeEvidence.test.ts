@@ -590,6 +590,7 @@ describe('exerciseGeminiResumeWithEvidence', () => {
       originalAnswer: 'RESUMEANSWER0123456789abcdef0123456789abcdef',
       resumedPrompt: 'Reply to RESUMEDPROMPT0123456789abcdef0123456789abcdef in the reopened session.',
       resumedAnswer: 'RESUMEDNEWANSWER0123456789abcdef0123456789abcdef',
+      originalRequest: request,
       request,
     }
     calls.lifecycle.mockImplementation(async (_context, options) => {
@@ -630,7 +631,7 @@ describe('exerciseGeminiResumeWithEvidence', () => {
         await options?.resumeEvidence?.({ phase, prior: f.agent })
         log.push(`${phase} done`)
       }
-      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', request: { protocol: 'google-generative-language', path: '', body: {} } }
+      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', originalRequest: { protocol: 'google-generative-language', path: '', body: {} }, request: { protocol: 'google-generative-language', path: '', body: {} } }
     })
     await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, clock)
     expect(log).toEqual(['sleep 50000', 'stored done', 'opened done'])
@@ -642,7 +643,7 @@ describe('exerciseGeminiResumeWithEvidence', () => {
     const sleep = vi.fn<(milliseconds: number) => Promise<void>>()
     calls.lifecycle.mockImplementation(async (_context, options) => {
       await options?.resumeEvidence?.({ phase: 'stored', prior: f.agent })
-      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', request: { protocol: 'google-generative-language', path: '', body: {} } }
+      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', originalRequest: { protocol: 'google-generative-language', path: '', body: {} }, request: { protocol: 'google-generative-language', path: '', body: {} } }
     })
     await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, { now: () => Date.parse('2026-10-04T01:03:00.000Z'), sleep })
     expect(sleep).not.toHaveBeenCalled()

@@ -2,33 +2,21 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
-import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { stepRequest } from '../helpers/mockModelScript'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { reopenFromSessionPicker } from '../helpers/nativeResume'
+import { openResumeSubject } from '../helpers/nativeResumePicker'
 import { nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
-import { createGitRepo } from '../helpers/worktree'
 
 diracTest.describe('Dirac session resume', () => {
   const provider: AgentProvider = AgentProvider.DIRAC
   const label = 'Dirac'
   diracTest('reattaches an incomplete task without its prior model context', async ({ page, leapmuxServer, modelScript }) => {
-    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const keeperDir = createGitRepo(dataDir, `resume-keeper-c-${crypto.randomUUID()}`)
-    const subjectDir = createGitRepo(dataDir, `resume-subject-c-${crypto.randomUUID()}`)
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `${label} resume ${crypto.randomUUID()}`)
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
-    const subjectId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, {
-      ...agentOpenOptions(provider),
-      title: 'Subject',
-    })
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, workspaceId)
-    await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
+    const { subjectId, subjectDir } = await openResumeSubject({ page, modelScript, leapmuxServer }, { label, subjectOptions: () => agentOpenOptions(provider) })
     const firstAnswer = 'The first answer contains HALIBUT.'
     const diracGate = 'dirac-incomplete-resume'
     const progressStep = await modelScript.queue(
@@ -66,12 +54,9 @@ diracTest.describe('Dirac session resume', () => {
   })
 })
 
-diracTest('reopens a completed native task with saved Worker rows and no prior model context', async ({ native, page, modelScript }) => {
-  // The scenario queues its first step at the next index of the script.
-  const start = (await modelScript.status()).stepCount
+diracTest('reopens a completed native task with saved Worker rows and no prior model context', async ({ native, page }) => {
   const resumed = await exerciseSessionResume(native)
-  const initial = await modelScript.requestAt(start)
-  const prompt = nativeModelContextText(initial).match(/\bRESUMEPROMPT[a-f0-9]{32}\b/)?.[0]
+  const prompt = nativeModelContextText(resumed.originalRequest).match(/\bRESUMEPROMPT[a-f0-9]{32}\b/)?.[0]
   const savedAnswers = await assistantBubbles(page).filter({ hasText: 'RESUMEANSWER' }).allTextContents()
   const answer = savedAnswers.join('\n').match(/\bRESUMEANSWER[a-f0-9]{32}\b/)?.[0]
   if (!prompt || !answer)

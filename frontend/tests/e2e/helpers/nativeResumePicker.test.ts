@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { stepRequest } from './mockModelScript'
-import { resumePickerScenario } from './nativeResumePicker'
+import { openResumeSubject, resumePickerScenario } from './nativeResumePicker'
 
 const STORED_SESSION = 'stored-native-session'
 const KEEPER_ID = 'keeper-agent'
@@ -278,6 +278,28 @@ beforeEach(() => {
   picker.historyInBody = true
 })
 
+describe('openResumeSubject', () => {
+  it('opens the keeper and the subject in repositories of their own, and selects the subject', async () => {
+    const subject = await openResumeSubject(pickerFixtures(), { label: 'Unit' })
+    expect(subject).toEqual({ workspaceId: 'unit-workspace', keeperId: KEEPER_ID, subjectId: SUBJECT_ID, subjectDir: expect.stringContaining('/unit/data/resume-subject-') })
+    expect(picker.events).toEqual(['repo:keeper', 'repo:subject', 'workspace:Unit', 'open:Keeper', 'open:Subject', 'login', 'open-workspace', 'click:[data-testid="tab"][data-tab-type="agent"]'])
+    // With no subject options, the subject opens with the Worker default.
+    expect(picker.openOptions[1]).toEqual({ workingDir: subject.subjectDir, title: 'Subject' })
+  })
+
+  it('takes the subject options from the workspace before either agent opens', async () => {
+    const subjectOptions = vi.fn(async (workspaceId: string) => {
+      picker.events.push(`options:${workspaceId}`)
+      return { agentProvider: AgentProvider.CODEX, model: 'unit-model', optionValues: { effort: 'low' } }
+    })
+    await openResumeSubject(pickerFixtures(), { label: 'Unit', subjectOptions })
+    expect(picker.events.indexOf('options:unit-workspace')).toBeGreaterThan(picker.events.indexOf('workspace:Unit'))
+    expect(picker.events.indexOf('options:unit-workspace')).toBeLessThan(picker.events.indexOf('open:Keeper'))
+    expect(picker.openOptions[0]).toEqual({ workingDir: expect.stringContaining('resume-keeper-'), title: 'Keeper' })
+    expect(picker.openOptions[1]).toMatchObject({ agentProvider: AgentProvider.CODEX, model: 'unit-model', optionValues: { effort: 'low' }, title: 'Subject' })
+  })
+})
+
 describe('resumePickerScenario', () => {
   it('runs the shared flow in order and proves the reopened agent after the resumed turn ends', async () => {
     const result = await run()
@@ -297,6 +319,7 @@ describe('resumePickerScenario', () => {
       'idle',
       'count:1',
       'visible',
+      'request-at:0',
       'list-agents',
       'count-rows:subject-agent',
       `close:${SUBJECT_ID}`,
@@ -321,6 +344,13 @@ describe('resumePickerScenario', () => {
     await expect(run()).rejects.toBe(picker.closeRefusal)
     expect(picker.events).toContain(`close:${SUBJECT_ID}`)
     expect(picker.reopens).toEqual([])
+  })
+
+  it('returns the original request, read after its turn ended, beside the resumed request', async () => {
+    const result = await run()
+    expect(result.originalRequest.stepIndex).toBe(0)
+    expect(result.originalRequest.body).toMatchObject({ stated: 'after-turn:0' })
+    expect(result.request.stepIndex).toBe(1)
   })
 
   it('returns the texts of the scenario with the settled resumed request', async () => {
@@ -412,7 +442,8 @@ describe('resumePickerScenario', () => {
       ...fixtures.modelScript,
       status: withoutRequests,
       waitForSteps: withoutRequests,
-      requestAt: async stepIndex => stepRequest(await withoutRequests(), stepIndex),
+      // The original turn keeps its request. Only the resumed prompt reaches no request.
+      requestAt: async stepIndex => stepIndex === 0 ? fixtures.modelScript.requestAt(0) : stepRequest(await withoutRequests(), stepIndex),
     }
     const scenario = resumePickerScenario({ ...fixtures, modelScript: script }, nativeContext(), { label: 'Unit' })
     await expect(scenario).rejects.toThrow('The model script holds no request for step 1')

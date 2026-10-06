@@ -5,6 +5,7 @@ import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSessionRow, openStoredSessionRow, sessionMenu, sessionMenuTrigger } from '../helpers/nativeResume'
+import { openResumeSubject } from '../helpers/nativeResumePicker'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, interruptButton, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
@@ -406,21 +407,9 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const keeperDir = createGitRepo(dataDir, 'session-picker-keeper')
-    const subjectDir = createGitRepo(dataDir, 'session-picker-subject')
-
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Session Picker WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, { title: 'Subject' })
-
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, workspaceId)
-
-    // Select the subject explicitly. Which tab the app activates on load is not
-    // this feature's contract, and guessing it would make the turn below land
-    // in the wrong directory.
-    await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
+    // The helper selects the subject explicitly. Which tab the app activates on load is not this feature's contract,
+    // and guessing it would make the turn below land in the wrong directory.
+    const { subjectId, subjectDir } = await openResumeSubject({ page, modelScript, leapmuxServer }, { label: 'Session Picker' })
     await expect(composerEditor(page)).toBeVisible()
 
     // A turn, so the worker records a resume handle: an agent that never spoke
@@ -429,10 +418,6 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps(original + 1)
     await expectAssistantAnswer(page)
-
-    const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    const subject = agents.find(a => a.title === 'Subject')
-    expect(subject).toBeDefined()
 
     // While the subject tab is OPEN its session must not be offered: a live
     // process is attached to that handle, and a second one against the same
@@ -451,7 +436,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     await firstDialog.getByRole('button', { name: 'Cancel' }).click()
 
     // Closing the tab releases the handle, and the picker offers it.
-    await closeNativeAgentAndWait({ leapmuxServer }, subject!.id)
+    await closeNativeAgentAndWait({ leapmuxServer }, subjectId)
 
     const dialog = await openNewAgentFor(page, AgentProvider.CLAUDE_CODE, subjectDir)
     const trigger = sessionMenuTrigger(dialog)

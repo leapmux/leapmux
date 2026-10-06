@@ -39,8 +39,10 @@ export type NativeResumeEvidence
   = | { readonly phase: 'stored' | 'opened', readonly prior: Readonly<AgentInfo> }
     | { readonly phase: 'continued', readonly prior: Readonly<AgentInfo>, readonly request: MockModelRequestRecord }
 
-/** The texts and the model request of one native resume scenario. */
+/** The texts and the model requests of one native resume scenario. */
 export interface NativeResumeResult extends NativeResumeTexts {
+  /** The native model request that consumed the original prompt, read after its turn ended. */
+  readonly originalRequest: MockModelRequestRecord
   /** The native model request that consumed the resumed prompt. */
   readonly request: MockModelRequestRecord
 }
@@ -304,7 +306,7 @@ export async function exerciseSessionResume(
 ): Promise<NativeResumeResult> {
   await options.prepare?.()
   const texts = nativeResumeTexts()
-  await sendNativeAnswer(context, texts.originalPrompt, texts.originalAnswer)
+  const originalRequest = await sendNativeAnswer(context, texts.originalPrompt, texts.originalAnswer)
   const before = await currentNativeAgent(context)
   expect(before.agentSessionId).not.toBe('')
   if (options.resumeEvidence)
@@ -336,7 +338,7 @@ export async function exerciseSessionResume(
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'continued', prior: before, request: resumedRequest })
   await expectResumedConversation(context, reopened.id, texts, originalAnswerRows, originalAnswerBubbles)
-  return { ...texts, request: resumedRequest }
+  return { ...texts, originalRequest, request: resumedRequest }
 }
 
 /**
