@@ -14,9 +14,11 @@ const agent = vi.hoisted(() => ({
 }))
 
 vi.mock('./ui', () => ({
-  sendMessage: async (_page: Page, text: string) => {
-    agent.sent.push(text)
-    agent.send(text)
+  // The composer starts a paragraph at each typed line break, sends a paragraph break as a blank line, and sends an
+  // empty paragraph as `<br />`. So a typed blank line reaches the model as `<br />`, as in the browser.
+  sendMessage: async (_page: Page, keys: string) => {
+    agent.sent.push(keys)
+    agent.send(keys.split('\n').map(paragraph => paragraph === '' ? '<br />' : paragraph).join('\n\n'))
   },
   waitForAgentIdle: async () => {},
   assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ fakeText: hasText }) }) }),
@@ -116,8 +118,10 @@ describe('exerciseCompactAsModelText', () => {
   })
 
   it('sends the command with the scenario marker when the provider needs it', async () => {
-    await exerciseCompactAsModelText(context(simulatedAgent()), { markCommand: true })
-    expect(agent.sent.at(-1)).toBe('/compact\n\nMARKER')
+    const result = await exerciseCompactAsModelText(context(simulatedAgent()), { markCommand: true })
+    // The composer turns the typed line break into the blank line of the marked command.
+    expect(agent.sent.at(-1)).toBe('/compact\nMARKER')
+    expect(JSON.stringify(result.request.body)).toContain(JSON.stringify('/compact\n\nMARKER'))
   })
 
   it('reads the last user text through the reader of the provider', async () => {

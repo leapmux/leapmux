@@ -2,6 +2,7 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { compactionNoticeRow } from './compaction'
+import { paragraphKeys } from './composerText'
 import { sendNativeAnswer } from './nativeConversation'
 import { currentNativeAgent, nativeModelLastUserText, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { uniqueMarker } from './shellArguments'
@@ -63,7 +64,8 @@ export async function exerciseCompactAsModelText(context: NativeScenarioContext,
   const reply = `The slash command reached the model as text: REPLY${marker}.`
   const start = await modelScript.queue(nativeTextStep(context, reply))
   const command = options.markCommand ? modelScript.prompt('/compact') : '/compact'
-  await sendMessage(page, command)
+  // The marked command holds a blank line. Typed as it is, the blank line reaches the model as `<br />`.
+  await sendMessage(page, paragraphKeys(command))
   await modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(page)
   // Read the record after the turn, because a native client states more of its request later.
