@@ -1,6 +1,7 @@
 import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
 import type { NativeAgentOpenOptions } from './nativeAgentOpen'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { googleFunctionDeclarations } from './googleModelContent'
@@ -13,11 +14,16 @@ import { uniqueMarker } from './shellArguments'
 import { assistantBubbles, toolCallRow } from './ui'
 
 /**
- * Open a new agent through {@link openNativeAgent}, and run one native turn while the tool catalog of the agent is
- * available. Return the model request of that turn: it holds the catalog that the native client offered.
+ * Open a new agent of `providerAgent` through {@link openNativeAgent}, and run one native turn while the tool catalog
+ * of the agent is available. Return the model request of that turn: it holds the catalog that the native client
+ * offered.
  */
-export async function openNativeCatalogTurn(context: ManagedNativeScenarioContext, options: NativeAgentOpenOptions = {}): Promise<MockModelRequestRecord> {
-  await openNativeAgent(context, options.workingDir === undefined ? { ...options, directoryPrefix: options.directoryPrefix ?? 'native-code-limit-' } : options)
+export async function openNativeCatalogTurn(
+  context: ManagedNativeScenarioContext,
+  providerAgent: ProviderAgent,
+  options: NativeAgentOpenOptions = {},
+): Promise<MockModelRequestRecord> {
+  await openNativeAgent(context, providerAgent, options.workingDir === undefined ? { ...options, directoryPrefix: options.directoryPrefix ?? 'native-code-limit-' } : options)
   return sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
 }
 

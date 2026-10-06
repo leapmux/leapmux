@@ -1,13 +1,13 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { createGrokWorkingDir, GROK_AGENT, grokTest } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
 import { answerControl, expectNoControlBanner, expectSettingsOptionChosen, openWorkspace, waitForControlBanner } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build images in tool results', () => {
@@ -29,7 +29,7 @@ grokTest.describe('Grok Build images in tool results', () => {
 
   grokTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const workingDir = createGrokWorkingDir()
+    const workingDir = newProviderWorkingDir(GROK_AGENT)
     const imageName = writeToolImage(workingDir, 'grok-mcp')
     const server = writeMcpImageServer(workingDir, imageName)
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: server.command, args: server.args } } }))

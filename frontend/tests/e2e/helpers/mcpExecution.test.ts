@@ -3,6 +3,7 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeToolTurn } from './nativeToolExecution'
+import type { ProviderAgent } from './workspace'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
@@ -63,6 +64,9 @@ function passingLocator(name: string): Locator {
     return true
   })
 }
+
+/** How a Claude Code agent opens in these tests: in a fresh directory of the run. */
+const claude: ProviderAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'claude-e2e' }
 
 function context(provider = AgentProvider.CLAUDE_CODE): ManagedNativeScenarioContext {
   return {
@@ -166,6 +170,7 @@ describe('withNativeMcpFormAgent', () => {
     writeFileSync(run.configurationPath, '{"kept":true}')
     const seen: string[] = []
     await withNativeMcpFormAgent(context(), {
+      providerAgent: claude,
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
       configuration: server => ({ servers: { [server.name]: { command: server.command, args: server.args } } }),
@@ -187,12 +192,49 @@ describe('withNativeMcpFormAgent', () => {
     mkdirSync(dirname(run.configurationPath), { recursive: true })
     writeFileSync(run.configurationPath, 'original')
     await expect(withNativeMcpFormAgent(context(), {
+      providerAgent: claude,
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
       configuration: () => ({}),
     }, async () => {
       throw new Error('the use failed')
     })).rejects.toThrow('the use failed')
+    expect(readFileSync(run.configurationPath, 'utf8')).toBe('original')
+  })
+
+  it('writes the server into the working directory that the rule of the provider creates', async () => {
+    const workingDir = vi.fn((prefix: string) => {
+      const repository = join(mkdtempSync(join(run.scratch, prefix)), 'repo')
+      mkdirSync(repository)
+      return repository
+    })
+    const receipts: string[] = []
+    await withNativeMcpFormAgent(context(), {
+      providerAgent: { ...claude, workingDir },
+      directoryPrefix: 'form-agent-',
+      configurationPath: run.configurationPath,
+      configuration: () => ({}),
+    }, async ({ receiptLog }) => {
+      receipts.push(receiptLog)
+    })
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('form-agent-')
+    expect(receipts).toEqual([expect.stringMatching(/form-agent-[^/]+\/repo\/native-mcp-receipt\.json$/)])
+  })
+
+  it('refuses the agent of another provider before it writes the server or the configuration', async () => {
+    mkdirSync(dirname(run.configurationPath), { recursive: true })
+    writeFileSync(run.configurationPath, 'original')
+    const workingDir = vi.fn(() => run.scratch)
+    const use = vi.fn()
+    await expect(withNativeMcpFormAgent(context(), {
+      providerAgent: { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir },
+      directoryPrefix: 'form-agent-',
+      configurationPath: run.configurationPath,
+      configuration: () => ({}),
+    }, use)).rejects.toThrow(`not by the rule of provider ${AgentProvider.CLINE}`)
+    expect(workingDir).not.toHaveBeenCalled()
+    expect(use).not.toHaveBeenCalled()
+    expect(run.events).toEqual([])
     expect(readFileSync(run.configurationPath, 'utf8')).toBe('original')
   })
 })

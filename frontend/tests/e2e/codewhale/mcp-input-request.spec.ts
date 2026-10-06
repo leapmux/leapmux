@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { codewhaleTest } from '../codewhale-fixtures'
+import { CODEWHALE_AGENT, codewhaleTest } from '../codewhale-fixtures'
 import { invokeNativeMcpTool, withNativeMcpFormAgent } from '../helpers/mcpExecution'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { expectUnansweredMcpInput } from '../helpers/unsupportedMcpInput'
@@ -23,6 +23,7 @@ const MCP_EXECUTE_TIMEOUT_SECONDS = 10
 codewhaleTest('times out an MCP input request that the native client never answers, without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await withNativeMcpFormAgent(context, {
+    providerAgent: CODEWHALE_AGENT,
     directoryPrefix: 'codewhale-native-mcp-unanswered-',
     configurationPath: join(leapmuxServer.agentEnv.CODEWHALE_HOME!, 'mcp.json'),
     configuration: server => ({ servers: { [server.name]: { command: server.command, args: server.args, execute_timeout: MCP_EXECUTE_TIMEOUT_SECONDS } } }),

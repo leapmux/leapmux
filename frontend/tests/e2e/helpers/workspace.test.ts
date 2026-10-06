@@ -6,7 +6,7 @@ import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { createTestDirectory } from './runDirectory'
 import { loginViaToken, openWorkspace } from './ui'
-import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, showWorkspaceWithAgents, withAgentWorkspace, withTestWorkspace } from './workspace'
+import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, newProviderWorkingDir, openProviderAgent, showWorkspaceWithAgents, withAgentWorkspace, withTestWorkspace } from './workspace'
 
 vi.mock('./api', () => ({ createWorkspaceViaAPI: vi.fn(), deleteWorkspaceViaAPI: vi.fn(), openAgentViaAPI: vi.fn() }))
 vi.mock('./runDirectory', () => ({ createTestDirectory: vi.fn(() => '/private-directory') }))
@@ -94,7 +94,7 @@ describe('workspace fixture lifetime', () => {
     const workingDir = vi.fn(() => '/repository/checkout')
     const use = vi.fn(async () => {})
     await withAgentWorkspace(server, { provider: AgentProvider.KIRO, prefix: 'kiro', workingDir }, use)
-    expect(workingDir).toHaveBeenCalledOnce()
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('kiro-wd-')
     expect(createTestDirectory).not.toHaveBeenCalled()
     expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/repository/checkout', expect.objectContaining({ agentProvider: AgentProvider.KIRO }))
     expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace', workingDir: '/repository/checkout' })
@@ -187,11 +187,30 @@ describe('openProviderAgent', () => {
     expect(openAgentViaAPI).toHaveBeenCalledWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', '/private-directory', expect.objectContaining({ agentProvider: AgentProvider.PI }))
   })
 
-  it('makes the directory through the maker of the provider', async () => {
+  it('makes the directory through the maker of the provider, with the default prefix of the provider', async () => {
     const workingDir = vi.fn(() => '/repository/checkout')
     expect((await openProviderAgent(server, 'workspace', { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir })).workingDir).toBe('/repository/checkout')
-    expect(workingDir).toHaveBeenCalledOnce()
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('kiro-e2e-wd-')
     expect(createTestDirectory).not.toHaveBeenCalled()
+  })
+
+  it('gives the stated directory prefix to the maker of the provider', async () => {
+    const workingDir = vi.fn(() => '/repository/checkout')
+    await openProviderAgent(server, 'workspace', { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir }, { directoryPrefix: 'native-code-' })
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-')
+  })
+
+  it('gives the stated directory prefix to a fresh directory of the run', async () => {
+    await openProviderAgent(server, 'workspace', pi, { directoryPrefix: 'native-code-' })
+    expect(createTestDirectory).toHaveBeenCalledExactlyOnceWith('native-code-')
+  })
+
+  it('refuses a directory of the test and a prefix together, before it makes a directory or opens the agent', async () => {
+    const workingDir = vi.fn(() => '/unused')
+    await expect(openProviderAgent(server, 'workspace', { ...pi, workingDir }, { workingDir: '/test/directory', directoryPrefix: 'native-' })).rejects.toThrow('not in both')
+    expect(workingDir).not.toHaveBeenCalled()
+    expect(createTestDirectory).not.toHaveBeenCalled()
+    expect(openAgentViaAPI).not.toHaveBeenCalled()
   })
 
   it('opens the agent in the directory of the test, and makes no other one', async () => {
@@ -219,6 +238,20 @@ describe('openProviderAgent', () => {
       throw error
     } })).rejects.toBe(error)
     expect(openAgentViaAPI).not.toHaveBeenCalled()
+  })
+})
+
+describe('newProviderWorkingDir', () => {
+  it('makes a fresh directory of the run with the default prefix of a provider that states no rule', () => {
+    expect(newProviderWorkingDir(pi)).toBe('/private-directory')
+    expect(createTestDirectory).toHaveBeenCalledExactlyOnceWith('pi-e2e-wd-')
+  })
+
+  it('makes the directory by the rule of the provider, with the stated prefix', () => {
+    const workingDir = vi.fn((prefix: string) => `/run/${prefix}repository/repo`)
+    expect(newProviderWorkingDir({ ...pi, workingDir }, 'native-')).toBe('/run/native-repository/repo')
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-')
+    expect(createTestDirectory).not.toHaveBeenCalled()
   })
 })
 

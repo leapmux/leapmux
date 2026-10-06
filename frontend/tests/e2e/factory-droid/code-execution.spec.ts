@@ -1,6 +1,6 @@
 import { cpSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { droidTest, expect } from '../droid-fixtures'
+import { DROID_AGENT, droidTest, expect } from '../droid-fixtures'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema, openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
@@ -29,7 +29,7 @@ droidTest('runs native code and retains computed output and script errors after 
     env: { FACTORY_HOME_OVERRIDE: home, FACTORY_FEATURE_FLAGS_SNAPSHOT_PATH: snapshot },
   }, async ({ server }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const request = await openNativeCatalogTurn(context, { directoryPrefix: 'native-code-execution-' })
+    const request = await openNativeCatalogTurn(context, DROID_AGENT, { directoryPrefix: 'native-code-execution-' })
     expect(request.mockCredential?.accepted).toBe(true)
     expect(droidScriptExecutors(droidCompleteToolCatalog(request).current).map(tool => tool.name)).toContain('Script')
     const schema = nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)

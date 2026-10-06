@@ -5,20 +5,14 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeContext } from './deepseek-harness/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { createGitRepo } from './helpers/worktree'
+import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DEEPSEEK_HARNESS_E2E_SKIP_REASON: string | null = missingBinaryReason('dsh', 'DeepSeek Harness E2E requires the native dsh executable.')
 
-/** A working directory that is the root of a git repository of its own. */
-export function createDeepseekHarnessWorkingDir(): string {
-  return createGitRepo(createTestDirectory('deepseek-harness-e2e-wd-'), 'repo')
-}
-
-/** How a DeepSeek Harness agent opens. */
-export const DEEPSEEK_HARNESS_AGENT: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: createDeepseekHarnessWorkingDir }
+/** How a DeepSeek Harness agent opens. Its working directory is the root of a git repository of its own. */
+export const DEEPSEEK_HARNESS_AGENT: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** The option values of an Act agent with one permission preset. */
 function actWith(permissions: string) {

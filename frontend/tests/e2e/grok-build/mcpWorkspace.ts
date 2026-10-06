@@ -2,16 +2,16 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { createGrokWorkingDir, GROK_AGENT } from '../grok-fixtures'
+import { GROK_AGENT } from '../grok-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { controlButton, expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 
 /** Open an actual project MCP server through Grok's native trust decision. */
 export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext, decision: 'allow' | 'deny'): Promise<{ workingDir: string, receiptLog: string }> {
-  const workingDir = createGrokWorkingDir()
+  const workingDir = newProviderWorkingDir(GROK_AGENT)
   const receiptLog = join(workingDir, 'native-mcp-receipt.json')
   writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(writeMcpEchoServer(workingDir, { receiptLog }))))
   const server = context.leapmuxServer

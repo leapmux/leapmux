@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, createCodebuddyWorkingDir, expect } from '../codebuddy-fixtures'
+import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, expect } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -9,13 +9,13 @@ import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { expectNoControlBanner, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { withCodebuddyUserMcpServer } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
   codebuddyTest('shows no form when stream JSON declines native MCP elicitation', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
-    const workingDir = createCodebuddyWorkingDir()
+    const workingDir = newProviderWorkingDir(CODEBUDDY_AGENT)
     const receiptLog = join(workingDir, 'mcp-input-receipt.jsonl')
     const server = writeMcpFormServer(workingDir, 'form-server.mjs', { receiptLog })
     await withCodebuddyUserMcpServer(leapmuxServer.agentEnv, server, async () => {

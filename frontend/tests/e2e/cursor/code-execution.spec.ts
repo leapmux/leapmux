@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { cursorTest } from '../cursor-fixtures'
+import { CURSOR_AGENT, cursorTest } from '../cursor-fixtures'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { cursorNativeToolOutput, runCursorNativeOperations } from './nativeExecutionScenario'
@@ -8,7 +8,7 @@ import { readInstalledCursorToolCases } from './toolCatalog'
 
 cursorTest('confirms the complete native protocol omits a general code executor', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openNativeCatalogTurn(context)
+  await openNativeCatalogTurn(context, CURSOR_AGENT)
   const cases = readInstalledCursorToolCases(leapmuxServer.agentEnv)
   expect(cases).toHaveLength(69)
   expect(cases).toContain('shell_tool_call')

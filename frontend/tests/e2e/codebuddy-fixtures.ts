@@ -18,20 +18,14 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeContext } from './codebuddy-code/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { createGitRepo } from './helpers/worktree'
+import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const CODEBUDDY_E2E_SKIP_REASON: string | null = missingBinaryReason('codebuddy', 'CodeBuddy E2E requires the codebuddy CLI on PATH (https://cnb.cool/codebuddy/codebuddy-code)')
 
-/** A working directory that is the root of a git repository of its own. */
-export function createCodebuddyWorkingDir(): string {
-  return createGitRepo(createTestDirectory('codebuddy-e2e-wd-'), 'repo')
-}
-
-/** How a CodeBuddy agent opens. */
-export const CODEBUDDY_AGENT: ProviderAgent = { provider: AgentProvider.CODEBUDDY, prefix: 'codebuddy-e2e', workingDir: createCodebuddyWorkingDir }
+/** How a CodeBuddy agent opens. Its working directory is the root of a git repository of its own. */
+export const CODEBUDDY_AGENT: ProviderAgent = { provider: AgentProvider.CODEBUDDY, prefix: 'codebuddy-e2e', workingDir: gitRepositoryWorkingDir }
 
 /**
  * The agent opens in Bypass Permissions, which answers every tool call at once.

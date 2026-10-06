@@ -71,15 +71,19 @@ export interface ProviderAgent {
   /** The prefix of the workspace name and of the default working directory. */
   prefix: string
   /**
-   * Create the agent's working directory. Omit it for a fresh private directory of the run, which suits every
-   * provider that reads no configuration from the git repository around it.
+   * Create a working directory whose name starts with the given prefix. Omit it for a fresh private directory of the
+   * run, which suits every provider that reads no configuration from the git repository around it. A provider that
+   * reads such configuration states `gitRepositoryWorkingDir` (`./worktree.ts`).
    */
-  workingDir?: () => string
+  workingDir?: (prefix: string) => string
 }
 
-/** The working directory of a new agent of `agent`. */
-function newWorkingDir(agent: ProviderAgent): string {
-  return agent.workingDir?.() ?? createTestDirectory(`${agent.prefix}-wd-`)
+/**
+ * Create a new working directory for an agent of `agent`, by the rule of its provider.
+ * The name of the directory starts with `prefix`. The default prefix is `<agent prefix>-wd-`.
+ */
+export function newProviderWorkingDir(agent: ProviderAgent, prefix = `${agent.prefix}-wd-`): string {
+  return (agent.workingDir ?? createTestDirectory)(prefix)
 }
 
 /** Keep workspace creation and disposal identical across agent providers. */
@@ -109,7 +113,7 @@ export async function withAgentWorkspace(
   // Build the request first, so open options that the merge rule refuses create no workspace.
   const request = agentOpenOptions(options.provider, options.openOptions)
   await withTestWorkspace(server, options.prefix, async (workspace) => {
-    const workingDir = newWorkingDir(options)
+    const workingDir = newProviderWorkingDir(options)
     await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, request)
     await use({ workspaceId: workspace.workspaceId, workingDir })
   })
@@ -164,6 +168,11 @@ export async function showWorkspaceWithAgents(
 export interface ProviderAgentOpenOptions extends AgentOpenOverrides {
   /** The directory that the agent works in. The default is a new directory of the provider. */
   workingDir?: string
+  /**
+   * The prefix of the name of the new directory, which `newProviderWorkingDir` creates by the rule of the provider.
+   * The default is `<agent prefix>-wd-`. An existing `workingDir` takes no prefix.
+   */
+  directoryPrefix?: string
   /** Write into the working directory before the agent starts, for a configuration that the agent reads at its start. */
   prepare?: (workingDir: string) => void
 }
@@ -178,9 +187,11 @@ export async function openProviderAgent(
   agent: ProviderAgent,
   options: ProviderAgentOpenOptions = {},
 ): Promise<{ agentId: string, workingDir: string }> {
+  if (options.workingDir !== undefined && options.directoryPrefix !== undefined)
+    throw new Error('An agent opens in an existing directory or in a new one, not in both.')
   // Build the request first, so an override that the merge rule refuses creates and prepares no directory.
   const request = agentOpenOptions(agent.provider, options)
-  const workingDir = options.workingDir ?? newWorkingDir(agent)
+  const workingDir = options.workingDir ?? newProviderWorkingDir(agent, options.directoryPrefix)
   options.prepare?.(workingDir)
   const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, request)
   return { agentId, workingDir }

@@ -4,20 +4,14 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeContext } from './command-code/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { createGitRepo } from './helpers/worktree'
+import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const COMMAND_CODE_E2E_SKIP_REASON: string | null = missingBinaryReason('command-code', 'Command Code E2E requires the native command-code executable.')
 
-/** A working directory that is the root of a git repository of its own. */
-export function createCommandCodeWorkingDir(): string {
-  return createGitRepo(createTestDirectory('command-code-e2e-wd-'), 'repo')
-}
-
-/** How a Command Code agent opens. */
-export const COMMAND_CODE_AGENT: ProviderAgent = { provider: AgentProvider.COMMAND_CODE, prefix: 'command-code-e2e', workingDir: createCommandCodeWorkingDir }
+/** How a Command Code agent opens. Its working directory is the root of a git repository of its own. */
+export const COMMAND_CODE_AGENT: ProviderAgent = { provider: AgentProvider.COMMAND_CODE, prefix: 'command-code-e2e', workingDir: gitRepositoryWorkingDir }
 
 export const commandCodeTest = base.extend<CliSkipFixture & NativeFixture & {
   /** An agent in bypass mode, which runs every tool call at once. */

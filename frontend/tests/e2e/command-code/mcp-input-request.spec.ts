@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { commandCodeTest, createCommandCodeWorkingDir, expect } from '../command-code-fixtures'
+import { COMMAND_CODE_AGENT, commandCodeTest, expect } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpProbeServer } from '../helpers/mcpProbeServer'
@@ -11,13 +11,14 @@ import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { expectNoControlBanner, sendMessage } from '../helpers/ui'
+import { newProviderWorkingDir } from '../helpers/workspace'
 import { createMcpCloseControl } from './mcpCloseControl'
 import { withCommandCodeMcp } from './mcpScenarios'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('ignores the actual unsupported MCP input request and ends its tool after a controlled server close', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const workingDir = createCommandCodeWorkingDir()
+  const workingDir = newProviderWorkingDir(COMMAND_CODE_AGENT)
   const receipt = join(workingDir, 'native-mcp-form-receipt.json')
   const formServer = writeMcpFormServer(workingDir, 'form-server.mjs', { receiptLog: receipt })
   // The agent starts the close control, which runs the form server until the test closes it.

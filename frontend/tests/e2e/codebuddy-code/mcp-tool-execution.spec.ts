@@ -1,16 +1,16 @@
-import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, createCodebuddyWorkingDir, expect } from '../codebuddy-fixtures'
+import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, expect } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { withCodebuddyUserMcpServer } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
   codebuddyTest('executes a disposable MCP tool through the native server', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-    const workingDir = createCodebuddyWorkingDir()
+    const workingDir = newProviderWorkingDir(CODEBUDDY_AGENT)
     const echoArguments = { query: 'codebuddy', limit: 0, tail: 'END_MCP_ARGUMENTS' }
     const server = writeMcpFormServer(workingDir, 'form-server.mjs', { expectedEchoArguments: echoArguments })
     await withCodebuddyUserMcpServer(leapmuxServer.agentEnv, server, async () => {

@@ -1,4 +1,5 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ProviderAgent } from '../helpers/workspace'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
@@ -9,8 +10,13 @@ import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { opencodeMcpServerConfiguration } from './mcpLimit'
 
-/** The environment variables through which one OpenCode-family provider reads its configuration and its code mode. */
+/**
+ * One OpenCode-family provider: how its agent opens, and the environment variables through which it reads its
+ * configuration and its code mode.
+ */
 export interface OpenCodeFamilyCodeMode {
+  /** How an agent of the provider opens. Its provider must be the provider of the scenario context. */
+  providerAgent: ProviderAgent
   /** The variable that holds the inline configuration, such as `OPENCODE_CONFIG_CONTENT`. */
   configurationVariable: string
   /** The variable that turns on the experimental code mode, such as `OPENCODE_EXPERIMENTAL_CODE_MODE`. */
@@ -41,7 +47,7 @@ export async function exerciseOpenCodeFamilyCodeExecution(context: ManagedNative
   const content = opencodeMcpServerConfiguration(original, server)
   await withNativeWorker(context.leapmuxServer, { dataDirPrefix: 'native-code-worker', workerName: 'Native code executor', env: { [mode.codeModeVariable]: 'true', [mode.configurationVariable]: content } }, async ({ server: worker }) => {
     const privateContext = { ...context, leapmuxServer: worker }
-    await openNativeAgent(privateContext, { directoryPrefix: 'native-code-execution-' })
+    await openNativeAgent(privateContext, mode.providerAgent, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(privateContext, {
       catalogProof: (request) => {
         nativeCodeExecutionSchema(request, 'execute', { code: 'string' })

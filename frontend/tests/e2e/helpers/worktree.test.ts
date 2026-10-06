@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { callHub, getTestChannel } from './api'
@@ -11,6 +11,7 @@ import {
   commitFile,
   createGitRepo,
   createGitRepoWithRemote,
+  gitRepositoryWorkingDir,
   initGitRepo,
   managedWorktreePath,
   terminalExitedViaAPI,
@@ -38,6 +39,9 @@ vi.mock('./ui', () => ({
 }))
 // A short deadline, so a wait that never succeeds reports its failure within the unit test.
 vi.mock('./testDeadline', () => ({ waitTimeoutBeforeTestDeadline: () => 400 }))
+// The run directory of these tests is the scratch directory of the current test.
+const runDirectory = vi.hoisted(() => ({ root: '' }))
+vi.mock('./runDirectory', () => ({ createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)) }))
 
 const server = { hubUrl: 'http://hub.test', adminToken: 'session', workerId: 'worker' }
 const callWorker = vi.fn()
@@ -172,6 +176,7 @@ describe('git repository helpers', () => {
     const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
     mkdirSync(scratch, { recursive: true })
     root = mkdtempSync(join(scratch, 'worktree-helpers-'))
+    runDirectory.root = root
   })
 
   afterEach(() => {
@@ -187,6 +192,20 @@ describe('git repository helpers', () => {
     expect(gitOutput(dir, ['config', '--local', 'user.email'])).toBe('test@test.com')
     expect(gitOutput(dir, ['config', '--local', 'user.name'])).toBe('Test')
     expect(gitOutput(dir, ['symbolic-ref', '--short', 'HEAD'])).toBe('main')
+  })
+
+  it('gitRepositoryWorkingDir makes a new directory of the run with the prefix, and a repository of its own in it', () => {
+    const first = gitRepositoryWorkingDir('agent-wd-')
+    const second = gitRepositoryWorkingDir('agent-wd-')
+    expect(first).not.toBe(second)
+    for (const dir of [first, second]) {
+      expect(basename(dir)).toBe('repo')
+      expect(dirname(dirname(dir))).toBe(root)
+      expect(basename(dirname(dir))).toMatch(/^agent-wd-/)
+      // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.
+      expect(gitOutput(dir, ['rev-parse', '--show-toplevel'])).toBe(realpathSync(dir))
+      expect(gitOutput(dir, ['log', '--pretty=%s'])).toBe('init')
+    }
   })
 
   it('createGitRepo commits the README on main', () => {

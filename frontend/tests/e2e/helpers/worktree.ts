@@ -26,6 +26,7 @@ import {
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
 import { API_POLL_INTERVAL_MS, callHub, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { retryUntilPass } from './retryUntilPass'
+import { createTestDirectory } from './runDirectory'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 import { activeWorkspaceRow, expectAnyVisible, isMaybeVisible, loginViaToken, sidebarSectionHeader } from './ui'
 
@@ -100,6 +101,19 @@ export function createGitRepo(dataDir: string, name: string): string {
   initGitRepo(repoDir)
   commitFile(repoDir, 'README.md', '# Test\n', 'init')
   return repoDir
+}
+
+/**
+ * Create a working directory that is the root of a git repository of its own, inside a new directory of the run whose
+ * name starts with `prefix`.
+ *
+ * Some providers read configuration from the git repository around their working directory: rules, skills, steering
+ * documents, hooks, an `AGENTS.md` or an `.mcp.json`. The run directory sits inside the LeapMux checkout, whose root
+ * holds such files. A repository of its own holds none of them, so the agent reads none of the checkout's
+ * configuration. The `ProviderAgent` of each such provider states this rule (`./workspace.ts`).
+ */
+export function gitRepositoryWorkingDir(prefix: string): string {
+  return createGitRepo(createTestDirectory(prefix), 'repo')
 }
 
 /**

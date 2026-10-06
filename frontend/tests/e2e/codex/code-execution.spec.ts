@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { codexTest } from '../codex-fixtures'
+import { CODEX_AGENT, codexTest } from '../codex-fixtures'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution } from '../helpers/nativeCodeExecution'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -10,7 +10,7 @@ import { nativeContext } from './scenarios'
 
 codexTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })
+  await openNativeAgent(context, CODEX_AGENT, { directoryPrefix: 'native-code-execution-' })
   await exerciseNativeCodeExecution(context, { scripts: marker => [
     { label: 'output', source: `text(${JSON.stringify(marker)} + (40 + 2));`, expected: `${marker}42`, failed: false },
     { label: 'failure', source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`, expected: `${marker}77`, failed: true },
@@ -20,7 +20,7 @@ codexTest('runs native code and retains computed output and script errors after 
 codexTest('retains a completed native script with empty output after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const { workspaceId } = context
-  await openNativeAgent(context, { directoryPrefix: 'native-code-empty-' })
+  await openNativeAgent(context, CODEX_AGENT, { directoryPrefix: 'native-code-empty-' })
   const callId = 'native-code-empty'
   const start = await modelScript.queue({ toolCalls: [codexExecToolCall(callId, 'text("");')] }, { text: 'The empty native script completed.' })
   await sendMessage(page, modelScript.prompt('Run the empty native script.'))
@@ -44,7 +44,7 @@ codexTest('retains a completed native script with empty output after reload', as
 codexTest('retains native large-output truncation and its computed head and tail after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const { workspaceId } = context
-  await openNativeAgent(context, { directoryPrefix: 'native-code-large-' })
+  await openNativeAgent(context, CODEX_AGENT, { directoryPrefix: 'native-code-large-' })
   const callId = 'native-code-large'
   const source = '// @exec: {"max_output_tokens": 300}\ntext(Array.from({ length: 3000 }, (_, i) => "NATIVELARGE" + i + ":" + "x".repeat(40)).join("\\n"));'
   const start = await modelScript.queue({ toolCalls: [codexExecToolCall(callId, source)] }, { text: 'The large native script completed.' })

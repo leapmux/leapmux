@@ -17,21 +17,15 @@ import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { createGitRepo } from './helpers/worktree'
+import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 import { nativeContext } from './qoder-cli/scenarios'
 
 export const QODER_E2E_SKIP_REASON: string | null = missingBinaryReason('qodercli', 'Qoder E2E requires the qodercli CLI on PATH (https://qoder.com)')
 
-/** A working directory that is the root of a git repository of its own. */
-export function createQoderWorkingDir(): string {
-  return createGitRepo(createTestDirectory('qoder-e2e-wd-'), 'repo')
-}
-
-/** How a Qoder agent opens. */
-export const QODER_AGENT: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: createQoderWorkingDir }
+/** How a Qoder agent opens. Its working directory is the root of a git repository of its own. */
+export const QODER_AGENT: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: gitRepositoryWorkingDir }
 
 /**
  * The agent opens in Accept Edits, which answers every edit at once.

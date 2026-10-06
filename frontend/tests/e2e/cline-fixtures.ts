@@ -18,27 +18,21 @@ import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeContext } from './cline/scenarios'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { createGitRepo } from './helpers/worktree'
+import { gitRepositoryWorkingDir } from './helpers/worktree'
 import { cliSkipFixture } from './provider-fixture-factory'
 
 export const CLINE_E2E_SKIP_REASON: string | null = missingBinaryReason('cline', 'Cline E2E requires the cline CLI on PATH (https://cline.bot/cli)')
 
 /**
- * A working directory that is the root of a git repository of its own.
+ * How a Cline agent opens. Its working directory is the root of a git repository of its own.
  *
  * Cline reads rules, skills and workflows from the workspace it runs in, and it
  * takes the root of the git repository around the working directory as that
  * workspace. The run directory sits inside the LeapMux checkout, whose root holds an
  * `AGENTS.md`, and a repository of its own holds nothing that Cline reads.
  */
-export function createClineWorkingDir(): string {
-  return createGitRepo(createTestDirectory('cline-e2e-wd-'), 'repo')
-}
-
-/** How a Cline agent opens. */
-export const CLINE_AGENT: ProviderAgent = { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir: createClineWorkingDir }
+export const CLINE_AGENT: ProviderAgent = { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir: gitRepositoryWorkingDir }
 
 /**
  * The agent opens in Auto-approve, which answers every tool call at once.

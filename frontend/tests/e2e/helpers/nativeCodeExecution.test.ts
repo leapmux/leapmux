@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ProviderAgent } from './workspace'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
@@ -111,22 +112,31 @@ const context = {
   leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' },
 } as unknown as ManagedNativeScenarioContext
 
+const cursor: ProviderAgent = { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e' }
+
 describe('openNativeCatalogTurn', () => {
   it('opens the agent with the pinned settings in a fresh directory, shows the workspace, and returns the catalog turn', async () => {
-    const request = await openNativeCatalogTurn(context)
+    const request = await openNativeCatalogTurn(context, cursor)
     expect(request.body).toEqual({ catalog: true })
     expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
     expect(opened.events).toEqual(['directory native-code-limit-', 'open /run/native-code-limit-directory', 'workspace workspace-1', 'answer Reply once while the native tool catalog remains available.'])
   })
 
   it('takes the directory prefix and the open settings of the caller', async () => {
-    await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
+    await openNativeCatalogTurn(context, cursor, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
     expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
+  })
+
+  it('creates the directory by the working directory rule of the provider', async () => {
+    const workingDir = vi.fn((prefix: string) => `/run/${prefix}repository/repo`)
+    await openNativeCatalogTurn(context, { ...cursor, workingDir })
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-limit-')
+    expect(opened.open).toHaveBeenCalledWith('http://hub', 'token', 'worker-1', 'workspace-1', '/run/native-code-limit-repository/repo', agentOpenOptions(AgentProvider.CURSOR))
   })
 
   it('runs no turn when the agent does not open', async () => {
     opened.open.mockRejectedValue(new Error('the Worker refused the agent'))
-    await expect(openNativeCatalogTurn(context)).rejects.toThrow('the Worker refused the agent')
+    await expect(openNativeCatalogTurn(context, cursor)).rejects.toThrow('the Worker refused the agent')
     expect(opened.events).toEqual(['directory native-code-limit-'])
   })
 })

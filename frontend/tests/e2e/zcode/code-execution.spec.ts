@@ -13,7 +13,7 @@ import { retryUntilPass } from '../helpers/retryUntilPass'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
-import { zcodeTest } from '../zcode-fixtures'
+import { ZCODE_AGENT, zcodeTest } from '../zcode-fixtures'
 import { zcodeStoredWorkflowCompletion, zcodeWorkflowCompletion, zcodeWorkflowLaunch } from './codeExecution'
 import { nativeContext } from './scenarios'
 
@@ -87,7 +87,7 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
 
 zcodeTest('restricts the native Node executor to browser and computer use', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  const request = await openNativeCatalogTurn(context, { directoryPrefix: 'native-zcode-code-limit-' })
+  const request = await openNativeCatalogTurn(context, ZCODE_AGENT, { directoryPrefix: 'native-zcode-code-limit-' })
   const body = isObject(request.body) ? request.body : undefined
   const tools = Array.isArray(body?.tools) ? body.tools.filter(isObject) : []
   const definitions = tools.map(tool => isObject(tool.function) ? tool.function : tool)
