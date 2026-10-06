@@ -1,9 +1,9 @@
 import { Buffer } from 'node:buffer'
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
 import { acpClosedToolCall } from '../helpers/acpToolFrame'
-import { withCleanupSync } from '../helpers/cleanup'
+import { readNativeToolOutputFile } from '../helpers/nativeToolOutputFile'
 
 export interface GrokWorkflowLaunch {
   runId: string
@@ -97,30 +97,16 @@ export function grokWorkflowManifestPath(launch: GrokWorkflowLaunch, nativeHome:
   return join(dirname(launch.scriptPath), 'state.json')
 }
 
-interface GrokManifestReader {
-  open: (path: string) => number
-  stat: (fd: number) => { size: number, isFile: () => boolean }
-  read: (fd: number) => string
-  close: (fd: number) => void
-}
+/** The largest native workflow manifest that the reader accepts, in bytes. */
+const GROK_MANIFEST_MAX_BYTES = 512 * 1024
 
-const manifestReader: GrokManifestReader = {
-  open: path => openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW),
-  stat: fstatSync,
-  read: fd => readFileSync(fd, 'utf8'),
-  close: closeSync,
-}
-
-/** The reader argument lets tests control read and close failures on the same descriptor. */
-export function readGrokWorkflowManifest(path: string, io: GrokManifestReader = manifestReader): unknown {
-  const fd = io.open(path)
-  return withCleanupSync((): unknown => {
-    const stat = io.stat(fd)
-    if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > 512 * 1024)
-      throw new Error('The native Grok manifest exceeds its file limit.')
-    const text = io.read(fd)
-    if (Buffer.byteLength(text) > 512 * 1024)
-      throw new Error('The native Grok manifest exceeds its byte limit.')
-    return JSON.parse(text)
-  }, () => io.close(fd))
+/**
+ * Read the native workflow manifest at `path`, which `grokWorkflowManifestPath` returns.
+ *
+ * `readNativeToolOutputFile` refuses a symbolic link, a file that is not regular, a file larger than the limit, and a
+ * file that changes during the read, on every platform. O_NOFOLLOW alone cannot refuse a link: Windows has no
+ * O_NOFOLLOW, and an open there follows a link at the last component of the path.
+ */
+export function readGrokWorkflowManifest(path: string): unknown {
+  return JSON.parse(readNativeToolOutputFile(path, GROK_MANIFEST_MAX_BYTES))
 }

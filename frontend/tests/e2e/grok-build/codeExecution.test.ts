@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { grokWorkflowCompletion, grokWorkflowLaunch, grokWorkflowManifestPath, grokWorkflowName, grokWorkflowReportLabel, readGrokWorkflowManifest } from './codeExecution'
 
 const directories: string[] = []
@@ -105,96 +105,52 @@ describe('grokWorkflowManifestPath', () => {
 })
 
 describe('readGrokWorkflowManifest', () => {
-  function ioFixture() {
-    return {
-      open: vi.fn(() => 0),
-      stat: vi.fn(() => ({ size: 0, isFile: () => true })),
-      read: vi.fn(() => '{}'),
-      close: vi.fn(),
-    }
+  /** A manifest path in a new private directory of the run. */
+  function manifestPath(): string {
+    return join(createDirectory('grok-full-output-unit-'), 'state.json')
   }
-  it('closes descriptor zero after a complete read', () => {
-    const io = ioFixture()
-    expect(readGrokWorkflowManifest('native', io)).toEqual({})
-    expect(io.close).toHaveBeenCalledExactlyOnceWith(0)
-  })
-  it('preserves a read failure and a close failure together', () => {
-    const io = ioFixture()
-    const readError = new Error('Read failed.')
-    const closeError = new Error('Close failed.')
-    io.read.mockImplementation(() => {
-      throw readError
-    })
-    io.close.mockImplementation(() => {
-      throw closeError
-    })
-    try {
-      readGrokWorkflowManifest('native', io)
-      throw new Error('The native read did not fail.')
-    }
-    catch (error) {
-      expect(error).toBeInstanceOf(AggregateError)
-      if (!(error instanceof AggregateError))
-        throw error
-      expect(error.errors).toEqual([readError, closeError])
-    }
-  })
-  it('closes after a malformed manifest and preserves a close failure', () => {
-    const io = ioFixture()
-    io.read.mockReturnValue('{')
-    const closeError = new Error('Close failed.')
-    io.close.mockImplementation(() => {
-      throw closeError
-    })
-    try {
-      readGrokWorkflowManifest('native', io)
-      throw new Error('The native parse did not fail.')
-    }
-    catch (error) {
-      expect(error).toBeInstanceOf(AggregateError)
-      if (!(error instanceof AggregateError))
-        throw error
-      expect(error.errors[0]).toBeInstanceOf(SyntaxError)
-      expect(error.errors[1]).toBe(closeError)
-    }
-  })
-  it('retains a close failure after a successful read', () => {
-    const io = ioFixture()
-    const error = new Error('Close failed.')
-    io.close.mockImplementation(() => {
-      throw error
-    })
-    expect(() => readGrokWorkflowManifest('native', io)).toThrow(error)
-  })
-  it('does not close a descriptor that did not open', () => {
-    const io = ioFixture()
-    const error = new Error('Open failed.')
-    io.open.mockImplementation(() => {
-      throw error
-    })
-    expect(() => readGrokWorkflowManifest('native', io)).toThrow(error)
-    expect(io.close).not.toHaveBeenCalled()
-  })
-  it('reads a complete native file and reports malformed or absent full tool output', () => {
-    const root = createDirectory('grok-full-output-unit-')
-    const path = join(root, 'state.json')
+
+  /** The refusal of `readNativeToolOutputFile` for an entry that is not a regular file within the limit. */
+  const REFUSED = 'The native full tool output requires a complete regular file within the read limit.'
+
+  it('reads a complete native file', () => {
+    const path = manifestPath()
     writeFileSync(path, JSON.stringify(manifest('complete', 'answer42')))
     expect(readGrokWorkflowManifest(path)).toEqual(manifest('complete', 'answer42'))
+  })
+  it('fails with a SyntaxError on a manifest that Grok has not finished writing', () => {
+    const path = manifestPath()
     writeFileSync(path, '{')
     expect(() => readGrokWorkflowManifest(path)).toThrow(SyntaxError)
-    rmSync(path)
-    expect(() => readGrokWorkflowManifest(path)).toThrow(expect.objectContaining({ code: 'ENOENT' }))
   })
-  it('rejects a large native file and a symbolic full tool output', () => {
-    const root = createDirectory('grok-full-output-unit-')
-    const path = join(root, 'state.json')
-    writeFileSync(path, 'x'.repeat(512 * 1024 + 1))
-    expect(() => readGrokWorkflowManifest(path)).toThrow('file limit')
-    const link = join(root, 'link.json')
+  it('fails with ENOENT on a manifest that Grok has not written yet', () => {
+    expect(() => readGrokWorkflowManifest(manifestPath())).toThrow(expect.objectContaining({ code: 'ENOENT' }))
+  })
+  it('reads a manifest of exactly the byte limit', () => {
+    const path = manifestPath()
+    // A JSON string adds its two quotes to the text.
+    const text = 'x'.repeat(512 * 1024 - 2)
+    writeFileSync(path, JSON.stringify(text))
+    expect(readGrokWorkflowManifest(path)).toBe(text)
+  })
+  it('rejects a manifest one byte above the limit', () => {
+    const path = manifestPath()
+    writeFileSync(path, JSON.stringify('x'.repeat(512 * 1024 - 1)))
+    expect(() => readGrokWorkflowManifest(path)).toThrow(REFUSED)
+  })
+  it('rejects a directory in place of the manifest', () => {
+    const path = manifestPath()
+    mkdirSync(path)
+    expect(() => readGrokWorkflowManifest(path)).toThrow(REFUSED)
+  })
+  // The target is a valid manifest, so only the refusal of the link can fail the read. Windows has no O_NOFOLLOW, and
+  // an open there follows the link, so the refusal must not come from the open.
+  it('rejects a symbolic link to a valid manifest on every platform', () => {
+    const path = manifestPath()
+    writeFileSync(path, JSON.stringify(manifest('complete', 'answer42')))
+    const link = join(dirname(path), 'link.json')
     symlinkSync(path, link)
-    // POSIX opens the manifest with O_NOFOLLOW, so the link itself fails with ELOOP. Windows has no O_NOFOLLOW: the
-    // open follows the link to the large file, and only the size check refuses it.
-    expect(() => readGrokWorkflowManifest(link)).toThrow(process.platform === 'win32' ? 'file limit' : expect.objectContaining({ code: 'ELOOP' }))
+    expect(() => readGrokWorkflowManifest(link)).toThrow(REFUSED)
   })
 })
 
