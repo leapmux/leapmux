@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { randomUUID } from 'node:crypto'
+import { uniqueMarker } from './shellArguments'
 
 /**
  * The largest number of elements that a reader could see at one moment of a navigation, for a check that a page
@@ -67,7 +67,7 @@ export function installVisibleCountRecorder(scope: VisibleCountScope, key: strin
 export async function maxVisibleCountDuring(page: Page, scope: VisibleCountScope, navigate: () => Promise<void>): Promise<number> {
   if (scope.container.trim() === '' || scope.item.trim() === '')
     throw new Error('A visible count needs a container selector and an item selector.')
-  const key = `__e2eVisibleCount_${randomUUID().replaceAll('-', '')}`
+  const key = `__e2eVisibleCount_${uniqueMarker()}`
   const source = `(${installVisibleCountRecorder.toString()})(${JSON.stringify(scope)}, ${JSON.stringify(key)})`
   const cdp = await page.context().newCDPSession(page)
   try {

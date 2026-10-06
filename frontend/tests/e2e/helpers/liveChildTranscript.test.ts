@@ -18,6 +18,7 @@ import { MOCK_MODEL_IDS, MOCK_MODELS } from './mockAgentEnvironment'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { bashToolCall, ohMyPiYieldToolCall, readToolCall } from './providerToolCalls'
+import { uniqueMarker } from './shellArguments'
 
 type RowKind = 'user' | 'assistant' | 'tool'
 
@@ -802,7 +803,7 @@ describe('expectChildToolOutputDeferred', () => {
   let marker = ''
 
   beforeEach(() => {
-    marker = `NATIVECHILDREAD${crypto.randomUUID().replaceAll('-', '')}`
+    marker = uniqueMarker('NATIVECHILDREAD')
     browser.tabs = new Map<string, FakeRow[]>([[PARENT_TAB, []], [CHILD_AGENT, [{ kind: 'user', text: CHILD_TASK }]]])
     browser.selected = PARENT_TAB
     browser.childAgentId = CHILD_AGENT

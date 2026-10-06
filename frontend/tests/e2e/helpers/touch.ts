@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
-import { randomUUID } from 'node:crypto'
 import { devices, expect } from '@playwright/test'
 import { settleFrames } from './frames'
+import { uniqueMarker } from './shellArguments'
 
 /**
  * Real touch input for the E2E specs, plus the device metrics that give Blink a coarse pointer.
@@ -152,7 +152,7 @@ export interface RecordedClicks {
  * the record.
  */
 export async function recordClicks(page: Pick<Page, 'evaluate'>): Promise<RecordedClicks> {
-  const key = `__e2eRecordedClicks_${randomUUID().replaceAll('-', '')}`
+  const key = `__e2eRecordedClicks_${uniqueMarker()}`
   await page.evaluate((name) => {
     const record: string[] = []
     Object.defineProperty(window, name, { value: record, configurable: true })
