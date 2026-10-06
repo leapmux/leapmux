@@ -18,6 +18,7 @@ import { cssAttributeValue } from './cssAttribute'
 import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
 import { E2E_BROWSER_HOST } from './server'
 import { readEntry, storageKeys, writeEntry } from './storage'
+import { terminalXterm } from './terminal'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 
 /** Read immediate locator visibility. Return false when the read fails. */
@@ -955,13 +956,26 @@ export async function waitForActiveTabContext(page: Page) {
 }
 
 /**
- * Open a terminal through the tab-bar button. Wait for the active tab directory first.
- * The handler reads the directory synchronously. If absent, it opens a directory dialog without retrying.
- * An early click therefore creates no terminal, and later terminal assertions would time out.
+ * Open a terminal through the tab-bar button, wait until its xterm shows, and return the ID of the new terminal.
+ *
+ * - Wait for the active tab directory first. The handler reads the directory synchronously. If absent, it opens a
+ *   directory dialog without retrying, so an early click creates no terminal.
+ * - The new terminal is the terminal tab that was not there before the click. The tab list is optimistic state, so
+ *   the wait then requires the xterm of THAT terminal: a bare `.xterm` matches each mounted terminal, and a hidden
+ *   terminal tab stays mounted.
  */
-export async function openTerminalViaUI(page: Page) {
+export async function openTerminalViaUI(page: Page): Promise<string> {
   await waitForActiveTabContext(page)
+  const tabIds = () => terminalTabs(page).evaluateAll(tabs => tabs.map(tab => tab.getAttribute('data-tab-id') ?? ''))
+  const before = new Set(await tabIds())
   await page.locator('[data-testid="new-terminal-button"]').click()
+  let opened = ''
+  await expect.poll(async () => {
+    opened = (await tabIds()).find(id => id !== '' && !before.has(id)) ?? ''
+    return opened
+  }, { message: 'the button opens a terminal tab' }).not.toBe('')
+  await expect(terminalXterm(page, opened), 'the new terminal shows its xterm').toBeVisible()
+  return opened
 }
 
 /**
@@ -1968,26 +1982,6 @@ export async function gotoWorkspace(page: Page, token: string, workspaceId: stri
   await openWorkspace(page, workspaceId)
   // Wait for the first tile to mount before the caller changes the layout.
   await tiles(page).first().waitFor()
-}
-
-/**
- * Read the rendered agent-tab titles in the tabbar. Remove text from these child elements:
- * - The close button.
- * - Notifications.
- * - Remote badges.
- * Drag and restore specs use the remaining visible title to verify metadata.
- */
-export async function tabbarAgentLabels(page: Page): Promise<string[]> {
-  return agentTabs(page).evaluateAll(els =>
-    els.map((el) => {
-      const clone = el.cloneNode(true) as HTMLElement
-      // A row's context menu keeps its items in the DOM behind the popover
-      // attribute while closed; they are not part of the label. Strip every
-      // popover alongside the close button and the badges.
-      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"], [popover]').forEach(n => n.remove())
-      return (clone.textContent ?? '').trim()
-    }),
-  )
 }
 
 /** Locate a tab by its hub-side `tab_id`. */

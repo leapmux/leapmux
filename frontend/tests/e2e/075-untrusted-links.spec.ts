@@ -70,7 +70,6 @@ const dialog = (page: Page) => page.locator('dialog[data-testid="untrusted-link-
 test.describe('Untrusted link prompt', () => {
   test('warns before opening a terminal hyperlink whose text names a different address', async ({ page, authenticatedWorkspace }) => {
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
     await waitForTerminalReady(page)
     await recordOpenedUrls(page)
 
@@ -104,7 +103,6 @@ test.describe('Untrusted link prompt', () => {
   // reader to confirm without reading.
   test('opens a terminal hyperlink that spells its own address, with no prompt', async ({ page, authenticatedWorkspace }) => {
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
     await waitForTerminalReady(page)
     await recordOpenedUrls(page)
 

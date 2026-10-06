@@ -163,18 +163,15 @@ test.describe('workspace archive', () => {
     // its content the variable this test cannot control.
     await sendScriptedTurn(page, modelScript)
 
-    await openTerminalViaUI(page)
+    const terminalId = await openTerminalViaUI(page)
     const terminalTab = terminalTabs(page).first()
-    await expect(terminalTab).toBeVisible()
-    const terminalId = await terminalTab.getAttribute('data-tab-id')
-    expect(terminalId).toBeTruthy()
     await typeInTerminal(page, 'echo ARCHIVE_SCREEN_PRESERVED')
     await waitForTerminalText(page, 'ARCHIVE_SCREEN_PRESERVED')
 
     await archiveWorkspaceViaUI(page, workspaceId)
 
     await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.INACTIVE)
-    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId!)).toBe(true)
+    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId)).toBe(true)
     await expect(agentTab).toBeVisible()
     await expect(terminalTab).toBeVisible()
     await agentTab.click()
@@ -196,7 +193,7 @@ test.describe('workspace archive', () => {
 
     await clickWorkspaceMenuItem(page, workspaceId, 'Unarchive')
     await expect.poll(() => agentStatusViaAPI(leapmuxServer, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
-    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId!)).toBe(true)
+    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, workspaceId, terminalId)).toBe(true)
   })
 
   test('should keep file tabs uncloseable in an archived workspace', async ({ page, authenticatedWorkspace }) => {

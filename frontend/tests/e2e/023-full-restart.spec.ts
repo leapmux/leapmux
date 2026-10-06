@@ -1,15 +1,16 @@
-import type { ServerInfo } from './fixtures'
-import { focusActiveTerminal } from './helpers/terminal'
-import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, waitForLayoutSave } from './helpers/ui'
-import { listTerminalsViaAPI } from './helpers/worktree'
+import type { AgentServer } from './helpers/workspace'
+import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
+import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'
+import { listTerminalsViaAPI, terminalExitedViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
 import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Wait for the Worker to store the title before its process stops. */
-async function waitForSavedTerminalTitle(server: Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId'>, workspaceId: string, title: string): Promise<void> {
-  await expect.poll(async () => {
-    const terminals = await listTerminalsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
-    return terminals.map(terminal => terminal.title)
-  }, 'the renamed title must reach the Worker before the restart').toContain(title)
+async function waitForSavedTerminalTitle(server: AgentServer, workspaceId: string, title: string): Promise<void> {
+  await waitForWorkerTabTitle(
+    () => listTerminalsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId),
+    title,
+    'the renamed title must reach the Worker before the restart',
+  )
 }
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -17,13 +18,9 @@ test.describe('Full Hub+Worker Restart', () => {
     // Listen for the layout save before the terminal opens.
     const saved = waitForLayoutSave(page)
 
-    // Open a terminal through the tab bar.
+    // Open a terminal through the tab bar. The helper waits for its tab and its xterm.
     await openTerminalViaUI(page)
-
-    // Wait for the terminal tab and xterm to appear.
-    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    await expect(terminalTab).toBeVisible()
-    await expect(page.locator('.xterm')).toBeVisible()
+    const terminalTab = terminalTabs(page)
 
     // Wait for the layout save to store the tab.
     await saved
@@ -49,7 +46,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await reopenWorkspace(page, authenticatedWorkspace.workspaceId)
 
     // Require the restored terminal tab and its stored title.
-    const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    const restoredTab = terminalTabs(page)
     await expect(restoredTab).toBeVisible()
     await expect(restoredTab).toContainText('My Custom Title')
   })
@@ -57,15 +54,9 @@ test.describe('Full Hub+Worker Restart', () => {
   test('should recover exited terminal title and screen after reloading before worker reconnects', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
     const saved = waitForLayoutSave(page)
 
-    await openTerminalViaUI(page)
-
-    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    await expect(terminalTab).toBeVisible()
-    await expect(page.locator('.xterm')).toBeVisible()
+    const terminalId = await openTerminalViaUI(page)
+    const terminalTab = terminalTabs(page)
     await saved
-
-    const terminalId = await terminalTab.getAttribute('data-tab-id')
-    expect(terminalId).toBeTruthy()
 
     // Rename the tab to store its title.
     await renameTabViaUI(page, terminalTab, 'Recovered Title')
@@ -74,21 +65,11 @@ test.describe('Full Hub+Worker Restart', () => {
     // Layout persistence carries no title, so it cannot establish this receipt.
     await waitForSavedTerminalTitle(separateHubWorker, authenticatedWorkspace.workspaceId, 'Recovered Title')
 
-    await focusActiveTerminal(page)
-    await page.keyboard.type('echo EXITEDRESTORE\n', { delay: 30 })
-    await page.waitForFunction(() => {
-      const getText = Reflect.get(window, '__getActiveTerminalText')
-      if (typeof getText !== 'function')
-        return false
-      const text: unknown = getText()
-      return typeof text === 'string' && text.includes('EXITEDRESTORE')
-    })
+    await typeInTerminal(page, 'echo EXITEDRESTORE')
+    await waitForTerminalText(page, 'EXITEDRESTORE')
 
     await page.keyboard.press('Control+D')
-    await expect.poll(async () => {
-      const terminals = await listTerminalsViaAPI(separateHubWorker.hubUrl, separateHubWorker.adminToken, separateHubWorker.workerId, authenticatedWorkspace.workspaceId)
-      return terminals.find(terminal => terminal.id === terminalId)?.exited
-    }).toBe(true)
+    await expect.poll(() => terminalExitedViaAPI(separateHubWorker, authenticatedWorkspace.workspaceId, terminalId)).toBe(true)
 
     await stopWorker(separateHubWorker)
     await stopHub(separateHubWorker)
@@ -96,19 +77,12 @@ test.describe('Full Hub+Worker Restart', () => {
     await restartHub(separateHubWorker)
 
     await reopenWorkspace(page, authenticatedWorkspace.workspaceId)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+    await expect(terminalTabs(page)).toBeVisible()
 
     await restartWorker(separateHubWorker)
 
-    const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    await expect(restoredTab).toContainText('Recovered Title')
-    await page.waitForFunction(() => {
-      const getText = Reflect.get(window, '__getActiveTerminalText')
-      if (typeof getText !== 'function')
-        return false
-      const text: unknown = getText()
-      return typeof text === 'string' && text.includes('EXITEDRESTORE')
-    })
+    await expect(terminalTabs(page)).toContainText('Recovered Title')
+    await waitForTerminalText(page, 'EXITEDRESTORE')
 
     const restoredLeaf = sidebarLeaves(page, authenticatedWorkspace.workspaceId)
       .and(page.locator(`[data-tab-id="${terminalId}"]:visible`))

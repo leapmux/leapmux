@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { openTerminalViaUI } from './helpers/ui'
+import { activeXterm } from './helpers/terminal'
+import { openTerminalViaUI, terminalTabs } from './helpers/ui'
 
 /** Number of terminals currently holding a live WebGL context. */
 function webglTerminalCount(page: Page): Promise<number> {
@@ -25,16 +26,6 @@ function terminalIds(page: Page): Promise<{ active: string[], hidden: string[] }
   })
 }
 
-/**
- * The xterm surface of the currently-visible terminal. Scoped to the active
- * container because hidden terminal tabs stay mounted (each with its own
- * `.xterm` element on the DOM renderer), so a bare `.xterm` locator matches
- * every open terminal.
- */
-function activeXterm(page: Page) {
-  return page.locator('[data-terminal-id][data-active="true"] .xterm')
-}
-
 test.describe('Terminal WebGL context pool', () => {
   // Only the visible terminal in a tile should hold a WebGL context. Hidden
   // terminal tabs -- which stay mounted -- must NOT each keep their own
@@ -51,12 +42,11 @@ test.describe('Terminal WebGL context pool', () => {
     // Open three terminals in the same tile. Each new terminal becomes the
     // active tab, hiding the previous one.
     await openTerminalViaUI(page)
-    await expect(activeXterm(page)).toBeVisible()
     await openTerminalViaUI(page)
     await openTerminalViaUI(page)
 
-    const terminalTabs = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    await expect(terminalTabs).toHaveCount(3)
+    const terminals = terminalTabs(page)
+    await expect(terminals).toHaveCount(3)
 
     // Exactly one context: only the active terminal. The two hidden tabs are
     // mounted but render via the DOM renderer.
@@ -75,11 +65,11 @@ test.describe('Terminal WebGL context pool', () => {
 
     // Switching tabs must move the single context to whichever terminal is
     // now visible -- never accumulate one per tab.
-    await terminalTabs.nth(0).click()
+    await terminals.nth(0).click()
     await expect(activeXterm(page)).toBeVisible()
     await expect.poll(() => webglTerminalCount(page)).toBe(1)
 
-    await terminalTabs.nth(1).click()
+    await terminals.nth(1).click()
     await expect(activeXterm(page)).toBeVisible()
     await expect.poll(() => webglTerminalCount(page)).toBe(1)
 

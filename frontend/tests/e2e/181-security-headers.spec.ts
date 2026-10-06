@@ -108,8 +108,8 @@ test.describe('security headers', () => {
 
     // The terminal is the directive-sensitive surface: xterm's DOM renderer
     // writes a <style> element's textContent, which style-src governs.
+    // The open waits for the xterm of the new terminal.
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm').first()).toBeVisible()
 
     expect(violations, `the browser refused something the policy should allow:\n${violations.join('\n')}`)
       .toEqual([])

@@ -1,7 +1,8 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { boxCenter, dragSidebarLeafTo } from './helpers/drag'
-import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, sidebarLeafLabels, sidebarLeaves, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { tabbarLabels } from './helpers/tabLabels'
+import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, sidebarLeafLabels, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /**
  * Regression: dragging a tab from a non-active workspace's expanded
@@ -60,7 +61,7 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     // Poll: the title is worker-side metadata, fetched asynchronously after
     // the tab itself renders from the CRDT projection. A one-shot read races
     // that fetch. This still fails if the title never arrives.
-    await expect.poll(() => tabbarAgentLabels(page)).toEqual([wsBTitle])
+    await expect.poll(() => tabbarLabels(page, 'agent')).toEqual([wsBTitle])
 
     // Expand wsA in the sidebar so its tab-tree-leaf mounts and is
     // draggable. Clicking the chevron fires `onExpandWorkspace`, which
@@ -89,7 +90,7 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     // pre-fix bug would have collapsed the moved one to a bare
     // "Agent" (tabbar fallback) and its sidebar row to the nanoid.
     await expectAgentTabCount(page, 2)
-    const tabbarTitles = await tabbarAgentLabels(page)
+    const tabbarTitles = await tabbarLabels(page, 'agent')
     expect(new Set(tabbarTitles)).toEqual(new Set([wsATitle, wsBTitle]))
     expect(tabbarTitles).not.toContain(wsAAgentId)
     expect(tabbarTitles).not.toContain('Agent')

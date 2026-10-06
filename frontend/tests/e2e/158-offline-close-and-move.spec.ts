@@ -2,8 +2,9 @@ import { openAgentViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { nativeAgentsByIds } from './helpers/nativeScenario'
+import { tabbarLabels } from './helpers/tabLabels'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
-import { expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, tabById, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -65,7 +66,7 @@ test.describe('Offline close and cross-workspace move', () => {
           await expectAgentTabCount(page, 2)
           // Poll: titles are Worker-side metadata fetched after the tab itself
           // renders from the CRDT projection, so a one-shot read races the fetch.
-          await expect.poll(async () => (await tabbarAgentLabels(page)).sort())
+          await expect.poll(async () => (await tabbarLabels(page, 'agent')).sort())
             .toEqual([closeTitle, moveTitle].sort())
 
           // Both agents are live on the Worker before we kill it -- otherwise the

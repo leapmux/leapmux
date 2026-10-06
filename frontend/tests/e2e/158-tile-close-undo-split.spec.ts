@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { agentTabs, expectAgentTabCount, tabbarAgentLabels, tiles } from './helpers/ui'
+import { tabbarLabels } from './helpers/tabLabels'
+import { agentTabs, expectAgentTabCount, tiles } from './helpers/ui'
 
 /**
  * Regression: closing one of two SPLIT children used to leave the
@@ -38,8 +39,8 @@ test.describe('Tile close undo-split', () => {
     // against the real title that arrived in between. Wait for hydration, which
     // is what "with full metadata intact" needs anyway.
     await expect(tiles(page)).toHaveCount(1)
-    await expect.poll(async () => (await tabbarAgentLabels(page))[0]).not.toBe('Agent')
-    const initialLabels = await tabbarAgentLabels(page)
+    await expect.poll(async () => (await tabbarLabels(page, 'agent'))[0]).not.toBe('Agent')
+    const initialLabels = await tabbarLabels(page, 'agent')
     expect(initialLabels).toHaveLength(1)
     const seededTabId = authenticatedWorkspace.agentId
     await expect(agentTabs(page).first()).toHaveAttribute('data-tab-id', seededTabId)
@@ -64,7 +65,7 @@ test.describe('Tile close undo-split', () => {
     // LEAF), and the tab is rendered on the merged tile.
     await expect(tiles(page)).toHaveCount(1)
     await expectAgentTabCount(page, 1)
-    const afterCloseLabels = await tabbarAgentLabels(page)
+    const afterCloseLabels = await tabbarLabels(page, 'agent')
     expect(afterCloseLabels).toEqual(initialLabels)
     const survivingTabId = await agentTabs(page)
       .first()
@@ -84,7 +85,7 @@ test.describe('Tile close undo-split', () => {
     // The reload wiped the metadata store, so the title has to be re-fetched
     // from the worker; the tab itself renders from the CRDT projection first.
     // Poll rather than snapshot, exactly as above.
-    await expect.poll(() => tabbarAgentLabels(page)).toEqual(initialLabels)
+    await expect.poll(() => tabbarLabels(page, 'agent')).toEqual(initialLabels)
     const reloadTabId = await agentTabs(page)
       .first()
       .getAttribute('data-tab-id')

@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
-import { focusActiveTerminal, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
-import { openTerminalViaUI, waitForLayoutSave } from './helpers/ui'
-import { listTerminalsViaAPI } from './helpers/worktree'
+import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
+import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
+import { listTerminalsViaAPI, terminalExitedViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
 
 test.describe('Terminal', () => {
   // Closing a terminal that is running something is the case the close guard
@@ -10,7 +10,6 @@ test.describe('Terminal', () => {
   // tells a user nothing they can act on.
   test('warns before closing a terminal that is still running a process', async ({ page, authenticatedWorkspace }) => {
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
     await waitForTerminalReady(page)
 
     // Backgrounded on purpose: a foreground-process-group probe cannot see this,
@@ -18,7 +17,7 @@ test.describe('Terminal', () => {
     await typeInTerminal(page, 'sleep 120 &')
     await waitForTerminalText(page, 'sleep 120')
 
-    const tab = page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible').first()
+    const tab = visibleOnly(terminalTabs(page)).first()
     await tab.locator('[data-testid="tab-close"]').click()
 
     const dialog = page.locator('dialog[data-testid="busy-tab-close-dialog"]')
@@ -29,26 +28,25 @@ test.describe('Terminal', () => {
     // Cancel keeps the tab: a guard that closed anyway would be worse than none.
     await dialog.getByTestId('busy-tab-close-cancel').click()
     await expect(dialog).toBeHidden()
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(1)
+    await expect(visibleOnly(terminalTabs(page))).toHaveCount(1)
 
     // Then the override. `danger` makes it a two-click ConfirmButton.
     await tab.locator('[data-testid="tab-close"]').click()
     await expect(page.locator('dialog[data-testid="busy-tab-close-dialog"]')).toBeVisible()
     await page.getByTestId('busy-tab-close-confirm').click()
     await page.getByRole('button', { name: 'Confirm?' }).click()
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(0)
+    await expect(visibleOnly(terminalTabs(page))).toHaveCount(0)
   })
 
   // The mirror. A guard that prompted for every close would pass the test above
   // and make the app unusable.
   test('closes an idle terminal with no prompt', async ({ page, authenticatedWorkspace }) => {
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
     await waitForTerminalReady(page)
 
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible').first().locator('[data-testid="tab-close"]').click()
+    await visibleOnly(terminalTabs(page)).first().locator('[data-testid="tab-close"]').click()
 
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(0)
+    await expect(visibleOnly(terminalTabs(page))).toHaveCount(0)
     await expect(page.locator('dialog[data-testid="busy-tab-close-dialog"]')).toBeHidden()
   })
 
@@ -57,40 +55,34 @@ test.describe('Terminal', () => {
     await openTerminalViaUI(page)
 
     // Verify terminal tab appears in the unified tab bar
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+    await expect(terminalTabs(page)).toBeVisible()
 
     // Verify xterm element is rendered
-    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(activeXterm(page)).toBeVisible()
   })
 
   test('should preserve terminal content when switching between tabs', async ({ page, authenticatedWorkspace }) => {
     // Open terminal 1 and type a marker
     await openTerminalViaUI(page)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
-    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(terminalTabs(page)).toBeVisible()
     await typeInTerminal(page, 'echo TERM1MARKER')
     await waitForTerminalText(page, 'TERM1MARKER')
 
-    // Open terminal 2 and type a marker
+    // Open terminal 2 and type a marker. The helper waits for the xterm of the
+    // new terminal, so the typing reaches it.
     await openTerminalViaUI(page)
-    // Wait for the second terminal tab to appear
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]').nth(1)).toBeVisible()
-    // Wait for the new terminal to render
-    await page.waitForTimeout(500)
+    await expect(terminalTabs(page)).toHaveCount(2)
     await typeInTerminal(page, 'echo TERM2MARKER')
     await waitForTerminalText(page, 'TERM2MARKER')
 
-    // Switch back to terminal 1 tab (first terminal tab) using data-testid
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"]').first().click()
-    await page.waitForTimeout(1000)
-
-    // Terminal 1 content should be visible -- read from the active container
-    await waitForTerminalText(page, 'TERM1MARKER', 30_000)
+    // Switch back to terminal 1 tab (first terminal tab). The text wait reads
+    // the active container and retries until the switch lands.
+    await terminalTabs(page).first().click()
+    await waitForTerminalText(page, 'TERM1MARKER')
 
     // Switch back to terminal 2 tab (second terminal tab)
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"]').nth(1).click()
-    await page.waitForTimeout(1000)
-    await waitForTerminalText(page, 'TERM2MARKER', 30_000)
+    await terminalTabs(page).nth(1).click()
+    await waitForTerminalText(page, 'TERM2MARKER')
   })
 
   test('should keep xterm in alt-screen after page refresh once the ring has wrapped', async ({ page, authenticatedWorkspace }) => {
@@ -103,14 +95,13 @@ test.describe('Terminal', () => {
 
     const saved = waitForLayoutSave(page)
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
     await saved
 
     // Toggle alt-screen, paint a sentinel, then push ~150 KB of
     // filler. `yes ... | head -c N` is portable across macOS and Linux
     // and emits printable bytes (no null pollution in xterm).
     await typeInTerminal(page, 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_FILLING\\n\'')
-    await waitForTerminalText(page, 'DONE_FILLING', 30_000)
+    await waitForTerminalText(page, 'DONE_FILLING')
 
     const getBufferType = () =>
       page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
@@ -121,9 +112,9 @@ test.describe('Terminal', () => {
     expect(await getBufferType()).toBe('alternate')
 
     await page.reload()
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"]').click()
-    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(terminalTabs(page)).toBeVisible()
+    await terminalTabs(page).click()
+    await expect(activeXterm(page)).toBeVisible()
 
     // The sentinel itself is gone — it fell out of the ring along with
     // the alt-screen toggle. What we CAN verify is the buffer type:
@@ -140,7 +131,6 @@ test.describe('Terminal', () => {
 
     // Open a terminal via the tab bar
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
 
     // Wait for the layout save to complete so the terminal tab is persisted
     await saved
@@ -154,11 +144,11 @@ test.describe('Terminal', () => {
 
     // Terminal tab should be restored automatically (no mode switch needed)
     // Click on the terminal tab to activate it
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"]').click()
+    await expect(terminalTabs(page)).toBeVisible()
+    await terminalTabs(page).click()
 
     // Verify xterm is visible (terminal restored from worker)
-    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(activeXterm(page)).toBeVisible()
 
     // Verify screen content was restored
     await waitForTerminalText(page, 'SCREENRESTORE')
@@ -167,38 +157,36 @@ test.describe('Terminal', () => {
   test('should terminate shell in worker when terminal tab is closed', async ({ page, authenticatedWorkspace }) => {
     // Open a terminal via the tab bar
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
 
     // Close the terminal tab (click the x button on the terminal tab)
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"] [data-testid="tab-close"]').first().click()
+    await terminalTabs(page).locator('[data-testid="tab-close"]').first().click()
 
     // Verify no terminal tabs remain
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).not.toBeVisible()
+    await expect(terminalTabs(page)).not.toBeVisible()
 
     // Refresh the page
     await page.reload()
 
     // Verify no terminal tabs appear (worker killed the shell)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).not.toBeVisible()
+    await expect(terminalTabs(page)).not.toBeVisible()
   })
 
-  test('should keep terminal tab but stop input after shell exits via "exit"', async ({ page, authenticatedWorkspace }) => {
+  test('should keep terminal tab but stop input after shell exits via "exit"', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     // Open a terminal via the tab bar
-    await openTerminalViaUI(page)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
-    await expect(page.locator('.xterm')).toBeVisible()
+    const terminalId = await openTerminalViaUI(page)
+    await expect(terminalTabs(page)).toBeVisible()
 
     // Type "exit" to terminate the shell
     await typeInTerminal(page, 'exit')
 
-    // Wait a moment for the exit notification to arrive
-    await page.waitForTimeout(2000)
+    // Wait until the Worker reports the shell as exited.
+    await expect.poll(() => terminalExitedViaAPI(leapmuxServer, authenticatedWorkspace.workspaceId, terminalId)).toBe(true)
 
     // The terminal tab should still be visible (not removed)
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+    await expect(terminalTabs(page)).toBeVisible()
 
     // The xterm should still be visible (shows final output)
-    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(activeXterm(page)).toBeVisible()
 
     // Verify the terminal no longer accepts input: type something and
     // confirm it does NOT appear in the terminal output
@@ -212,8 +200,8 @@ test.describe('Terminal', () => {
     // Closing the tab manually should work.
     // Use dispatchEvent to avoid Playwright actionability timeout issues
     // when xterm's helper textarea holds focus after the shell exited.
-    await page.locator('[data-testid="tab"][data-tab-type="terminal"] [data-testid="tab-close"]').dispatchEvent('click')
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).not.toBeVisible()
+    await terminalTabs(page).locator('[data-testid="tab-close"]').dispatchEvent('click')
+    await expect(terminalTabs(page)).not.toBeVisible()
   })
 
   test('should resize terminal to fit panel dimensions', async ({ page, authenticatedWorkspace }) => {
@@ -222,50 +210,32 @@ test.describe('Terminal', () => {
 
     // Open a terminal via the tab bar
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
 
     // Wait for xterm to initialize with rows
-    let initialRows = 0
-    await expect(async () => {
-      initialRows = await page.evaluate(() => {
-        if (typeof (window as any).__getActiveTerminalRows === 'function') {
-          return (window as any).__getActiveTerminalRows() as number
-        }
-        return 0
-      })
-      expect(initialRows).toBeGreaterThan(0)
-    }).toPass()
+    await expect.poll(() => getTerminalRows(page)).toBeGreaterThan(0)
+    const initialRows = await getTerminalRows(page)
 
     // Resize viewport much larger
     await page.setViewportSize({ width: 1600, height: 1000 })
 
     // Poll until row count increases (ResizeObserver + fit needs time)
-    await expect(async () => {
-      const newRows = await page.evaluate(() => {
-        if (typeof (window as any).__getActiveTerminalRows === 'function') {
-          return (window as any).__getActiveTerminalRows() as number
-        }
-        return 0
-      })
-      expect(newRows).toBeGreaterThan(initialRows)
-    }).toPass()
+    await expect.poll(() => getTerminalRows(page)).toBeGreaterThan(initialRows)
   })
 
   test('switching back into a hidden terminal keeps prior content without a blank frame', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
     await typeInTerminal(page, 'echo KEEP_ON_SWITCH')
     await waitForTerminalText(page, 'KEEP_ON_SWITCH')
 
     // Cover with the workspace's existing agent tab — demotion must clear nothing.
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
     await agentTab.click()
     await expect(agentTab).toHaveAttribute('aria-selected', 'true')
 
     // Queue output while hidden, then switch back and assert both markers without
     // an intervening empty read (retained buffer + ring catch-up).
-    const termTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]').first()
+    const termTab = terminalTabs(page).first()
     await termTab.click()
     await typeInTerminal(page, 'sleep 0.5; echo HIDDEN_OUTPUT')
     await agentTab.click()
@@ -296,14 +266,10 @@ test.describe('Terminal', () => {
    * browser cleaned the title or showed the text the user typed.
    */
   test('a sidebar rename stores the cleaned title on the worker', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTerminalViaUI(page)
+    const terminalId = await openTerminalViaUI(page)
+    const terminalTab = terminalTabs(page)
 
-    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-    await expect(terminalTab).toBeVisible()
-    const terminalId = await terminalTab.getAttribute('data-tab-id')
-    expect(terminalId).toBeTruthy()
-
-    const leaf = page.locator(`[data-testid="tab-tree-leaf"][data-tab-id="${terminalId}"]:visible`)
+    const leaf = visibleOnly(sidebarLeaves(page, authenticatedWorkspace.workspaceId).and(page.locator(`[data-tab-id="${terminalId}"]`)))
     await leaf.dblclick()
     const renameInput = leaf.locator('input')
     // Settle the editor BEFORE typing into it, and commit from the keyboard.
@@ -326,9 +292,10 @@ test.describe('Terminal', () => {
     expect(await terminalTab.textContent()).not.toContain('Build \t $watcher')
 
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    await expect.poll(async () => {
-      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
-      return terminals.map(t => t.title)
-    }, 'the sidebar rename must reach the worker, holding the cleaned title').toContain('Build $watcher "1"')
+    await waitForWorkerTabTitle(
+      () => listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId),
+      'Build $watcher "1"',
+      'the sidebar rename must reach the worker, holding the cleaned title',
+    )
   })
 })

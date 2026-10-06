@@ -1,17 +1,8 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { tabbarLabels } from './helpers/tabLabels'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
-import { openTerminalViaUI, waitForWorkspaceReady } from './helpers/ui'
-
-/** Terminal tab label text with chrome nodes stripped. */
-async function terminalTabLabel(page: Page, index: number): Promise<string> {
-  return page.locator('[data-testid="tab"][data-tab-type="terminal"]').nth(index).evaluate((el) => {
-    const clone = el.cloneNode(true) as HTMLElement
-    clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-progress"]').forEach(n => n.remove())
-    return (clone.textContent ?? '').trim()
-  })
-}
+import { agentTabs, openTerminalViaUI, terminalTabs, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Terminal signals while backgrounded', () => {
   test('bell, title, and OSC 9 reach a hidden terminal tab', async ({ page, authenticatedWorkspace }) => {
@@ -19,16 +10,14 @@ test.describe('Terminal signals while backgrounded', () => {
     await waitForWorkspaceReady(page)
 
     await openTerminalViaUI(page)
-    const termTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]').first()
-    await expect(termTab).toBeVisible()
-    await expect(page.locator('.xterm')).toBeVisible()
+    const termTab = terminalTabs(page).first()
 
     // Seed a marker so we can prove the screen is still current after switch-back.
     await typeInTerminal(page, 'echo SIGMARKER')
     await waitForTerminalText(page, 'SIGMARKER')
 
     // Cover the terminal with the workspace's existing agent tab.
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
     await agentTab.click()
     await expect(agentTab).toHaveAttribute('aria-selected', 'true')
 
@@ -63,8 +52,10 @@ test.describe('Terminal signals while backgrounded', () => {
     await expect(page.locator('[role="tooltip"]').filter({ hasText: 'newtitle' })).toBeVisible()
 
     // ...and the label is still the name the worker assigned, which is the
-    // half of the rule that keeps a user's rename from being clobbered.
-    expect(await terminalTabLabel(page, 0)).toMatch(/^Terminal /)
+    // half of the rule that keeps a user's rename from being clobbered. The
+    // whole label must be that name: the label reader strips the chrome of the
+    // tab, its closed menu included, so no other text can satisfy the check.
+    expect((await tabbarLabels(page, 'terminal'))[0]).toMatch(/^Terminal [A-Z][A-Za-z]+$/)
 
     // OSC 9 badges (already) and toasts when OS notifications are not opted in.
     await expectToastRecorded(page, 'hi')

@@ -38,6 +38,7 @@ import {
   focusComposer,
   isMaybeVisible,
   offeredSettingsOptions,
+  openTerminalViaUI,
   openWorkspaceRowMenu,
   platformModifier,
   questionPagination,
@@ -1317,6 +1318,46 @@ describe('waitForAgentStarted', () => {
     const { root, log } = fakeTree((_expression, path) => path !== composer)
     await expect(waitForAgentStarted(root)).rejects.toThrow('the agent tab shows its composer')
     expect(log).toEqual([`to.be.visible ${composer}`])
+  })
+})
+
+describe('openTerminalViaUI', () => {
+  /** A page whose terminal tabs are `t-1` before the click and `idsAfterClick` after it. */
+  function terminalPage(log: string[], idsAfterClick: string[], xtermShows = true): Page {
+    let clicked = false
+    return opaqueHandle<Page>({
+      locator: (selector: string) => {
+        if (selector === '[data-working-dir]:not([data-working-dir=""])') {
+          return opaqueHandle<PlaywrightLocator>({ first: () => opaqueHandle<PlaywrightLocator>({ waitFor: async () => {
+            log.push('directory known')
+          } }) })
+        }
+        if (selector === '[data-testid="tab"][data-tab-type="terminal"]')
+          return opaqueHandle<PlaywrightLocator>({ evaluateAll: (async () => clicked ? idsAfterClick : ['t-1']) as unknown as PlaywrightLocator['evaluateAll'] })
+        if (selector === '[data-testid="new-terminal-button"]') {
+          return opaqueHandle<PlaywrightLocator>({ click: async () => {
+            log.push('click')
+            clicked = true
+          } })
+        }
+        log.push(`xterm of ${selector}`)
+        return assertingLocator('xterm', log, () => xtermShows)
+      },
+    })
+  }
+
+  it('clicks once the directory is known, and waits for the xterm of the terminal that the click added', async () => {
+    const log: string[] = []
+    await expect(openTerminalViaUI(terminalPage(log, ['t-1', 't-2']))).resolves.toBe('t-2')
+    expect(log).toEqual(['directory known', 'click', 'xterm of [data-terminal-id="t-2"] .xterm', 'xterm:to.be.visible'])
+  })
+
+  it('finds the new terminal by ID, wherever the tab bar places it', async () => {
+    await expect(openTerminalViaUI(terminalPage([], ['t-0', 't-1']))).resolves.toBe('t-0')
+  })
+
+  it('fails when the new terminal shows no xterm', async () => {
+    await expect(openTerminalViaUI(terminalPage([], ['t-1', 't-2'], false))).rejects.toThrow('the new terminal shows its xterm')
   })
 })
 

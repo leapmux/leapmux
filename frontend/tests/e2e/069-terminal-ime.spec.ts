@@ -84,8 +84,8 @@ async function composeInTerminal(cdp: CDPSession, compositions: Composition[]): 
  * — land in xterm.
  */
 async function openFocusedTerminal(page: Page): Promise<void> {
+  // The open waits for the xterm of the new terminal.
   await openTerminalViaUI(page)
-  await expect(page.locator('.xterm')).toBeVisible()
   await focusActiveTerminal(page)
 }
 

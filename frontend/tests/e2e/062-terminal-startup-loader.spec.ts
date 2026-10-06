@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { openTerminalViaUI } from './helpers/ui'
+import { activeXterm } from './helpers/terminal'
+import { openTerminalViaUI, terminalTabs } from './helpers/ui'
 
 /**
  * Verifies the terminal startup loader: when a new terminal is opened,
@@ -16,13 +17,13 @@ test.describe('Terminal startup loader', () => {
     await openTerminalViaUI(page)
 
     // The terminal tab must appear immediately (sync OpenTerminal response).
-    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+    await expect(terminalTabs(page)).toBeVisible()
 
     // The xterm container should mount once status flips to READY.
     // Backend's WatchEvents catch-up guarantees the READY event reaches
     // a late-subscribing watcher, so this transition is robust to the
     // open/subscribe race that motivated the registry.
-    await expect(page.locator('.xterm')).toBeVisible()
+    await expect(activeXterm(page)).toBeVisible()
     await expect(page.locator('[data-testid="terminal-startup-overlay"]')).not.toBeVisible()
   })
 })
