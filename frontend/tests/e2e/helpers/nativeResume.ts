@@ -1,14 +1,121 @@
-import type { Page } from '@playwright/test'
-import type { AgentChatMessage, AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { Locator, Page } from '@playwright/test'
+import type { AgentChatMessage, AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext, NativeModelTurn } from './nativeScenario'
 import { expect } from '@playwright/test'
+import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMessages'
 import { nativeAgentById, selectedAgentTab } from './nativeScenario'
 import { uniqueMarker } from './shellArguments'
-import { assistantBubbles, userBubbles } from './ui'
+import { assistantBubbles, openMenu, userBubbles } from './ui'
+import { openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
 const RESUME_MARKER = /^[a-f0-9]{32}$/
+
+/** The base test ID of the session menu in the New Agent dialog. */
+const SESSION_MENU = 'session-select-menu'
+
+/**
+ * The label of the pinned row that starts a new session. `SessionSelect.tsx` declares it as `NEW_SESSION_LABEL`, but
+ * that module is a component, which the Playwright process cannot load.
+ */
+const NEW_SESSION_ROW = 'Start a new session'
+
+/**
+ * The label of the pinned row that opens the text box. Only a provider whose session is a file (Pi) states a file
+ * path in it, so either label identifies the row.
+ */
+const TYPE_A_HANDLE_ROW = new RegExp(`^(?:${escapeRegExp(typeAHandleLabel(false))}|${escapeRegExp(typeAHandleLabel(true))})$`)
+
+/**
+ * How the session menu lists the stored session:
+ * - `by-id`: the menu can hold other sessions also, so the scenario finds the row of the stored session by its test ID.
+ * - `sole-session`: the menu holds the stored session and no other session, below its two pinned rows.
+ */
+export type StoredSessionList = 'by-id' | 'sole-session'
+
+/** Locate the session menu of the New Agent dialog. */
+export function sessionMenu(dialog: Locator): Locator {
+  return dialog.getByTestId(SESSION_MENU)
+}
+
+/** Locate the control that opens the session menu. It states the chosen session in `data-value`. */
+export function sessionMenuTrigger(dialog: Locator): Locator {
+  return dialog.getByTestId(`${SESSION_MENU}-trigger`)
+}
+
+/** Open the New Agent dialog for `provider` in `workingDir`, and return the dialog. */
+export async function openNewAgentFor(page: Page, provider: AgentProvider, workingDir: string): Promise<Locator> {
+  if (!workingDir)
+    throw new Error('The New Agent dialog requires a working directory.')
+  await openNewAgentDialog(page)
+  await waitForWorker(page)
+  const dialog = page.getByRole('dialog')
+  await dialog.getByTestId('agent-provider-selector-trigger').click()
+  await page.getByTestId(`agent-provider-option-${provider}`).click()
+  await setWorkingDir(page, workingDir)
+  return dialog
+}
+
+/**
+ * Wait until the session menu holds the session list of the Worker, open it, and return the menu.
+ * The trigger stays disabled until the list for the working directory arrives.
+ */
+export async function openSessionMenu(dialog: Locator): Promise<Locator> {
+  await expect(sessionMenuTrigger(dialog)).toBeEnabled()
+  await openMenu(dialog, SESSION_MENU)
+  return sessionMenu(dialog)
+}
+
+/**
+ * Open the session menu, and return the row of the one session that it offers.
+ *
+ * The menu always shows two pinned rows first: the row that starts a new session, and the row that opens the text
+ * box. So a menu that offers one session holds exactly three rows.
+ */
+export async function openSoleSessionRow(dialog: Locator): Promise<Locator> {
+  const rows = (await openSessionMenu(dialog)).getByRole('menuitemradio')
+  await expect(rows).toHaveCount(3)
+  await expect(rows.first()).toHaveText(NEW_SESSION_ROW)
+  await expect(rows.nth(1)).toHaveText(TYPE_A_HANDLE_ROW)
+  return rows.nth(2)
+}
+
+/** Open the session menu, and return the row of the stored session `sessionId`, as `list` states the menu. */
+export async function openStoredSessionRow(dialog: Locator, sessionId: string, list: StoredSessionList = 'by-id'): Promise<Locator> {
+  if (!sessionId)
+    throw new Error('The stored session row requires the native session ID.')
+  const testId = `loading-menu-option-${sessionId}`
+  if (list === 'sole-session') {
+    const row = await openSoleSessionRow(dialog)
+    await expect(row).toHaveAttribute('data-testid', testId)
+    return row
+  }
+  const row = (await openSessionMenu(dialog)).getByTestId(testId)
+  await expect(row).toBeVisible()
+  return row
+}
+
+/** Choose the session `row`, require the menu to state `sessionId`, and create the agent. */
+export async function createFromSessionRow(dialog: Locator, row: Locator, sessionId: string): Promise<void> {
+  await row.click()
+  await expect(sessionMenuTrigger(dialog)).toHaveAttribute('data-value', sessionId)
+  await dialog.getByRole('button', { name: 'Create' }).click()
+  await expect(dialog.getByRole('heading', { name: 'New Agent' })).toBeHidden()
+}
+
+/** Reopen the stored session `sessionId` of `workingDir` through the session menu of the New Agent dialog. */
+export async function reopenFromSessionPicker(page: Page, options: {
+  provider: AgentProvider
+  workingDir: string
+  sessionId: string
+  list?: StoredSessionList
+}): Promise<void> {
+  const dialog = await openNewAgentFor(page, options.provider, options.workingDir)
+  const row = await openStoredSessionRow(dialog, options.sessionId, options.list)
+  await createFromSessionRow(dialog, row, options.sessionId)
+}
 
 /** The texts of the original turn and of the turn that continues it in the resumed agent. */
 export interface NativeResumeTexts {

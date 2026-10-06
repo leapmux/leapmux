@@ -4,11 +4,9 @@ import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { expectNativeResumeContext } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { deepseekHarnessModelContextText } from './modelContextText'
-import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('keeps prior context in the actual native request after reopening the session', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  const resumed = await exerciseSessionResume(context)
+deepseekHarnessTest('keeps prior context in the actual native request after reopening the session', async ({ native }) => {
+  const resumed = await exerciseSessionResume(native)
   const text = deepseekHarnessModelContextText(resumed.request)
   expect(text).toContain('RESUMEPROMPT')
   expect(text).toContain('RESUMEANSWER')

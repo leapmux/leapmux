@@ -9,6 +9,7 @@ import { JUNIE_ANSWER_TOOL, junieAnswerToolCall, junieSubagentSubmitToolCall, sp
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
+import { junieModelTurns } from './modelTurns'
 
 /**
  * Build the scenario context of Junie, with every field that its native protocol needs.
@@ -21,6 +22,8 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
     provider: AgentProvider.JUNIE,
     textStep: (text: string) => ({ toolCalls: [junieAnswerToolCall(`junie-answer-${randomUUID()}`, text)] }),
     answerToolNames: [JUNIE_ANSWER_TOOL],
+    // Junie compresses the prior exchange into its previous_issue row, and the reader splits it back into turns.
+    readConversationTurns: junieModelTurns,
   }
 }
 

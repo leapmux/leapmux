@@ -3,15 +3,15 @@ import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { expect } from '../fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
+import { stepRequest } from '../helpers/mockModelScript'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
+import { reopenFromSessionPicker } from '../helpers/nativeResume'
 import { nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, loginViaToken, openMenu, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
-import { nativeContext } from './scenarios'
+import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { closeAgentViaAPI, createGitRepo } from '../helpers/worktree'
 
 diracTest.describe('Dirac session resume', () => {
-  const SESSION_MENU = 'session-select-menu'
   const provider: AgentProvider = AgentProvider.DIRAC
   const label = 'Dirac'
   diracTest('reattaches an incomplete task without its prior model context', async ({ page, leapmuxServer, modelScript }) => {
@@ -26,19 +26,20 @@ diracTest.describe('Dirac session resume', () => {
     })
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
-    await page.locator('[data-testid="tab"][data-tab-type="agent"]').filter({ hasText: 'Subject' }).first().click()
+    await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
     const firstAnswer = 'The first answer contains HALIBUT.'
     const diracGate = 'dirac-incomplete-resume'
-    await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-resume-progress', 'progress', firstAnswer)] })
-    await modelScript.queue({ gate: diracGate, text: 'The first task remains incomplete.' })
+    const progressStep = await modelScript.queue(
+      { toolCalls: [diracRespondToolCall('dirac-resume-progress', 'progress', firstAnswer)] },
+      { gate: diracGate, text: 'The first task remains incomplete.' },
+    )
     let sessionId = ''
     let diracGateHeld = false
     try {
       await sendMessage(page, modelScript.prompt('Remember HALIBUT across a resumed session.'))
       const held = await modelScript.waitForGate(diracGate)
       diracGateHeld = true
-      const continued = held.requests.find(request => request.stepIndex === 1)
-      expect(JSON.stringify(continued?.body).includes(firstAnswer)).toBe(true)
+      expect(JSON.stringify(stepRequest(held, progressStep + 1).body)).toContain(firstAnswer)
       await expect.poll(async () => {
         sessionId = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, subjectId))?.agentSessionId ?? ''
         return sessionId
@@ -49,39 +50,24 @@ diracTest.describe('Dirac session resume', () => {
       if (diracGateHeld && (await modelScript.status()).pendingGates.includes(diracGate))
         await modelScript.releaseGate(diracGate)
     }
-    await openNewAgentDialog(page)
-    await waitForWorker(page)
-    const dialog = page.getByRole('dialog')
-    await dialog.getByTestId('agent-provider-selector-trigger').click()
-    await page.getByTestId(`agent-provider-option-${provider}`).click()
-    await setWorkingDir(page, subjectDir)
-    await expect(dialog.getByTestId(`${SESSION_MENU}-trigger`)).toBeEnabled()
-    await openMenu(dialog, SESSION_MENU)
-    const session = dialog.getByTestId(SESSION_MENU).getByTestId(`loading-menu-option-${sessionId}`)
-    await expect(session).toBeVisible()
-    await session.click()
-    await dialog.getByRole('button', { name: 'Create' }).click()
+    await reopenFromSessionPicker(page, { provider, workingDir: subjectDir, sessionId })
     await expect(userBubbles(page).filter({ hasText: 'Remember HALIBUT across a resumed session.' })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: firstAnswer })).toHaveCount(1)
-    await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-resume-second', 'complete', 'I remember HALIBUT.')] })
+    const resumedStep = await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-resume-second', 'complete', 'I remember HALIBUT.')] })
     await sendMessage(page, modelScript.prompt('What was the word from the prior turn?'))
-    const status = await modelScript.waitForSteps(3)
+    await modelScript.waitForSteps(resumedStep + 1)
     await waitForAgentIdle(page)
-    const resumed = status.requests.find(request => request.stepIndex === (2))
-    const resumedBody = JSON.stringify(resumed?.body)
-    expect(resumedBody.includes(firstAnswer)).toBe(false)
-    expect(resumedBody.includes('What was the word from the prior turn?')).toBe(true)
+    const resumedBody = JSON.stringify((await modelScript.requestAt(resumedStep)).body)
+    expect(resumedBody).not.toContain(firstAnswer)
+    expect(resumedBody).toContain('What was the word from the prior turn?')
   })
 })
 
-diracTest('reopens a completed native task with saved Worker rows and no prior model context', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
+diracTest('reopens a completed native task with saved Worker rows and no prior model context', async ({ native, page, modelScript }) => {
+  // The scenario queues its first step at the next index of the script.
   const start = (await modelScript.status()).stepCount
-  const resumed = await exerciseSessionResume(context)
-  const status = await modelScript.status()
-  const initial = status.requests.find(record => record.stepIndex === start)
-  if (!initial)
-    throw new Error('The completed native task reached no first model request.')
+  const resumed = await exerciseSessionResume(native)
+  const initial = await modelScript.requestAt(start)
   const prompt = nativeModelContextText(initial).match(/\bRESUMEPROMPT[a-f0-9]{32}\b/)?.[0]
   const savedAnswers = await assistantBubbles(page).filter({ hasText: 'RESUMEANSWER' }).allTextContents()
   const answer = savedAnswers.join('\n').match(/\bRESUMEANSWER[a-f0-9]{32}\b/)?.[0]

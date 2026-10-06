@@ -1,9 +1,9 @@
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { NativeResumeTexts } from './nativeResume'
-import type { ResumePickerContext, ResumePickerOptions } from './nativeResumePicker'
-import type { NativeModelTurn } from './nativeScenario'
+import type { StoredSessionList } from './nativeResume'
+import type { ResumePickerFixtures, ResumePickerNativeContext, ResumePickerOptions } from './nativeResumePicker'
+import type { ManagedNativeScenarioContext, NativeModelTurn } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -28,10 +28,9 @@ const picker = vi.hoisted(() => ({
   idleTimeouts: [] as (number | undefined)[],
   /** How many reads of the agent list return no session yet. */
   emptySessionReads: 0,
-  menuRows: 3,
-  /** Whether the newest menu row holds the stored session. */
-  newestIsStored: true,
   openOptions: [] as unknown[],
+  /** The arguments of each picker reopen. */
+  reopens: [] as { provider: AgentProvider, workingDir: string, sessionId: string, list?: StoredSessionList }[],
   conversation: [] as { agentId: string, originalAnswerRows: number, originalAnswerBubbles: number | undefined }[],
 }))
 
@@ -56,9 +55,6 @@ vi.mock('./worktree', () => ({
     picker.events.push(`close:${agentId}`)
     return { failureMessage: '' }
   },
-  openNewAgentDialog: async () => { picker.events.push('dialog') },
-  waitForWorker: async () => { picker.events.push('worker-ready') },
-  setWorkingDir: async (_page: Page, path: string) => { picker.events.push(`working-dir:${path.split('/').at(-1)?.split('-').slice(0, 2).join('-')}`) },
 }))
 
 vi.mock('./nativeResume', async importOriginal => ({
@@ -75,6 +71,11 @@ vi.mock('./nativeResume', async importOriginal => ({
   expectResumedConversation: async (_context: unknown, agentId: string, _texts: unknown, originalAnswerRows: number, originalAnswerBubbles?: number) => {
     picker.events.push(`conversation:${agentId}`)
     picker.conversation.push({ agentId, originalAnswerRows, originalAnswerBubbles })
+  },
+  // nativeResume.test.ts proves the picker flow. This file proves what the scenario asks of it.
+  reopenFromSessionPicker: async (_page: Page, options: { provider: AgentProvider, workingDir: string, sessionId: string, list?: StoredSessionList }) => {
+    picker.events.push(`reopen:${options.sessionId}`)
+    picker.reopens.push(options)
   },
 }))
 
@@ -106,7 +107,6 @@ vi.mock('./ui', () => ({
   userBubbles: () => rows(() => picker.userRows),
   loginViaToken: async () => { picker.events.push('login') },
   openWorkspace: async () => { picker.events.push('open-workspace') },
-  openMenu: async (_scope: unknown, base: string) => { picker.events.push(`menu:${base}`) },
   sendMessage: async (_page: Page, text: string) => {
     const prompt = text.slice(PROMPT_MARK.length)
     picker.events.push(`send:${prompt.split(' ')[0]}`)
@@ -131,26 +131,13 @@ vi.mock('./ui', () => ({
 }))
 
 /** A fake locator that records its clicks and answers the chained calls that the scenario makes. */
-function control(label: string, attributes: Record<string, string> = {}): Locator {
+function control(label: string): Locator {
   return Object.assign({} as Locator, {
     resumePickerProbe: 'control',
     label,
-    attributes,
     click: async () => { picker.events.push(`click:${label}`) },
-    getByTestId: (id: string) => control(id, { 'data-testid': id }),
-    getByRole: (role: string, options?: { name?: string }) => role === 'menuitemradio' ? menuRows() : control(options?.name ?? role),
-    locator: (selector: string) => control(selector),
     filter: () => control(label),
     first: () => control(label),
-  })
-}
-
-/** The session menu rows. The stored session is the newest row, the last one. */
-function menuRows() {
-  return Object.assign({} as Locator, {
-    resumePickerProbe: 'menu-rows',
-    readCount: () => picker.menuRows,
-    nth: (index: number) => control(`menu-row-${index}`, { 'data-testid': index === picker.menuRows - 1 && picker.newestIsStored ? `loading-menu-option-${STORED_SESSION}` : `loading-menu-option-other-${index}` }),
   })
 }
 
@@ -159,13 +146,8 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const check = (value: unknown) => {
     if (typeof value !== 'object' || value === null || !('resumePickerProbe' in value))
       return original.expect(value)
-    const label = 'label' in value && typeof value.label === 'string' ? value.label : ''
-    const attributes = 'attributes' in value && typeof value.attributes === 'object' && value.attributes !== null ? value.attributes as Record<string, string> : {}
     const readCount = 'readCount' in value && typeof value.readCount === 'function' ? value.readCount : undefined
     return {
-      toBeVisible: async () => { picker.events.push(`visible:${label}`) },
-      toBeEnabled: async () => { picker.events.push(`enabled:${label}`) },
-      toHaveAttribute: async (name: string, expected: string) => { expect(attributes[name]).toBe(expected) },
       toHaveCount: async (expected: number) => {
         if (!readCount)
           throw new Error('The picker fixture holds no count for this locator.')
@@ -233,11 +215,9 @@ function fakeModelScript(): ModelScript {
   }
 }
 
-function pickerContext(): ResumePickerContext {
+function pickerFixtures(): ResumePickerFixtures {
   const page = Object.assign({} as Page, {
     locator: (selector: string) => control(selector),
-    getByRole: (role: string) => control(role),
-    getByTestId: (id: string) => control(id),
   })
   return {
     page,
@@ -246,8 +226,21 @@ function pickerContext(): ResumePickerContext {
   }
 }
 
-function run(options: Partial<ResumePickerOptions> = {}) {
-  return resumePickerScenario(pickerContext(), { provider: AgentProvider.CODEX, label: 'Unit', ...options })
+/** The `nativeContext` of a Codex-like provider directory, with the provider fields that a test states. */
+function nativeContext(fields: Partial<ManagedNativeScenarioContext> = {}): ResumePickerNativeContext {
+  return async (fixtures) => {
+    picker.events.push(`native-context:${fixtures.workspaceId}`)
+    return { ...fixtures, provider: AgentProvider.CODEX, ...fields }
+  }
+}
+
+/** A text step that changes the original answer, so the resumed request body cannot repeat it. */
+function unrelatedOriginalAnswer(text: string): MockModelStep {
+  return { text: text.startsWith('RESUMEANSWER') ? 'unrelated answer' : text }
+}
+
+function run(options: Partial<ResumePickerOptions> = {}, fields: Partial<ManagedNativeScenarioContext> = {}) {
+  return resumePickerScenario(pickerFixtures(), nativeContext(fields), { label: 'Unit', ...options })
 }
 
 beforeEach(() => {
@@ -260,9 +253,8 @@ beforeEach(() => {
   picker.idleTimeouts.length = 0
   picker.openOptions.length = 0
   picker.conversation.length = 0
+  picker.reopens.length = 0
   picker.emptySessionReads = 0
-  picker.menuRows = 3
-  picker.newestIsStored = true
 })
 
 describe('resumePickerScenario', () => {
@@ -272,6 +264,7 @@ describe('resumePickerScenario', () => {
       'repo:keeper',
       'repo:subject',
       'workspace:Unit',
+      'native-context:unit-workspace',
       'open:Keeper',
       'open:Subject',
       'login',
@@ -284,16 +277,7 @@ describe('resumePickerScenario', () => {
       'list-agents',
       'count-rows:subject-agent',
       `close:${SUBJECT_ID}`,
-      'dialog',
-      'worker-ready',
-      'click:agent-provider-selector-trigger',
-      `click:agent-provider-option-${AgentProvider.CODEX}`,
-      'working-dir:resume-subject',
-      'enabled:session-select-menu-trigger',
-      'menu:session-select-menu',
-      `visible:loading-menu-option-${STORED_SESSION}`,
-      `click:loading-menu-option-${STORED_SESSION}`,
-      'click:Create',
+      `reopen:${STORED_SESSION}`,
       `reopened:${STORED_SESSION}:${KEEPER_ID},${SUBJECT_ID}`,
       'count:1',
       'count:1',
@@ -334,18 +318,18 @@ describe('resumePickerScenario', () => {
     expect(read).toBeGreaterThan(picker.events.lastIndexOf('steps:2'))
   })
 
-  it('hands the original-turn status to onFirstTurn before that turn ends', async () => {
-    const seen: MockModelScenarioStatus[] = []
+  it('hands the original-turn request to onFirstTurn before that turn ends', async () => {
+    const seen: MockModelRequestRecord[] = []
     await run({
-      onFirstTurn: (status) => {
-        seen.push(status)
+      onFirstTurn: (request) => {
+        seen.push(request)
         picker.events.push('first-turn')
       },
     })
     expect(seen).toHaveLength(1)
-    expect(seen[0]?.stepCount).toBe(1)
+    expect(seen[0]?.stepIndex).toBe(0)
     // The first-turn hook sees the request before the turn settles, so it holds no late field.
-    expect(seen[0]?.requests[0]?.body).not.toHaveProperty('stated')
+    expect(seen[0]?.body).not.toHaveProperty('stated')
     expect(picker.events.indexOf('first-turn')).toBeGreaterThan(picker.events.indexOf('steps:1'))
     expect(picker.events.indexOf('first-turn')).toBeLessThan(picker.events.indexOf('idle'))
   })
@@ -365,13 +349,13 @@ describe('resumePickerScenario', () => {
   it('does not run the resumed provider assertion when the original answer is absent from the request body', async () => {
     const providerAssertion = vi.fn()
     // A request body that never repeats the original answer fails the default proof before the provider assertion.
-    await expect(run({ onResumedRequest: providerAssertion, answerStep: (texts, turn) => ({ text: turn === 'original' ? 'unrelated answer' : texts.resumedAnswer }) })).rejects.toThrow()
+    await expect(run({ onResumedRequest: providerAssertion }, { textStep: unrelatedOriginalAnswer })).rejects.toThrow()
     expect(providerAssertion).not.toHaveBeenCalled()
   })
 
   it('accepts a request body without the original answer when the provider keeps its history on a service', async () => {
     const seen = vi.fn()
-    await run({ resumedBodyHoldsOriginalAnswer: false, onResumedRequest: seen, answerStep: (texts, turn) => ({ text: turn === 'original' ? 'unrelated answer' : texts.resumedAnswer }) })
+    await run({ resumedBodyHoldsOriginalAnswer: false, onResumedRequest: seen }, { textStep: unrelatedOriginalAnswer })
     expect(seen).toHaveBeenCalledOnce()
   })
 
@@ -380,52 +364,36 @@ describe('resumePickerScenario', () => {
     expect(picker.events.find(event => event.startsWith('context:'))).toBe('context:[{"role":"assistant","text":"default reader:1"}]')
   })
 
-  it('reads the conversation turns through the reader that the provider gives', async () => {
+  it('reads the conversation turns through the reader of the provider context', async () => {
     const read = vi.fn((request: MockModelRequestRecord): NativeModelTurn[] => [{ role: 'assistant', text: `provider reader:${request.stepIndex}` }])
-    await run({ conversationTurns: read })
+    await run({}, { readConversationTurns: read })
     expect(read).toHaveBeenCalledOnce()
     expect(picker.events.find(event => event.startsWith('context:'))).toBe('context:[{"role":"assistant","text":"provider reader:1"}]')
   })
 
   it('refuses a resumed prompt that reached no model request', async () => {
-    const context = pickerContext()
-    const withoutRequests = async () => ({ ...(await context.modelScript.status()), requests: [] })
+    const fixtures = pickerFixtures()
+    const withoutRequests = async () => ({ ...(await fixtures.modelScript.status()), requests: [] })
     const script: ModelScript = {
-      ...context.modelScript,
+      ...fixtures.modelScript,
       status: withoutRequests,
       waitForSteps: withoutRequests,
       requestAt: async stepIndex => stepRequest(await withoutRequests(), stepIndex),
     }
-    const scenario = resumePickerScenario({ ...context, modelScript: script }, { provider: AgentProvider.CODEX, label: 'Unit' })
+    const scenario = resumePickerScenario({ ...fixtures, modelScript: script }, nativeContext(), { label: 'Unit' })
     await expect(scenario).rejects.toThrow('The model script holds no request for step 1')
     expect(picker.events).not.toContain(`conversation:${REOPENED_ID}`)
   })
 
   describe('session list', () => {
-    it('finds the stored session by its own test id by default', async () => {
+    it('reopens the stored session of the subject directory, and lists it by its id by default', async () => {
       await run()
-      expect(picker.events).toContain(`visible:loading-menu-option-${STORED_SESSION}`)
-      expect(picker.events).toContain(`click:loading-menu-option-${STORED_SESSION}`)
-      expect(picker.events).not.toContain('click:menu-row-2')
+      expect(picker.reopens).toEqual([{ provider: AgentProvider.CODEX, workingDir: expect.stringContaining('/unit/data/resume-subject-'), sessionId: STORED_SESSION }])
     })
 
-    it('clicks the third row when the CLI seeds extra sessions and the stored session is the newest', async () => {
-      await run({ sessionList: 'newest-of-three' })
-      expect(picker.events).toContain('count:3')
-      expect(picker.events).toContain('click:menu-row-2')
-      expect(picker.events).not.toContain(`visible:loading-menu-option-${STORED_SESSION}`)
-    })
-
-    it('refuses a menu that does not hold exactly three options', async () => {
-      picker.menuRows = 2
-      await expect(run({ sessionList: 'newest-of-three' })).rejects.toThrow()
-      expect(picker.events).not.toContain('click:Create')
-    })
-
-    it('refuses a menu whose third row is not the stored session', async () => {
-      picker.newestIsStored = false
-      await expect(run({ sessionList: 'newest-of-three' })).rejects.toThrow()
-      expect(picker.events).not.toContain('click:Create')
+    it('passes the stated session list to the picker', async () => {
+      await run({ sessionList: 'sole-session' })
+      expect(picker.reopens).toEqual([expect.objectContaining({ sessionId: STORED_SESSION, list: 'sole-session' })])
     })
   })
 
@@ -466,16 +434,22 @@ describe('resumePickerScenario', () => {
       expect(picker.events.some(event => event.startsWith('rule:'))).toBe(false)
     })
 
-    it('queues the step that the provider builds for each turn', async () => {
-      const turns: string[] = []
-      await run({
-        answerStep: (texts: NativeResumeTexts, turn) => {
-          turns.push(turn)
-          return { text: turn === 'original' ? texts.originalAnswer : texts.resumedAnswer, toolCalls: [] }
+    it('queues the answer step of the provider context for each turn', async () => {
+      const answers: string[] = []
+      const result = await run({}, {
+        textStep: (text) => {
+          answers.push(text)
+          return { text, toolCalls: [] }
         },
       })
-      expect(turns).toEqual(['original', 'resumed'])
+      expect(answers).toEqual([result.originalAnswer, result.resumedAnswer])
       expect(picker.queued.every(step => step.toolCalls?.length === 0)).toBe(true)
+    })
+
+    it('builds the provider context for the workspace that it opens, before it opens an agent there', async () => {
+      await run()
+      expect(picker.events.indexOf('native-context:unit-workspace')).toBeGreaterThan(picker.events.indexOf('workspace:Unit'))
+      expect(picker.events.indexOf('native-context:unit-workspace')).toBeLessThan(picker.events.indexOf('open:Keeper'))
     })
   })
 

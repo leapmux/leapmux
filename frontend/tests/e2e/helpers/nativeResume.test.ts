@@ -1,19 +1,25 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { AgentChatMessage, AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { NativeMessageSnapshot } from './nativeMessages'
 import type { NativeModelTurn } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   countOriginalAnswerRows,
+  createFromSessionRow,
   expectNativeResumeContext,
   expectReopenedNativeAgent,
   expectResumedAnswerUnmerged,
   expectResumedConversation,
   nativeResumeContextOrder,
   nativeResumeTexts,
+  openNewAgentFor,
+  openSoleSessionRow,
+  openStoredSessionRow,
   reopenedNativeAgentVerdict,
+  reopenFromSessionPicker,
 } from './nativeResume'
 
 /** The poll fixture reads a value at most this many times, as a bounded stand-in for the Playwright timeout. */
@@ -24,6 +30,24 @@ const calls = vi.hoisted(() => ({
   snapshot: vi.fn<(context: unknown, agentId: string) => Promise<NativeMessageSnapshot>>(),
   user: [] as string[],
   assistant: [] as string[],
+}))
+
+/** The New Agent dialog in memory: its browser steps in order, the rows of its session menu, and its chosen session. */
+const dialogState = vi.hoisted(() => ({
+  events: [] as string[],
+  rows: [] as { testId: string, text: string }[],
+  /** The `data-value` of the session menu trigger. */
+  value: '',
+  open: true,
+  /** The session that a click on any row chooses. Absent, a click chooses the session of its own row. */
+  clickChooses: undefined as string | undefined,
+}))
+
+vi.mock('./worktree', async importOriginal => ({
+  ...await importOriginal<typeof import('./worktree')>(),
+  openNewAgentDialog: async () => { dialogState.events.push('dialog') },
+  waitForWorker: async () => { dialogState.events.push('worker') },
+  setWorkingDir: async (_page: Page, path: string) => { dialogState.events.push(`working-dir:${path}`) },
 }))
 
 vi.mock('./nativeScenario', async importOriginal => ({
@@ -50,11 +74,100 @@ vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   assistantBubbles: () => bubbles(() => calls.assistant),
   userBubbles: () => bubbles(() => calls.user),
+  openMenu: async (_scope: unknown, base: string) => { dialogState.events.push(`menu:${base}`) },
 }))
+
+/** A control of the dialog that records its click. The Create button closes the dialog. */
+function dialogControl(label: string): Locator {
+  return Object.assign({} as Locator, {
+    pickerProbe: 'control',
+    click: async () => {
+      dialogState.events.push(`click:${label}`)
+      if (label === 'Create')
+        dialogState.open = false
+    },
+  })
+}
+
+/** The session menu row at `index()`. A click chooses its session, or the session that the test states. */
+function sessionMenuRow(index: () => number): Locator {
+  return Object.assign({} as Locator, {
+    pickerProbe: 'row',
+    index,
+    click: async () => {
+      const row = dialogState.rows[index()]
+      if (!row)
+        throw new Error('The dialog fixture holds no such session menu row.')
+      dialogState.events.push(`click:${row.testId}`)
+      dialogState.value = dialogState.clickChooses ?? row.testId.replace(/^loading-menu-option-/, '')
+    },
+  })
+}
+
+function newAgentDialog(): Locator {
+  const menu = {
+    pickerProbe: 'menu',
+    getByRole: () => ({ pickerProbe: 'rows', first: () => sessionMenuRow(() => 0), nth: (index: number) => sessionMenuRow(() => index) }),
+    getByTestId: (id: string) => sessionMenuRow(() => dialogState.rows.findIndex(row => row.testId === id)),
+  }
+  return Object.assign({} as Locator, {
+    pickerProbe: 'dialog',
+    getByTestId: (id: string) => id === 'session-select-menu-trigger' ? { pickerProbe: 'trigger' } : id === 'session-select-menu' ? menu : dialogControl(id),
+    getByRole: (role: string, options?: { name?: string }) => role === 'heading' ? { pickerProbe: 'heading' } : dialogControl(options?.name ?? role),
+  })
+}
+
+const pickerPage = Object.assign({} as Page, {
+  getByRole: (role: string) => role === 'dialog' ? newAgentDialog() : dialogControl(role),
+  getByTestId: (id: string) => dialogControl(id),
+})
+
+/** Answer each browser assertion of the picker flow from the dialog fixture. */
+function pickerAssertions(value: { pickerProbe: unknown }, message?: string) {
+  const kind = value.pickerProbe
+  const row = () => {
+    const index = 'index' in value && typeof value.index === 'function' ? value.index() as number : -1
+    return dialogState.rows[index]
+  }
+  return {
+    toBeEnabled: async () => {
+      expect(kind, message).toBe('trigger')
+      dialogState.events.push('enabled:session-select-menu-trigger')
+    },
+    toHaveCount: async (expected: number) => {
+      expect(kind, message).toBe('rows')
+      expect(dialogState.rows.length, message).toBe(expected)
+    },
+    toHaveText: async (expected: string | RegExp) => {
+      const text = row()?.text ?? ''
+      if (typeof expected === 'string')
+        expect(text, message).toBe(expected)
+      else
+        expect(text, message).toMatch(expected)
+    },
+    toHaveAttribute: async (name: string, expected: string) => {
+      if (kind === 'trigger' && name === 'data-value')
+        expect(dialogState.value, message).toBe(expected)
+      else if (kind === 'row' && name === 'data-testid')
+        expect(row()?.testId, message).toBe(expected)
+      else
+        throw new Error(`The dialog fixture holds no ${name} for a ${String(kind)}.`)
+    },
+    toBeVisible: async () => {
+      expect(row(), message).toBeDefined()
+    },
+    toBeHidden: async () => {
+      expect(kind, message).toBe('heading')
+      expect(dialogState.open, message).toBe(false)
+    },
+  }
+}
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   const check = (value: unknown, message?: string) => {
+    if (typeof value === 'object' && value !== null && 'pickerProbe' in value)
+      return pickerAssertions(value, message)
     if (typeof value === 'object' && value !== null && 'bubbleProbe' in value && 'count' in value && typeof value.count === 'function') {
       const count = value.count
       return {
@@ -142,7 +255,19 @@ beforeEach(() => {
   vi.resetAllMocks()
   calls.user.length = 0
   calls.assistant.length = 0
+  dialogState.events.length = 0
+  dialogState.rows = []
+  dialogState.value = ''
+  dialogState.open = true
+  dialogState.clickChooses = undefined
 })
+
+const NEW_SESSION = { testId: 'loading-menu-option-', text: 'Start a new session' }
+const TYPE_A_HANDLE = { testId: 'loading-menu-option-\u0000type-a-handle', text: typeAHandleLabel(false) }
+
+function sessionOption(id: string) {
+  return { testId: `loading-menu-option-${id}`, text: `Session ${id}` }
+}
 
 describe('nativeResumeTexts', () => {
   it('builds four texts that each hold the one marker', () => {
@@ -458,5 +583,123 @@ describe('expectResumedAnswerUnmerged', () => {
   it('refuses a merged resumed answer in an external session', async () => {
     calls.assistant.push(`${texts.originalAnswer} ${texts.resumedAnswer}`)
     await expect(expectResumedAnswerUnmerged(context, 'reopened', texts)).rejects.toThrow('The resumed answer bubble must not hold the original answer.')
+  })
+})
+
+describe('openNewAgentFor', () => {
+  it('opens the dialog, chooses the provider, and enters the working directory, in order', async () => {
+    const dialog = await openNewAgentFor(pickerPage, AgentProvider.CODEX, '/project')
+    expect(dialog).toMatchObject({ pickerProbe: 'dialog' })
+    expect(dialogState.events).toEqual([
+      'dialog',
+      'worker',
+      'click:agent-provider-selector-trigger',
+      `click:agent-provider-option-${AgentProvider.CODEX}`,
+      'working-dir:/project',
+    ])
+  })
+
+  it('refuses an empty working directory before it opens the dialog', async () => {
+    await expect(openNewAgentFor(pickerPage, AgentProvider.CODEX, '')).rejects.toThrow('requires a working directory')
+    expect(dialogState.events).toEqual([])
+  })
+})
+
+describe('openSoleSessionRow', () => {
+  it('waits for the session list, then returns the one session below the two pinned rows', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    const row = await openSoleSessionRow(newAgentDialog())
+    await row.click()
+    expect(dialogState.events).toEqual(['enabled:session-select-menu-trigger', 'menu:session-select-menu', 'click:loading-menu-option-stored'])
+  })
+
+  it('accepts the pinned row that also offers a file path, as Pi states it', async () => {
+    dialogState.rows = [NEW_SESSION, { ...TYPE_A_HANDLE, text: typeAHandleLabel(true) }, sessionOption('stored')]
+    await expect(openSoleSessionRow(newAgentDialog())).resolves.toMatchObject({ pickerProbe: 'row' })
+  })
+
+  it('refuses a menu that offers a second session', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored'), sessionOption('other')]
+    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow()
+  })
+
+  it('refuses a menu whose first row is not the row that starts a new session', async () => {
+    dialogState.rows = [sessionOption('stored'), TYPE_A_HANDLE, NEW_SESSION]
+    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow()
+  })
+
+  it('refuses a menu whose second row is not the row that opens the text box', async () => {
+    dialogState.rows = [NEW_SESSION, sessionOption('other'), sessionOption('stored')]
+    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow()
+  })
+})
+
+describe('openStoredSessionRow', () => {
+  it('finds the stored session by its test ID among other sessions by default', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
+    await (await openStoredSessionRow(newAgentDialog(), 'stored')).click()
+    expect(dialogState.events.at(-1)).toBe('click:loading-menu-option-stored')
+  })
+
+  it('refuses a menu that does not offer the stored session', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other')]
+    await expect(openStoredSessionRow(newAgentDialog(), 'stored')).rejects.toThrow()
+  })
+
+  it('refuses a sole session that is not the stored session', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other')]
+    await expect(openStoredSessionRow(newAgentDialog(), 'stored', 'sole-session')).rejects.toThrow()
+  })
+
+  it('accepts the stored session as the sole session', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    await expect(openStoredSessionRow(newAgentDialog(), 'stored', 'sole-session')).resolves.toMatchObject({ pickerProbe: 'row' })
+  })
+
+  it('refuses an empty session ID before it opens the menu', async () => {
+    await expect(openStoredSessionRow(newAgentDialog(), '')).rejects.toThrow('requires the native session ID')
+    expect(dialogState.events).toEqual([])
+  })
+})
+
+describe('createFromSessionRow', () => {
+  it('chooses the row, requires its session in the menu, creates the agent, and waits for the dialog to close', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    const dialog = newAgentDialog()
+    await createFromSessionRow(dialog, await openSoleSessionRow(dialog), 'stored')
+    expect(dialogState.events.slice(-2)).toEqual(['click:loading-menu-option-stored', 'click:Create'])
+    expect(dialogState.open).toBe(false)
+  })
+
+  it('refuses a row whose click chooses another session, before it creates the agent', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    dialogState.clickChooses = 'other'
+    const dialog = newAgentDialog()
+    await expect(createFromSessionRow(dialog, await openSoleSessionRow(dialog), 'stored')).rejects.toThrow()
+    expect(dialogState.events).not.toContain('click:Create')
+  })
+})
+
+describe('reopenFromSessionPicker', () => {
+  it('opens the dialog for the stored session and creates the agent from its row', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
+    await reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: '/project', sessionId: 'stored' })
+    expect(dialogState.events).toEqual([
+      'dialog',
+      'worker',
+      'click:agent-provider-selector-trigger',
+      `click:agent-provider-option-${AgentProvider.GEMINI_CLI}`,
+      'working-dir:/project',
+      'enabled:session-select-menu-trigger',
+      'menu:session-select-menu',
+      'click:loading-menu-option-stored',
+      'click:Create',
+    ])
+  })
+
+  it('requires the sole session when the list states it', async () => {
+    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
+    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: '/project', sessionId: 'stored', list: 'sole-session' })).rejects.toThrow()
+    expect(dialogState.events).not.toContain('click:Create')
   })
 })

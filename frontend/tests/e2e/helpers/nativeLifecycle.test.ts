@@ -26,10 +26,7 @@ const resume = vi.hoisted(() => ({
   open: vi.fn<() => Promise<string>>(),
   close: vi.fn<() => Promise<{ failureMessage: string }>>(),
   directory: vi.fn<(prefix: string) => string>(),
-  dialog: vi.fn<() => Promise<void>>(),
-  worker: vi.fn<() => Promise<void>>(),
-  workingDir: vi.fn<(page: Page, path: string) => Promise<void>>(),
-  menu: vi.fn<() => Promise<void>>(),
+  picker: vi.fn<(page: Page, options: { provider: AgentProvider, workingDir: string, sessionId: string }) => Promise<void>>(),
   countRows: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalAnswer'>) => Promise<number>>(),
   reopen: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, stored: NativeResumeIdentity, earlierAgentIds: readonly string[]) => Promise<AgentInfo>>(),
   conversation: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalPrompt' | 'originalAnswer' | 'resumedAnswer'>, originalAnswerRows: number) => Promise<void>>(),
@@ -53,6 +50,7 @@ vi.mock('./nativeResume', async importOriginal => ({
   countOriginalAnswerRows: resume.countRows,
   expectReopenedNativeAgent: resume.reopen,
   expectResumedConversation: resume.conversation,
+  reopenFromSessionPicker: resume.picker,
 }))
 vi.mock('./runDirectory', async importOriginal => ({
   ...await importOriginal<typeof import('./runDirectory')>(),
@@ -61,9 +59,6 @@ vi.mock('./runDirectory', async importOriginal => ({
 vi.mock('./worktree', async importOriginal => ({
   ...await importOriginal<typeof import('./worktree')>(),
   closeAgentViaAPI: resume.close,
-  openNewAgentDialog: resume.dialog,
-  waitForWorker: resume.worker,
-  setWorkingDir: resume.workingDir,
 }))
 
 function control(label: string): Locator {
@@ -94,7 +89,6 @@ vi.mock('./ui', async importOriginal => ({
   assistantBubbles: () => rows('assistant'),
   userBubbles: () => rows('user'),
   tabById: (_page: Page, id: string) => control(id),
-  openMenu: resume.menu,
 }))
 
 vi.mock('@playwright/test', async importOriginal => ({
@@ -212,18 +206,10 @@ function scenario() {
     resume.events.push('keeper:directory')
     return `/controlled/${prefix}`
   })
-  resume.dialog.mockImplementation(async () => {
-    resume.events.push('dialog:open')
-  })
-  resume.worker.mockImplementation(async () => {
-    resume.events.push('worker:ready')
-  })
-  resume.workingDir.mockImplementation(async (_page, path) => {
-    expect(path).toBe(prior.workingDir)
-    resume.events.push('working-directory:set')
-  })
-  resume.menu.mockImplementation(async () => {
-    resume.events.push('menu:open')
+  resume.picker.mockImplementation(async (pickerPage, pickerOptions) => {
+    expect(pickerPage).toBe(page)
+    expect(pickerOptions).toEqual({ provider: AgentProvider.CODEX, workingDir: prior.workingDir, sessionId: prior.agentSessionId })
+    resume.events.push('picker:reopen')
   })
   resume.countRows.mockImplementation(async (rowContext, agentId, texts) => {
     expect(rowContext).toBe(context)
@@ -283,7 +269,7 @@ describe('exerciseSessionResume', () => {
   })
 
   it('keeps the existing operation sequence when evidence is absent', async () => {
-    const { context, prior, resumedRequest } = scenario()
+    const { context, resumedRequest } = scenario()
     expect((await exerciseSessionResume(context, options())).request).toBe(resumedRequest)
     expect(resume.events).toEqual([
       'prepare',
@@ -296,15 +282,7 @@ describe('exerciseSessionResume', () => {
       'original:close',
       'click:keeper-worker-agent',
       'agent:keeper',
-      'dialog:open',
-      'worker:ready',
-      'click:agent-provider-selector-trigger',
-      `click:agent-provider-option-${context.provider}`,
-      'working-directory:set',
-      'menu:open',
-      `visible:loading-menu-option-${prior.agentSessionId}`,
-      `click:loading-menu-option-${prior.agentSessionId}`,
-      'click:Create',
+      'picker:reopen',
       'verdict:reopened',
       'count:user',
       'count:assistant',
@@ -318,6 +296,7 @@ describe('exerciseSessionResume', () => {
     expect(resume.open).toHaveBeenCalledTimes(1)
     expect(resume.close).toHaveBeenCalledTimes(1)
     expect(resume.countRows).toHaveBeenCalledTimes(1)
+    expect(resume.picker).toHaveBeenCalledTimes(1)
     expect(resume.reopen).toHaveBeenCalledTimes(1)
     expect(resume.conversation).toHaveBeenCalledTimes(1)
   })
@@ -431,7 +410,7 @@ describe('exerciseSessionResume', () => {
       }
     }))
     expect(opened).toEqual({ phase: 'opened', prior })
-    expect(resume.events.indexOf('evidence:opened')).toBeGreaterThan(resume.events.indexOf('click:Create'))
+    expect(resume.events.indexOf('evidence:opened')).toBeGreaterThan(resume.events.indexOf('picker:reopen'))
     expect(resume.events.indexOf('evidence:opened')).toBeLessThan(resume.events.indexOf('count:user'))
     expect(resume.events.indexOf('evidence:opened')).toBeLessThan(resume.events.indexOf('count:assistant'))
   })

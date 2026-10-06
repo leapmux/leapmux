@@ -1,12 +1,17 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
+import { cursorModelTurns } from './modelTurns'
 
-/** Build the scenario context of Cursor. Its native protocol needs no field beyond the provider. */
+/**
+ * Build the scenario context of Cursor, with every field that its native protocol needs.
+ * Cursor sends only the current prompt and a conversation ID, so the context reads the conversation that the service
+ * holds.
+ */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.CURSOR }
+  return { ...fixtures, provider: AgentProvider.CURSOR, readConversationTurns: cursorModelTurns }
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

@@ -15,7 +15,7 @@ import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from './api'
 import { sendNativeAnswer } from './nativeConversation'
 import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
-import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts } from './nativeResume'
+import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { isAlive, listProcesses } from './processTree'
@@ -23,8 +23,8 @@ import { bashToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, openMenu, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
-import { closeAgentViaAPI, inspectLastTabCloseViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
+import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { closeAgentViaAPI, inspectLastTabCloseViaAPI } from './worktree'
 
 interface LifecyclePreparation {
   prepare?: () => Promise<void>
@@ -307,17 +307,7 @@ export async function exerciseSessionResume(
   expect(closed.failureMessage).toBe('')
   await tabById(context.page, keeper).click()
   await currentNativeAgent(context)
-  await openNewAgentDialog(context.page)
-  await waitForWorker(context.page)
-  const dialog = context.page.getByRole('dialog')
-  await dialog.getByTestId('agent-provider-selector-trigger').click()
-  await context.page.getByTestId(`agent-provider-option-${context.provider}`).click()
-  await setWorkingDir(context.page, before.workingDir)
-  await openMenu(dialog, 'session-select-menu')
-  const session = dialog.getByTestId(`loading-menu-option-${before.agentSessionId}`)
-  await expect(session).toBeVisible()
-  await session.click()
-  await dialog.getByRole('button', { name: 'Create' }).click()
+  await reopenFromSessionPicker(context.page, { provider: context.provider, workingDir: before.workingDir, sessionId: before.agentSessionId })
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'opened', prior: before })
   const reopened = await expectReopenedNativeAgent(context, before, [before.id, keeper])

@@ -1,12 +1,13 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
-import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI, openPinnedModeAgentViaAPI } from '../helpers/api'
+import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSessionRow, openStoredSessionRow, sessionMenu, sessionMenuTrigger } from '../helpers/nativeResume'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openMenu, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI } from '../helpers/worktree'
 import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
 
 test.describe('worker restart thinking indicator', () => {
@@ -572,10 +573,6 @@ test.describe('Agent Settings', () => {
   })
 })
 
-const SESSION_MENU = 'session-select-menu'
-
-const NEW_SESSION_ROW = 'Start a new session'
-
 // From the app's own declaration, so the row's wording and this locator cannot
 // drift. `false`: the Claude provider's session is an id, not a file path.
 const TYPE_A_HANDLE_ROW = typeAHandleLabel(false)
@@ -600,11 +597,8 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     // Select the subject explicitly. Which tab the app activates on load is not
     // this feature's contract, and guessing it would make the turn below land
     // in the wrong directory.
-    await page.locator('[data-testid="tab"][data-tab-type="agent"]')
-      .filter({ hasText: 'Subject' })
-      .first()
-      .click()
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
+    await expect(composerEditor(page)).toBeVisible()
 
     // A turn, so the worker records a resume handle: an agent that never spoke
     // has no session to offer.
@@ -621,10 +615,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     // process is attached to that handle, and a second one against the same
     // session store corrupts it. With nothing left to offer, the field falls
     // back to its text input rather than showing a menu that cannot resume.
-    await openNewAgentDialog(page)
-    await waitForWorker(page)
-    const firstDialog = page.getByRole('dialog')
-    await setWorkingDir(page, subjectDir)
+    const firstDialog = await openNewAgentFor(page, AgentProvider.CLAUDE_CODE, subjectDir)
     // Wait for the ANSWER before asserting the absence. The field shows a
     // disabled menu until a fetch for the current directory settles, and the
     // refresh button is enabled only when no fetch is in flight -- so this is
@@ -633,29 +624,20 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     // and the exclusion this test exists to prove would go unchecked.
     await expect(firstDialog.getByTestId('session-field-refresh')).toBeEnabled()
     await expect(firstDialog.getByPlaceholder(/^Session ID/)).toBeVisible()
-    await expect(firstDialog.getByTestId(`${SESSION_MENU}-trigger`)).toHaveCount(0)
+    await expect(sessionMenuTrigger(firstDialog)).toHaveCount(0)
     await firstDialog.getByRole('button', { name: 'Cancel' }).click()
 
     // Closing the tab releases the handle, and the picker offers it.
     await closeAgentViaAPI(hubUrl, adminToken, workerId, subject!.id)
 
-    await openNewAgentDialog(page)
-    await waitForWorker(page)
-    const dialog = page.getByRole('dialog')
-    await setWorkingDir(page, subjectDir)
-
-    const trigger = dialog.getByTestId(`${SESSION_MENU}-trigger`)
-    await expect(trigger).toBeEnabled()
-    await openMenu(dialog, SESSION_MENU)
+    const dialog = await openNewAgentFor(page, AgentProvider.CLAUDE_CODE, subjectDir)
+    const trigger = sessionMenuTrigger(dialog)
 
     // Exactly one resumable session, UNDER the two rows that are not sessions:
     // the one that withdraws a pick and the one that hands the field back to
     // its text box. The Keeper's session is still open AND in another
     // directory, so it is absent on both counts.
-    const options = dialog.getByTestId(SESSION_MENU).getByRole('menuitemradio')
-    await expect(options).toHaveCount(3)
-    await expect(options.first()).toHaveText(NEW_SESSION_ROW)
-    await expect(options.nth(1)).toHaveText(TYPE_A_HANDLE_ROW)
+    const sessionRow = await openSoleSessionRow(dialog)
 
     // The menu opens over a dialog, so it must not outgrow the control it
     // belongs to or the dialog that holds it. One long session title used to
@@ -666,7 +648,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     // limit exists -- a measurement alone would pass against an uncapped
     // popover and state nothing. The caps are the thing under test: they are
     // what a fifty-session list and a title wider than the field run into.
-    const menu = dialog.getByTestId(SESSION_MENU)
+    const menu = sessionMenu(dialog)
     const triggerBox = await trigger.boundingBox()
     const dialogBox = await dialog.boundingBox()
     const caps = await menu.evaluate((el) => {
@@ -682,7 +664,6 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     expect(menuBox!.width).toBeLessThanOrEqual(triggerBox!.width + 1)
     expect(menuBox!.height).toBeLessThanOrEqual(dialogBox!.height + 1)
 
-    const sessionRow = options.nth(2)
     const sessionValue = (await sessionRow.getAttribute('data-testid'))!
       .replace('loading-menu-option-', '')
     // The TITLE, not the row's whole text: the row also carries the age, which
@@ -699,8 +680,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     // The route into the text box is a menu row, so the route out is a button
     // on the field. Without it a mistaken pick held the user in the text box
     // for as long as the dialog stayed open.
-    await openMenu(dialog, SESSION_MENU)
-    await dialog.getByTestId(SESSION_MENU)
+    await (await openSessionMenu(dialog))
       .getByRole('menuitemradio', { name: TYPE_A_HANDLE_ROW })
       .click()
     await expect(dialog.getByPlaceholder(/^Session ID/)).toBeVisible()
@@ -709,12 +689,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     // The way back withdraws the pick, so the field starts from the top.
     await expect(trigger).toHaveAttribute('data-value', '')
 
-    await openMenu(dialog, SESSION_MENU)
-    await dialog.getByTestId(`loading-menu-option-${sessionValue}`).click()
-    await expect(trigger).toHaveAttribute('data-value', sessionValue)
-
-    await dialog.getByRole('button', { name: 'Create' }).click()
-    await expect(page.getByRole('heading', { name: 'New Agent' })).toBeHidden()
+    await createFromSessionRow(dialog, await openStoredSessionRow(dialog, sessionValue), sessionValue)
 
     // The resumed tab reaches the worker and takes a turn, which proves the
     // handle the picker sent is one the provider accepts.
@@ -736,11 +711,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
-    await openNewAgentDialog(page)
-    await waitForWorker(page)
-
-    const dialog = page.getByRole('dialog')
-    await setWorkingDir(page, emptyDir)
+    const dialog = await openNewAgentFor(page, AgentProvider.CLAUDE_CODE, emptyDir)
 
     // Nothing to pick, so the field keeps the text input. Deleting that
     // fallback would make resume impossible here.

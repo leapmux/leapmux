@@ -2,15 +2,17 @@ import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../hel
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { kiroToolResult } from '../helpers/kiroToolResult'
-import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
+import { kiroModelTurns } from './modelTurns'
 
 /**
  * Build the scenario context of Kiro, with every field that its native protocol needs.
  * Kiro returns a tool result in the conversation state of its own service request, so the context reads it there.
+ * The same request states the conversation in a shape of its own, so the context reads the turns there also.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return { ...fixtures, provider: AgentProvider.KIRO, readToolResult: kiroToolResult }
+  return { ...fixtures, provider: AgentProvider.KIRO, readToolResult: kiroToolResult, readConversationTurns: kiroModelTurns }
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

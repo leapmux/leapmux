@@ -39,6 +39,11 @@ export interface NativeScenarioContext {
   answerToolNames?: readonly string[]
   readToolResult?: NativeToolResultReader
   readModelContext?: NativeModelContextReader
+  /**
+   * Read the user and assistant turns of a native model request, for a provider whose request does not state its
+   * history in the generic shape that `nativeModelConversationTurns` reads.
+   */
+  readConversationTurns?: (request: MockModelRequestRecord) => NativeModelTurn[]
 }
 
 /** A scenario that can inspect the Worker and manage the current native session. */

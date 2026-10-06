@@ -3,11 +3,9 @@ import { geminiTest } from '../gemini-fixtures'
 import { expectNativeResumeContext } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { exerciseGeminiResumeWithEvidence } from './resumeEvidence'
-import { nativeContext } from './scenarios'
 
-geminiTest('loads the original native context through the stored-session picker', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
-  const resumed = await exerciseGeminiResumeWithEvidence(context, testInfo)
+geminiTest('loads the original native context through the stored-session picker', async ({ native }, testInfo) => {
+  const resumed = await exerciseGeminiResumeWithEvidence(native, testInfo)
   expect(resumed.request.protocol).toBe('google-generative-language')
   expect(JSON.stringify(resumed.request.body)).toContain('RESUMEPROMPT')
   expect(JSON.stringify(resumed.request.body)).toContain('RESUMEANSWER')
