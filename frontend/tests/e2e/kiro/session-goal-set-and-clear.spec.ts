@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
+import { expectGoalObjective, expectGoalStatus, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
 import { blockGoalToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
@@ -19,6 +19,7 @@ kiroTest.describe('Kiro session goal', () => {
   // the step, not Kiro's generic reason for the failed node, and the words also
   // reach the parent transcript.
   kiroTest('leaves the goal blocked when a step reports an error', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    // The native fixture opens Kiro with its default policy. This test needs `allow-all`, so it opens its own agent.
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
@@ -32,8 +33,9 @@ kiroTest.describe('Kiro session goal', () => {
     // the step's message and for the failed run.
     await modelScript.fallback({ text: 'Recorded.' })
 
-    await submitGoal(page, modelScript.prompt('Rewrite the history.'))
-    await expectGoalObjective(page, 'Rewrite the history.')
+    const objective = scriptedObjective(modelScript, 'Rewrite the history.')
+    await submitGoal(page, objective.input)
+    await expectGoalObjective(page, objective)
 
     await expectGoalStatus(page, 'blocked')
     await expect(page.locator('[data-testid="goal-status-detail"]:visible')).toContainText('The repository is read-only.')

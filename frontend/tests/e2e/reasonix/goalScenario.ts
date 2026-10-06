@@ -1,33 +1,31 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
-import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal, submitGoal } from '../helpers/goalsAndTodos'
 import { openWorkspace } from '../helpers/ui'
 
 /** Preserve a native goal through busy refusal, cancellation, clear, and browser reload. */
 export async function exerciseReasonixGoalLifecycle(context: ManagedNativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
-  const objective = 'Keep the native objective until the browser clears it.'
-  const nativeObjective = modelScript.prompt(objective)
+  const objective = scriptedObjective(modelScript, 'Keep the native objective until the browser clears it.')
   const firstGate = `reasonix-goal-first-${crypto.randomUUID()}`
   const secondGate = `reasonix-goal-second-${crypto.randomUUID()}`
-  const start = (await modelScript.status()).stepCount
+  const start = await modelScript.queue(
+    { text: 'The first native goal turn must stay held until interruption.', gate: firstGate },
+    { text: 'The second native goal turn must stay held until interruption.', gate: secondGate },
+  )
   await withCleanup(async () => {
-    await modelScript.queue(
-      { text: 'The first native goal turn must stay held until interruption.', gate: firstGate },
-      { text: 'The second native goal turn must stay held until interruption.', gate: secondGate },
-    )
     // Reasonix runs a goal round at once, so the interrupt control proves that the goal turn started.
+    const interrupt = page.getByTestId('interrupt-button').filter({ visible: true })
     const setRunningGoal = async () => {
-      await submitGoal(page, nativeObjective)
-      await expectGoalObjective(page, objective)
-      await expectGoalStatus(page, 'active')
-      await expect(page.getByTestId('interrupt-button').filter({ visible: true })).toBeVisible()
+      await setGoal(page, objective)
+      await expect(interrupt).toBeVisible()
     }
     await setRunningGoal()
-    const first = await modelScript.waitForGate(firstGate)
-    expect(first.requests.find(request => request.stepIndex === start)?.body).toBeDefined()
-    expect(JSON.stringify(first.requests.find(request => request.stepIndex === start)?.body)).toContain(objective)
+    await modelScript.waitForGate(firstGate)
+    const first = await modelScript.requestAt(start)
+    expect(first.body).toBeDefined()
+    expect(JSON.stringify(first.body)).toContain(objective.text)
     await openGoalMenu(page)
     await submitGoal(page, 'Retain this replacement after the refusal.')
     await expect(page.getByText('agent is already running a turn', { exact: false })).toBeVisible()
@@ -45,14 +43,14 @@ export async function exerciseReasonixGoalLifecycle(context: ManagedNativeScenar
     await expect(goalAction(page, 'resume')).toHaveCount(0)
     await goalAction(page, 'clear').click()
     await expectEmptyGoalCard(page)
-    const interrupt = page.getByTestId('interrupt-button').filter({ visible: true })
     await expect(interrupt).toBeVisible()
     await interrupt.click()
     await expect(interrupt).toHaveCount(0)
     await setRunningGoal()
-    const second = await modelScript.waitForGate(secondGate)
-    expect(second.requests.find(request => request.stepIndex === start + 1)?.body).toBeDefined()
-    expect(JSON.stringify(second.requests.find(request => request.stepIndex === start + 1)?.body)).toContain(objective)
+    await modelScript.waitForGate(secondGate)
+    const second = await modelScript.requestAt(start + 1)
+    expect(second.body).toBeDefined()
+    expect(JSON.stringify(second.body)).toContain(objective.text)
     await interrupt.click()
     await expect(interrupt).toHaveCount(0)
     await expectGoalStatus(page, 'blocked')

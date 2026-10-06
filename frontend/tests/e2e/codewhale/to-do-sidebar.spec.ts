@@ -3,19 +3,14 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
+import { initialTodoList, TODO_LIST_STEPS } from '../helpers/todoSidebar'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codewhaleTest.describe('Codewhale to-do list', () => {
-  codewhaleTest('shows the list that todo_write keeps, and keeps it after a reload', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-    void authenticatedCodewhaleWorkspace
+  codewhaleTest('shows the list that todo_write keeps, and keeps it after a reload', async ({ native }) => {
+    const { page, modelScript } = native
     await modelScript.queue(
-      {
-        toolCalls: [updateTodosToolCall(AgentProvider.CODEWHALE, 'todo-call', [
-          { step: 'Inspect the repository', status: 'completed' },
-          { step: 'List three checks', status: 'in_progress' },
-          { step: 'Report their purpose', status: 'pending' },
-        ])],
-      },
+      { toolCalls: [updateTodosToolCall(AgentProvider.CODEWHALE, 'todo-call', initialTodoList(TODO_LIST_STEPS))] },
       { text: 'I wrote the plan.' },
     )
     await sendMessage(page, modelScript.prompt('Plan three steps to review this repository.'))
@@ -26,12 +21,12 @@ codewhaleTest.describe('Codewhale to-do list', () => {
     // so each row here is the runtime's own.
     const todos = goalsAndTodosList(page)
     await expandGoalsAndTodosSection(page)
-    for (const step of ['Inspect the repository', 'List three checks', 'Report their purpose'])
+    for (const step of TODO_LIST_STEPS)
       await expect(todos).toContainText(step)
 
     await page.reload()
     await expandGoalsAndTodosSection(page)
-    for (const step of ['Inspect the repository', 'List three checks', 'Report their purpose'])
+    for (const step of TODO_LIST_STEPS)
       await expect(todos).toContainText(step)
   })
 })

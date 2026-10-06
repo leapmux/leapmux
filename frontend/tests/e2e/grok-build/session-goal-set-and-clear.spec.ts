@@ -1,11 +1,12 @@
 import { expect } from '@playwright/test'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
-import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
+import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 
 grokTest.describe('Grok Build session goal', () => {
   grokTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    // The native fixture opens Grok in its default approval mode. This test needs `always-approve`, so it opens its own agent.
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
@@ -18,8 +19,9 @@ grokTest.describe('Grok Build session goal', () => {
       respond: { text: 'No plan.' },
     })
 
-    await submitGoal(page, modelScript.prompt('Keep the probe objective.'))
-    await expectGoalObjective(page, 'Keep the probe objective.')
+    const objective = scriptedObjective(modelScript, 'Keep the probe objective.')
+    await submitGoal(page, objective.input)
+    await expectGoalObjective(page, objective)
 
     await expectGoalStatus(page, 'paused')
 

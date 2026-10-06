@@ -1,11 +1,8 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo, expectRelatedTodoSurvivesReload } from '../helpers/relatedTodoProof'
 import { qwenTest } from '../qwen-fixtures'
 
-qwenTest('persists the actual native task snapshot in the sidebar after reload', async ({ page, modelScript, leapmuxServer, authenticatedQwenWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedQwenWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
+qwenTest('persists the actual native task snapshot in the sidebar after reload', async ({ native }) => {
   const item = 'Keep the native task snapshot'
-  await exerciseRelatedTodo(context, { toolCall: updateTodosToolCall(AgentProvider.QWEN_CODE, 'native-todo-sidebar', [{ step: item, status: 'pending' }]), item })
-  await expectRelatedTodoSurvivesReload(context, item)
+  await exerciseRelatedTodo(native, { item })
+  await expectRelatedTodoSurvivesReload(native, item)
 })

@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
+import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
 import { assistantBubbles, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
@@ -17,19 +17,20 @@ function verdict(ok: boolean, reason: string): string {
 }
 
 mimoTest.describe('MiMo Code session goal', () => {
-  mimoTest('a goal that the judge finds met ends done, and the card clears', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
+  mimoTest('a goal that the judge finds met ends done, and the card clears', async ({ native }) => {
+    const { page, modelScript } = native
     await modelScript.rule({
       name: 'the judge finds the condition met',
       when: { system: JUDGE_SYSTEM },
       respond: { text: verdict(true, 'The transcript says GOAL_DONE.') },
     })
     await modelScript.queue({ text: 'GOAL_DONE' })
-    await submitGoal(page, modelScript.prompt('Reply with the word GOAL_DONE.'))
+    const objective = scriptedObjective(modelScript, 'Reply with the word GOAL_DONE.')
+    await submitGoal(page, objective.input)
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expectGoalObjective(page, 'Reply with the word GOAL_DONE.')
+    await expectGoalObjective(page, objective)
     await expectGoalStatus(page, 'done')
     // The model's own answer. The goal notice in the transcript states the objective,
     // which holds the word too, so only an agent bubble proves that the model answered.
@@ -41,8 +42,8 @@ mimoTest.describe('MiMo Code session goal', () => {
 
   // A verdict of "not met" makes MiMo run another pass of the loop, with the
   // judge's reason as the reminder. The second verdict ends the goal.
-  mimoTest('an unmet verdict runs another pass before the goal ends', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
+  mimoTest('an unmet verdict runs another pass before the goal ends', async ({ native }) => {
+    const { page, modelScript } = native
     await modelScript.rule(
       {
         name: 'the judge first finds the condition unmet',

@@ -4,8 +4,8 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('tracks the Letta Code to-do list', () => {
-  lettaTest('the sidebar follows task creation and updates, and keeps them after a reload', async ({ authenticatedLettaWorkspace, page, modelScript }) => {
-    void authenticatedLettaWorkspace
+  lettaTest('the sidebar follows task creation and updates, and keeps them after a reload', async ({ native }) => {
+    const { page, modelScript } = native
     await modelScript.queue(
       { toolCalls: [lettaTaskCreateToolCall('create-first', 'Inspect the repository', 'Read the repository files.')] },
       { toolCalls: [lettaTaskCreateToolCall('create-second', 'List three checks', 'List three checks to run.')] },

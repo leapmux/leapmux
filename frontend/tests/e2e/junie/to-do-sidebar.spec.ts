@@ -2,11 +2,10 @@ import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { junieTest } from '../junie-fixtures'
 import { exerciseNativePlanReview } from './planScenarios'
-import { nativeContext } from './scenarios'
 
-junieTest('keeps native delivery-plan tasks and their status after reload', async ({ authenticatedJunieWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId })
-  await exerciseNativePlanReview(context)
+junieTest('keeps native delivery-plan tasks and their status after reload', async ({ native }) => {
+  const { page } = native
+  await exerciseNativePlanReview(native)
   await expandGoalsAndTodosSection(page)
   const list = goalsAndTodosList(page)
   await expect(list.locator('[data-task-checkbox]')).toHaveCount(2)

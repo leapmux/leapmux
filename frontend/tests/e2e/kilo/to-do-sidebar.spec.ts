@@ -5,8 +5,8 @@ import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiloTest } from '../kilo-fixtures'
 
-kiloTest('keeps the to-do list after a reload', async ({ authenticatedKiloWorkspace, page, modelScript }) => {
-  void authenticatedKiloWorkspace
+kiloTest('keeps the to-do list after a reload', async ({ native }) => {
+  const { page, modelScript } = native
   await modelScript.queue(
     { toolCalls: [updateTodosToolCall(AgentProvider.KILO, 'kilo-todos', [
       { step: 'Inspect the repository', status: 'completed' },
@@ -15,7 +15,7 @@ kiloTest('keeps the to-do list after a reload', async ({ authenticatedKiloWorksp
     { text: 'The list is ready.' },
   )
   await sendMessage(page, modelScript.prompt('Write a two-step to-do list.'))
-  await modelScript.waitForSteps(2)
+  await modelScript.waitForSteps()
   await waitForAgentIdle(page)
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)

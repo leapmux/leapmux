@@ -2,7 +2,10 @@ import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { expandGoalsAndTodosSection, expectEmptyGoalCard, pauseResumeClearGoal, setGoal } from '../helpers/goalsAndTodos'
 import { expect } from '../qoder-fixtures'
 
-/** Exercise the actual native control and retain every original assertion. */
+/**
+ * Set, pause, resume, and clear a native Qoder session goal through the goal card.
+ * Qoder changes its goal without a model turn, so the scenario requires that no model request reached the script.
+ */
 export async function exerciseNativeGoalCycle(context: NativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
 

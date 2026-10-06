@@ -1,18 +1,16 @@
 import { AgentGoalAction, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
-import { goalAction } from '../helpers/goalsAndTodos'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { goalAction, nativeGoalProbeTurn } from '../helpers/goalsAndTodos'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { waitForSettingsHydrated } from '../helpers/ui'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
 import { expect, junieTest } from '../junie-fixtures'
-import { nativeContext } from './scenarios'
 
 junieTest.describe('junie unsupported controls', () => {
-  junieTest('does not offer Set for the session goal', async ({ authenticatedJunieWorkspace, page, leapmuxServer }) => {
-    void authenticatedJunieWorkspace
+  junieTest('does not offer Set for the session goal', async ({ native }) => {
+    const { page, leapmuxServer } = native
     await waitForSettingsHydrated(page)
-    const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first().getAttribute('data-tab-id')
-    expect(agentId).not.toBeNull()
+    const agentId = await selectedAgentTabId(page)
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     let actions: AgentGoalAction[] = []
     await expect.poll(async () => {
@@ -21,7 +19,7 @@ junieTest.describe('junie unsupported controls', () => {
         'ListAgentMessages',
         ListAgentMessagesRequestSchema,
         ListAgentMessagesResponseSchema,
-        { agentId: agentId ?? '', limit: 1 },
+        { agentId, limit: 1 },
       )
       actions = response.goalSupportedActions
       return actions
@@ -32,9 +30,8 @@ junieTest.describe('junie unsupported controls', () => {
   })
 })
 
-junieTest('refuses only the unsupported native goal actions and preserves the supported actions', async ({ authenticatedJunieWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId })
-  await expectUnsupportedGoalActions(context, { actions: [AgentGoalAction.SET], relatedProof: async () => {
-    await sendNativeAnswer(context, 'Complete before the native goal refusal.', 'The native goal probe completed.')
+junieTest('refuses only the unsupported native goal actions and preserves the supported actions', async ({ native }) => {
+  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.SET], relatedProof: async () => {
+    await nativeGoalProbeTurn(native)
   } })
 })

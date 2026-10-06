@@ -1,12 +1,12 @@
 import { expect } from '@playwright/test'
 import { finishCleanup } from '../helpers/cleanup'
-import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, goalCard, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
 import { waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code session goal', () => {
-  kimiTest('set a goal from the panel, pause it, resume it, and clear it', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
-    void authenticatedKimiWorkspace
+  kimiTest('set a goal from the panel, pause it, resume it, and clear it', async ({ native }) => {
+    const { page, modelScript } = native
     await waitForSettingsHydrated(page)
     const first = 'kimi-goal-first-turn'
     const second = 'kimi-goal-resumed-turn'
@@ -14,10 +14,7 @@ kimiTest.describe('Kimi Code session goal', () => {
     try {
       await expandGoalsAndTodosSection(page)
       await expectEmptyGoalCard(page)
-      await submitGoal(page, modelScript.prompt('Keep inspecting this repository until I pause the goal.'))
-      await expect(goalCard(page)).toBeVisible()
-      await expect.poll(() => page.locator('[data-testid="goal-objective"]:visible').textContent()).toContain('Keep inspecting this repository')
-      await expectGoalStatus(page, 'active')
+      await setGoal(page, scriptedObjective(modelScript, 'Keep inspecting this repository until I pause the goal.'))
       await modelScript.waitForGate(first)
       expect((await modelScript.status()).requests.length).toBeGreaterThan(0)
       await openGoalMenu(page)

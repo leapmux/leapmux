@@ -5,28 +5,25 @@ import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsA
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { geminiTodoSnapshotToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
+import { geminiTodoSnapshotToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo, expectRelatedTodoSurvivesReload } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset, sendMessage } from '../helpers/ui'
-import { nativeContext } from './scenarios'
 
 // Gemini CLI asks for approval of write_todos in its default mode: the tool is not
 // in the allow list of its read-only policy (bundle/policies/read-only.toml). The
 // shared proof answers no approval, so this case runs under the bypass shortcut
 // (native yolo). The next case answers the approval in the default mode.
-geminiTest('stores an exact native task snapshot and preserves it after reload', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+geminiTest('stores an exact native task snapshot and preserves it after reload', async ({ native }) => {
   const item = 'Keep the native Gemini task'
-  await exerciseRelatedTodo(context, {
-    toolCall: updateTodosToolCall(context.provider, 'gemini-sidebar-todo', [{ step: item, status: 'pending' }]),
+  await exerciseRelatedTodo(native, {
     item,
-    prepare: () => applyPermissionPreset(page, 'bypass'),
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
   })
-  await expectRelatedTodoSurvivesReload(context, item)
+  await expectRelatedTodoSurvivesReload(native, item)
 })
 
-geminiTest('preserves all native task statuses and replaces and clears the saved snapshot', async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
+geminiTest('preserves all native task statuses and replaces and clears the saved snapshot', async ({ native }) => {
+  const { page, modelScript } = native
   const statuses = ['pending', 'in_progress', 'completed', 'cancelled', 'blocked'] as const
   const nativeTodos = statuses.map(status => ({ description: `GEMINI_NATIVE_TASK_${status}`, status }))
   const canonicalStatuses = {
@@ -39,18 +36,16 @@ geminiTest('preserves all native task statuses and replaces and clears the saved
   const replacement = [{ description: 'GEMINI_NATIVE_REPLACEMENT', status: 'blocked' }] as const
   const snapshots = [nativeTodos, replacement, []] as const
   for (const [index, todos] of snapshots.entries()) {
-    const start = (await modelScript.status()).stepCount
     const callId = `gemini-native-todo-snapshot-${index}`
-    await modelScript.queue({ toolCalls: [geminiTodoSnapshotToolCall(callId, todos)] }, { text: 'The native task snapshot completed.' })
+    const start = await modelScript.queue({ toolCalls: [geminiTodoSnapshotToolCall(callId, todos)] }, { text: 'The native task snapshot completed.' })
     await sendMessage(page, modelScript.prompt('Replace the native task list with the scripted snapshot.'))
-    await waitForNativeToolSteps(context, start + 2)
-    const request = (await modelScript.status()).requests.find(row => row.stepIndex === start + 1)
-    const returned = nativeToolResult(request, callId)
+    await waitForNativeToolSteps(native, start + 2)
+    const returned = nativeToolResult(await modelScript.requestAt(start + 1), callId)
     expect(returned).toContain(todos.length === 0 ? 'Successfully cleared the todo list.' : 'Successfully updated the todo list.')
     for (const todo of todos)
       expect(returned).toContain(`[${todo.status}] ${todo.description}`)
     const verifySnapshot = async () => {
-      const snapshot = await readNativeSidebarSnapshot(context)
+      const snapshot = await readNativeSidebarSnapshot(native)
       expect(snapshot.todos.map(todo => ({ content: todo.content, status: todo.status }))).toEqual(todos.map(todo => ({ content: todo.description, status: canonicalStatuses[todo.status].value })))
       const list = goalsAndTodosList(page)
       if (todos.length === 0) {

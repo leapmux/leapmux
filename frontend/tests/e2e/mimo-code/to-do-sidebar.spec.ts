@@ -8,8 +8,8 @@ mimoTest.describe('MiMo Code to-do list', () => {
   // MiMo's to-do tool acts on one item for each call, and states the item's id
   // and its new status. The worker folds each call into the agent's list, so the
   // sidebar holds both items with the status the last call gave each one.
-  mimoTest('folds each task call into the sidebar list', async ({ authenticatedMiMoWorkspace, page, modelScript }) => {
-    void authenticatedMiMoWorkspace
+  mimoTest('folds each task call into the sidebar list', async ({ native }) => {
+    const { page, modelScript } = native
     await modelScript.queue(
       { toolCalls: [mimoTaskToolCall('create-inspect', { action: 'create', summary: 'Inspect the parser' })] },
       { toolCalls: [mimoTaskToolCall('create-report', { action: 'create', summary: 'Write the report' })] },

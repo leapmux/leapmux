@@ -6,8 +6,8 @@ import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('Codex to-do sidebar', () => {
-  codexTest('keeps the native plan update after a reload', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
-    void authenticatedCodexWorkspace
+  codexTest('keeps the native plan update after a reload', async ({ native }) => {
+    const { page, modelScript } = native
     await modelScript.queue(
       {
         toolCalls: [updateTodosToolCall(AgentProvider.CODEX, 'codex-todos', [

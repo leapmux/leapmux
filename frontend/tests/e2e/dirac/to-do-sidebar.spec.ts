@@ -3,13 +3,11 @@ import { diracTest } from '../dirac-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
 
-diracTest('shows completed native plan entries in the sidebar and keeps their status after reload', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
+diracTest('shows completed native plan entries in the sidebar and keeps their status after reload', async ({ native }) => {
+  const { page, modelScript } = native
   await chooseSettingsOption(page, 'permissionMode-plan')
-  const start = (await modelScript.status()).stepCount
-  await modelScript.queue(
+  const start = await modelScript.queue(
     { toolCalls: [diracRespondToolCall('dirac-native-todo-plan', 'plan', '- DIRACPLANONE inspect the file.\n- DIRACPLANTWO report the result.')] },
     { toolCalls: [diracRespondToolCall('dirac-native-todo-complete', 'complete', 'The native plan turn completed.')] },
   )

@@ -4,12 +4,11 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { toJson } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
-import { AgentGoalStatus, AgentProvider, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalStatus, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
-import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
-import { SCENARIO_MARKER } from '../helpers/mockModelScript'
+import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
@@ -22,6 +21,7 @@ import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById,
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { kiroGoalCancellation, kiroGoalExecutionId, kiroGoalSessionId, readKiroGoalMessages } from './goalReceipt'
+import { nativeContext } from './scenarios'
 
 /** The word of the reason that Kiro states when a goal reaches its round limit. */
 const KIRO_ROUND_LIMIT_WORD = 'maxIterations'
@@ -50,13 +50,13 @@ kiroTest.describe('Kiro session goal', () => {
     const resumeGate = `kiro-goal-resume-${marker}`
     const setRule = `kiro-goal-set-rule-${marker}`
     const resumeRule = `kiro-goal-resume-rule-${marker}`
-    const objective = modelScript.prompt('Keep inspecting the repository.')
+    const objective = scriptedObjective(modelScript, 'Keep inspecting the repository.')
     const staleAnswer = 'Still working on the objective.'
     await withCleanup(async () => {
       const { agentId, workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await waitForSettingsHydrated(page)
-      const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIRO }
+      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
       const parent = await currentNativeAgent(context)
       expect(parent.id).toBe(agentId)
       const home = leapmuxServer.agentEnv.HOME
@@ -94,9 +94,7 @@ kiroTest.describe('Kiro session goal', () => {
       await modelScript.fallback({ text: 'The native goal notification completed.' })
       modelScript.allowUnconsumed('Native Pause and Clear stop the held goal executions on purpose.')
 
-      await submitGoal(page, objective)
-      await expectGoalObjective(page, 'Keep inspecting the repository.')
-      await expectGoalStatus(page, 'active')
+      await setGoal(page, objective)
       const setStatus = await modelScript.waitForGate(setGate)
       const setRequests = setStatus.requests.filter(request => request.rule === setRule)
       expect(setRequests).toHaveLength(1)
@@ -104,8 +102,8 @@ kiroTest.describe('Kiro session goal', () => {
       if (!setRequest)
         throw new Error('The native Kiro goal reached no held Set request.')
       expect(setRequest.protocol).toBe('aws-event-stream')
-      expect(nativeModelContextText(setRequest)).toContain('Keep inspecting the repository.')
-      expect(nativeModelContextText(setRequest)).toContain(`${SCENARIO_MARKER}${modelScript.id}`)
+      expect(nativeModelContextText(setRequest)).toContain(objective.text)
+      expect(nativeModelContextText(setRequest)).toContain(objective.marker)
       await expect.poll(async () => (await modelScript.status()).requests.length).toBeGreaterThan(0)
       const sessionId = kiroGoalSessionId(setRequest)
       const initial = await readNativeSidebarSnapshot(context, agentId)
@@ -247,14 +245,9 @@ kiroTest.describe('Kiro session goal', () => {
         await testInfo.attach(`kiro-${stage}-worker-evidence`, { body: Buffer.from(JSON.stringify(evidence)), contentType: 'application/json' })
       }
       const sendBarrier = async (stage: string, prompt: string, answer: string) => {
-        const index = (await modelScript.status()).stepCount
-        await modelScript.queue({ text: answer })
+        const index = await modelScript.queue({ text: answer })
         await sendMessage(page, modelScript.prompt(prompt))
-        const status = await modelScript.waitForSteps(index + 1)
-        const request = status.requests.find(record => record.stepIndex === index)
-        if (!request)
-          throw new Error('The Kiro barrier reached no exact native model request.')
-        let finished = status
+        let finished = await modelScript.waitForSteps(index + 1)
         await expect.poll(async () => {
           finished = await modelScript.status()
           return finished.requests.find(record => record.stepIndex === index)?.response?.status
@@ -262,6 +255,8 @@ kiroTest.describe('Kiro session goal', () => {
         await attachBarrierEvidence(`${stage}-model-finished`, finished, answer)
         await waitForAgentIdle(page)
         await attachBarrierEvidence(`${stage}-worker-idle`, finished, answer)
+        // Read the record after the turn. A native client states more of its request after the mock counts the step.
+        const request = await modelScript.requestAt(index)
         expect(nativeModelContextText(request)).toContain(prompt)
         await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
         return request
@@ -314,7 +309,7 @@ kiroTest.describe('Kiro session goal', () => {
       await installPremeasureObservation()
       await expandGoalsAndTodosSection(page)
       await expectGoalStatus(page, 'paused')
-      await expectGoalObjective(page, 'Keep inspecting the repository.')
+      await expectGoalObjective(page, objective)
       await expect(detail.filter({ hasText: KIRO_ROUND_LIMIT_WORD }), 'the reader paused the goal, not the round limit').toHaveCount(0)
       await assertNoSavedStaleAnswer()
 
@@ -333,8 +328,8 @@ kiroTest.describe('Kiro session goal', () => {
       if (!resumeRequest)
         throw new Error('The native Kiro goal reached no new held Resume request.')
       expect(resumeRequest.protocol).toBe('aws-event-stream')
-      expect(nativeModelContextText(resumeRequest)).toContain('Keep inspecting the repository.')
-      expect(nativeModelContextText(resumeRequest)).toContain(`${SCENARIO_MARKER}${modelScript.id}`)
+      expect(nativeModelContextText(resumeRequest)).toContain(objective.text)
+      expect(nativeModelContextText(resumeRequest)).toContain(objective.marker)
       expect(kiroGoalSessionId(resumeRequest)).toBe(sessionId)
       await expect.poll(() => {
         const id = kiroGoalExecutionId(nativeMessages())

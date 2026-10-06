@@ -1,20 +1,18 @@
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
-import { sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code session goal', () => {
-  codebuddyTest('sets and clears a goal through native commands', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
-    void authenticatedCodebuddyWorkspace
+  codebuddyTest('sets and clears a goal through native commands', async ({ native }) => {
+    const { page, modelScript } = native
     await waitForSettingsHydrated(page, 'permissionMode')
     await modelScript.rule({
       name: 'native goal command turn',
       when: { user: '<user_query>/goal' },
       respond: { text: 'The goal command was processed.' },
     })
-    await modelScript.queue({ text: 'Goal controls are ready.' })
-    await sendMessage(page, modelScript.prompt('Reply once before the goal command.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
+    await sendNativeAnswer(native, 'Reply once before the goal command.', 'Goal controls are ready.')
     await submitGoal(page, 'Keep the example objective active.')
     await expectGoalStatus(page, 'active')
     await expectGoalObjective(page, 'Keep the example objective active.')

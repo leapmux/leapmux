@@ -79,9 +79,9 @@ function grokGoalMachineryRules({ marker }: NativeGoalScenario): MockModelRule[]
 // arrives during it, and yields to that prompt after the running round. So the
 // `/goal pause` command goes to Grok's own queue at once, and the held round
 // finishes before the pause.
-grokTest('records the native user pause and resumes new native goal model work', async ({ authenticatedGrokWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGrokWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }
-  await exerciseNativeGoalPauseAndResume(context, {
+grokTest('records the native user pause and resumes new native goal model work', async ({ native }) => {
+  const { page, leapmuxServer } = native
+  await exerciseNativeGoalPauseAndResume(native, {
     pauseTiming: 'after-the-round',
     roundSystem: GROK_ROUND_SYSTEM,
     supportRules: grokGoalMachineryRules,
@@ -89,7 +89,7 @@ grokTest('records the native user pause and resumes new native goal model work',
       // Grok answers a pause of an active goal so. A pause that reached a goal
       // that already paused itself reads "Goal is already paused." instead.
       await expect(messageBubbles(page).filter({ hasText: 'Goal paused. Use /goal resume to continue.' }).first()).toBeVisible()
-      const agent = await currentNativeAgent(context)
+      const agent = await currentNativeAgent(native)
       const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
       // `user_paused` states no reason. Each pause of Grok's own states one.
       await expect.poll(async () => {

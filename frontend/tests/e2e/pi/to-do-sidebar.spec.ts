@@ -4,8 +4,8 @@ import { piTodoToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
-piTest('follows native create, update, and clear snapshots across reload', async ({ authenticatedPiWorkspace, page, modelScript }) => {
-  void authenticatedPiWorkspace
+piTest('follows native create, update, and clear snapshots across reload', async ({ native }) => {
+  const { page, modelScript } = native
   await modelScript.queue(
     { toolCalls: [piTodoToolCall('pi-todo-inspect', { action: 'create', subject: 'Inspect the repository' })] },
     { toolCalls: [piTodoToolCall('pi-todo-report', { action: 'create', subject: 'Report the finding' })] },

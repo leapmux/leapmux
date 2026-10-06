@@ -1,4 +1,11 @@
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { codewhaleTest } from '../codewhale-fixtures'
+import { expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { blockGoalToolCall } from '../helpers/providerToolCalls'
+import { waitForAgentIdle } from '../helpers/ui'
+
 /**
  * The goal card sets and clears the actual native session goal. The test waits for authoritative Worker state.
  *
@@ -6,21 +13,12 @@ import { expect } from '@playwright/test'
  *
  * Setting a goal starts a turn at once. Codewhale starts another pass after each turn until the model completes or blocks the goal. The runtime exposes no pause or resume route.
  */
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codewhaleTest } from '../codewhale-fixtures'
-import { expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
-import { blockGoalToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
 codewhaleTest.describe('Codewhale session goal', () => {
-  codewhaleTest('sets a goal that the model blocks, and clears it', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-    void authenticatedCodewhaleWorkspace
+  codewhaleTest('sets a goal that the model blocks, and clears it', async ({ native }) => {
+    const { page, modelScript } = native
 
     // Drive one turn first, so the goal actions come from the running agent.
-    await modelScript.queue({ text: 'ready' })
-    await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
+    await sendNativeAnswer(native, 'Reply with the single word: ready', 'ready')
 
     await expandGoalsAndTodosSection(page)
     await expectEmptyGoalCard(page)
@@ -33,8 +31,9 @@ codewhaleTest.describe('Codewhale session goal', () => {
     )
     // The objective carries the marker, because the kickoff turn takes the
     // objective as its prompt.
-    await submitGoal(page, modelScript.prompt('Keep the build green.'))
-    await expectGoalObjective(page, 'Keep the build green.')
+    const objective = scriptedObjective(modelScript, 'Keep the build green.')
+    await submitGoal(page, objective.input)
+    await expectGoalObjective(page, objective)
 
     await modelScript.waitForSteps()
     await expectGoalStatus(page, 'blocked')
