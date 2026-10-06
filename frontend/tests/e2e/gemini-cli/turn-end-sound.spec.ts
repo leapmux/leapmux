@@ -1,12 +1,13 @@
 import { geminiTest } from '../gemini-fixtures'
-import { exerciseTurnEndSound } from '../helpers/nativeTurnEndSound'
+import { exerciseTurnEndSound, NATIVE_SOUND_COMMAND } from '../helpers/nativeTurnEndSound'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { printfMarkerCommand } from '../helpers/shellArguments'
-import { nativeContext } from './scenarios'
 
 for (const toolActivity of [false, true]) {
-  geminiTest(`uses the actual native activity when tool activity is ${toolActivity}`, async ({ page, modelScript, leapmuxServer, authenticatedGeminiWorkspace }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGeminiWorkspace.workspaceId })
-    await exerciseTurnEndSound(context, { toolActivity, ...(toolActivity ? { steps: [{ toolCalls: [bashToolCall(context.provider, 'gemini-sound-tool', printfMarkerCommand('GEMINISOUND', 42))] }, { text: 'The native tool sound turn completed.' }], approveTool: true } : {}) })
+  geminiTest(`uses the actual native activity when tool activity is ${toolActivity}`, async ({ native }) => {
+    await exerciseTurnEndSound(native, toolActivity ? { tool: bashToolCall(native.provider, 'gemini-sound-tool', NATIVE_SOUND_COMMAND), approveTool: true } : {})
   })
 }
+
+geminiTest('uses the actual native activity when tool activity is true and the sound is none', async ({ native }) => {
+  await exerciseTurnEndSound(native, { sound: 'none', tool: bashToolCall(native.provider, 'gemini-sound-tool', NATIVE_SOUND_COMMAND), approveTool: true })
+})

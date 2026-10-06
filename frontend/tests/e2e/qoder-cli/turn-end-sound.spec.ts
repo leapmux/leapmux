@@ -1,43 +1,17 @@
-import { nativeTextStep } from '../helpers/nativeScenario'
-import { exerciseTurnEndSound } from '../helpers/nativeTurnEndSound'
+import { exerciseTurnEndSound, NATIVE_SOUND_COMMAND } from '../helpers/nativeTurnEndSound'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { qoderTest } from '../qoder-fixtures'
-import { nativeContext } from './scenarios'
 
-qoderTest('applies the completion sound policy to the native answer turn', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
-  await exerciseTurnEndSound(context, { toolActivity: false })
+qoderTest('applies the completion sound policy to the native answer turn', async ({ native }) => {
+  await exerciseTurnEndSound(native)
 })
 
-// The tool must run with no banner, because the case states `approveTool:
-// false`. In Accept Edits, qodercli 1.1.65 runs a plain `echo` at once. It
-// asks before a command with shell arithmetic expansion such as
-// `$((40 + 2))`: its permission check keeps the ask at
-// `mode.accept_edits.ineligible.keep_ask`.
-const SOUND_COMMAND = 'echo SOUND42'
-
-qoderTest('plays one sound for a completed native tool turn', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
-  await exerciseTurnEndSound(context, {
-    toolActivity: true,
-    sound: 'ding-dong',
-    steps: [
-      { toolCalls: [bashToolCall(context.provider, 'native-sound-tool', SOUND_COMMAND)] },
-      nativeTextStep(context, 'The native sound tool ended.'),
-    ],
-    approveTool: false,
-  })
+// The tool must run with no banner, because the case approves no tool. `NATIVE_SOUND_COMMAND` states why qodercli
+// runs it at once in Accept Edits.
+qoderTest('plays one sound for a completed native tool turn', async ({ native }) => {
+  await exerciseTurnEndSound(native, { sound: 'ding-dong', tool: bashToolCall(native.provider, 'native-sound-tool', NATIVE_SOUND_COMMAND) })
 })
 
-qoderTest('keeps a completed native tool turn quiet when sound is disabled', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
-  await exerciseTurnEndSound(context, {
-    toolActivity: true,
-    sound: 'none',
-    steps: [
-      { toolCalls: [bashToolCall(context.provider, 'native-sound-tool', SOUND_COMMAND)] },
-      nativeTextStep(context, 'The native sound tool ended.'),
-    ],
-    approveTool: false,
-  })
+qoderTest('keeps a completed native tool turn quiet when sound is disabled', async ({ native }) => {
+  await exerciseTurnEndSound(native, { sound: 'none', tool: bashToolCall(native.provider, 'native-sound-tool', NATIVE_SOUND_COMMAND) })
 })
