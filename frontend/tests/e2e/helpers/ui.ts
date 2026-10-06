@@ -873,18 +873,14 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
 /**
  * Require that `dialog` is open and does not close.
  *
- * `Dialog` defers its unmount by `motion.fast` ms while its closing marker plays the fade-out, so a visibility check
- * alone also passes on a dialog that closes. The marker starts a CSS transition of the opacity and the transform at
- * once, in the same task as the key press or the click that closes the dialog. So an open dialog whose opacity is 1
- * and whose element runs no animation does not close, and the check needs no wait for the fade to end.
+ * `Dialog` defers its unmount by `motion.fast` ms while it plays the fade-out, so a visibility check alone also passes
+ * on a dialog that closes. `Dialog` sets `data-closing` in the same task as the key press or the click that closes it,
+ * so a dialog without the attribute after that action does not close. The opacity and the animations decide nothing:
+ * they change while the dialog fades in after it opens, as well as while it fades out.
  */
 export async function expectDialogStaysOpen(dialog: Locator, message: string): Promise<void> {
   await expect(dialog, message).toBeVisible()
-  const state = await dialog.evaluate(element => ({
-    opacity: getComputedStyle(element).opacity,
-    animations: element.getAnimations().map(animation => animation instanceof CSSTransition ? `transition of ${animation.transitionProperty}` : animation.constructor.name),
-  }))
-  expect(state, message).toEqual({ opacity: '1', animations: [] })
+  await expect(dialog, message).not.toHaveAttribute('data-closing')
 }
 
 /**

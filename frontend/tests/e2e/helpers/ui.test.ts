@@ -1601,40 +1601,44 @@ describe('expectDialogStaysOpen', () => {
     constructor(readonly transitionProperty: string) {}
   }
 
-  /** A dialog whose visibility, computed opacity, and running animations the test states. */
-  function dialog(state: { visible: boolean, opacity: string, animations: object[] }) {
+  /**
+   * A dialog whose visibility, closing marker, computed opacity, and running animations the test states. The opacity
+   * and the animations change while a dialog opens as well as while it closes, so they decide nothing.
+   */
+  function dialog(state: { visible: boolean, closing: boolean, opacity?: string, animations?: object[] }, checks: string[] = []) {
     vi.stubGlobal('CSSTransition', FakeCssTransition)
-    vi.stubGlobal('getComputedStyle', () => ({ opacity: state.opacity }))
-    const element = { getAnimations: () => state.animations }
-    return fakeLocator(() => state.visible, {
+    vi.stubGlobal('getComputedStyle', () => ({ opacity: state.opacity ?? '1' }))
+    const element = { getAnimations: () => state.animations ?? [] }
+    return fakeLocator((check) => {
+      checks.push(`${check.expression} ${typeof check.expressionArg === 'string' ? check.expressionArg : ''}`.trim())
+      if (check.expression === 'to.be.visible')
+        return state.visible
+      if (check.expression === 'to.have.attribute' && check.expressionArg === 'data-closing')
+        return state.closing
+      throw new Error(`The fake dialog answers no check ${check.expression}.`)
+    }, {
       evaluate: async <R>(read: (element: Element) => R) => read(element as unknown as Element),
     })
   }
 
   it('accepts an open dialog that runs no animation', async () => {
-    await expect(expectDialogStaysOpen(dialog({ visible: true, opacity: '1', animations: [] }), 'the dialog stays')).resolves.toBeUndefined()
+    await expect(expectDialogStaysOpen(dialog({ visible: true, closing: false }), 'the dialog stays')).resolves.toBeUndefined()
   })
 
-  it('refuses a dialog whose closing transition runs, although it is still visible', async () => {
-    const closing = dialog({ visible: true, opacity: '1', animations: [new FakeCssTransition('opacity')] })
-    await expect(expectDialogStaysOpen(closing, 'the dialog stays')).rejects.toThrow('transition of opacity')
+  // Gate12 caught this state: Escape cleared the search while the dialog still faded in after it opened.
+  it('accepts an open dialog while its opening fade-in still runs', async () => {
+    const opening = dialog({ visible: true, closing: false, opacity: '0.969432', animations: [new FakeCssTransition('opacity')] })
+    await expect(expectDialogStaysOpen(opening, 'the dialog stays')).resolves.toBeUndefined()
   })
 
-  it('refuses a dialog that faded out but is not unmounted yet', async () => {
-    await expect(expectDialogStaysOpen(dialog({ visible: true, opacity: '0', animations: [] }), 'the dialog stays')).rejects.toThrow('the dialog stays')
+  it('refuses a dialog that carries the closing marker, although it is still visible', async () => {
+    await expect(expectDialogStaysOpen(dialog({ visible: true, closing: true }), 'the dialog stays')).rejects.toThrow('the dialog stays')
   })
 
-  it('names another animation by its kind', async () => {
-    class CSSAnimation {}
-    const animated = dialog({ visible: true, opacity: '1', animations: [new CSSAnimation()] })
-    await expect(expectDialogStaysOpen(animated, 'the dialog stays')).rejects.toThrow('CSSAnimation')
-  })
-
-  it('refuses a dialog that is gone, before it reads the closing state', async () => {
-    const evaluate = vi.fn()
-    const gone = fakeLocator(() => false, { evaluate })
-    await expect(expectDialogStaysOpen(gone, 'the dialog stays')).rejects.toThrow('the dialog stays')
-    expect(evaluate).not.toHaveBeenCalled()
+  it('refuses a dialog that is gone, before it reads the closing marker', async () => {
+    const checks: string[] = []
+    await expect(expectDialogStaysOpen(dialog({ visible: false, closing: false }, checks), 'the dialog stays')).rejects.toThrow('the dialog stays')
+    expect(checks).toEqual(['to.be.visible'])
   })
 })
 
