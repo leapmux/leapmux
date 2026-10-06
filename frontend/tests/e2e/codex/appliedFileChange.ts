@@ -4,7 +4,7 @@ import { codexChangeKind } from '../../../src/components/chat/providers/codex/ex
 import { CODEX_ITEM } from '../../../src/generated/contracts/codex-protocol'
 import { AgentProvider, MessageCompletion, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { nativeMessageBody } from '../helpers/nativeMessages'
+import { isStoredMessageSeq, nativeMessageBody } from '../helpers/nativeMessages'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 
 /** Require the exact current Worker span and its native started and completed file items. */
@@ -14,7 +14,7 @@ export function codexAppliedFileChange(messages: readonly AgentChatMessage[], se
   const matching = messages.filter(message => message.agentSessionId === sessionId && message.spanId === itemId)
   const items = matching.map((message) => {
     if (message.source !== MessageSource.AGENT || message.agentProvider !== AgentProvider.CODEX || message.spanType !== CODEX_ITEM.FileChange
-      || message.id.trim() === '' || message.seq < 0n) {
+      || message.id.trim() === '' || !isStoredMessageSeq(message.seq)) {
       throw new Error('The exact Worker file span contains invalid native message metadata.')
     }
     const body = nativeMessageBody(message)

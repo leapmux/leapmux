@@ -7,7 +7,7 @@ import { expect } from '@playwright/test'
 import { parsePersistedControlResponse } from '../../../src/components/chat/persistedControlResponse'
 import { MarkType, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '../../../src/lib/messageParser'
-import { readNativeMessageSnapshot } from './nativeMessages'
+import { isStoredMessageSeq, readNativeMessageSnapshot } from './nativeMessages'
 
 /**
  * One saved answer to a native control request, as the Worker stored it.
@@ -79,7 +79,7 @@ export function readNativeStoredControlDecision(snapshot: NativeMessageSnapshot,
       throw new Error(`The row for native request ${requestId} is not a saved control response.`)
     if (message.agentSessionId !== snapshot.agentSessionId || message.depth !== 0 || message.parentSpanId !== '')
       throw new Error(`The saved decision for native request ${requestId} is outside the root scope of native session ${snapshot.agentSessionId}.`)
-    if (!message.id.trim() || message.seq < 0n)
+    if (!message.id.trim() || !isStoredMessageSeq(message.seq))
       throw new Error(`The saved decision for native request ${requestId} has no valid Worker row identity.`)
     if (!saved.claimToken.trim() || !saved.request || !saved.response)
       throw new Error(`The saved decision for native request ${requestId} lacks its native request, its native answer, or its claim token.`)

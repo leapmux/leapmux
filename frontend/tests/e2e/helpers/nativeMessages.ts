@@ -51,6 +51,15 @@ export function sameAgentOwnership(first: AgentInfo, second: AgentInfo): boolean
 }
 
 /**
+ * Whether `seq` is a sequence that the Worker allocates for a stored message. The Worker allocates each sequence as
+ * `message_seq_hwm + 1` from a high-water that starts at 0, and the resume clone copies sequences that are already
+ * allocated, so a stored sequence is 1 or more. A list response uses 0 only to state "no message".
+ */
+export function isStoredMessageSeq(seq: bigint): boolean {
+  return seq >= 1n
+}
+
+/**
  * Read every stored Worker message of one agent, oldest first, page by page.
  *
  * These pages fail the read:
@@ -91,9 +100,7 @@ export async function readAllAgentMessages(
         throw new Error('The Worker message page contains an absent or duplicate message ID.')
       if (cursor !== undefined && message.seq <= cursor)
         throw new Error('The Worker message cursor did not advance.')
-      // The Worker allocates a sequence as `message_seq_hwm + 1` from a high-water that starts at 0, so a stored
-      // sequence is 1 or more. A list response uses 0 only to state "no message".
-      if (message.seq < 1n)
+      if (!isStoredMessageSeq(message.seq))
         throw new Error(`The Worker message page contains sequence ${message.seq}, a sequence below 1. The Worker allocates each sequence from 1.`)
       seen.add(message.id)
       messages.push(message)

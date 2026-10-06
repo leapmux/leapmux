@@ -3,7 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
 import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readAllAgentMessages, readNativeMessageSnapshot, readNativeToolOutputRecord, sameAgentOwnership } from './nativeMessages'
+import { isStoredMessageSeq, nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readAllAgentMessages, readNativeMessageSnapshot, readNativeToolOutputRecord, sameAgentOwnership } from './nativeMessages'
 
 const calls = vi.hoisted(() => ({ agent: vi.fn(), worker: vi.fn() }))
 vi.mock('./nativeScenario', () => ({ nativeAgentById: calls.agent }))
@@ -16,6 +16,16 @@ function message(id: string, seq: bigint, body: unknown = {}) {
 beforeEach(() => {
   vi.resetAllMocks()
   calls.agent.mockResolvedValue(create(AgentInfoSchema, { id: 'parent', status: AgentStatus.ACTIVE, agentSessionId: 'native-session' }))
+})
+
+describe('isStoredMessageSeq', () => {
+  it.each([1n, 2n, 9223372036854775807n])('accepts the allocated sequence %s', (seq) => {
+    expect(isStoredMessageSeq(seq)).toBe(true)
+  })
+
+  it.each([0n, -1n, -9223372036854775808n])('refuses the sequence %s, which the Worker never allocates', (seq) => {
+    expect(isStoredMessageSeq(seq)).toBe(false)
+  })
 })
 
 describe('readAllAgentMessages', () => {

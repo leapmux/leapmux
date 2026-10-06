@@ -53,6 +53,11 @@ describe('codexAppliedFileChange', () => {
     const finishedByWorker = makeMessage({ ...completed, completion })
     expect(() => codexAppliedFileChange([started, finishedByWorker], sessionId, item.id, '/private/file.txt')).toThrow('did not report a completed applied change')
   })
+  it('refuses a start row with sequence 0, which the Worker never allocates', () => {
+    const zeroStart = makeMessage({ ...started, seq: 0n })
+    const firstEnd = makeMessage({ ...completed, seq: 1n })
+    expect(() => codexAppliedFileChange([zeroStart, firstEnd], sessionId, item.id, '/private/file.txt')).toThrow('invalid native message metadata')
+  })
   it('refuses native completion before the same item starts', () => {
     const earlyCompleted = makeMessage({ ...completed, seq: 40n })
     expect(() => codexAppliedFileChange([earlyCompleted, started], sessionId, item.id, '/private/file.txt')).toThrow('before its actual start')
@@ -60,6 +65,7 @@ describe('codexAppliedFileChange', () => {
   it.each([
     { label: 'empty message ID', fields: { id: '' } },
     { label: 'negative sequence', fields: { seq: -1n } },
+    { label: 'sequence 0, which the Worker never allocates', fields: { seq: 0n } },
     { label: 'equal sequence', fields: { seq: 41n } },
     { label: 'duplicate message ID', fields: { id: started.id } },
     { label: 'user message source', fields: { source: MessageSource.USER } },
@@ -85,9 +91,9 @@ describe('codexAppliedFileChange', () => {
     const currentEnd = makeMessage({ ...completed, seq: 9223372036854775807n })
     expect(codexAppliedFileChange([...old, currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual(item.changes[0])
   })
-  it('preserves sequence zero and an explicitly empty native diff', () => {
-    const currentStart = makeMessage({ ...started, seq: 0n })
-    const currentEnd = storedMessage('native-completed', 1n, payload({ ...item, changes: [{ path: '/private/file.txt', kind: 'add', diff: '' }] }))
+  it('preserves the first allocated sequence and an explicitly empty native diff', () => {
+    const currentStart = makeMessage({ ...started, seq: 1n })
+    const currentEnd = storedMessage('native-completed', 2n, payload({ ...item, changes: [{ path: '/private/file.txt', kind: 'add', diff: '' }] }))
     expect(codexAppliedFileChange([currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual({ path: '/private/file.txt', kind: 'add', diff: '' })
   })
 })

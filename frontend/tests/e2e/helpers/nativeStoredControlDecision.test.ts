@@ -9,7 +9,10 @@ import { AgentChatMessageSchema, ContentCompression, ControlResponseState, MarkT
 import { onlyObservedNativeControl, readNativeStoredControlDecision, readObservedNativeDecision, waitForOneNativeControl } from './nativeStoredControlDecision'
 
 const reads = vi.hoisted(() => ({ snapshot: vi.fn<(context: unknown, agentId: string) => Promise<NativeMessageSnapshot>>() }))
-vi.mock('./nativeMessages', () => ({ readNativeMessageSnapshot: reads.snapshot }))
+vi.mock('./nativeMessages', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeMessages')>(),
+  readNativeMessageSnapshot: reads.snapshot,
+}))
 beforeEach(() => {
   reads.snapshot.mockReset()
 })
@@ -50,7 +53,7 @@ interface DecisionRow {
 function decisionRow({ answer = NATIVE_ANSWER, supplemental = supplement(), row = {} }: DecisionRow = {}): AgentChatMessage {
   return create(AgentChatMessageSchema, {
     id: 'native-decision-row',
-    seq: 0n,
+    seq: 1n,
     agentSessionId: SESSION,
     source: MessageSource.USER,
     markType: MarkType.CONTROL_RESPONSE,
@@ -77,7 +80,7 @@ describe('readNativeStoredControlDecision', () => {
     const value = snapshot()
     const decision = readNativeStoredControlDecision(value, REQUEST_ID)
     expect(decision.message).toBe(value.messages[0])
-    expect(decision.message.seq).toBe(0n)
+    expect(decision.message.seq).toBe(1n)
     expect(decision.requestId).toBe(REQUEST_ID)
     expect(decision.claimToken).toBe(CLAIM_TOKEN)
     expect(decision.request).toEqual(NATIVE_REQUEST)
@@ -143,6 +146,7 @@ describe('readNativeStoredControlDecision', () => {
     { name: 'an empty row ID', row: { id: '' } },
     { name: 'a blank row ID', row: { id: ' ' } },
     { name: 'a negative sequence', row: { seq: -1n } },
+    { name: 'sequence 0, which the Worker never allocates', row: { seq: 0n } },
   ])('refuses a decision with $name', ({ row }) => {
     expect(() => readNativeStoredControlDecision(snapshot([decisionRow({ row })]), REQUEST_ID)).toThrow('has no valid Worker row identity')
   })
