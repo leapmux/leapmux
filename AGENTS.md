@@ -19,10 +19,10 @@ path, wire compatibility or migration hygiene, and never propose a shim.
   `reserved` and no hole**: delete the field and move every later field down
   one. A reservation protects a number still meaningful on some wire or in some
   database, and nothing here is.
-  - Renumbering an enum is a **data change** where its ordinals are stored (see
-    **Enum columns store proto enum ordinals**): move the column `CHECK`s to a
-    plain `BETWEEN 1 AND <last>`, no carve-out. `enum_column_numbering_test.go`
-    states the range and asserts contiguity.
+  - Renumbering an enum is a **data change** where a column stores its
+    ordinals (see **Enum columns store proto enum ordinals**): move the column
+    `CHECK`s to a plain `BETWEEN 1 AND <last>`, no carve-out.
+    `enum_column_numbering_test.go` states the range and asserts contiguity.
   - Not a hole: a header at `1` (sometimes `2`) and a payload `oneof` from
     `10`, as `frame.proto`, `user_ops.proto` and `worker.proto` do on purpose.
 
@@ -148,8 +148,8 @@ message or RPC) if it has no enum yet.
   `store.AppRegistrationSourceWire`), each stating it is not the storage format.
   Add the inverse only for a caller that reads those words inward.
 
-Why: otherwise one vocabulary is spelled in Go and in three SQL dialects with
-nothing keeping them in step — a renamed constant left a
+Why: otherwise Go and three SQL dialects each spell one vocabulary, and nothing
+keeps them in step — a renamed constant left a
 `status IN ('completed','failed',…)` list stale, and a `FromWire` falling
 through to a default turned the drift into a plausible wrong value.
 
@@ -401,9 +401,9 @@ Run E2E tests locally before claiming that an E2E change works.
   (`fixtures.ts`) restores listeners, routes, cookies, permissions, storage,
   viewport, device metrics and every media-emulation key. A spec's own cleanup
   runs only on success, so one failure would poison every later spec.
-  `203-shared-tab-isolation.spec.ts` guards this; `mediaEmulationReset` is typed
-  `Required<…>`, so a new Playwright media feature fails to compile until
-  handled.
+  `203-shared-tab-isolation.spec.ts` guards this; the type of
+  `mediaEmulationReset` is `Required<…>`, so a new Playwright media feature
+  fails to compile until the reset handles it.
 - **Isolate explicitly** in `ISOLATED_CONTEXT_SPECS`. `isMobile`, `hasTouch` and
   a non-default `deviceScaleFactor` isolate automatically — they belong to a
   CONTEXT, not a page.
@@ -411,7 +411,7 @@ Run E2E tests locally before claiming that an E2E change works.
   the services of Cursor, Kiro and Amp. The `modelScript` fixture states each
   turn:
   - `queue` — an ordered turn.
-  - `rule` — a turn that cannot be placed in order, such as a subagent's.
+  - `rule` — a turn with no known place in the order, such as a subagent's.
   - `fallback` — however many turns a provider starts by itself.
   - `prompt` — marks a prompt as this test's.
   - `waitForSteps` — synchronizes.
@@ -434,8 +434,8 @@ Run E2E tests locally before claiming that an E2E change works.
   (same test ids and text), so a page-rooted chat locator can match TWO elements
   and fail strict mode; use `helpers/ui.ts` (`assistantBubbles`, `userBubbles`,
   `messageBubbles`, `messageContents`, `visibleOnly`) on the OUTERMOST locator.
-  The SIDEBAR is mounted twice for real (desktop and mobile): the second copy
-  may be visible, never hydrates worker-side metadata, and can intercept a
+  The shell mounts the SIDEBAR twice for real (desktop and mobile): the second
+  copy may be visible, never hydrates worker-side metadata, and can intercept a
   hover. Use `workspaceRow` / `treeRow` / `branchGroupRow` and
   `sidebarLeafLabels` / `sidebarLeafIds`, never a raw `querySelector`. The agent
   info card renders on two surfaces; scope each row to its popover.
