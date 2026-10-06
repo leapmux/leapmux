@@ -18,7 +18,9 @@ test.describe('Markdown Editor', () => {
       await page.keyboard.press('Enter')
     }
 
-    // The editor wrapper should have grown (capped at 75% of container)
+    // The editor wrapper should have grown (capped at 75% of container).
+    // The wrapper, not `composerEditor`: the wrapper holds the cap, and the
+    // ProseMirror element inside it grows with its text whether the cap moved or not.
     const wrapper = page.locator('[data-testid="composer-editor"]:visible')
     const height = await wrapper.evaluate(el => el.getBoundingClientRect().height)
     expect(height).toBeGreaterThan(60)
