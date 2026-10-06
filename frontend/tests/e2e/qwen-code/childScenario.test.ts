@@ -14,7 +14,7 @@ const startupReminders = { role: 'user', content: '<system-reminder>\nThe projec
 
 function matches(matcher: ReturnType<typeof qwenChildTurn>, messages: unknown[]): boolean {
   const body = { messages }
-  return matchesRequest(matcher, { protocol: 'openai-chat-completions', systemText: '', userText: lastUserText(body), body })
+  return matchesRequest(matcher, { protocol: 'openai-chat-completions', systemText: '', userText: lastUserText('openai-chat-completions', body), body })
 }
 
 describe('qwenChildTurn', () => {

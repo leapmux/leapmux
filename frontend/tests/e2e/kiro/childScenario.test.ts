@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { mockScenarioPrompt } from '../helpers/mockModelScenario'
 import { matchesRequest } from '../helpers/mockModelScript'
+import { KIRO_CHILD_AGENT } from '../helpers/providerToolCalls'
 import { HELD_CHILD_TASK } from '../helpers/subagentRegistry'
-import { KIRO_CHILD_AGENT, KIRO_HELD_CHILD_TURN, kiroChildTurn } from './childScenario'
+import { KIRO_HELD_CHILD_TURN, kiroChildTurn } from './childScenario'
 
 const heldPrompt = mockScenarioPrompt('kiro-held-child', `${HELD_CHILD_TASK}.`)
 
