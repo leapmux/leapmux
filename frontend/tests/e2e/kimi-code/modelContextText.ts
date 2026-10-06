@@ -2,13 +2,13 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
 
 /**
- * The raw text of one native Kimi Code model request.
+ * The message text of one native Kimi Code model request.
  *
- * The generic `nativeModelContextText` JSON-stringifies the body, so a native
- * reminder that quotes its mode (`You are now in "agent swarm" mode.`) never
- * matches a literal substring: the quotes arrive escaped. This reader joins the
- * actual message text instead. An assistant step of tool calls alone carries a
- * null content and contributes nothing.
+ * The generic `nativeModelContextText` reads every string of the body, tool
+ * schemas included, so a negative check of a mode word can match a schema. This
+ * reader joins the message text alone, and it refuses a message whose content is
+ * not text. An assistant step of tool calls alone carries a null content and
+ * contributes nothing.
  */
 export function kimiModelContextText(request: MockModelRequestRecord): string {
   if (request.protocol !== 'openai-chat-completions')

@@ -173,16 +173,27 @@ describe('nativeModelContextText', () => {
     expect(request.body).toEqual({ prompt: 'NEXT_PROMPT_MARKER' })
   })
 
-  it('keeps native body values when there is no server history', () => {
-    const body = { prompt: 'NATIVE_BODY_MARKER', enabled: false, usedTokens: 0, emptyText: '', nullable: null }
+  it('keeps native body strings when there is no server history', () => {
+    const body = { prompt: 'NATIVE_BODY_MARKER', enabled: false, usedTokens: 0, emptyText: '', nullable: null, nested: [{ text: 'NESTED_MARKER' }] }
     const request: MockModelRequestRecord = { protocol: 'anthropic-messages', path: '/v1/messages', body }
-    const text = nativeModelContextText(request)
-    expect(text).toContain('NATIVE_BODY_MARKER')
-    expect(text).toContain('"enabled":false')
-    expect(text).toContain('"usedTokens":0')
-    expect(text).toContain('"emptyText":""')
-    expect(text).toContain('"nullable":null')
+    expect(nativeModelContextText(request)).toBe('NATIVE_BODY_MARKER\n\nNESTED_MARKER')
     expect(request.body).toBe(body)
+  })
+
+  // A JSON encoding escapes these characters, so a marker that holds one never matched, and a negative check passed.
+  it.each(['You are now in "agent swarm" mode.', 'C:\\work\\plan.md', 'first line\nsecond line'])('keeps the literal text of a marker with an escaped character: %j', (marker) => {
+    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [{ role: 'system', content: marker }] } }
+    expect(nativeModelContextText(request)).toContain(marker)
+  })
+
+  it('reads no object key as context', () => {
+    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { KEY_ONLY: 'value' } }
+    expect(nativeModelContextText(request)).not.toContain('KEY_ONLY')
+  })
+
+  it('reads the server-held context after the body', () => {
+    const request: MockModelRequestRecord = { protocol: 'openai-responses', path: '/responses', body: { prompt: 'BODY' }, serverContext: { conversationId: 'ID', messages: [{ role: 'user', content: 'HELD' }] } }
+    expect(nativeModelContextText(request)).toBe('BODY\nID\nuser\nHELD')
   })
 })
 

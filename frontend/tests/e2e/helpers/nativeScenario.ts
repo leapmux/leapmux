@@ -162,11 +162,17 @@ export async function currentNativeAgent(context: Pick<ManagedNativeScenarioCont
   })
 }
 
-/** Read submitted or server-held native context from a recorded model request. */
+/**
+ * Read submitted or server-held native context from a recorded model request: each string value of the body and of
+ * the server-held context, in document order, one per line.
+ *
+ * The text keeps each string literal. A JSON encoding escapes a quote, a backslash, and a line break, so a marker that
+ * holds one never matched the encoded text, and a negative check on it passed whatever the model received.
+ */
 export function nativeModelContextText(
   request: MockModelRequestRecord & { serverContext?: unknown },
 ): string {
-  return JSON.stringify({ body: request.body, serverContext: request.serverContext })
+  return jsonStringValues([request.body, request.serverContext]).join('\n')
 }
 
 /** Read context through the scenario's provider reader or the generic service reader. */
