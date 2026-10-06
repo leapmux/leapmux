@@ -160,9 +160,28 @@ export async function closeNativeAgentAndWait(
     const detail = closed.failureDetail ? ` (${closed.failureDetail})` : ''
     throw new Error(`The Worker refused to close agent ${agentId}: ${closed.failureMessage || 'no message'}${detail}`)
   }
-  // A Worker read can fail for a moment during a reconnect, so the wait retries the read and the match together.
+  await waitForWorkerAgentsClosed(context, [agentId])
+}
+
+/**
+ * Wait until the Worker's `ListAgents` omits each agent of `agentIds`. The Worker lists only rows that are not closed,
+ * so the omission shows that it recorded each completed close, whatever started the close: an API call, or a dialog
+ * of the page.
+ *
+ * The read asks the Worker for the agent IDs themselves. A read through the Hub's tab list cannot prove a close,
+ * because the Hub's tombstone removes the tabs from that list before the Worker closes the agents.
+ */
+export async function waitForWorkerAgentsClosed(
+  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
+  agentIds: readonly string[],
+): Promise<void> {
+  if (agentIds.length === 0 || agentIds.some(agentId => !agentId))
+    throw new Error('The Worker close wait requires one or more agent IDs, each nonempty.')
+  // A Worker read can fail for a moment during a reconnect, so the wait retries the reads and the match together.
   await retryUntilPass(async () => {
-    expect(await nativeAgentById(context, agentId), `The Worker still lists the closed agent ${agentId}.`).toBeNull()
+    const agents = await Promise.all(agentIds.map(agentId => nativeAgentById(context, agentId)))
+    const listed = agents.flatMap(agent => agent ? [agent.id] : [])
+    expect(listed, `The Worker still lists the closed agents ${listed.join(', ')}.`).toEqual([])
   })
 }
 
@@ -240,9 +259,16 @@ async function workspaceTabIdsViaAPI(
 }
 
 /**
- * List agents for a workspace via hub ListTabs + worker ListAgents.
- * The ListAgents RPC now accepts tab_ids instead of workspace_id,
- * so we first fetch the tab list from the hub and then request agents by ID.
+ * List the agents of a workspace: the Hub's ListTabs gives the agent tab IDs, and the Worker's ListAgents reads those
+ * agents. ListAgents takes tab IDs, not a workspace ID.
+ *
+ * A failed read throws, from the Hub or from the Worker, so a caller never takes a failed read for an empty list. A
+ * wait that must outlast a reconnect retries the read: `waitForAgentsViaAPI` does, and so does a read inside
+ * `retryUntilPass` (`./retryUntilPass.ts`).
+ *
+ * Do not wait for an empty list through this read to prove a close. The Hub's tombstone removes the tab from ListTabs
+ * before the Worker closes the agent, and the read then asks the Worker for nothing. `waitForWorkerAgentsClosed` asks
+ * the Worker for each closed agent.
  */
 export async function listAgentsViaAPI(
   hubUrl: string,
@@ -256,27 +282,20 @@ export async function listAgentsViaAPI(
   }
 
   const channel = await getTestChannel(hubUrl, token)
-  let resp: Awaited<ReturnType<typeof channel.callWorker<typeof ListAgentsRequestSchema, typeof ListAgentsResponseSchema>>>
-  try {
-    resp = await channel.callWorker(
-      workerId,
-      'ListAgents',
-      ListAgentsRequestSchema,
-      ListAgentsResponseSchema,
-      { tabIds: agentTabIds },
-    )
-  }
-  catch {
-    // Treat as transient; caller retries via waitForAgentsViaAPI.
-    return []
-  }
-  return (resp.agents ?? []).map(a => ({ id: a.id, title: a.title, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
+  const resp = await channel.callWorker(
+    workerId,
+    'ListAgents',
+    ListAgentsRequestSchema,
+    ListAgentsResponseSchema,
+    { tabIds: agentTabIds },
+  )
+  return resp.agents.map(a => ({ id: a.id, title: a.title, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
 }
 
 /**
  * The status of one agent of the workspace, as its Worker reports it, or undefined while the Worker lists no such
- * agent. The Worker, not the tab bar, is the authority on an agent's state. The Hub read of the tab list throws when
- * it fails, so a wait on this read uses `waitForAgentStatusViaAPI`, not `expect.poll`.
+ * agent. The Worker, not the tab bar, is the authority on an agent's state. A failed Hub or Worker read throws, so a
+ * wait on this read uses `waitForAgentStatusViaAPI`, not `expect.poll`.
  */
 export async function agentStatusViaAPI(server: AgentServer, workspaceId: string, agentId: string): Promise<number | undefined> {
   const agents = await listAgentsViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId)
@@ -350,6 +369,9 @@ export async function waitForWorkerTabTitle(
  * `UpdateTerminalTitle` without awaiting it -- so a reload or a worker restart
  * begun in that window drops the write and the failure reads as a
  * persistence regression. Sibling of `listAgentsViaAPI`, same two-step shape.
+ *
+ * A failed read throws, as `listAgentsViaAPI` states. A wait that must outlast a reconnect retries the read, as
+ * `waitForWorkerTabTitle` and `waitForTerminalExitViaAPI` do.
  */
 export async function listTerminalsViaAPI(
   hubUrl: string,
@@ -363,26 +385,19 @@ export async function listTerminalsViaAPI(
   }
 
   const channel = await getTestChannel(hubUrl, token)
-  try {
-    const resp = await channel.callWorker(
-      workerId,
-      'ListTerminals',
-      ListTerminalsRequestSchema,
-      ListTerminalsResponseSchema,
-      { tabIds: terminalTabIds },
-    )
-    return (resp.terminals ?? []).map(t => ({
-      id: t.terminalId,
-      title: t.title,
-      status: t.status,
-      exited: t.exited,
-    }))
-  }
-  catch {
-    // Treat as transient so a caller polling this converges instead of
-    // failing on one blip.
-    return []
-  }
+  const resp = await channel.callWorker(
+    workerId,
+    'ListTerminals',
+    ListTerminalsRequestSchema,
+    ListTerminalsResponseSchema,
+    { tabIds: terminalTabIds },
+  )
+  return resp.terminals.map(t => ({
+    id: t.terminalId,
+    title: t.title,
+    status: t.status,
+    exited: t.exited,
+  }))
 }
 
 /**

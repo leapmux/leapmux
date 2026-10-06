@@ -18,7 +18,7 @@ import {
   workspaceChildren,
   workspaceRow,
 } from './helpers/ui'
-import { listAgentsViaAPI, waitForAgentStartupViaAPI } from './helpers/workerTabs'
+import { listAgentsViaAPI, waitForAgentStartupViaAPI, waitForWorkerAgentsClosed } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import { branchExists, createGitRepo, createWorkspaceWithWorktreeViaAPI, expectRepoBranch } from './helpers/worktree'
 
@@ -491,7 +491,7 @@ test.describe('Branch context menu', () => {
       repoDir,
       'keep-locked-branch',
     )
-    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    const agents = await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
     execFileSync('git', ['worktree', 'lock', '--reason', 'held by the e2e test', worktreeDir], { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
@@ -506,12 +506,11 @@ test.describe('Branch context menu', () => {
     await expect(page.getByRole('heading', { name: 'Delete worktree' })).not.toBeVisible()
 
     // The tabs go, and the worktree stays — which is the whole point of the
-    // hatch. Poll the worker for the tab count; the directory check follows it,
-    // because the removal (if a regression let one run) takes seconds.
-    await expect(async () => {
-      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
-      expect(agents).toHaveLength(0)
-    }).toPass()
+    // hatch. Wait until the Worker no longer lists the agents. The directory
+    // check follows that wait, because the removal (if a regression let one
+    // run) takes seconds. The Hub's tab list cannot prove the close: its
+    // tombstone empties the list before the Worker closes the agents.
+    await waitForWorkerAgentsClosed({ leapmuxServer }, agents.map(agent => agent.id))
     expect(existsSync(worktreeDir)).toBe(true)
     expect(branchExists(repoDir, 'keep-locked-branch')).toBe(true)
   })
