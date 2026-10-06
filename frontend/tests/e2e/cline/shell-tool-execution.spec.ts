@@ -28,8 +28,8 @@ function toolMessageText(body: unknown, callId: string): string {
 clineTest.describe('Cline tool execution', () => {
   clineTest('draws the output of a command', async ({ native }) => {
     // The command text states no `cline-42`, so only the command's own output can put
-    // it on the page.
-    const { resultRequest } = await runNativeToolTurn(native, {
+    // it on the page. `exerciseShellToolExecution` below proves that the result reaches the model.
+    await runNativeToolTurn(native, {
       toolCalls: [bashToolCall(native.provider, 'echo-call', 'echo "cline-$((40 + 2))"')],
       prompt: 'Run the arithmetic command.',
       answer: 'The command printed its number.',
@@ -39,8 +39,6 @@ clineTest.describe('Cline tool execution', () => {
     // Cline states the result as a list of records. The row draws the output, not the
     // record.
     expect(await chatText(native.page)).not.toContain('"success"')
-    // The executor ran the call: its record reached the next model call.
-    expect(JSON.stringify(resultRequest.body)).toContain('cline-42')
   })
 
   clineTest('draws the error of a failed command, and the model reads why', async ({ native }) => {

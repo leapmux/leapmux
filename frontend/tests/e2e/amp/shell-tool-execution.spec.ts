@@ -12,8 +12,8 @@ import { applyPermissionPreset, chatText } from '../helpers/ui'
 ampTest.describe('Amp tool execution', () => {
   ampTest('draws the output of a command', async ({ native }) => {
     // The command text states no `amp-42`, so only the command's own output can put
-    // it on the page.
-    const { resultRequest } = await runNativeToolTurn(native, {
+    // it on the page. `exerciseShellToolExecution` below proves that the result reaches the model.
+    await runNativeToolTurn(native, {
       toolCalls: [bashToolCall(native.provider, 'echo-call', 'echo "amp-$((40 + 2))"')],
       prompt: 'Run the arithmetic command.',
       answer: 'The command printed its number.',
@@ -22,8 +22,6 @@ ampTest.describe('Amp tool execution', () => {
     await expect.poll(() => chatText(native.page)).toContain('amp-42')
     // Amp states the result as a JSON record. The row draws its output, not the record.
     expect(await chatText(native.page)).not.toContain('"exitCode"')
-    // The executor ran the call: its record reached the next inference.
-    expect(JSON.stringify(resultRequest.body)).toContain('amp-42')
   })
 })
 
