@@ -1,7 +1,6 @@
 import { expect } from '@playwright/test'
 import { ampTest } from '../amp-fixtures'
-import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { bashToolCall } from '../helpers/providerToolCalls'
+import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { applyPermissionPreset, chatText } from '../helpers/ui'
 
 /**
@@ -11,17 +10,14 @@ import { applyPermissionPreset, chatText } from '../helpers/ui'
  */
 ampTest.describe('Amp tool execution', () => {
   ampTest('draws the output of a command', async ({ native }) => {
-    // The command text states no `amp-42`, so only the command's own output can put
-    // it on the page. `exerciseShellToolExecution` below proves that the result reaches the model.
-    await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'echo-call', 'echo "amp-$((40 + 2))"')],
-      prompt: 'Run the arithmetic command.',
-      answer: 'The command printed its number.',
+    // The shared scenario proves the computed output on the page and in the next model request.
+    await exerciseShellToolExecution(native, {
+      includeFailure: false,
+      // Amp states the result as a JSON record. The row draws its output, not the record.
+      rowProof: async ({ page }) => {
+        expect(await chatText(page)).not.toContain('"exitCode"')
+      },
     })
-
-    await expect.poll(() => chatText(native.page)).toContain('amp-42')
-    // Amp states the result as a JSON record. The row draws its output, not the record.
-    expect(await chatText(native.page)).not.toContain('"exitCode"')
   })
 })
 

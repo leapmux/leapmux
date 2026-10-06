@@ -1,10 +1,9 @@
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { exerciseFileEditSequence, runNativeToolSteps, runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { bashToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { exerciseFileEditSequence, exerciseNativeFileWrite, runNativeToolSteps } from '../helpers/nativeToolExecution'
+import { bashToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { chatText, messageContents } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
@@ -59,14 +58,6 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     const agent = await currentNativeAgent(native)
     if (!agent.workingDir)
       throw new Error('The active native agent has no working directory.')
-    const path = join(createNativeToolDirectory(agent.workingDir), 'note.txt')
-    await runNativeToolTurn(native, {
-      toolCalls: [writeToolCall(native.provider, 'write-call', { path, content: 'omp was here\n' })],
-      prompt: 'Write the note.',
-      answer: 'I wrote the note.',
-    })
-
-    expect(readFileSync(path, 'utf8')).toBe('omp was here\n')
-    await expect.poll(() => chatText(native.page)).toContain('note.txt')
+    await exerciseNativeFileWrite(native, { directory: createNativeToolDirectory(agent.workingDir), content: 'omp was here\n' })
   })
 })

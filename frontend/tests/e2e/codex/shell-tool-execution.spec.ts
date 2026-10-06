@@ -1,25 +1,23 @@
 import { expect } from '@playwright/test'
 import { codexTest } from '../codex-fixtures'
-import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { bashToolCall } from '../helpers/providerToolCalls'
+import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { toolRows } from '../helpers/ui'
 import { codexExecContext } from './scenarios'
 
 codexTest.describe('codex tool execution', () => {
   codexTest('command execution shows command, output, and exit code', async ({ native }) => {
-    // The command really runs, so the exit code the card shows is the shell's own.
-    // The command text states no `codex-hello-42` and no `codex-done-55`, so only
-    // the command's own output can put them in a tool row.
-    await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'exit-call', `sh -c 'echo "codex-hello-$((40 + 2))"; echo "codex-done-$((50 + 5))"; exit 7'`)],
-      prompt: 'Run this exact command and report its result.',
-      answer: 'The command exited with status 7.',
+    // The commands really run, so the exit code that the card shows is the shell's own. Each command computes its
+    // output, so only the command's own output can put it in a tool row.
+    await exerciseShellToolExecution(codexExecContext(native), {
+      rowProof: async ({ page, output, printedPrefix, failed }) => {
+        const rows = toolRows(page)
+        // The output holds no `printf`, so a row that holds it and the printed text shows the command itself.
+        await expect(rows.filter({ hasText: 'printf' }).filter({ hasText: printedPrefix }).first(), 'a tool row shows the command').toBeVisible()
+        await expect(rows.filter({ hasText: output }).first(), 'a tool row shows the output').toBeVisible()
+        if (failed)
+          await expect(rows.filter({ hasText: 'Error (exit 7)' }).first(), 'a tool row shows the exit code').toBeVisible()
+      },
     })
-
-    const toolMessages = toolRows(native.page)
-    await expect(toolMessages.filter({ hasText: 'codex-hello-42' }).first()).toBeVisible()
-    await expect(toolMessages.filter({ hasText: 'codex-done-55' }).first()).toBeVisible()
-    await expect(toolMessages.filter({ hasText: 'Error (exit 7)' }).first()).toBeVisible()
   })
 })
 

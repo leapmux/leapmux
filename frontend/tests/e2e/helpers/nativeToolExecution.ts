@@ -12,7 +12,7 @@ import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './providerToolCalls'
 import { isFileNameComponent } from './runDirectory'
 import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { assistantBubbles, controlButton, expectNoControlBanner, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, chatText, controlButton, expectNoControlBanner, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
 
 interface ToolPreparation {
   prepare?: () => Promise<void>
@@ -208,6 +208,26 @@ export interface ShellToolExecutionOptions extends ToolPreparation {
    * this option, because the hold changes the command that the model asks for.
    */
   outputGate?: boolean
+  /**
+   * Prove what the provider's row draws for each command, after the shared checks of that command. A provider states
+   * its own facts here, such as a native record that the row must not draw.
+   */
+  rowProof?: (proof: ShellRowProof) => Promise<void>
+}
+
+/** What the row proof of one command of {@link exerciseShellToolExecution} receives. */
+export interface ShellRowProof {
+  page: Page
+  /** The command that the model asked the native shell tool to run. */
+  command: string
+  /** The text that the command prints. */
+  output: string
+  /**
+   * The text that the command passes to `printf`, which `output` holds with the computed digits after it. The command
+   * holds it also, so a row that holds `printf` and this text shows the command, not only its output.
+   */
+  printedPrefix: string
+  failed: boolean
 }
 
 /** Verify actual shell output and a failed command through the native tool path. */
@@ -222,8 +242,8 @@ export async function exerciseShellToolExecution(
   expect(existsSync(outputFile)).toBe(false)
   const marker = uniqueMarker()
   const commands = [
-    { command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, output: `SHELL${marker}42`, failed: false },
-    ...(options.includeFailure === false ? [] : [{ command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, failed: true }]),
+    { command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, printedPrefix: `SHELL${marker}`, output: `SHELL${marker}42`, failed: false },
+    ...(options.includeFailure === false ? [] : [{ command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, printedPrefix: `SHELLERR${marker}`, output: `SHELLERR${marker}77`, failed: true }]),
   ]
   for (const [index, command] of commands.entries()) {
     const answer = `The shell scenario ${index} ended.`
@@ -231,8 +251,9 @@ export async function exerciseShellToolExecution(
     const outputRow = () => messageContents(context.page).filter({ hasText: command.output }).first()
     // The gate file lives in the literal private tool directory. A hold that quotes its path incorrectly runs the marker command, and the check of `command-expanded-marker` below finds it.
     const gate = options.outputGate ? createOutputGate(directory) : undefined
+    const asked = gate ? gate.hold(command.command) : command.command
     const stepIndex = await context.modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, callId, gate ? gate.hold(command.command) : command.command)] },
+      { toolCalls: [bashToolCall(context.provider, callId, asked)] },
       nativeTextStep(context, answer),
     )
     await sendMessage(context.page, context.modelScript.prompt(`Run the native shell scenario ${index}.`))
@@ -255,6 +276,7 @@ export async function exerciseShellToolExecution(
         expect(result.text).toMatch(/(?:exit(?:ed)?(?: with)?[ _]code|exitCode|exit[ _]status)[^\d-]*7\b/i)
       await expect(messageBubbles(context.page).filter({ hasText: command.output }).first()).toContainText(/Error|failed|exit[^\d-]*7\b/i)
     }
+    await options.rowProof?.({ page: context.page, command: asked, output: command.output, printedPrefix: command.printedPrefix, failed: command.failed })
     await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
   }
 }
@@ -371,6 +393,78 @@ export async function exerciseFileWriteSequence(context: NativeScenarioContext, 
   await context.modelScript.waitForSteps(start + sequence.steps.length + 1)
   await waitForAgentIdle(context.page)
   expect(readFileSync(sequence.filePath, 'utf8'), 'the write changed the file on disk').toContain('written-42')
+}
+
+/** The file name of the native read, edit, and write scenarios below. Each scenario writes it in its own directory. */
+const NATIVE_FILE_NAMES = { read: 'notes.txt', edit: 'parity.ts', write: 'note.txt' } as const
+
+/**
+ * Read three seeded lines through the provider's native read tool, and require the row to draw the lines of the file:
+ * the last line shows, and the numbered form that the native tool returns to the model does not. `numberedLine`
+ * states that form for the provider, such as `3: text`.
+ */
+export async function exerciseNativeFileRead(
+  context: NativeScenarioContext,
+  options: { directory: string, linePrefix: string, numberedLine: (lineNumber: number, text: string) => string },
+): Promise<void> {
+  if (!options.linePrefix)
+    throw new Error('The native read needs a line prefix that only the file holds.')
+  const notes = join(options.directory, NATIVE_FILE_NAMES.read)
+  const lines = [1, 2, 3].map(index => `${options.linePrefix}-${index}`)
+  writeFileSync(notes, `${lines.join('\n')}\n`)
+  await runNativeToolTurn(context, {
+    toolCalls: [readToolCall(context.provider, 'read-notes', notes)],
+    prompt: 'Read the notes back.',
+    answer: 'I read the notes.',
+  })
+  await expect.poll(() => chatText(context.page), 'the read row draws the last line of the file').toContain(lines[2])
+  expect(await chatText(context.page), 'the read row draws the lines of the file, not their numbered form').not.toContain(options.numberedLine(3, lines[2]!))
+}
+
+/**
+ * Change one seeded line through the provider's native edit tool, and require the exact bytes on disk and the diff of
+ * the edit in the transcript.
+ */
+export async function exerciseNativeFileEdit(context: NativeScenarioContext, options: { directory: string }): Promise<void> {
+  const path = join(options.directory, NATIVE_FILE_NAMES.edit)
+  writeFileSync(path, `${PARITY_BEFORE}\n`)
+  await runNativeToolTurn(context, {
+    toolCalls: [editToolCall(context.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })],
+    prompt: 'Change parity.ts.',
+    answer: 'I changed parity.ts.',
+  })
+  expect(readFileSync(path, 'utf8'), 'the edit stores exactly the changed line').toBe(`${PARITY_AFTER}\n`)
+  await expectFileDiff(context.page, { before: PARITY_BEFORE, after: PARITY_AFTER })
+}
+
+/**
+ * Create a missing file through the provider's native write tool, and require the stored bytes and the file name in
+ * the transcript. `stored` states the bytes that the provider stores for `content`: the same text by default, a
+ * string for exact other bytes (Amp appends a final newline), or a pattern for a provider whose exact bytes the suite
+ * has not pinned. Give a pattern anchored at both ends, so it states the whole file.
+ */
+export async function exerciseNativeFileWrite(
+  context: NativeScenarioContext,
+  options: { directory: string, content: string, stored?: string | RegExp },
+): Promise<void> {
+  if (!options.content)
+    throw new Error('The native write needs content.')
+  const stored = options.stored ?? options.content
+  if (stored instanceof RegExp && (!stored.source.startsWith('^') || !stored.source.endsWith('$')))
+    throw new Error('A stored-bytes pattern must state the whole file, from ^ to $.')
+  const path = join(options.directory, NATIVE_FILE_NAMES.write)
+  expect(existsSync(path), 'the written file does not exist before the write').toBe(false)
+  await runNativeToolTurn(context, {
+    toolCalls: [writeToolCall(context.provider, 'write-call', { path, content: options.content })],
+    prompt: 'Write the note.',
+    answer: 'I wrote the note.',
+  })
+  const bytes = readFileSync(path, 'utf8')
+  if (typeof stored === 'string')
+    expect(bytes, 'the write stores exactly the stated bytes').toBe(stored)
+  else
+    expect(bytes, 'the write stores the stated bytes').toMatch(stored)
+  await expect.poll(() => chatText(context.page), 'the transcript names the written file').toContain(NATIVE_FILE_NAMES.write)
 }
 
 /** Verify native reads, the applied edit diff, and real file creation. */

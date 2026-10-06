@@ -2,28 +2,29 @@ import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
-import type { NativeToolStep } from './nativeToolExecution'
+import type { NativeToolStep, ShellRowProof } from './nativeToolExecution'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fakeLocator } from '~/test-support/fakeLocator'
+import { fakeLocator, fakeLocatorTree } from '~/test-support/fakeLocator'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { stepRequest } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { createNativeToolDirectory } from './nativeToolDirectory'
-import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseShellToolExecution, expectFileDiff, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolSteps, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
+import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseNativeFileEdit, exerciseNativeFileRead, exerciseNativeFileWrite, exerciseShellToolExecution, expectFileDiff, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolSteps, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
-const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn(), noBanner: vi.fn() }))
+const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn(), noBanner: vi.fn(), chat: vi.fn() }))
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   waitForAgentIdle: calls.idle,
   sendMessage: calls.send,
   expectNoControlBanner: calls.noBanner,
+  chatText: calls.chat,
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
@@ -522,6 +523,106 @@ describe('exerciseFileEditSequence', () => {
   })
 })
 
+describe('native file read, edit, and write scenarios', () => {
+  /** A model script whose turn runs `effect`, as the native tool does, and a page that answers each check as passed. */
+  function fileTurn(effect: () => void) {
+    const status: MockModelScenarioStatus = { complete: true, nextStep: 1_000, stepCount: 1_000, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const log: string[] = []
+    const { page } = fakeLocatorTree({ log })
+    const queued: MockModelStep[][] = []
+    calls.send.mockImplementation(async () => {
+      effect()
+    })
+    const context = {
+      page,
+      provider: AgentProvider.CLINE,
+      modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({
+        prompt: text => text,
+        queue: async (...steps: MockModelStep[]) => {
+          queued.push(steps)
+          return 0
+        },
+        status: async () => status,
+        waitForSteps: async () => status,
+        requestAt: async stepIndex => ({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }),
+      }),
+    } satisfies NativeScenarioContext
+    return { context, queued, log }
+  }
+
+  describe('exerciseNativeFileRead', () => {
+    it('seeds three lines, reads them through the native tool, and requires the lines without their numbered form', async () => {
+      const { context, queued } = fileTurn(() => {})
+      calls.chat.mockResolvedValue('unit-read-1 unit-read-2 unit-read-3')
+      await exerciseNativeFileRead(context, { directory, linePrefix: 'unit-read', numberedLine: (line, text) => `${line} | ${text}` })
+      expect(readFileSync(join(directory, 'notes.txt'), 'utf8')).toBe('unit-read-1\nunit-read-2\nunit-read-3\n')
+      expect(calls.read).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'read-notes', join(directory, 'notes.txt'))
+      expect(queued[0]?.[0]).toEqual({ toolCalls: [{ id: 'read-notes', name: 'unit-read' }] })
+    })
+
+    it('fails when the row draws the numbered form of the native tool', async () => {
+      const { context } = fileTurn(() => {})
+      calls.chat.mockResolvedValue('3 | unit-read-3')
+      await expect(exerciseNativeFileRead(context, { directory, linePrefix: 'unit-read', numberedLine: (line, text) => `${line} | ${text}` }))
+        .rejects
+        .toThrow('not their numbered form')
+    })
+  })
+
+  describe('exerciseNativeFileEdit', () => {
+    it('requires the exact changed bytes and the diff of the edit', async () => {
+      const path = join(directory, 'parity.ts')
+      const { context, log } = fileTurn(() => writeFileSync(path, `${PARITY_AFTER}\n`))
+      await exerciseNativeFileEdit(context, { directory })
+      expect(calls.edit).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })
+      expect(log.at(-1)).toContain('to.be.visible')
+    })
+
+    it('fails when the edit leaves other bytes than the changed line', async () => {
+      const path = join(directory, 'parity.ts')
+      const { context } = fileTurn(() => writeFileSync(path, `${PARITY_AFTER}\n// trailer\n`))
+      await expect(exerciseNativeFileEdit(context, { directory })).rejects.toThrow('the edit stores exactly the changed line')
+    })
+  })
+
+  describe('exerciseNativeFileWrite', () => {
+    const path = () => join(directory, 'note.txt')
+
+    it('requires exactly the written content by default, and the file name in the transcript', async () => {
+      const { context } = fileTurn(() => writeFileSync(path(), 'unit was here\n'))
+      calls.chat.mockResolvedValue('Wrote note.txt')
+      await exerciseNativeFileWrite(context, { directory, content: 'unit was here\n' })
+      expect(calls.write).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'write-call', { path: path(), content: 'unit was here\n' })
+    })
+
+    it('requires exactly the stated other bytes of a provider that changes the content', async () => {
+      const { context } = fileTurn(() => writeFileSync(path(), 'unit was here\n'))
+      calls.chat.mockResolvedValue('Wrote note.txt')
+      await exerciseNativeFileWrite(context, { directory, content: 'unit was here', stored: 'unit was here\n' })
+    })
+
+    it('fails on bytes that differ from the stated ones', async () => {
+      const { context } = fileTurn(() => writeFileSync(path(), 'unit was here, and more\n'))
+      calls.chat.mockResolvedValue('Wrote note.txt')
+      await expect(exerciseNativeFileWrite(context, { directory, content: 'unit was here\n' })).rejects.toThrow('the write stores exactly the stated bytes')
+    })
+
+    it('accepts the whole-file pattern of a provider with unpinned bytes, and refuses a pattern that states part of the file', async () => {
+      const { context } = fileTurn(() => writeFileSync(path(), 'unit was here'))
+      calls.chat.mockResolvedValue('Wrote note.txt')
+      await exerciseNativeFileWrite(context, { directory, content: 'unit was here', stored: /^unit was here\n?$/ })
+      await expect(exerciseNativeFileWrite(context, { directory, content: 'unit was here', stored: /unit was here/ })).rejects.toThrow('from ^ to $')
+    })
+
+    it('fails when the file exists before the write', async () => {
+      writeFileSync(path(), 'earlier')
+      const { context, queued } = fileTurn(() => {})
+      await expect(exerciseNativeFileWrite(context, { directory, content: 'unit was here' })).rejects.toThrow('does not exist before the write')
+      expect(queued).toEqual([])
+    })
+  })
+})
+
 describe('PARITY_BEFORE and PARITY_AFTER', () => {
   it('keeps each constant on one line, and neither holds the other, so a diff filter on one cannot match only the other', () => {
     for (const line of [PARITY_BEFORE, PARITY_AFTER])
@@ -875,6 +976,91 @@ describe('exerciseShellToolExecution', () => {
     const command = await firstQueuedCommand({ includeFailure: false, outputGate: true })
     expect(command).toContain('trap')
     expect(command).toMatch(/; printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
+  })
+
+  /**
+   * Run the whole scenario: each sent prompt runs the queued command in a shell, as the native tool does, and the
+   * provider reader returns its output. The page answers each check as passed and logs it.
+   */
+  async function runScenario(options: Parameters<typeof exerciseShellToolExecution>[1], log: string[] = []) {
+    const { page } = fakeLocatorTree({ log })
+    const status: MockModelScenarioStatus = { complete: true, nextStep: 1_000, stepCount: 1_000, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const queued: Array<{ callId: string, command: string }> = []
+    const outcomes = new Map<string, { text: string, exitCode: number }>()
+    calls.shell.mockImplementation((_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-shell', arguments: { command } }))
+    calls.agent.mockResolvedValue({ workingDir: directory })
+    calls.send.mockImplementation(async () => {
+      const call = queued.at(-1)
+      if (!call)
+        throw new Error('The scenario sent a prompt before it queued a command.')
+      try {
+        outcomes.set(call.callId, { text: execFileSync('/bin/sh', ['-c', call.command], { encoding: 'utf8', stdio: 'pipe' }), exitCode: 0 })
+      }
+      catch (error) {
+        const failed = error as { stderr: string, status: number }
+        outcomes.set(call.callId, { text: failed.stderr, exitCode: failed.status })
+      }
+    })
+    const context: ManagedNativeScenarioContext = {
+      page,
+      provider: AgentProvider.CODEX,
+      providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+      workspaceId: 'shell-unit',
+      readToolResult: (_request, callId) => {
+        const outcome = outcomes.get(callId)
+        if (!outcome)
+          throw new Error(`The native tool has no result for ${callId}.`)
+        return outcome
+      },
+      modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({
+        prompt: text => text,
+        queue: async (...steps: MockModelStep[]) => {
+          const call = steps[0]?.toolCalls?.[0]
+          if (!call || typeof call.arguments?.command !== 'string')
+            throw new Error('The scenario queued no shell call.')
+          queued.push({ callId: call.id, command: call.arguments.command })
+          return (queued.length - 1) * 2
+        },
+        status: async () => status,
+        waitForSteps: async () => status,
+        requestAt: async stepIndex => ({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }),
+      }),
+    }
+    await exerciseShellToolExecution(context, options)
+    return { page, queued }
+  }
+
+  it.runIf(existsSync('/bin/sh'))('hands the row proof each command, its output, its printed prefix, and its outcome, after the shared checks', async () => {
+    const proofs: ShellRowProof[] = []
+    const log: string[] = []
+    const { page, queued } = await runScenario({
+      rowProof: async (proof) => {
+        log.push('row proof')
+        proofs.push(proof)
+      },
+    }, log)
+    expect(proofs.map(proof => ({ ...proof, page: proof.page === page }))).toEqual([
+      { page: true, command: queued[0]?.command, output: expect.stringMatching(/^SHELL[0-9a-f]{32}42$/), printedPrefix: expect.stringMatching(/^SHELL[0-9a-f]{32}$/), failed: false },
+      { page: true, command: queued[1]?.command, output: expect.stringMatching(/^SHELLERR[0-9a-f]{32}77$/), printedPrefix: expect.stringMatching(/^SHELLERR[0-9a-f]{32}$/), failed: true },
+    ])
+    for (const proof of proofs) {
+      expect(proof.output.startsWith(proof.printedPrefix)).toBe(true)
+      expect(proof.command).toContain(proof.printedPrefix)
+      expect(proof.command).not.toContain(proof.output)
+    }
+    // Each proof runs after the shared output row check of its command, and before the answer of its turn.
+    const proofIndexes = log.flatMap((entry, index) => entry === 'row proof' ? [index] : [])
+    expect(proofIndexes).toHaveLength(2)
+    for (const index of proofIndexes)
+      expect(log.slice(index + 1).some(entry => entry.startsWith('to.be.visible'))).toBe(true)
+  })
+
+  it.runIf(existsSync('/bin/sh'))('keeps a failed row proof as the failure of the scenario', async () => {
+    const failure = new Error('The row draws the native record.')
+    await expect(runScenario({ includeFailure: false, rowProof: async () => {
+      throw failure
+    } })).rejects.toBe(failure)
   })
 
   it('keeps the gate file inside the literal private tool directory', async () => {
