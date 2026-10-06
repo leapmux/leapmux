@@ -105,6 +105,10 @@ describe('maxVisibleCountDuring', () => {
     const cdp = {
       send: vi.fn(async (method: string, params?: { source?: string, identifier?: string }) => {
         events.push(method)
+        if (method === 'Page.enable') {
+          expect(params).toBeUndefined()
+          return {}
+        }
         if (method === 'Page.addScriptToEvaluateOnNewDocument') {
           expect(params?.source).toContain(JSON.stringify(SCOPE))
           return { identifier: 'script-1' }
@@ -131,10 +135,12 @@ describe('maxVisibleCountDuring', () => {
     return { page, events, navigate }
   }
 
-  it('adds the recorder, navigates, reads the count, and removes the recorder', async () => {
+  // Chromium runs a script that a session adds only when that session enabled its Page domain. A new session starts
+  // with the domain off, and Playwright enables it only on its own sessions.
+  it('enables the Page domain of its session, adds the recorder, navigates, reads the count, and removes the recorder', async () => {
     const { page, events, navigate } = fakePage()
     expect(await maxVisibleCountDuring(page, SCOPE, navigate)).toBe(2)
-    expect(events).toEqual(['Page.addScriptToEvaluateOnNewDocument', 'navigate', 'read', 'Page.removeScriptToEvaluateOnNewDocument', 'detach'])
+    expect(events).toEqual(['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'navigate', 'read', 'Page.removeScriptToEvaluateOnNewDocument', 'detach'])
   })
 
   it('removes the recorder and detaches when the navigation fails', async () => {
@@ -143,7 +149,7 @@ describe('maxVisibleCountDuring', () => {
       throw failure
     } })
     await expect(maxVisibleCountDuring(page, SCOPE, navigate)).rejects.toBe(failure)
-    expect(events).toEqual(['Page.addScriptToEvaluateOnNewDocument', 'navigate', 'Page.removeScriptToEvaluateOnNewDocument', 'detach'])
+    expect(events).toEqual(['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'navigate', 'Page.removeScriptToEvaluateOnNewDocument', 'detach'])
   })
 
   it.each([undefined, null, {}])('fails when the page holds no count (%j), as when the navigation started no new document', async (record) => {

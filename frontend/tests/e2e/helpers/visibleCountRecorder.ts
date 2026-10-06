@@ -71,6 +71,9 @@ export async function maxVisibleCountDuring(page: Page, scope: VisibleCountScope
   const source = `(${installVisibleCountRecorder.toString()})(${JSON.stringify(scope)}, ${JSON.stringify(key)})`
   const cdp = await page.context().newCDPSession(page)
   try {
+    // Chromium runs a script that a session adds only when that session enabled its Page domain. A new session starts
+    // with the domain off, so without this call the reload runs no recorder.
+    await cdp.send('Page.enable')
     const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source })
     try {
       await navigate()
