@@ -1,9 +1,10 @@
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
 
 grokTest.describe('Grok Build workflow grouping', () => {
@@ -39,12 +40,11 @@ grokTest.describe('Grok Build workflow grouping', () => {
     const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
     await expectRowBecomesFinal(page, workflow)
     await expect(workflow).toHaveAttribute('data-status', 'completed')
-    await expect.poll(() => workflowGroupHeading(workflow)).toContain(name)
     expect((await modelScript.status()).ruleMatches['the workflow child answers']).toBe(1)
 
     const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Probe child' }).first()
     await expectRowBecomesFinal(page, child)
-    await expect.poll(() => workflowGroupHeading(child)).toContain(name)
-    await expect.poll(() => workflowRowsShareGroup(workflow, child)).toBe(true)
+    // No spec states the full heading text, so the pattern requires only the workflow name inside it.
+    await expectRowsInWorkflowGroup([workflow, child], new RegExp(escapeRegExp(name)))
   })
 })

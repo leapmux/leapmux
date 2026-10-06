@@ -1,14 +1,12 @@
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { codewhaleWorkflowToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, sendMessage, waitForSettingsHydrated } from '../helpers/ui'
-import { expectOpaqueNativeWorkflowResult, workflowGroupHeading } from '../helpers/workflowGrouping'
+import { expectOpaqueNativeWorkflowResult } from '../helpers/workflowGrouping'
 
 codewhaleTest.describe('Codewhale workflow grouping', () => {
-  codewhaleTest('shows one workflow row after its native child answers', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-    void authenticatedCodewhaleWorkspace
+  codewhaleTest('shows one workflow row after its native child answers', async ({ native }) => {
+    const { page, modelScript } = native
     await waitForSettingsHydrated(page)
     await applyPermissionPreset(page, 'bypass')
 
@@ -25,23 +23,15 @@ codewhaleTest.describe('Codewhale workflow grouping', () => {
     await modelScript.fallback({ text: 'The workflow finished.' })
     await sendMessage(page, modelScript.prompt('Run one read-only workflow child.'))
     await modelScript.waitForSteps()
-
-    await expandBackgroundTasksSection(page)
-    const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
-    await expectRowBecomesFinal(page, workflow)
-    await expect(workflow).toHaveAttribute('data-status', 'completed')
-    expect((await modelScript.status()).ruleMatches['the workflow child answers']).toBe(1)
-    await expect.poll(() => workflowGroupHeading(workflow))
-      .toContain(goal)
-    await expect(page.locator('[data-testid="bg-task-row"]:visible')).toHaveCount(1)
-    await expect(page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')).toHaveCount(0)
+    // No spec states the full heading text, so the pattern requires only the goal inside it.
+    await expectOpaqueNativeWorkflowResult(native, { ruleNames: ['the workflow child answers'], heading: new RegExp(escapeRegExp(goal)) })
   })
 })
 
-codewhaleTest('keeps two actual native workflow units inside one opaque workflow row', async ({ authenticatedCodewhaleWorkspace, leapmuxServer, page, modelScript }) => {
+codewhaleTest('keeps two actual native workflow units inside one opaque workflow row', async ({ native }) => {
+  const { page, modelScript } = native
   await waitForSettingsHydrated(page)
   await applyPermissionPreset(page, 'bypass')
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }
   const children = [
     { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.') },
     { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.') },
@@ -58,5 +48,5 @@ codewhaleTest('keeps two actual native workflow units inside one opaque workflow
   await modelScript.fallback({ text: 'Both native workflow units completed.' })
   await sendMessage(page, modelScript.prompt('Run the two scripted native workflow assignments.'))
   await modelScript.waitForSteps()
-  await expectOpaqueNativeWorkflowResult(context, { ruleNames: ['native-work-unit-0', 'native-work-unit-1'], heading: /Read two independent work units/ })
+  await expectOpaqueNativeWorkflowResult(native, { ruleNames: ['native-work-unit-0', 'native-work-unit-1'], heading: /Read two independent work units/ })
 })

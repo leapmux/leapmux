@@ -7,10 +7,11 @@ import type { Locator, Page } from '@playwright/test'
  * MiMo's workflow script spawns child actors inside the parent session. The Worker groups their registry rows under the native workflow row.
  */
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { mimoWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, messageBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { mimoTest } from '../mimo-fixtures'
 
 /** The run's name, from the script's `meta`. The registry titles the run and its group with it. */
@@ -97,26 +98,20 @@ mimoTest.describe('MiMo Code workflow', () => {
       await expect(bandRows(page, 'text').filter({ hasText: word })).toHaveCount(0)
     }
 
-    // The registry: one row for the run, closed as completed, with the run's name
-    // as its title and as the heading of its group.
+    // The registry: one row for the run and one row for each subagent, each closed as
+    // completed, and all in the group whose heading holds the run's name.
     await expandBackgroundTasksSection(page)
     const workflowRow = registryRow(page, 'workflow', WORKFLOW_NAME)
-    await expectRowBecomesFinal(page, workflowRow)
-    await expect(workflowRow).toHaveAttribute('data-status', 'completed')
-    await expect.poll(() => workflowGroupHeading(workflowRow)).toContain(WORKFLOW_NAME)
-
-    for (const [index, { label, word }] of helpers.entries()) {
-      // One row for each subagent, in the run's group, closed as completed, and
-      // linked to a transcript of its own.
-      const row = registryRow(page, 'subagent', label)
+    const helperRows = helpers.map(helper => ({ ...helper, row: registryRow(page, 'subagent', helper.label) }))
+    const rows = [workflowRow, ...helperRows.map(({ row }) => row)]
+    for (const row of rows) {
       await expectRowBecomesFinal(page, row)
       await expect(row).toHaveAttribute('data-status', 'completed')
-      await expect.poll(() => workflowGroupHeading(row)).toContain(WORKFLOW_NAME)
-      await expect.poll(() => workflowRowsShareGroup(workflowRow, row)).toBe(true)
-      // `getAttribute` answers null for an absent attribute, and null is not '', so
-      // the poll reads an absent attribute as the empty id it states.
-      await expect.poll(async () => await row.getAttribute('data-child-agent-id') ?? '').not.toBe('')
+    }
+    await expectRowsInWorkflowGroup(rows, new RegExp(escapeRegExp(WORKFLOW_NAME)))
 
+    for (const [index, { word, row }] of helperRows.entries()) {
+      // Each subagent row links a transcript of its own.
       if (index > 0)
         await tabById(page, parentTabId).click()
       await openChildTabFromRow(page, row)

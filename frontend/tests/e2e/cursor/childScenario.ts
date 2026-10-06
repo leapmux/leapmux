@@ -17,7 +17,7 @@ export interface CursorRunningChild extends RunningNativeChild {
 /** Hold an actual local child after its real Read result reaches its own transcript. */
 export async function openCursorRunningChild(
   context: ManagedNativeScenarioContext,
-  options: { description?: string, allowExistingRows?: boolean } = {},
+  options: { allowExistingRows?: boolean } = {},
 ): Promise<CursorRunningChild> {
   const parent = await currentNativeAgent(context)
   if (!parent.workingDir)
@@ -29,7 +29,7 @@ export async function openCursorRunningChild(
   const answer = `CURSORCHILDFINAL${suffix}`
   const filePath = join(parent.workingDir, `native-child-${suffix}.txt`)
   writeFileSync(filePath, `${marker}\n`)
-  const description = options.description ?? `Read the actual child file ${suffix}`
+  const description = `Read the actual child file ${suffix}`
   const spawn = spawnSubagentToolCall(context.provider, `cursor-native-task-${suffix}`, {
     description,
     prompt: context.modelScript.prompt(prompt),

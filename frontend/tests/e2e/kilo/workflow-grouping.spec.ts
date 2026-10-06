@@ -1,32 +1,8 @@
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeModelToolNames } from '../helpers/nativeScenario'
-import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
-import { uniqueMarker } from '../helpers/shellArguments'
-import { exerciseUngroupedNativeChildren } from '../helpers/ungroupedNativeChildren'
+import { openProfiledNativeChild } from '../helpers/runningChildProof'
+import { exerciseUngroupedNativeChildren } from '../helpers/workflowGrouping'
 import { kiloTest } from '../kilo-fixtures'
+import { KILO_CHILD } from './childScenario'
 
-kiloTest('keeps two actual native children outside workflow groups after reload', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }
-  const suffix = uniqueMarker()
-  await exerciseUngroupedNativeChildren(context, {
-    openChild: async (index) => {
-      const gate = `group-child-${index}-${suffix}`
-      const description = `Actual grouping child ${index} ${suffix}`
-      return openRunningNativeChild(context, {
-        spawn: spawnSubagentToolCall(AgentProvider.KILO, `native-group-child-${index}`, { description, prompt: modelScript.prompt(`NATIVE_GROUP_CHILD_${index}_${suffix}: reply once.`) }),
-        gate,
-        child: { matcher: { user: `^NATIVE_GROUP_CHILD_${index}_${suffix}` }, finalStep: { text: `ACTUAL_CHILD_REPORT_${index}_${suffix}` } },
-        allowExistingRows: index > 0,
-        rowText: description,
-      })
-    },
-    nativeCatalogProof: async () => {
-      const parentRequest = (await modelScript.status()).requests.find(record => record.stepIndex !== undefined)
-      if (!parentRequest)
-        throw new Error('The native child sequence contains no parent model request.')
-      expect(nativeModelToolNames(parentRequest).some(name => ['Workflow', 'SubagentWorkflow', 'workflow'].includes(name))).toBe(false)
-    },
-  })
+kiloTest('keeps two actual native children outside workflow groups after reload', async ({ native }) => {
+  await exerciseUngroupedNativeChildren(native, { openChild: slot => openProfiledNativeChild(native, KILO_CHILD, slot), catalogProof: true })
 })

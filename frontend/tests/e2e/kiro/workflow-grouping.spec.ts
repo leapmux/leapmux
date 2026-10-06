@@ -4,7 +4,7 @@ import { expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/go
 import { completeGoalToolCall } from '../helpers/providerToolCalls'
 import { expectRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
@@ -43,8 +43,6 @@ kiroTest.describe('Kiro session goal', () => {
       .first()
     await expect(run).toBeVisible()
     await expect(step).toHaveAttribute('data-kind', 'subagent')
-    await expect.poll(() => workflowGroupHeading(run)).toBe('goal')
-    await expect.poll(() => workflowGroupHeading(step)).toBe('goal')
-    await expect.poll(() => workflowRowsShareGroup(run, step)).toBe(true)
+    await expectRowsInWorkflowGroup([run, step], 'goal')
   })
 })

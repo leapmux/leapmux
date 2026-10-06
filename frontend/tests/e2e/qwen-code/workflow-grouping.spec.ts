@@ -2,9 +2,8 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { qwenWorkflowToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expectOpaqueNativeWorkflowResult, workflowGroupHeading } from '../helpers/workflowGrouping'
+import { expectOpaqueNativeWorkflowResult } from '../helpers/workflowGrouping'
 import { openProviderAgent } from '../helpers/workspace'
 import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
@@ -33,17 +32,11 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
     await sendMessage(page, modelScript.prompt('Run one workflow child and report completion.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    expect((await modelScript.status()).ruleMatches['the workflow child answers']).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
-
-    await expandBackgroundTasksSection(page)
-    const workflow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]').first()
-    await expectRowBecomesFinal(page, workflow)
-    await expect(workflow).toHaveAttribute('data-status', 'completed')
-    await expect.poll(() => workflowGroupHeading(workflow))
-      .toBe('Workflow')
-    await expect(page.locator('[data-testid="bg-task-row"]:visible')).toHaveCount(1)
-    await expect(page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')).toHaveCount(0)
+    await expectOpaqueNativeWorkflowResult(
+      { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE },
+      { ruleNames: ['the workflow child answers'], heading: 'Workflow' },
+    )
   })
 })
 

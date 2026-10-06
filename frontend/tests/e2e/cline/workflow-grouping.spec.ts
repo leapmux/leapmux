@@ -4,7 +4,7 @@ import { clineTest, offeredTools } from '../cline-fixtures'
 import { clineRunTeammateTaskToolCall, clineSpawnTeammateToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
 clineTest.describe('Cline workflow grouping', () => {
   clineTest('groups two native teammate runs under their team', async ({ authenticatedClineWorkspace, page, modelScript }) => {
@@ -59,13 +59,13 @@ clineTest.describe('Cline workflow grouping', () => {
     await expandBackgroundTasksSection(page)
     const runs = page.locator('[data-testid="bg-task-row"]:visible[data-kind="workflow"]')
     await expect(runs).toHaveCount(2)
-    for (const { agentId } of teammates) {
+    const teammateRuns = teammates.map(({ agentId }) => ({ agentId, run: runs.filter({ hasText: agentId }).first() }))
+    for (const { agentId, run } of teammateRuns) {
       await expect(messageBubbles(page).filter({ hasText: `${agentId} started a run` }).first()).toBeVisible()
-      const run = runs.filter({ hasText: agentId }).first()
       await expectRowBecomesFinal(page, run)
       await expect(run).toHaveAttribute('data-status', 'completed')
-      await expect.poll(() => workflowGroupHeading(run)).toMatch(/^team-[\w-]{5}$/)
     }
-    await expect.poll(() => workflowRowsShareGroup(runs.nth(0), runs.nth(1))).toBe(true)
+    // The team heading holds a suffix that the test cannot predict, so the check uses a pattern.
+    await expectRowsInWorkflowGroup(teammateRuns.map(({ run }) => run), /^team-[\w-]{5}$/)
   })
 })

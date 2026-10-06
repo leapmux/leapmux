@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { kimiAgentSwarmToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, assistantBubbles, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('Kimi Code workflow grouping', () => {
@@ -44,8 +45,8 @@ kimiTest.describe('Kimi Code workflow grouping', () => {
     for (const member of await members.all()) {
       await expectRowBecomesFinal(page, member)
       await expect(member).toHaveAttribute('data-status', 'completed')
-      await expect.poll(() => workflowGroupHeading(member)).toContain(description)
     }
-    await expect.poll(() => workflowRowsShareGroup(members.nth(0), members.nth(1))).toBe(true)
+    // No spec states the full heading text, so the pattern requires only the swarm description inside it.
+    await expectRowsInWorkflowGroup([members.nth(0), members.nth(1)], new RegExp(escapeRegExp(description)))
   })
 })

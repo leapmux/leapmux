@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { qoderWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('native workflow grouping', () => {
@@ -88,12 +88,9 @@ qoderTest.describe('native workflow grouping', () => {
     const secondChild = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: `Reply with ${SECOND_ANSWER}` }).first()
     await expect(firstChild).toHaveAttribute('data-status', 'completed')
     await expect(secondChild).toHaveAttribute('data-status', 'completed')
-    await expect.poll(() => workflowGroupHeading(firstChild)).toBe(WORKFLOW_NAME)
-    await expect.poll(() => workflowGroupHeading(secondChild)).toBe(WORKFLOW_NAME)
-    await expect.poll(() => workflowRowsShareGroup(workflow, firstChild)).toBe(true)
-    await expect.poll(() => workflowRowsShareGroup(workflow, secondChild)).toBe(true)
+    await expectRowsInWorkflowGroup([workflow, firstChild, secondChild], WORKFLOW_NAME)
+    // The completed first child keeps the link to its transcript. `openChildTabFromRow` below proves the link of the second.
     await expect.poll(async () => await firstChild.getAttribute('data-child-agent-id') ?? '').not.toBe('')
-    await expect.poll(async () => await secondChild.getAttribute('data-child-agent-id') ?? '').not.toBe('')
     await tabById(page, firstChildTabId).click()
     await expect(visibleOnly(page.getByText(FILE_MARKER, { exact: false })).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: FIRST_ANSWER }).first()).toBeVisible()

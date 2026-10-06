@@ -7,7 +7,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('groups two actual one-shot children under their native workflow run and keeps that group after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
@@ -33,8 +33,8 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     await expandBackgroundTasksSection(page)
     const children = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')
     await expect(children).toHaveCount(2)
-    await expect.poll(() => workflowRowsShareGroup(children.nth(0), children.nth(1))).toBe(true)
-    await expect.poll(() => workflowGroupHeading(children.nth(0))).toContain('native-code')
+    // No spec states the full heading text, so the pattern requires only `native-code` inside it.
+    await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)
     const running = await readNativeSidebarSnapshot(context, parent.id)
     const run = running.backgroundTasks.find(task => task.kind === BackgroundTaskKind.WORKFLOW)
     expect(run).toBeDefined()
@@ -56,7 +56,7 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     await page.reload()
     await expandBackgroundTasksSection(page)
     await expect(children).toHaveCount(2)
-    await expect.poll(() => workflowRowsShareGroup(children.nth(0), children.nth(1))).toBe(true)
+    await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)
     const restored = await readNativeSidebarSnapshot(context, parent.id)
     expect(restored.backgroundTasks.map(task => ({ id: task.id, groupKey: task.groupKey, groupLabel: task.groupLabel }))).toEqual(running.backgroundTasks.map(task => ({ id: task.id, groupKey: task.groupKey, groupLabel: task.groupLabel })))
   }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))

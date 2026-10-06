@@ -5,7 +5,7 @@ import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { codebuddyFindWorkflowToolCall, codebuddyWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, tabById, userBubbles } from '../helpers/ui'
-import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
 codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
   codebuddyTest('groups a native Workflow run with its child agent', async ({ authenticatedCodebuddyWorkspace, leapmuxServer, page, modelScript }) => {
@@ -44,10 +44,9 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
     const child = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Probe child' }).first()
     await expect(workflow).toBeVisible()
     await expect(child).toBeVisible()
-    const groupHeading = await workflowGroupHeading(workflow)
-    expect(groupHeading).not.toBe('')
-    await expect.poll(() => workflowGroupHeading(child)).toBe(groupHeading)
-    await expect.poll(() => workflowRowsShareGroup(workflow, child)).toBe(true)
+    // The run states its own heading. Each row needs a heading that is not empty, and the child shares the heading
+    // element of the workflow, so the two headings are one text.
+    await expectRowsInWorkflowGroup([workflow, child], /\S/)
 
     await expect.poll(async () => (await modelScript.status()).ruleMatches['workflow child reads its marker'] ?? 0).toBe(1)
     await expect.poll(async () => (await modelScript.status()).ruleMatches['workflow child answers after its tool result'] ?? 0).toBe(1)
