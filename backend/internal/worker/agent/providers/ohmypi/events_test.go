@@ -176,6 +176,10 @@ func TestDroppedFrames(t *testing.T) {
 		`{"type":"extension_ui_request","id":"s","method":"setStatus","statusKey":"k","statusText":"t"}`,
 		`{"type":"extension_ui_request","id":"t","method":"setTitle","title":"t"}`,
 		`{"type":"extension_ui_request","id":"e","method":"set_editor_text","text":"t"}`,
+		// omp 18.6.0 sends session_settled after each final agent_end, and
+		// queue_update for each change of its own steering and follow-up queue.
+		`{"type":"session_settled"}`,
+		`{"type":"queue_update","steering":[],"followUp":[]}`,
 	)
 	assert.Empty(t, r.sink.Messages())
 	assert.Zero(t, r.sink.NotificationCount())

@@ -44,6 +44,8 @@ const OH_MY_PI_HIDDEN_EVENT_TYPES = new Set<string>([
   OH_MY_PI_EVENT.AdvisorCostChanged,
   OH_MY_PI_EVENT.AdvisorYielded,
   OH_MY_PI_EVENT.ConfigWarningsChanged,
+  OH_MY_PI_EVENT.SessionSettled,
+  OH_MY_PI_EVENT.QueueUpdate,
   OH_MY_PI_EVENT.HostToolCall,
   OH_MY_PI_EVENT.HostToolCancel,
   OH_MY_PI_EVENT.HostUriRequest,

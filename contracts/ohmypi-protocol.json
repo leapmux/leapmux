@@ -44,6 +44,8 @@
     "AdvisorCostChanged": "advisor_cost_changed",
     "AdvisorYielded": "advisor_yielded",
     "ConfigWarningsChanged": "config_warnings_changed",
+    "SessionSettled": "session_settled",
+    "QueueUpdate": "queue_update",
     "HostToolCall": "host_tool_call",
     "HostToolCancel": "host_tool_cancel",
     "HostUriRequest": "host_uri_request",

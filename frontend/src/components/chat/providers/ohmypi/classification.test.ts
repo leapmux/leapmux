@@ -88,6 +88,11 @@ describe('classifyOhMyPiMessage', () => {
       expect(classify({ type }), type).toEqual({ kind: 'hidden' })
   })
 
+  it('hides the settle and queue frames that omp 18.6.0 sends, which an earlier worker stored', () => {
+    expect(classify({ type: 'session_settled' })).toEqual({ kind: 'hidden' })
+    expect(classify({ type: 'queue_update', steering: ['steer'], followUp: [] })).toEqual({ kind: 'hidden' })
+  })
+
   it('reads a thread of notifications and hides an empty one', () => {
     const thread = classifyOhMyPiMessage(input(undefined, { old_seqs: [], messages: [{ type: 'auto_compaction_start' }, { type: 'auto_compaction_end', result: { tokensBefore: 10 } }] }, AgentProvider.OH_MY_PI))
     expect(thread).toEqual({

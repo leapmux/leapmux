@@ -80,11 +80,18 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 	case contracts.OhMyPiEventAvailableCommandsUpdate, contracts.OhMyPiEventSessionInfoUpdate,
 		contracts.OhMyPiEventTtsrTriggered, contracts.OhMyPiEventAdvisorCostChanged,
 		contracts.OhMyPiEventAdvisorYielded, contracts.OhMyPiEventConfigWarningsChanged,
-		contracts.OhMyPiEventTodoAutoClear:
+		contracts.OhMyPiEventTodoAutoClear, contracts.OhMyPiEventSessionSettled,
+		contracts.OhMyPiEventQueueUpdate:
 		// State that LeapMux has no surface for. The slash-command list feeds no
 		// menu, LeapMux gives its tabs their own names, and the advisor, the
 		// time-traveling stream rules and the configuration warnings have no row.
 		// omp 18.2.11 declares todo_auto_clear and never sends it.
+		//
+		// omp 18.6.0 sends session_settled after each final agent_end, when no
+		// background work can wake the session. The agent_end already gives the
+		// turn its divider. It sends queue_update for each change of its own
+		// steering and follow-up queue. LeapMux keeps the input queue in the Worker
+		// and draws it from there.
 	default:
 		// A frame type this build does not know. It reaches the transcript as an
 		// inspectable card rather than disappearing.
