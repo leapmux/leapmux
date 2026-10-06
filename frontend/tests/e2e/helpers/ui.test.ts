@@ -26,6 +26,7 @@ import {
   branchGroupRow,
   chatScrollContainer,
   chooseSettingsOption,
+  collapseWorkspaceRow,
   composerEditor,
   controlActions,
   controlBanner,
@@ -1392,10 +1393,11 @@ function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWo
       throw new Error('A click on the whole row can land on its pinned three-dot trigger.')
     }
 
-    async _expect(expression: string, options: { isNot: boolean, expressionArg?: string }) {
+    // `toHaveAttribute(name, value)` sends the expected value as the first entry of `expectedText`.
+    async _expect(expression: string, options: { isNot: boolean, expressionArg?: string, expectedText?: ReadonlyArray<{ string?: string }> }) {
       log.push(`${expression} ${options.expressionArg ?? ''}`.trim())
-      const matches = options.expressionArg === 'data-expanded' ? state.expanded : state.active
-      return { matches, received: String(matches), log: [], timedOut: false }
+      const received = String(options.expressionArg === 'data-expanded' ? state.expanded : state.active)
+      return { matches: received === options.expectedText?.[0]?.string, received, log: [], timedOut: false }
     }
   }
   const row = new Row()
@@ -1448,6 +1450,31 @@ describe('expandWorkspaceRow', () => {
     await expect(expandWorkspaceRow(workspaceRowPage({ expanded: false, active: false, chevronWorks: false }, log), 'ws-1'))
       .rejects
       .toThrow('the sidebar row of ws-1 is expanded')
+  })
+})
+
+describe('collapseWorkspaceRow', () => {
+  it('collapses an expanded row through its chevron, and requires the collapsed state', async () => {
+    const log: string[] = []
+    const state = { expanded: true, active: false }
+    await collapseWorkspaceRow(workspaceRowPage(state, log), 'ws-1')
+    expect(log).toEqual(['read data-expanded', 'click chevron', 'to.have.attribute.value data-expanded'])
+    expect(state.expanded).toBe(false)
+  })
+
+  it('leaves a collapsed row collapsed, because a chevron click would expand it', async () => {
+    const log: string[] = []
+    const state = { expanded: false, active: false }
+    await collapseWorkspaceRow(workspaceRowPage(state, log), 'ws-1')
+    expect(log).toEqual(['read data-expanded', 'to.have.attribute.value data-expanded'])
+    expect(state.expanded).toBe(false)
+  })
+
+  it('fails with the workspace when the row stays expanded', async () => {
+    const log: string[] = []
+    await expect(collapseWorkspaceRow(workspaceRowPage({ expanded: true, active: false, chevronWorks: false }, log), 'ws-1'))
+      .rejects
+      .toThrow('the sidebar row of ws-1 is collapsed')
   })
 })
 

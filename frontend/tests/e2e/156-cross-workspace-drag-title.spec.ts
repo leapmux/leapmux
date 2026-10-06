@@ -64,8 +64,8 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     await expect.poll(() => tabbarLabels(page, 'agent')).toEqual([wsBTitle])
 
     // Expand wsA in the sidebar so its tab-tree-leaf mounts and is
-    // draggable. Expanding fires `onExpandWorkspace`, which lazy-loads wsA's
-    // tabs, which the projection already carries.
+    // draggable. The projection already carries wsA's tabs, so the expansion
+    // only shows them.
     await expandWorkspaceRow(page, wsA)
     // One leaf each under wsA (the source) and wsB (the destination --
     // already visible because wsB is active). Counted PER WORKSPACE, not

@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
-import { archiveWorkspaceViaUI, clickRowMenuItem, clickWorkspaceMenuItem, openRowMenu, sidebarSectionHeader, workspaceChevron, workspaceRow } from './helpers/ui'
+import { archiveWorkspaceViaUI, clickRowMenuItem, clickWorkspaceMenuItem, expandWorkspaceRow, openRowMenu, sidebarSectionHeader, workspaceRow } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
@@ -165,11 +165,11 @@ test.describe('sidebar section menu', () => {
     const other = workspaceRow(page, second)
     await expect(other).toBeVisible()
 
-    // Both expanded, both in In progress; then archive the second so the two
-    // sit in DIFFERENT sections. The helper waits for the archived section.
+    // Archive the second so the two sit in DIFFERENT sections, then expand
+    // it. The helper waits for the archived section. The first is active, so
+    // the app expanded it.
     await archiveWorkspaceViaUI(page, second)
-    await workspaceChevron(page, second).click()
-    await expect(other).toHaveAttribute('data-expanded', 'true')
+    await expandWorkspaceRow(page, second)
     await expect(first).toHaveAttribute('data-expanded', 'true')
 
     await clickSectionMenuItem(page, 'workspaces_in_progress', 'Collapse all')

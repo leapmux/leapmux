@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { agentTabs, loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { agentTabs, loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
 
@@ -30,7 +30,6 @@ test.describe('Diff Stat Isolation', () => {
     await openWorkspace(page, wsB)
 
     // The DiffStatsBadge is rendered inside the workspace-item div.
-    const wsBItem = workspaceRow(page, wsB)
     const wsAItem = workspaceRow(page, wsA)
 
     // Wait for workspace B's diff stats badge to appear on the workspace item.
@@ -42,7 +41,7 @@ test.describe('Diff Stat Isolation', () => {
     await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
     // Now switch to workspace A.
-    await wsAItem.click()
+    await workspaceRowTitle(page, wsA).click()
     await waitForWorkspaceReady(page)
 
     // After switching, workspace A should still have no diff stats.
@@ -52,12 +51,12 @@ test.describe('Diff Stat Isolation', () => {
     await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
 
     // Switch back to workspace B — diff stats should reappear.
-    await wsBItem.click()
+    await workspaceRowTitle(page, wsB).click()
     await waitForWorkspaceReady(page)
     await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
     // Switch to workspace A one more time — still no diff stats.
-    await wsAItem.click()
+    await workspaceRowTitle(page, wsA).click()
     await waitForWorkspaceReady(page)
     await page.waitForTimeout(3000)
     await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()

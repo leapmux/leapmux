@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { chatScrollContainer, loginViaToken, openWorkspace, sidebarLeaves, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { chatScrollContainer, expandWorkspaceRow, loginViaToken, openWorkspace, sidebarLeaves, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 test.describe('chat workspace switch cleanup', () => {
@@ -11,7 +11,7 @@ test.describe('chat workspace switch cleanup', () => {
     await openWorkspace(page, firstWorkspace)
     await expect(chatScrollContainer(page)).toBeVisible()
 
-    await workspaceChevron(page, secondWorkspace).click()
+    await expandWorkspaceRow(page, secondWorkspace)
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(error.stack ?? error.message))
 

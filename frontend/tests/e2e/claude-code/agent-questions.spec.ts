@@ -10,7 +10,7 @@ import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceChevron, workspaceRow } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
 
 /** Click the displayed question option of the visible banner. Its control and label forward selection to the native input. */
 async function clickOption(page: Page, label: string) {
@@ -296,7 +296,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
         await tabs.first().click()
         await askQuestions(page, modelScript, [COLOR_Q_2], { gate })
         await tabs.nth(1).click()
-        await workspaceRow(page, ws1).click()
+        await workspaceRowTitle(page, ws1).click()
         await waitForWorkspaceReady(page)
         await modelScript.releaseGate(gate)
 
@@ -307,13 +307,12 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
         // A folded workspace shows the notification on its own row.
         // Its leaves remain mounted and an expanded child can retain visibility inside the clipped grid.
         // Use data-expanded to prove the workspace's actual fold state.
-        await workspaceChevron(page, ws2).click()
-        await expect(workspaceRow(page, ws2)).toHaveAttribute('data-expanded', 'false')
+        await collapseWorkspaceRow(page, ws2)
         await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toBeVisible()
 
         // Return with agent 2 selected. Require agent 1's notification after its background question arrives.
         await expect(async () => {
-          await workspaceRow(page, ws2).click()
+          await workspaceRowTitle(page, ws2).click()
           await waitForWorkspaceReady(page)
           expect(await tabs.first().locator('[data-testid="tab-notification"]').count()).toBe(1)
         }).toPass()

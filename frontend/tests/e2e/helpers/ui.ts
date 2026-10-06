@@ -1948,16 +1948,30 @@ export function workspaceRowTitle(page: Page, workspaceId: string): Locator {
 }
 
 /**
- * Expand the sidebar row of workspaceId through its chevron, leave an expanded row unchanged, and require that the row
- * is expanded at the end.
- * The chevron toggles, and the app restores the expanded rows of the previous load, so a click without the read can
- * collapse the row.
+ * Bring the sidebar row of workspaceId to the `expanded` state through its chevron, and require that state at the end.
+ *
+ * The chevron toggles, so the helper clicks it only when the row is in the other state. A row can be expanded before
+ * the test touches it, for two reasons:
+ * - The app restores the expanded rows of the previous load.
+ * - The app expands the active workspace when it has a tab. `openWorkspace` loads `/` first, so the cold start can
+ *   activate another workspace for a moment and expand it before the selection moves on.
  */
-export async function expandWorkspaceRow(page: Page, workspaceId: string): Promise<void> {
+async function setWorkspaceRowExpanded(page: Page, workspaceId: string, expanded: boolean): Promise<void> {
   const row = workspaceRow(page, workspaceId)
-  if (await row.getAttribute('data-expanded') !== 'true')
+  const state = expanded ? 'true' : 'false'
+  if (await row.getAttribute('data-expanded') !== state)
     await workspaceChevron(page, workspaceId).click()
-  await expect(row, `the sidebar row of ${workspaceId} is expanded`).toHaveAttribute('data-expanded', 'true')
+  await expect(row, `the sidebar row of ${workspaceId} is ${expanded ? 'expanded' : 'collapsed'}`).toHaveAttribute('data-expanded', state)
+}
+
+/** Expand the sidebar row of workspaceId, leave an expanded row unchanged, and require the expanded state. */
+export async function expandWorkspaceRow(page: Page, workspaceId: string): Promise<void> {
+  await setWorkspaceRowExpanded(page, workspaceId, true)
+}
+
+/** Collapse the sidebar row of workspaceId, leave a collapsed row unchanged, and require the collapsed state. */
+export async function collapseWorkspaceRow(page: Page, workspaceId: string): Promise<void> {
+  await setWorkspaceRowExpanded(page, workspaceId, false)
 }
 
 /**

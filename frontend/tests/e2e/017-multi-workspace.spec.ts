@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { boxCenter, dragSidebarLeafTo, mouseDragOnto } from './helpers/drag'
 import { selectedAgentTab } from './helpers/nativeScenario'
-import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow, workspaceRowTitle } from './helpers/ui'
+import { agentTabs, collapseWorkspaceRow, expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
@@ -49,13 +49,14 @@ test.describe('Multi-Workspace', () => {
     await openWorkspace(page, ws1)
     await agentTabs(page).first().waitFor()
 
-    // ws2 should be visible in the sidebar but not expanded
-    const ws2Item = workspaceRow(page, ws2)
-    await expect(ws2Item).toBeVisible()
+    // ws2 should be visible in the sidebar. Collapse it first: the cold start
+    // of `openWorkspace` can expand it, and the test then proves nothing.
+    await expect(workspaceRow(page, ws2)).toBeVisible()
+    await collapseWorkspaceRow(page, ws2)
 
-    // Click the chevron on ws2 to expand it — this triggers lazy loading
-    // without needing to preload (visit) the workspace first
-    await workspaceChevron(page, ws2).click()
+    // Expand ws2 while ws1 stays active. The projection already holds the
+    // tabs of every workspace, so the expansion only shows them.
+    await expandWorkspaceRow(page, ws2)
 
     // ws2's tab tree should appear beside the active ws1's. Counted per
     // workspace, so a workspace that another test left behind cannot change it.
@@ -103,7 +104,7 @@ test.describe('Multi-Workspace', () => {
     await agentTabs(page).first().waitFor()
 
     // Expand ws2 in the sidebar
-    await workspaceChevron(page, ws2).click()
+    await expandWorkspaceRow(page, ws2)
 
     // Wait for ws2's tab tree leaves to appear: ws1 has 1 leaf and ws2 has 2.
     await expect(sidebarLeaves(page, ws1)).toHaveCount(1)
@@ -138,20 +139,12 @@ test.describe('Multi-Workspace', () => {
     // collapsing only sets `visibility: hidden` on the children wrapper, so
     // the leaves stay in the DOM and a count reads the same either way.
     const ws2Row = workspaceRow(page, ws2)
-    const ws2Chevron = workspaceChevron(page, ws2)
     const ws2Leaf = sidebarLeaves(page, ws2)
 
-    // Drive ws2 to collapsed instead of assuming it. `openWorkspace` loads
-    // `/` first, which activates whichever workspace a cold start picks and
-    // auto-expands it -- so ws2 is sometimes already expanded here, and the
-    // click below would then collapse it and test the opposite thing.
-    if (await ws2Row.getAttribute('data-expanded') === 'true')
-      await ws2Chevron.click()
-    await expect(ws2Row).toHaveAttribute('data-expanded', 'false')
-
-    // Expand ws2 in the sidebar
-    await ws2Chevron.click()
-    await expect(ws2Row).toHaveAttribute('data-expanded', 'true')
+    // Drive ws2 to collapsed instead of assuming it: the cold start of
+    // `openWorkspace` can expand it. The expansion is then a real chevron click.
+    await collapseWorkspaceRow(page, ws2)
+    await expandWorkspaceRow(page, ws2)
     await expect(ws2Leaf).toBeVisible()
 
     // Reload the page
@@ -174,7 +167,7 @@ test.describe('Multi-Workspace', () => {
     await agentTabs(page).first().waitFor()
 
     // Expand ws2 in the sidebar
-    await workspaceChevron(page, ws2).click()
+    await expandWorkspaceRow(page, ws2)
     await expect(sidebarLeaves(page, ws1)).toHaveCount(1)
     await expect(sidebarLeaves(page, ws2)).toHaveCount(1)
 
@@ -208,7 +201,7 @@ test.describe('Multi-Workspace', () => {
     await saved
 
     // Expand ws2's tab tree in the sidebar
-    await workspaceChevron(page, ws2).click()
+    await expandWorkspaceRow(page, ws2)
 
     // ws2 should now have 2 leaves (original + moved tab); ws1 has 1 leaf
     await expect(sidebarLeaves(page, ws1)).toHaveCount(1)
@@ -246,7 +239,7 @@ test.describe('Multi-Workspace', () => {
     await expectAgentTabCount(page, 0)
 
     // Expand ws2's tab tree — should show 2 leaves (tab 1 moved + tab 2 existing)
-    await workspaceChevron(page, ws2).click()
+    await expandWorkspaceRow(page, ws2)
     await expect(sidebarLeaves(page, ws2)).toHaveCount(2)
 
     // Click the first leaf in ws2's sidebar tree immediately.
@@ -334,7 +327,7 @@ test.describe('Multi-Workspace', () => {
     await agentTabs(page).first().waitFor()
 
     // Expand ws2 in the sidebar
-    await workspaceChevron(page, ws2).click()
+    await expandWorkspaceRow(page, ws2)
 
     // Wait for ws2's tab tree leaves to appear (2 agents)
     await expect(sidebarLeaves(page, ws2)).toHaveCount(2)

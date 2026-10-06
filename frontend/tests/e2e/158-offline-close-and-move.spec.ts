@@ -4,7 +4,7 @@ import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { nativeAgentsByIds } from './helpers/nativeScenario'
 import { tabbarLabels } from './helpers/tabLabels'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
-import { expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceChevron, workspaceRow, workspaceRowTitle } from './helpers/ui'
+import { expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -119,8 +119,9 @@ test.describe('Offline close and cross-workspace move', () => {
           await waitForWorkspaceReady(page)
           await expectAgentTabCount(page, 1)
           await expect.poll(() => sidebarLeafIds(page, wsB)).toEqual([movedAgentId])
-          // Expand wsA so its (now empty) section mounts.
-          await workspaceChevron(page, wsA).click()
+          // Expand wsA so its (now empty) section mounts. wsA was active
+          // before the reload, so it can already be expanded.
+          await expandWorkspaceRow(page, wsA)
           await expect.poll(() => sidebarLeafIds(page, wsA)).toEqual([])
 
           // ─── 4. The Worker converges on reconnect ───────────────────────────
