@@ -16,12 +16,11 @@ qwenTest.describe('Qwen Code subagent registry', () => {
   qwenTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.QWEN_CODE,
+    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.QWEN_CODE }, {
       childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
-      toolProof: { workingDir },
+      toolProof: { read: { workingDir } },
     })
   })
 })

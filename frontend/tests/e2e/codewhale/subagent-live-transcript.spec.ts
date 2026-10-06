@@ -1,4 +1,3 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 
@@ -10,10 +9,8 @@ import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
  * The agent tool returns a child ID at once. Codewhale omits child events from the parent stream. The Worker reads the child transcript and run record until the run ends.
  */
 codewhaleTest.describe('Codewhale subagent registry', () => {
-  codewhaleTest('shows the child prompt while the child remains open', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-    void authenticatedCodewhaleWorkspace
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.CODEWHALE,
+  codewhaleTest('shows the child prompt while the child remains open', async ({ native }) => {
+    await exerciseLiveChildTranscript(native, {
       childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
@@ -26,16 +23,15 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
 
   // The child reads its file with the native read tool, which the explore role runs without approval.
   // The Worker reads the read result from the child transcript file while the next child answer stays held.
-  codewhaleTest('shows a native child file result only in the running child tab', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
+  codewhaleTest('shows a native child file result only in the running child tab', async ({ native, authenticatedCodewhaleWorkspace }) => {
     const workingDir = authenticatedCodewhaleWorkspace.workingDir
     if (!workingDir)
       throw new Error('The live child file proof requires the working directory of the native agent.')
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.CODEWHALE,
+    await exerciseLiveChildTranscript(native, {
       childWhen: { user: 'Read the assigned file in the live child' },
       childTask: 'Read the assigned file in the live child.',
       parentTask: 'Delegate the live child file read.',
-      toolProof: { workingDir },
+      toolProof: { read: { workingDir } },
       holdParentAnswer: true,
       background: true,
       // A resumable native interruption keeps the child tab open as Paused.

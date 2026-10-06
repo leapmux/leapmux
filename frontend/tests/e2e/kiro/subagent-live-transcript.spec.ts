@@ -15,12 +15,11 @@ kiroTest.describe('Kiro subagent registry', () => {
   kiroTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.KIRO,
+    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.KIRO }, {
       childWhen: { body: '"agentMode":"context-gatherer"', user: 'Reply with CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
-      toolProof: { workingDir },
+      toolProof: { read: { workingDir } },
     })
   })
 })

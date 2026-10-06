@@ -24,12 +24,11 @@ grokTest.describe('Grok Build subagent registry', () => {
   grokTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.GROK_BUILD,
+    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.GROK_BUILD }, {
       childWhen: { system: GROK_SUBAGENT_SYSTEM, user: 'Reply with CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
-      toolProof: { workingDir },
+      toolProof: { read: { workingDir } },
     })
   })
 })

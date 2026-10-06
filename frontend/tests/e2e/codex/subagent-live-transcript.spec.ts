@@ -1,7 +1,7 @@
 /** Test the held child prompt and file result in its own tab. */
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { AgentProvider, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { codexTest } from '../codex-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
@@ -42,28 +42,25 @@ async function expectNativeCodexCompletion(context: Pick<ManagedNativeScenarioCo
 }
 
 codexTest.describe('codex subagent lifecycle', () => {
-  codexTest('shows a child prompt while its own model request waits', async ({ authenticatedCodexWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedCodexWorkspace
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.CODEX,
+  codexTest('shows a child prompt while its own model request waits', async ({ native }) => {
+    await exerciseLiveChildTranscript(native, {
       childWhen: { body: ['NEW_TASK', 'answer_the_live_child_task'] },
       childTask: 'Report the live child marker.',
       parentTask: 'Spawn one child to report the live child marker.',
-      afterComplete: () => expectNativeCodexCompletion({ page, leapmuxServer }),
+      afterComplete: () => expectNativeCodexCompletion(native),
     })
   })
 
-  codexTest('shows a child file result only in the running child tab', async ({ authenticatedCodexWorkspace, page, modelScript, leapmuxServer }) => {
+  codexTest('shows a child file result only in the running child tab', async ({ native, authenticatedCodexWorkspace }) => {
     const workingDir = authenticatedCodexWorkspace.workingDir
     if (!workingDir)
       throw new Error('The live child file proof requires a working directory.')
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.CODEX,
+    await exerciseLiveChildTranscript(native, {
       childWhen: { body: ['NEW_TASK', 'answer_the_live_child_task'] },
       childTask: 'Read the assigned file in the live child task.',
       parentTask: 'Start one child to read the assigned file.',
-      toolProof: { workingDir },
-      afterComplete: () => expectNativeCodexCompletion({ page, leapmuxServer }),
+      toolProof: { read: { workingDir } },
+      afterComplete: () => expectNativeCodexCompletion(native),
     })
   })
 })

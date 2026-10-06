@@ -43,8 +43,7 @@ async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioCo
 claudeTest.describe('Claude subagent background tasks', () => {
   claudeTest('shows a child prompt while that child still waits for its model', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
     void authenticatedWorkspace
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.CLAUDE_CODE,
+    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE }, {
       childWhen: { user: 'CHILD_LIVE_CLAUDE_MARKER' },
       childTask: 'Report CHILD_LIVE_CLAUDE_MARKER.',
       parentTask: 'Spawn one subagent to report its assigned marker.',
@@ -62,12 +61,11 @@ claudeTest.describe('Claude subagent background tasks', () => {
     const workingDir = agent.workingDir
     if (!workingDir)
       throw new Error('The live child file proof requires a working directory.')
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: AgentProvider.CLAUDE_CODE,
+    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE }, {
       childWhen: { user: 'CHILD_LIVE_CLAUDE_READ' },
       childTask: 'Read the assigned file for CHILD_LIVE_CLAUDE_READ.',
       parentTask: 'Start one child to read the assigned file.',
-      toolProof: { workingDir },
+      toolProof: { read: { workingDir } },
       beforeRelease: async () => {
         await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-live-child', report: 'CHILD_LIVE_DONE', reply: 'The child file report arrived.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })
       },

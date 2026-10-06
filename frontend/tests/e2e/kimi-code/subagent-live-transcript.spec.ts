@@ -1,9 +1,6 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { applyPermissionPreset, expectSettingsChip, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
-
-const KIMI = AgentProvider.KIMI_CODE
 
 /**
  * The statement that opens a Kimi Code subagent's system prompt, and that the
@@ -13,9 +10,8 @@ const KIMI = AgentProvider.KIMI_CODE
 const SUBAGENT_SYSTEM = 'You are now running as a subagent'
 
 kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
-  kimiTest('shows the child prompt while the child still runs', async ({ page, modelScript }) => {
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: KIMI,
+  kimiTest('shows the child prompt while the child still runs', async ({ native }) => {
+    await exerciseLiveChildTranscript(native, {
       childWhen: { system: SUBAGENT_SYSTEM, body: 'CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
@@ -23,13 +19,12 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
   })
 
   // A reminder follows the task as the last user turn of a child request, so the rule matches the task in the body.
-  kimiTest('shows a native child file result only in the running child tab', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
-    await exerciseLiveChildTranscript(page, modelScript, {
-      provider: KIMI,
+  kimiTest('shows a native child file result only in the running child tab', async ({ native, authenticatedKimiWorkspace }) => {
+    await exerciseLiveChildTranscript(native, {
       childWhen: { system: SUBAGENT_SYSTEM, body: 'CHILD_LIVE_READ_TASK' },
       childTask: 'Read the assigned file for CHILD_LIVE_READ_TASK.',
       parentTask: 'Delegate the live child file read.',
-      toolProof: { workingDir: authenticatedKimiWorkspace.workingDir },
+      toolProof: { read: { workingDir: authenticatedKimiWorkspace.workingDir } },
     })
   })
 

@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import type { LiveChildSpec } from './liveChildTranscript'
+import type { LiveChild, LiveChildSpec } from './liveChildTranscript'
 import type { MockModelScenarioStatus, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -8,12 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { deferred } from '../../../src/test-support/async'
 import { withCleanup } from './cleanup'
-import { completeLiveChildTranscript, exerciseLiveChildTranscript } from './liveChildTranscript'
+import { completeLiveChildTranscript, exerciseLiveChildTranscript, LIVE_CHILD_SHELL_CALL_ID } from './liveChildTranscript'
 import { MOCK_MODEL_IDS, MOCK_MODELS } from './mockAgentEnvironment'
 import { isRecord } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
-import { ohMyPiYieldToolCall, readToolCall } from './providerToolCalls'
+import { bashToolCall, ohMyPiYieldToolCall, readToolCall } from './providerToolCalls'
 
 type RowKind = 'user' | 'assistant' | 'tool'
 
@@ -43,6 +43,8 @@ const browser = vi.hoisted(() => ({
   expansions: [] as string[],
   onExpand: undefined as (() => void) | undefined,
   send: vi.fn<(prompt: string) => Promise<void>>(),
+  /** The registry guard and the prompt send, in the order in which the helper made them. */
+  events: [] as string[],
 }))
 
 /** A fake locator over the visible rows of the selected tab. */
@@ -113,7 +115,10 @@ function selectTab(id: string): void {
 
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
-  sendMessage: async (_page: Page, prompt: string) => browser.send(prompt),
+  sendMessage: async (_page: Page, prompt: string) => {
+    browser.events.push('send')
+    return browser.send(prompt)
+  },
   userBubbles: () => rows('user'),
   assistantBubbles: () => rows('assistant'),
   messageContents: () => rows(undefined),
@@ -135,6 +140,9 @@ vi.mock('./nativeResultView', async importOriginal => ({
 
 vi.mock('./subagentRegistry', async importOriginal => ({
   ...await importOriginal<typeof import('./subagentRegistry')>(),
+  expectNoRegistryRows: async () => {
+    browser.events.push('registry-guard')
+  },
   requireRegistryRow: async () => registryRow(),
   openChildTabFromRow: async () => {
     selectTab(browser.childAgentId)
@@ -225,6 +233,8 @@ const CHILD_AGENT = 'unit-child-agent'
 const CHILD_TASK = 'Complete the unit child assignment.'
 const PARENT_TASK = 'Delegate the unit child assignment.'
 const READ_TOOL = readToolCall(PROVIDER, 'unit-read-name', '/unit-read-name').name
+const SHELL_TOOL = bashToolCall(PROVIDER, 'unit-shell-name', 'true').name
+const SHELL_COMMAND = 'printf unit-child-live'
 const DEFAULT_FINAL: Omit<MockModelStep, 'gate'> = { text: 'CHILD_LIVE_DONE' }
 const YIELD_FINAL: Omit<MockModelStep, 'gate'> = { toolCalls: [ohMyPiYieldToolCall('unit-native-yield', 'CHILD_LIVE_DONE')] }
 
@@ -239,6 +249,18 @@ interface NativeAgentReceipt {
   childResponses: ReceivedStep[]
   /** The file that the child read, with its exact bytes, and the ID of the Read call. */
   read?: { path: string, content: string, callId: string }
+}
+
+/** How the simulated native agent draws its transcripts. Each field states a defect that a test injects. */
+interface NativeAgentOptions {
+  leakReadToParent: boolean
+  collapseRead: boolean
+  /** The child tab shows this assistant text before the child asks its model, as a premature final answer would. */
+  earlyAnswer?: string
+  /** The child tab never shows the final answer. */
+  hideFinal: boolean
+  /** The child tab never shows the row of the shell command. */
+  hideShellRow: boolean
 }
 
 /** Parse one Chat Completions answer of the actual mock model server. */
@@ -308,7 +330,7 @@ function appendRow(tab: string, kind: RowKind, text: string, hiddenUntilExpanded
  * The child performs a real file Read when its answer asks for one.
  * It writes each visible row before its next model request, so a held request finds the rows in place.
  */
-async function runNativeAgent(serverURL: string, parentPrompt: string, log: string[], options: { leakReadToParent: boolean, collapseRead: boolean }): Promise<NativeAgentReceipt> {
+async function runNativeAgent(serverURL: string, parentPrompt: string, log: string[], options: NativeAgentOptions): Promise<NativeAgentReceipt> {
   appendRow(PARENT_TAB, 'user', parentPrompt)
   const spawn = await chat(serverURL, [{ role: 'user', content: parentPrompt }])
   const spawnCall = spawn.toolCalls?.[0]
@@ -322,16 +344,27 @@ async function runNativeAgent(serverURL: string, parentPrompt: string, log: stri
   browser.childAgentId = CHILD_AGENT
   browser.childStatus = 'running'
   appendRow(CHILD_AGENT, 'user', childPrompt)
+  if (options.earlyAnswer !== undefined)
+    appendRow(CHILD_AGENT, 'assistant', options.earlyAnswer)
 
   const receipt: NativeAgentReceipt = { childResponses: [] }
   const childMessages: unknown[] = [{ role: 'user', content: childPrompt }]
   for (;;) {
     const answer = await chat(serverURL, childMessages)
     receipt.childResponses.push(answer)
+    const shellCall = answer.toolCalls?.find(call => call.name === SHELL_TOOL)
+    if (shellCall) {
+      log.push('shell-delivered')
+      if (!options.hideShellRow)
+        appendRow(CHILD_AGENT, 'tool', JSON.stringify(shellCall.arguments))
+      childMessages.push(assistantMessage(answer), { role: 'tool', tool_call_id: shellCall.id, content: 'unit-child-live' })
+      continue
+    }
     const readCall = answer.toolCalls?.find(call => call.name === READ_TOOL)
     if (!readCall) {
       log.push('final-delivered')
-      appendRow(CHILD_AGENT, 'assistant', answer.text ?? JSON.stringify(answer.toolCalls))
+      if (!options.hideFinal)
+        appendRow(CHILD_AGENT, 'assistant', answer.text ?? JSON.stringify(answer.toolCalls))
       break
     }
     log.push('read-delivered')
@@ -379,7 +412,7 @@ function fakePage(): Page {
 
 interface LiveChildRun {
   /** The helper under test. */
-  helper: Promise<void>
+  helper: Promise<LiveChild>
   /** The simulated native agent. It finishes after the helper releases the held child answer. */
   agent: Promise<NativeAgentReceipt>
   /** The order of the native deliveries and the helper's gate releases. */
@@ -390,13 +423,18 @@ let workingDir = ''
 
 function startLiveChild(serverURL: string, script: ModelScript, options: {
   childResponse?: Omit<MockModelStep, 'gate'>
-  read: boolean
+  /** The tool that the spec asks the child to run. */
+  tool?: 'read' | 'shell'
   leakReadToParent?: boolean
   /** The native Read result puts header rows before the file text, so its collapsed view hides the marker. */
   collapseRead?: boolean
   /** The spec asks the helper to expand the result view of the Read. */
   expandResult?: boolean
   failRelease?: Error
+  earlyAnswer?: string
+  hideFinal?: boolean
+  hideShellRow?: boolean
+  finalAnswerInChildTab?: boolean
 }): LiveChildRun {
   const log: string[] = []
   browser.onExpand = () => log.push('result-expanded')
@@ -404,7 +442,13 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
   // The test reads this promise later. This branch keeps an early failure from becoming an unhandled rejection.
   agent.promise.catch(() => {})
   browser.send.mockImplementationOnce(async (prompt) => {
-    runNativeAgent(serverURL, prompt, log, { leakReadToParent: options.leakReadToParent ?? false, collapseRead: options.collapseRead ?? false }).then(agent.resolve, agent.reject)
+    runNativeAgent(serverURL, prompt, log, {
+      leakReadToParent: options.leakReadToParent ?? false,
+      collapseRead: options.collapseRead ?? false,
+      ...(options.earlyAnswer === undefined ? {} : { earlyAnswer: options.earlyAnswer }),
+      hideFinal: options.hideFinal ?? false,
+      hideShellRow: options.hideShellRow ?? false,
+    }).then(agent.resolve, agent.reject)
   })
   const observed: ModelScript = {
     ...script,
@@ -420,14 +464,16 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
     },
   }
   const spec: LiveChildSpec = {
-    provider: PROVIDER,
     childWhen: { user: CHILD_TASK },
     childTask: CHILD_TASK,
     parentTask: PARENT_TASK,
     ...(options.childResponse ? { childResponse: options.childResponse } : {}),
-    ...(options.read ? { toolProof: { workingDir, ...(options.expandResult ? { expandResult: true } : {}) } } : {}),
+    ...(options.tool === 'read' ? { toolProof: { read: { workingDir, ...(options.expandResult ? { expandResult: true } : {}) } } } : {}),
+    ...(options.tool === 'shell' ? { toolProof: { shell: { command: SHELL_COMMAND } } } : {}),
+    ...(options.finalAnswerInChildTab === undefined ? {} : { finalAnswerInChildTab: options.finalAnswerInChildTab }),
   }
-  return { helper: exerciseLiveChildTranscript(fakePage(), observed, spec), agent: agent.promise, log }
+  const context = { page: fakePage(), modelScript: observed, provider: PROVIDER, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  return { helper: exerciseLiveChildTranscript(context, spec), agent: agent.promise, log }
 }
 
 /** Run one test body against an actual mock model server and an actual model script. */
@@ -475,13 +521,14 @@ describe('exerciseLiveChildTranscript', () => {
     browser.expansions = []
     browser.onExpand = undefined
     browser.send.mockReset()
+    browser.events = []
   })
 
   afterEach(() => rmSync(workingDir, { recursive: true, force: true }))
 
   it('holds the native yield tool response when the child needs no Read', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { childResponse: YIELD_FINAL, read: false })
+      const run = startLiveChild(serverURL, script, { childResponse: YIELD_FINAL })
       await run.helper
       const receipt = await run.agent
       expect(receipt.childResponses).toEqual([YIELD_FINAL])
@@ -493,7 +540,7 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('holds the default text when the child needs no Read', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { read: false })
+      const run = startLiveChild(serverURL, script, {})
       await run.helper
       const receipt = await run.agent
       expect(receipt.childResponses).toEqual([DEFAULT_FINAL])
@@ -503,7 +550,7 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('sends the native yield tool response after the child Read and holds only that response', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { childResponse: YIELD_FINAL, read: true })
+      const run = startLiveChild(serverURL, script, { childResponse: YIELD_FINAL, tool: 'read' })
       await run.helper
       const receipt = await run.agent
       expectMarkerRead(receipt)
@@ -518,7 +565,7 @@ describe('exerciseLiveChildTranscript', () => {
   it('sends a custom text response after the child Read', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
       const custom = { text: 'The custom native child report.' }
-      const run = startLiveChild(serverURL, script, { childResponse: custom, read: true })
+      const run = startLiveChild(serverURL, script, { childResponse: custom, tool: 'read' })
       await run.helper
       const receipt = await run.agent
       expectMarkerRead(receipt)
@@ -529,7 +576,7 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('sends the default text after the child Read', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { read: true })
+      const run = startLiveChild(serverURL, script, { tool: 'read' })
       await run.helper
       const receipt = await run.agent
       expectMarkerRead(receipt)
@@ -542,7 +589,7 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('expands the result view of the child Read before it looks for a marker below the collapsed rows', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { read: true, collapseRead: true, expandResult: true })
+      const run = startLiveChild(serverURL, script, { tool: 'read', collapseRead: true, expandResult: true })
       await run.helper
       const receipt = await run.agent
       expectMarkerRead(receipt)
@@ -555,7 +602,7 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('does not expand a result view that the spec leaves alone, so a marker below the collapsed rows fails the helper', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { read: true, collapseRead: true })
+      const run = startLiveChild(serverURL, script, { tool: 'read', collapseRead: true })
       await expect(run.helper).rejects.toThrow(`in tab ${CHILD_AGENT}`)
       const receipt = await run.agent
       expectMarkerRead(receipt)
@@ -568,7 +615,7 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('releases the held final response when the parent transcript holds the child marker', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { read: true, leakReadToParent: true })
+      const run = startLiveChild(serverURL, script, { tool: 'read', leakReadToParent: true })
       await expect(run.helper).rejects.toThrow(`in tab ${PARENT_TAB}`)
       const receipt = await run.agent
       expectMarkerRead(receipt)
@@ -582,7 +629,7 @@ describe('exerciseLiveChildTranscript', () => {
   it('reports the transcript failure and the failed release of the held response together', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
       const releaseFailure = new Error('The mock model refused the gate release.')
-      const run = startLiveChild(serverURL, script, { read: true, leakReadToParent: true, failRelease: releaseFailure })
+      const run = startLiveChild(serverURL, script, { tool: 'read', leakReadToParent: true, failRelease: releaseFailure })
       const failure: unknown = await run.helper.then(() => undefined, (error: unknown) => error)
       expect(failure).toBeInstanceOf(AggregateError)
       const errors: unknown[] = failure instanceof AggregateError ? failure.errors : []
@@ -596,6 +643,75 @@ describe('exerciseLiveChildTranscript', () => {
       await script.releaseGate(held[0] ?? '')
       const receipt = await run.agent
       expect(receipt.childResponses[1]).toEqual(DEFAULT_FINAL)
+    })
+  })
+
+  it('reads the Worker registry before it sends the parent prompt, and returns the child and its parent', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, {})
+      expect(await run.helper).toMatchObject({ childId: CHILD_AGENT, parentId: PARENT_TAB })
+      await run.agent
+      expect(browser.events).toEqual(['registry-guard', 'send'])
+    })
+  })
+
+  it('shows the shell command of the child in its tab, and holds only the final response', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { tool: 'shell' })
+      await run.helper
+      const receipt = await run.agent
+      expect(receipt.childResponses[0]).toEqual({ toolCalls: [bashToolCall(PROVIDER, LIVE_CHILD_SHELL_CALL_ID, SHELL_COMMAND)] })
+      expect(receipt.childResponses[1]).toEqual(DEFAULT_FINAL)
+      // The shell answer arrives at once. Only the final answer waits for the helper's release.
+      expectOrder(run.log, ['shell-delivered', 'gate-released', 'final-delivered'])
+      expect((await script.status()).pendingGates).toEqual([])
+    })
+  })
+
+  it('fails and releases the held response when the child tab shows no row of the shell command', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { tool: 'shell', hideShellRow: true })
+      await expect(run.helper).rejects.toThrow(`the tool rows that hold ${SHELL_COMMAND} in tab ${CHILD_AGENT}`)
+      await run.agent
+      expect(run.log).not.toContain('gate-released')
+      expectOrder(run.log, ['shell-delivered', 'cleanup-release', 'final-delivered'])
+    })
+  })
+
+  it('fails when the held custom answer shows in the child tab before the release', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const custom = { text: 'The custom native child report.' }
+      const run = startLiveChild(serverURL, script, { childResponse: custom, earlyAnswer: custom.text })
+      await expect(run.helper).rejects.toThrow(`the assistant rows that hold ${custom.text} in tab ${CHILD_AGENT}`)
+      await run.agent
+      expect(run.log).not.toContain('gate-released')
+    })
+  })
+
+  it('checks the held answer text, so the default text in the child tab does not fail a custom answer', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { childResponse: { text: 'The custom native child report.' }, earlyAnswer: 'CHILD_LIVE_DONE' })
+      await run.helper
+      await run.agent
+      expectOrder(run.log, ['gate-released', 'final-delivered'])
+    })
+  })
+
+  it('requires the final answer in the child tab after the release', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { hideFinal: true })
+      await expect(run.helper).rejects.toThrow(`the assistant rows that hold CHILD_LIVE_DONE in tab ${CHILD_AGENT}`)
+      await run.agent
+      expectOrder(run.log, ['gate-released', 'final-delivered'])
+    })
+  })
+
+  it('leaves out the final answer check when the spec turns it off', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { hideFinal: true, finalAnswerInChildTab: false })
+      await run.helper
+      await run.agent
+      expectOrder(run.log, ['gate-released', 'final-delivered'])
     })
   })
 })
