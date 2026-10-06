@@ -10,7 +10,7 @@ import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
@@ -183,7 +183,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
 
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_AGENT_CHILD_DONE' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_EARLY_TEXT' }).first()).toBeVisible()
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'read_text_file' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'read_text_file' }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_READ_MARKER' }).first()).toBeVisible()
     await expectRowsInOrder(assistantBubbles(page), ['FAST_CHILD_EARLY_TEXT', 'FAST_CHILD_READ_MARKER', 'FAST_AGENT_CHILD_DONE'])
     // The row of the Read result holds neither the early text nor the final answer.
@@ -261,7 +261,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     expect(await openChildTabFromRow(page, restoredRow)).not.toBe(originalChildID)
     await expect(userBubbles(page).filter({ hasText: childPrompt })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_EARLY' })).toHaveCount(1)
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'read_text_file' })).toHaveCount(1)
+    await expect(toolRows(page).filter({ hasText: 'read_text_file' })).toHaveCount(1)
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_RESUME_TOOL_MARKER' })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(1)
     await expectRowsInOrder(assistantBubbles(page), ['FAST_CHILD_RESUME_EARLY', 'FAST_CHILD_RESUME_TOOL_MARKER', 'FAST_CHILD_RESUME_FINAL'])

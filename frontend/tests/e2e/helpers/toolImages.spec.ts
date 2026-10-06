@@ -79,7 +79,7 @@ test.describe('tool image result locators', () => {
     const image = readFileSync(join(directory, name)).toString('base64')
 
     await renderToolImages(page, 'merged', name, image, false)
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: name })).toHaveCount(1)
+    await expect(toolRows(page).filter({ hasText: name })).toHaveCount(1)
     expect(await (await toolResultImageForName(page, name)).count()).toBe(0)
 
     await renderToolImages(page, 'merged', name, image, true)
@@ -93,7 +93,7 @@ test.describe('tool image result locators', () => {
     const image = readFileSync(join(directory, name)).toString('base64')
 
     await renderToolImages(page, 'split', name, image, false)
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: name })).toHaveCount(1)
+    await expect(toolRows(page).filter({ hasText: name })).toHaveCount(1)
     expect(await (await toolResultImageForName(page, name)).count()).toBe(0)
 
     await renderToolImages(page, 'split', name, image, true)
@@ -156,7 +156,7 @@ test.describe('tool image result locators', () => {
       </main></div>
     `)
 
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: newName })).toHaveCount(1)
+    await expect(toolRows(page).filter({ hasText: newName })).toHaveCount(1)
     expect(await (await toolResultImageForName(page, newName)).count()).toBe(0)
   })
 
@@ -174,7 +174,7 @@ test.describe('tool image result locators', () => {
       </main></div>
     `)
 
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: newName })).toHaveCount(1)
+    await expect(toolRows(page).filter({ hasText: newName })).toHaveCount(1)
     expect(await (await imagesForToolCall(page, newName)).count()).toBe(0)
   })
 
@@ -263,7 +263,7 @@ test.describe('tool image result locators', () => {
       </main></div>
     `)
 
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: name })).toHaveCount(1)
+    await expect(toolRows(page).filter({ hasText: name })).toHaveCount(1)
     expect(await (await mcpResultImage(page, name, 'new-mcp-call')).count()).toBe(0)
   })
 
@@ -279,7 +279,7 @@ test.describe('tool image result locators', () => {
       </main></div>
     `)
 
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: name })).toHaveCount(2)
+    await expect(toolRows(page).filter({ hasText: name })).toHaveCount(2)
     expect(await (await mcpResultImage(page, name, 'reused-mcp-call')).count()).toBe(0)
   })
 
