@@ -56,8 +56,8 @@ describe('e2e load-state waits', () => {
       'whole 300s test budget. Wait for a locator the app renders instead:',
     ].join(' ')
     // The case above passes vacuously if the walk returns nothing, so
-    // `e2eFiles.test.ts` pins that it does not -- once, for the three guards
-    // that share it.
+    // `e2eFiles.test.ts` pins that it does not, one time for every guard that
+    // shares the walk.
     expect(offenders, `${hint}\n  ${offenders.join('\n  ')}`).toEqual([])
   })
 })

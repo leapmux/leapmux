@@ -15,6 +15,7 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  * - `visibleChatLocators.test.ts`: no unscoped chat locator rooted at the page.
  * - `testFileNaming.test.ts`: a `.test.ts` here names the module beside it.
  * - `throwingPollReads.test.ts`: no `expect.poll` waits on a Worker or Hub read.
+ * - `fixedWaits.test.ts`: no spec or helper sizes a window with `waitForTimeout`.
  *
  * The first three guards carried a byte-identical copy of the walk, so a
  * change to what counts as an e2e file -- a `.mts` helper, a fixtures

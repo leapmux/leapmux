@@ -18,6 +18,7 @@ import {
   isVariableDeclaration,
   ScriptTarget,
 } from 'typescript'
+import { enclosingFunctionName, lineOf } from '~/test-support/syntaxSite'
 
 // The analysis behind the E2E guard that refuses a Worker or Hub read inside `expect.poll`.
 //
@@ -145,22 +146,6 @@ function caughtByPromise(call: TypeScript.CallExpression): boolean {
   const parent = call.parent
   return isPropertyAccessExpression(parent) && parent.expression === call && parent.name.text === 'catch'
     && isCallExpression(parent.parent) && parent.parent.expression === parent
-}
-
-/** Return the 1-based line of `node`. */
-function lineOf(file: TypeScript.SourceFile, node: TypeScript.Node): number {
-  return file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1
-}
-
-/** Return the name of the function that holds `node`, or '' at the top level. */
-function enclosingFunctionName(node: TypeScript.Node): string {
-  for (let parent = node.parent; parent; parent = parent.parent) {
-    if (isFunctionDeclaration(parent) && parent.name)
-      return parent.name.text
-    if ((isArrowFunction(parent) || isFunctionExpression(parent)) && isVariableDeclaration(parent.parent) && isIdentifier(parent.parent.name))
-      return parent.parent.name.text
-  }
-  return ''
 }
 
 /** Find each `expect.poll` of `inputs` whose poll function can throw on a failed Worker or Hub request. */
