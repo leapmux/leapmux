@@ -40,8 +40,11 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
     await waitForAgentIdle(context.page)
     await expectSettingsChip(context.page, 'Yolo')
     expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe('yolo')
-    expect(existsSync(path)).toBe(false)
+    // The output proves that the command ran: `printf` runs only after `rm` succeeded. The idle wait above cannot
+    // prove it, because the indicator can clear between the permission answer and the tool run, so the file check
+    // comes after the output.
     await expect(messageContents(context.page).filter({ hasText: output }).first()).toBeVisible()
+    expect(existsSync(path)).toBe(false)
     const followUp = (await context.modelScript.status()).requests.find(request => request.stepIndex === start + 1)
     if (followUp)
       expect(nativeToolResult(followUp, callId)).toContain(output)
