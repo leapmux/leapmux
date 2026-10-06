@@ -2,6 +2,7 @@ import type { Buffer } from 'node:buffer'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
+import type { DisconnectSignals } from './mockHttp'
 import type { MockModelScriptHost, ModelRequestContext } from './mockModelRequest'
 import type {
   MockModelDeliveredError,
@@ -29,7 +30,7 @@ import { handleGoogleModelHttp } from './googleModelApi'
 import { handleKiroHttp, kiroRequestMetadata } from './kiroSurface'
 import { MOCK_IDENTITY_TOKEN, MOCK_MODELS, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
-import { holdOpen, readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
+import { readJSONBody, waitUnlessDisconnected, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import {
   lastUserText,
   matchesRequest,
@@ -220,10 +221,11 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         kind: 'step',
         step,
         isClosed: () => scenario.closed,
-        holdGate: (name, transport) => holdGate(scenario, name, transport.request, transport.response, transport.signal),
-        stream: (response, request) => createModelStream(response, step.stream, name => holdGate(scenario, name, request, response)),
+        holdGate: (name, transport) => holdGate(scenario, name, transport),
+        holdStep: transport => holdStep(scenario, step, transport),
+        stream: (response, request) => createModelStream(response, step.stream, name => holdGate(scenario, name, { request, response })),
         bufferGeneration: (signal) => {
-          const stream = createBufferedModelStream(signal, step.stream, name => holdGate(scenario, name, undefined, undefined, signal))
+          const stream = createBufferedModelStream(signal, step.stream, name => holdGate(scenario, name, { signal }))
           return bufferModelOutput(stream, step)
         },
         recordHttpResponse: (response, readError) => recordModelResponse(response, record, readError),
@@ -313,16 +315,14 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       }
       const { step, scenario } = answer
       recordModelResponse(response, answer.record, () => step.error ? genericModelError(step.error) : undefined)
-      if (step.gate && !await holdGate(scenario, step.gate, request, response))
-        return
-      if (step.delayMs && !await holdOpen(request, response, step.delayMs))
+      if (!await holdStep(scenario, step, { request, response }))
         return
       if (step.error) {
         writeModelError(response, protocol, body, step.error)
         return
       }
       responseSequence++
-      await writeModelResponse(response, protocol, body, step, `mock-response-${responseSequence}`, createModelStream(response, step.stream, name => holdGate(scenario, name, request, response)))
+      await writeModelResponse(response, protocol, body, step, `mock-response-${responseSequence}`, createModelStream(response, step.stream, name => holdGate(scenario, name, { request, response })))
     }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -488,14 +488,16 @@ function findRule(scenario: ScenarioState, context: ModelRequestContext): MockMo
     ?? scenario.spec.rules.find(rule => rule.priority !== 'high' && matches(rule))
 }
 
+/** Hold a step at its own gate or for its delay, by the rules that `SelectedModelAnswer.holdStep` states. */
+function holdStep(scenario: ScenarioState, step: MockModelStep, transport: DisconnectSignals): Promise<boolean> {
+  if (step.gate !== undefined)
+    return holdGate(scenario, step.gate, transport)
+  return waitUnlessDisconnected(step.delayMs ?? 0, transport)
+}
+
 /** Keep a model request open until its test releases the gate. */
-function holdGate(
-  scenario: ScenarioState,
-  name: string,
-  request?: IncomingMessage,
-  response?: ServerResponse,
-  signal?: AbortSignal,
-): Promise<boolean> {
+function holdGate(scenario: ScenarioState, name: string, transport: DisconnectSignals): Promise<boolean> {
+  const { request, response, signal } = transport
   if (scenario.closed)
     return Promise.resolve(false)
   let gate = scenario.gates.get(name)

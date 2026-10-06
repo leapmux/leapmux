@@ -1,7 +1,8 @@
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { AmpInference, AmpSurface, AmpSurfaceOptions } from './ampSurface'
-import type { MockModelScriptHost, ModelGateTransport, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
+import type { DisconnectSignals } from './mockHttp'
+import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelStep } from './mockModelScript'
 import { createServer } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -744,7 +745,10 @@ function selectedAmpAnswer(step: MockModelStep) {
     kind: 'step' as const,
     step,
     isClosed: () => false,
-    holdGate: vi.fn(async (_name: string, _transport: ModelGateTransport) => true),
+    holdGate: vi.fn(async (_name: string, _transport: DisconnectSignals) => true),
+    holdStep: vi.fn(async (_transport: DisconnectSignals) => {
+      throw new Error('The Amp adapter holds the gate alone, because the surface applies the delay itself.')
+    }),
     stream: () => createBufferedModelStream(new AbortController().signal),
     bufferGeneration: vi.fn(async () => true),
     recordHttpResponse: vi.fn(),

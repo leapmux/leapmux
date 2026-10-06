@@ -1,7 +1,7 @@
 import type { ServerResponse } from 'node:http'
 import type { MockModelStep, MockModelTextStream } from './mockModelScript'
+import { waitUnlessDisconnected } from './mockHttp'
 import { textChunks } from './mockModelScript'
-import { pauseBetweenChunks, pauseUntilAborted } from './responsePause'
 
 export interface ModelStream {
   readonly active: boolean
@@ -27,7 +27,7 @@ export function createModelStream(
 ): ModelStream {
   return createControlledModelStream(stream, hold, {
     active: () => !response.writableEnded && !response.destroyed,
-    pause: () => pauseBetweenChunks(response, stream?.delayMs ?? 0),
+    pause: () => waitUnlessDisconnected(stream?.delayMs ?? 0, { response }),
   })
 }
 
@@ -39,14 +39,14 @@ export function createBufferedModelStream(
 ): ModelStream {
   return createControlledModelStream(stream, hold, {
     active: () => !signal.aborted,
-    pause: () => pauseUntilAborted(stream?.delayMs ?? 0, signal),
+    pause: () => waitUnlessDisconnected(stream?.delayMs ?? 0, { signal }),
   })
 }
 
 function createControlledModelStream(
   stream: MockModelTextStream | undefined,
   hold: ((name: string) => Promise<boolean>) | undefined,
-  control: { active: () => boolean, pause: () => Promise<boolean | void> },
+  control: { active: () => boolean, pause: () => Promise<boolean> },
 ): ModelStream {
   if (stream?.gates?.length && !hold)
     throw new Error('A model stream gate requires a scenario-owned gate handler')
@@ -61,7 +61,7 @@ function createControlledModelStream(
       for (const chunk of textChunks({ text, ...(stream ? { stream } : {}) })) {
         if (!active())
           return
-        if (emitted > 0 && await control.pause() === false)
+        if (emitted > 0 && !await control.pause())
           cancelled = true
         if (!active())
           return

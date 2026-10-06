@@ -1684,6 +1684,20 @@ describe('Cursor delivered response receipts', () => {
     expect(receipt).toMatchObject({ status: response.status, serviceError: { code: wire.error.code, message: wire.error.message } })
     expect(receipt?.serviceError?.code).not.toBe('api_error')
   })
+
+  // Every surface holds a step at its gate before it answers, an error included.
+  it('holds a gated error step until its test releases the gate', async () => {
+    const server = await startServer()
+    const id = 'cursor-gated-error'
+    await registerScenario(server, id, { steps: [{ error: { status: 503, message: 'The held native failure.' }, gate: 'held-error' }] })
+    const pending = cursorResponse(server, `${id}-conversation`, mockScenarioPrompt(id, 'Run the held native error.'))
+    await waitForGate(server, id, 'held-error')
+    const release = await fetch(`${server.url}/__e2e/scenarios/${id}/gates/held-error/release`, { method: 'POST' })
+    expect(release.status).toBe(204)
+    const trailer = takeConnectFrames(new Uint8Array(await (await pending).arrayBuffer())).frames.at(-1)
+    expect(trailer?.flags).toBe(2)
+    expect(JSON.parse(new TextDecoder().decode(trailer?.payload))).toMatchObject({ error: { code: 'unavailable', message: 'The held native failure.' } })
+  })
 })
 
 describe('allowlisted native request headers', () => {

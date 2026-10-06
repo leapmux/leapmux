@@ -29,8 +29,8 @@ import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNa
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { mockCredentialReceipt } from './mockCredentials'
+import { waitUnlessDisconnected } from './mockHttp'
 import { bufferModelOutput, createBufferedModelStream } from './modelStream'
-import { pauseUntilAborted } from './responsePause'
 import { acceptWebSocket } from './webSocketServer'
 
 /** The path prefix of the actor gateway, which the CLI derives from `RIVET_PUBLIC_ENDPOINT`. */
@@ -123,6 +123,8 @@ export function ampScriptOptions(host: MockModelScriptHost): AmpSurfaceOptions {
       if (answer.kind !== 'step')
         return undefined
       requests.set(inference, answer)
+      // The gate only, not `holdStep`: the Amp surface applies a step's delay itself, after it buffers the
+      // generation, because it also runs without a script host. A delay held here as well would apply twice.
       if (answer.step.gate && !await answer.holdGate(answer.step.gate, { signal }))
         return undefined
       return answer.step
@@ -532,7 +534,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       if (!completed || turn.cancelled)
         return false
     }
-    if (step.delayMs && !await pauseUntilAborted(step.delayMs, turn.abort.signal))
+    if (step.delayMs && !await waitUnlessDisconnected(step.delayMs, { signal: turn.abort.signal }))
       return false
     return !turn.cancelled
   }

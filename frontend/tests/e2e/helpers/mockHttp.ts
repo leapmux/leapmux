@@ -47,33 +47,48 @@ export function writeMockJSON(response: ServerResponse, status: number, value: u
 }
 
 /**
- * Keep the response open for the scripted delay.
- *
- * If the client disconnects before the delay ends, return false.
- * Callers then stop response generation.
- *
- * Listen to request.aborted and response.close.
- * The caller reads the body before this function runs.
- * IncomingMessage.close can therefore indicate a completed request body.
- * It cannot distinguish that state from a socket disconnect here.
- * ServerResponse.close signals the end of the HTTP exchange.
+ * The sources that can end a held answer early. A native request supplies its HTTP
+ * exchange. A turn that a surface runs without an HTTP exchange of its own supplies
+ * an abort signal.
  */
-export function holdOpen(request: IncomingMessage, response: ServerResponse, delayMs: number): Promise<boolean> {
+export interface DisconnectSignals {
+  request?: IncomingMessage | undefined
+  response?: ServerResponse | undefined
+  signal?: AbortSignal | undefined
+}
+
+/**
+ * Wait `delayMs` and return true, unless the client goes away first: then return false
+ * at once, so the caller stops its answer.
+ *
+ * The request's `aborted`, the response's `close`, and the signal's `abort` each end the
+ * wait. The request's `close` does not: the caller reads the body before it waits, and
+ * IncomingMessage closes when its body ends, so that event cannot tell a completed body
+ * from a socket that went away. ServerResponse.close signals the end of the exchange.
+ */
+export function waitUnlessDisconnected(delayMs: number, transport: DisconnectSignals): Promise<boolean> {
+  const { request, response, signal } = transport
+  if (request?.aborted || response?.destroyed || signal?.aborted)
+    return Promise.resolve(false)
+  if (delayMs <= 0)
+    return Promise.resolve(true)
   return new Promise((resolve) => {
     let settled = false
     let timer: ReturnType<typeof setTimeout>
     const onDisconnect = () => finish(false)
-    function finish(delivered: boolean) {
+    function finish(completed: boolean) {
       if (settled)
         return
       settled = true
       clearTimeout(timer)
-      request.off('aborted', onDisconnect)
-      response.off('close', onDisconnect)
-      resolve(delivered)
+      request?.off('aborted', onDisconnect)
+      response?.off('close', onDisconnect)
+      signal?.removeEventListener('abort', onDisconnect)
+      resolve(completed)
     }
     timer = setTimeout(finish, delayMs, true)
-    request.once('aborted', onDisconnect)
-    response.once('close', onDisconnect)
+    request?.once('aborted', onDisconnect)
+    response?.once('close', onDisconnect)
+    signal?.addEventListener('abort', onDisconnect, { once: true })
   })
 }

@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { holdOpen, MAX_MOCK_REQUEST_BYTES, readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
+import { MAX_MOCK_REQUEST_BYTES, readJSONBody, readMockBody, waitUnlessDisconnected, writeMockJSON, writeResponseHeaders } from './mockHttp'
 
 function request(chunks: readonly Buffer[]): IncomingMessage {
   const message = new IncomingMessage(new Socket())
@@ -98,12 +98,13 @@ describe('writeResponseHeaders', () => {
   })
 })
 
-describe('holdOpen', () => {
+describe('waitUnlessDisconnected', () => {
   it('keeps the exact delay and removes disconnect listeners when it completes', async () => {
     vi.useFakeTimers()
     const message = request([])
     const response = new ServerResponse(message)
-    const result = holdOpen(message, response, 30)
+    const signal = new AbortController().signal
+    const result = waitUnlessDisconnected(30, { request: message, response, signal })
     expect(message.listenerCount('aborted')).toBe(1)
     await vi.advanceTimersByTimeAsync(29)
     expect(response.listenerCount('close')).toBe(1)
@@ -114,18 +115,50 @@ describe('holdOpen', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it.each(['request', 'response'])('cancels its timer when the %s disconnects', async (source) => {
+  it.each(['request', 'response', 'signal'])('cancels its timer when the %s ends the exchange', async (source) => {
     vi.useFakeTimers()
     const message = request([])
     const response = new ServerResponse(message)
-    const result = holdOpen(message, response, 1_000_000)
+    const controller = new AbortController()
+    const result = waitUnlessDisconnected(1_000_000, { request: message, response, signal: controller.signal })
     if (source === 'request')
       message.emit('aborted')
-    else
+    else if (source === 'response')
       response.emit('close')
+    else
+      controller.abort()
     expect(await result).toBe(false)
     expect(message.listenerCount('aborted')).toBe(0)
     expect(response.listenerCount('close')).toBe(0)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('waits on the signal alone for a turn without an HTTP exchange', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const result = waitUnlessDisconnected(1_000, { signal: controller.signal })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await result).toBe(true)
+  })
+
+  it('returns false at once for an exchange that already ended, and starts no timer', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    controller.abort()
+    expect(await waitUnlessDisconnected(1_000, { signal: controller.signal })).toBe(false)
+    const message = request([])
+    const response = new ServerResponse(message)
+    response.destroy()
+    expect(await waitUnlessDisconnected(1_000, { request: message, response })).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([0, -5])('returns true at once for the delay %s, and starts no timer', async (delayMs) => {
+    vi.useFakeTimers()
+    const message = request([])
+    const response = new ServerResponse(message)
+    expect(await waitUnlessDisconnected(delayMs, { request: message, response })).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(response.listenerCount('close')).toBe(0)
   })
 })

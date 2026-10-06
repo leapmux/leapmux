@@ -258,7 +258,6 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/qoderEnvironment.test.ts',
   'tests/e2e/helpers/rateLimit.test.ts',
   'tests/e2e/helpers/relatedTodoProof.test.ts',
-  'tests/e2e/helpers/responsePause.test.ts',
   'tests/e2e/helpers/runBinary.test.ts',
   'tests/e2e/helpers/runDirectory.test.ts',
   'tests/e2e/helpers/safeArea.test.ts',

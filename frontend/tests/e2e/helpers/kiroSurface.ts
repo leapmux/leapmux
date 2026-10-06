@@ -28,7 +28,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStream'
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
-import { holdOpen, readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
+import { readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import { contentText, selectScenarioID } from './mockModelScript'
 import { createModelStream } from './modelStream'
 
@@ -182,9 +182,7 @@ export async function handleKiroHttp(request: IncomingMessage, response: ServerR
       if (answer.kind === 'missing')
         return answer
       answer.recordHttpResponse(response, () => nativeError)
-      if (answer.step.gate && !await answer.holdGate(answer.step.gate, { request, response }))
-        return { kind: 'abandoned' }
-      if (answer.step.delayMs && !await holdOpen(request, response, answer.step.delayMs))
+      if (!await answer.holdStep({ request, response }))
         return { kind: 'abandoned' }
       return { kind: 'step', step: answer.step, stream: answer.stream(response, request) }
     },

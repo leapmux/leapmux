@@ -592,8 +592,10 @@ describe('handleKiroHttp', () => {
       kind: 'step',
       step: { error: { status: 429, code: 'ThrottlingException', message: 'Actual native quota.' }, gate: 'native-answer' },
       isClosed: () => false,
-      holdGate: async (name, transport) => {
-        expect(name).toBe('native-answer')
+      holdGate: async () => {
+        throw new Error('The Kiro surface holds a step through holdStep.')
+      },
+      holdStep: async (transport) => {
         expect(transport).toEqual({ request, response })
         events.push('hold')
         return true

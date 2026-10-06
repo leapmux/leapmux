@@ -28,6 +28,7 @@ import {
   readLengthDelimitedFields,
   takeConnectFrames,
 } from './cursorWire'
+import { waitUnlessDisconnected } from './mockHttp'
 import { mockScenarioPrompt } from './mockModelScenario'
 import { createModelStream } from './modelStream'
 
@@ -688,8 +689,11 @@ describe('native Cursor request compression', () => {
 
 async function startOwnedCursor(host: MockModelScriptHost) {
   const surface = createCursorSurface(host)
+  /** One entry for each request whose handling ended: true when the surface owned it. */
+  const settled: boolean[] = []
   const server = createServer((request, response) => {
     void surface.handleHttp(request, response, new URL(request.url ?? '/', 'http://mock.invalid')).then((owned) => {
+      settled.push(owned)
       if (!owned)
         response.writeHead(404).end()
     }).catch((error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))))
@@ -705,7 +709,8 @@ async function startOwnedCursor(host: MockModelScriptHost) {
   return {
     surface,
     url,
-    run: async (conversationID: string, prompt: string) => {
+    settled,
+    run: async (conversationID: string, prompt: string, signal?: AbortSignal) => {
       const opening = clientMessageWithPrompt(prompt)
       const runRequest = descend(opening, [1])
       if (!runRequest)
@@ -718,6 +723,7 @@ async function startOwnedCursor(host: MockModelScriptHost) {
         method: 'POST',
         headers: { 'content-type': 'application/connect+proto' },
         body: Buffer.from(connectFrame(nativeRun)),
+        ...(signal ? { signal } : {}),
       })
       return Buffer.from(await response.arrayBuffer())
     },
@@ -738,6 +744,8 @@ function cursorScriptHost(registered: Set<string>, contexts: ModelRequestContext
         step,
         isClosed: () => !registered.has(context.scenarioID ?? ''),
         holdGate: async () => true,
+        // The step's delay, which ends early, with false, when the client disconnects.
+        holdStep: transport => waitUnlessDisconnected(step.delayMs ?? 0, transport),
         stream: (response, request) => {
           expect(request).toBeDefined()
           return createModelStream(response, step.stream)
@@ -804,6 +812,19 @@ describe('createCursorSurface', () => {
     await owned.run('one', 'After Surface close.')
     expect(contexts[5]).toHaveProperty('scenarioID', 'ambient')
     expect(contexts[5]).not.toHaveProperty('serverContext')
+  })
+
+  // An interrupt closes the Run exchange. Every other surface then stops its delay at once.
+  it('stops a delayed step when the client disconnects, rather than holding the exchange for the whole delay', async () => {
+    const contexts: ModelRequestContext[] = []
+    const owned = await startOwnedCursor(cursorScriptHost(new Set(['surface-delayed']), contexts, () => ({ text: 'Never sent', delayMs: 60_000 })))
+    const controller = new AbortController()
+    const run = owned.run('delayed-conversation', mockScenarioPrompt('surface-delayed', 'Cancel me.'), controller.signal)
+    await expect.poll(() => contexts.length).toBe(1)
+    controller.abort()
+    await expect(run).rejects.toThrow()
+    await expect.poll(() => owned.settled.length).toBe(1)
+    expect(owned.settled[0]).toBe(true)
   })
 
   it('leaves unrelated paths unanswered and never selects a script for startup calls', async () => {

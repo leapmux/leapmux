@@ -216,12 +216,10 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
           const { step } = answer
           activeAnswer = answer
           answer.recordHttpResponse(response, () => nativeError)
+          if (!await answer.holdStep({ request, response }))
+            return undefined
           if (step.error)
             return { error: step.error }
-          if (step.gate && !await answer.holdGate(step.gate, { request, response }))
-            return undefined
-          if (step.delayMs)
-            await new Promise<void>(resolve => setTimeout(resolve, step.delayMs))
           const toolCalls = cursorToolCallsFrom(step.toolCalls)
           if (step.text === undefined && step.reasoning === undefined && toolCalls.length === 0)
             return undefined

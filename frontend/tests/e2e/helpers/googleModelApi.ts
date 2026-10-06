@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer'
 import { isObject } from '../../../src/lib/jsonPick'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
 import { mockCredentialReceipt } from './mockCredentials'
-import { holdOpen, readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
+import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
 
@@ -66,9 +66,7 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
   }
   const { step } = answer
   answer.recordHttpResponse(response, () => step.error ? { code: step.error.code ?? 'UNKNOWN', message: step.error.message } : undefined)
-  if (step.gate && !await answer.holdGate(step.gate, { request, response }))
-    return
-  if (step.delayMs && !await holdOpen(request, response, step.delayMs))
+  if (!await answer.holdStep({ request, response }))
     return
   if (step.error) {
     writeGoogleError(response, step.error.status, step.error.code ?? 'UNKNOWN', step.error.message)
