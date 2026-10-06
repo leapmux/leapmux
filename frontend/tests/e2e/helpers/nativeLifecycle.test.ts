@@ -542,7 +542,6 @@ describe('heldToolScript', () => {
 
   it('keeps each whitespace-separated word that holds a slash within 255 bytes', () => {
     const script = heldToolScript({
-      workingDir: deepWorkingDir,
       startedFile: join(deepWorkingDir, `interrupt-started-${marker}`),
       releaseFile: join(deepWorkingDir, `interrupt-release-${marker}`),
     })
@@ -552,18 +551,58 @@ describe('heldToolScript', () => {
       expect(Buffer.byteLength(word), word).toBeLessThanOrEqual(255)
   })
 
-  it('writes its start signal, holds, and exits with 0 after the release file appears', async () => {
+  // Codex runs a command in a sandbox on macOS, and there `fs.watch` fails with EMFILE. A held tool
+  // that watched its directory exited with 1 at once, before the reader could interrupt it.
+  it('holds and exits with 0 after the release file appears when the sandbox refuses a file watch', async () => {
     mkdirSync(SCRATCH_ROOT, { recursive: true })
     const workingDir = mkdtempSync(join(SCRATCH_ROOT, 'held-tool-script-'))
     const startedFile = join(workingDir, `interrupt-started-${marker}`)
     const releaseFile = join(workingDir, `interrupt-release-${marker}`)
-    const child = spawn(process.execPath, ['-e', heldToolScript({ workingDir, startedFile, releaseFile })], { stdio: 'ignore' })
+    const sandbox = join(workingDir, 'refuse-watch.cjs')
+    writeFileSync(sandbox, `require('node:fs').watch = () => { throw Object.assign(new Error('too many open files, watch'), { code: 'EMFILE' }) }\n`)
+    const child = spawn(process.execPath, ['--require', sandbox, '-e', heldToolScript({ startedFile, releaseFile })], { stdio: 'ignore' })
     try {
       const exited = new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))
       await expect.poll(() => existsSync(startedFile)).toBe(true)
       expect(child.exitCode).toBeNull()
       writeFileSync(releaseFile, '')
       await expect(exited).resolves.toBe(0)
+    }
+    finally {
+      await stopProcess(child)
+      rmSync(workingDir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes its start signal, holds, and exits with 0 after the release file appears', async () => {
+    mkdirSync(SCRATCH_ROOT, { recursive: true })
+    const workingDir = mkdtempSync(join(SCRATCH_ROOT, 'held-tool-script-'))
+    const startedFile = join(workingDir, `interrupt-started-${marker}`)
+    const releaseFile = join(workingDir, `interrupt-release-${marker}`)
+    const child = spawn(process.execPath, ['-e', heldToolScript({ startedFile, releaseFile })], { stdio: 'ignore' })
+    try {
+      const exited = new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))
+      await expect.poll(() => existsSync(startedFile)).toBe(true)
+      expect(child.exitCode).toBeNull()
+      writeFileSync(releaseFile, '')
+      await expect(exited).resolves.toBe(0)
+    }
+    finally {
+      await stopProcess(child)
+      rmSync(workingDir, { recursive: true, force: true })
+    }
+  })
+
+  it('exits with 0 at once when the release file exists before it starts', async () => {
+    mkdirSync(SCRATCH_ROOT, { recursive: true })
+    const workingDir = mkdtempSync(join(SCRATCH_ROOT, 'held-tool-script-'))
+    const startedFile = join(workingDir, 'interrupt-started')
+    const releaseFile = join(workingDir, 'interrupt-release')
+    writeFileSync(releaseFile, '')
+    const child = spawn(process.execPath, ['-e', heldToolScript({ startedFile, releaseFile })], { stdio: 'ignore' })
+    try {
+      await expect(new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))).resolves.toBe(0)
+      expect(existsSync(startedFile)).toBe(true)
     }
     finally {
       await stopProcess(child)

@@ -24,6 +24,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
+import { RELEASE_POLL_MS } from './toolOutputControl'
 import { assistantBubbles, composerEditor, controlButton, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI } from './workerTabs'
 
@@ -44,23 +45,26 @@ export interface NativeResumeResult extends NativeResumeTexts {
 
 /**
  * The Node.js source of a held tool: it writes `startedFile`, then waits until
- * `releaseFile` exists in `workingDir` and exits with 0. It exits with 1 after
- * ten minutes, so a lost release cannot leave the process behind.
+ * `releaseFile` exists and exits with 0. It exits with 1 after ten minutes, so a
+ * lost release cannot leave the process behind.
+ *
+ * It polls for the release file and does not watch its directory, for the reason
+ * that {@link RELEASE_POLL_MS} states: a sandbox can refuse a watch.
  *
  * The spaces keep each path in a short whitespace-separated word. Dirac 0.5.17
  * splits a command at whitespace and refuses it when one word that holds a `/`
  * is longer than 255 bytes (ExecuteCommandTool.validateCommands), and one word
- * with three absolute paths is longer than that.
+ * with two absolute paths is longer than that.
  */
-export function heldToolScript(paths: { workingDir: string, startedFile: string, releaseFile: string }): string {
-  const workingDir = JSON.stringify(paths.workingDir)
+export function heldToolScript(paths: { startedFile: string, releaseFile: string }): string {
   const startedFile = JSON.stringify(paths.startedFile)
   const releaseFile = JSON.stringify(paths.releaseFile)
   return [
     `const fs = require('node:fs');`,
     `fs.writeFileSync(${startedFile}, 'started');`,
-    `fs.watch(${workingDir}, () => { if (fs.existsSync(${releaseFile})) process.exit(0) });`,
-    `if (fs.existsSync(${releaseFile})) process.exit(0);`,
+    `const release = () => { if (fs.existsSync(${releaseFile})) process.exit(0) };`,
+    `setInterval(release, ${RELEASE_POLL_MS});`,
+    `release();`,
     `setTimeout(() => process.exit(1), 600000)`,
   ].join(' ')
 }
@@ -134,7 +138,7 @@ export async function exerciseInterruptTurn(
   const toolStarted = join(before.workingDir, `interrupt-started-${marker}`)
   let held: MockModelStep
   if (options.kind === 'tool') {
-    const script = heldToolScript({ workingDir: before.workingDir, startedFile: toolStarted, releaseFile })
+    const script = heldToolScript({ startedFile: toolStarted, releaseFile })
     held = { toolCalls: [bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] }
   }
   else if (options.holdModelTurn === 'after-first-chunk') {

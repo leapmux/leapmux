@@ -8,14 +8,14 @@ const FILE_SIGNAL_DEADLINE_MS = 30_000
 const NATIVE_OUTPUT_DEADLINE_MS = 600_000
 
 /**
- * How often the command looks for a release file, in milliseconds.
+ * How often a held native command looks for its release file, in milliseconds.
  *
  * The command polls. It does not watch the directory. A native client can run the
  * command in a sandbox. Codex does so on macOS, and there `fs.watch` fails with EMFILE
  * ("too many open files, watch"). A watching command then exited with code 1 straight
  * after its first output. A file check needs no watch.
  */
-const RELEASE_POLL_MS = 25
+export const RELEASE_POLL_MS = 25
 
 /**
  * The padding line after each segment's marker, in characters.
