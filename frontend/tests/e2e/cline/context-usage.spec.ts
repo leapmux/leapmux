@@ -7,8 +7,7 @@ import { exerciseContextUsage } from '../helpers/contextUsage'
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
 clineTest.describe('Cline basic chat', () => {
-  clineTest('reports model usage in the agent info card', async ({ authenticatedClineWorkspace, page, modelScript }) => {
-    void authenticatedClineWorkspace
-    await exerciseContextUsage(page, modelScript)
+  clineTest('reports model usage in the agent info card', async ({ native }) => {
+    await exerciseContextUsage(native)
   })
 })

@@ -1,24 +1,24 @@
 import { expect } from '@playwright/test'
 import { CONTEXT_USAGE_FIELD } from '../../../src/generated/contracts/session-info'
 import { pickNumber } from '../../../src/lib/jsonPick'
+import { SCRIPTED_CONTEXT_USAGE } from '../helpers/contextUsage'
 import { watchAgentContextUsage } from '../helpers/contextUsageEvents'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro basic chat', () => {
-  kiroTest('shows Kiro\'s native context percentage in the agent info card', async ({ authenticatedKiroWorkspace, leapmuxServer, page, modelScript }) => {
-    void authenticatedKiroWorkspace
-    const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first().getAttribute('data-tab-id') ?? ''
-    expect(agentId).not.toBe('')
+  kiroTest('shows Kiro\'s native context percentage in the agent info card', async ({ native, leapmuxServer, page, modelScript }) => {
+    const agentId = await selectedAgentTabId(native.page)
     const watch = await watchAgentContextUsage(leapmuxServer, agentId)
     try {
       const nativePercentages = () => watch.readings()
         .map(reading => pickNumber(reading, CONTEXT_USAGE_FIELD.UsagePercent))
         .filter((value): value is number => value !== null)
       const beforeCount = nativePercentages().length
-      await modelScript.queue({ text: 'Usage recorded.', usage: { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 } })
+      const step = await modelScript.queue({ text: 'Usage recorded.', usage: { ...SCRIPTED_CONTEXT_USAGE } })
       await sendMessage(page, modelScript.prompt('Reply once.'))
-      await modelScript.waitForSteps()
+      await modelScript.waitForSteps(step + 1)
       await waitForAgentIdle(page)
       await expect.poll(() => nativePercentages().length).toBeGreaterThan(beforeCount)
       const percentage = nativePercentages().at(-1)!

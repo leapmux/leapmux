@@ -1,8 +1,9 @@
 import type { Page } from '@playwright/test'
 import type { MockModelUsage } from './mockModelScript'
-import type { ModelScript } from './modelScriptFixture'
+import type { NativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { formatTokenCount } from '../../../src/components/chat/rendererUtils'
+import { nativeTextStep } from './nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from './ui'
 
 /**
@@ -89,20 +90,38 @@ export async function readContextRow(page: Page): Promise<ContextRowReading | un
 }
 
 /**
- * Open the agent info card and assert its Context row follows `usage`.
+ * Open the agent info card, assert its Context row follows `usage`, and close the card, as `readContextRow` does.
  */
 export async function expectContextUsage(page: Page, usage: MockModelUsage): Promise<void> {
+  const markers = usageMarkers(usage)
+  if (markers.length === 0)
+    throw new Error('The context usage check requires a usage block that states a token count.')
   const popover = await openAgentInfoCard(page)
-  for (const marker of usageMarkers(usage))
+  for (const marker of markers)
     await expect(popover).toContainText(marker)
+  await page.keyboard.press('Escape')
 }
 
-/** Verify that the provider reports the mock's token counts to the agent card. */
-export async function exerciseContextUsage(page: Page, modelScript: ModelScript): Promise<void> {
-  const usage = { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 }
-  await modelScript.queue({ text: 'Usage recorded.', usage })
-  await sendMessage(page, modelScript.prompt('Reply once.'))
-  await modelScript.waitForSteps()
-  await waitForAgentIdle(page)
-  await expectContextUsage(page, usage)
+/**
+ * The usage block of the context usage scenario. 12000/40 is the marker of the module comment. The window feeds the
+ * response shapes that state a window beside the usage.
+ */
+export const SCRIPTED_CONTEXT_USAGE: Readonly<MockModelUsage> = { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 }
+
+/**
+ * Run one turn whose answer reports `SCRIPTED_CONTEXT_USAGE`, and require the agent info card to state it. With
+ * `reload`, require it again after a reload, which reads the usage that the Worker stored. Return the usage.
+ */
+export async function exerciseContextUsage(context: NativeScenarioContext, options: { reload?: boolean } = {}): Promise<MockModelUsage> {
+  const usage = { ...SCRIPTED_CONTEXT_USAGE }
+  const step = await context.modelScript.queue({ ...nativeTextStep(context, 'Usage recorded.'), usage })
+  await sendMessage(context.page, context.modelScript.prompt('Reply once.'))
+  await context.modelScript.waitForSteps(step + 1)
+  await waitForAgentIdle(context.page)
+  await expectContextUsage(context.page, usage)
+  if (options.reload) {
+    await context.page.reload()
+    await expectContextUsage(context.page, usage)
+  }
+  return usage
 }

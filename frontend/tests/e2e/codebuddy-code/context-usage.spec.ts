@@ -1,16 +1,8 @@
 import { codebuddyTest } from '../codebuddy-fixtures'
-import { expectContextUsage } from '../helpers/contextUsage'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { exerciseContextUsage } from '../helpers/contextUsage'
 
 codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
-  codebuddyTest('the agent info grid follows the usage the model reports', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
-    void authenticatedCodebuddyWorkspace
-    const usage = { inputTokens: 12000, outputTokens: 40 }
-    await modelScript.queue({ text: 'Usage recorded.', usage })
-    await sendMessage(page, modelScript.prompt('Reply once.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    await expectContextUsage(page, usage)
+  codebuddyTest('the agent info grid follows the usage the model reports', async ({ native }) => {
+    await exerciseContextUsage(native)
   })
 })

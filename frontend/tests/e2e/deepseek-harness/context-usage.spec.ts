@@ -7,24 +7,21 @@ import { DEEPSEEK_HARNESS_CONTEXT_WINDOW } from '../helpers/deepseekHarnessEnvir
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('shows actual native nonzero context use', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript }) => {
-  void authenticatedDeepseekHarnessWorkspace
-  await exerciseContextUsage(page, modelScript)
+deepseekHarnessTest('shows actual native nonzero context use', async ({ native }) => {
+  await exerciseContextUsage(native)
 })
 
-deepseekHarnessTest('preserves explicit zero native usage in the Context row after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  const agent = await currentNativeAgent(context)
-  await modelScript.queue({ text: 'The actual native zero-count turn completed.', usage: { inputTokens: 0, outputTokens: 0 } })
+deepseekHarnessTest('preserves explicit zero native usage in the Context row after reload', async ({ native, page, modelScript }) => {
+  const agent = await currentNativeAgent(native)
+  const step = await modelScript.queue({ text: 'The actual native zero-count turn completed.', usage: { inputTokens: 0, outputTokens: 0 } })
   await sendMessage(page, modelScript.prompt('Complete the exact native zero-count turn.'))
-  await modelScript.waitForSteps()
+  await modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(page)
   for (const reloaded of [false, true]) {
     if (reloaded)
       await page.reload()
-    const snapshot = await readNativeMessageSnapshot(context, agent.id)
+    const snapshot = await readNativeMessageSnapshot(native, agent.id)
     const usage = snapshot.messages.map(message => deepseekHarnessContextUsage(parseMessageContent(message)))
     // The Worker states the native context window (`request/context`) beside the native usage, which states none.
     expect(usage).toContainEqual({ inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, contextTokens: 0, contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW })

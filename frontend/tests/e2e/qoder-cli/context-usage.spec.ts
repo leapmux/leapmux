@@ -1,26 +1,20 @@
-import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { isObject } from '../../../src/lib/jsonPick'
-import { getTestChannel } from '../helpers/api'
+import { SCRIPTED_CONTEXT_USAGE } from '../helpers/contextUsage'
+import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { listAgentsViaAPI } from '../helpers/worktree'
 import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI attachments and context usage', () => {
-  qoderTest('the agent info card follows the native context percentage after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const usage = { inputTokens: 12000, outputTokens: 40 }
-    await modelScript.queue({ text: 'Usage recorded.', usage })
+  qoderTest('the agent info card follows the native context percentage after reload', async ({ native }) => {
+    const { page, modelScript } = native
+    const step = await modelScript.queue({ text: 'Usage recorded.', usage: { ...SCRIPTED_CONTEXT_USAGE } })
     await sendMessage(page, modelScript.prompt('Reply once.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
 
-    const agents = await listAgentsViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedQoderWorkspace.workspaceId)
-    expect(agents).toHaveLength(1)
-    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    const transcript = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, {
-      agentId: agents[0]!.id,
-      limit: 200,
-    })
+    const transcript = await readNativeMessageSnapshot(native, await selectedAgentTabId(page))
     const ratios = transcript.messages.flatMap((row) => {
       const raw = decompressContentToString(row.content, row.contentCompression)
       if (!raw?.startsWith('{"type":"result"'))

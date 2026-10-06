@@ -7,8 +7,7 @@ import { exerciseContextUsage } from '../helpers/contextUsage'
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
 ampTest.describe('Amp basic chat', () => {
-  ampTest('reports model usage in the agent info card', async ({ authenticatedAmpWorkspace, page, modelScript }) => {
-    void authenticatedAmpWorkspace
-    await exerciseContextUsage(page, modelScript)
+  ampTest('reports model usage in the agent info card', async ({ native }) => {
+    await exerciseContextUsage(native)
   })
 })

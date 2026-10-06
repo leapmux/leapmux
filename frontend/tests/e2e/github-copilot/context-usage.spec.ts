@@ -4,12 +4,11 @@ import { CONTEXT_USAGE_FIELD } from '../../../src/generated/contracts/session-in
 import { pickNumber } from '../../../src/lib/jsonPick'
 import { copilotTest } from '../copilot-fixtures'
 import { watchAgentContextUsage } from '../helpers/contextUsageEvents'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-copilotTest('shows the current tokens from its native usage event', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
-  void authenticatedCopilotWorkspace
-  const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-  expect(agentId).not.toBe('')
+copilotTest('shows the current tokens from its native usage event', async ({ native, page, modelScript, leapmuxServer }) => {
+  const agentId = await selectedAgentTabId(native.page)
   const watch = await watchAgentContextUsage(leapmuxServer, agentId)
   try {
     const nativeTokenReadings = () => watch.readings().filter((reading) => {
@@ -18,9 +17,9 @@ copilotTest('shows the current tokens from its native usage event', async ({ aut
     })
     const before = pickNumber(nativeTokenReadings().at(-1), CONTEXT_USAGE_FIELD.ContextTokens) ?? 0
     const beforeCount = nativeTokenReadings().length
-    await modelScript.queue({ text: 'Usage recorded.' })
+    const step = await modelScript.queue({ text: 'Usage recorded.' })
     await sendMessage(page, modelScript.prompt('Reply once.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
     await expect.poll(() => nativeTokenReadings().length).toBeGreaterThan(beforeCount)
     const usage = nativeTokenReadings().at(-1)
