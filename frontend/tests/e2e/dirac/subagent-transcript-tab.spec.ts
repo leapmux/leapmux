@@ -2,7 +2,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, openWorkspace, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 
 diracTest.describe('Dirac subagent transcript', () => {
@@ -50,10 +50,8 @@ diracTest.describe('Dirac subagent transcript', () => {
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'DIRAC_CHILD_ARCHIVE_ONLY' }).first()).toBeVisible()
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
-    const answers = await assistantBubbles(page).allTextContents()
-    expect(answers.findIndex(text => text.includes('DIRAC_CHILD_ARCHIVE_ONLY')))
-      .toBeLessThan(answers.findIndex(text => text.includes('DIRAC_CHILD_DONE')))
+    await expect(toolRows(page).filter({ hasText: 'DIRAC_CHILD_DONE' }).first()).toBeVisible()
+    await expectRowsInOrder(assistantBubbles(page), ['DIRAC_CHILD_ARCHIVE_ONLY', 'DIRAC_CHILD_DONE'])
     expect((await modelScript.status()).ruleMatches['the Dirac child reports its count']).toBe(1)
   })
 
@@ -113,8 +111,7 @@ diracTest.describe('Dirac subagent transcript', () => {
         await expect(userBubbles(page).filter({ hasText: previousPrompt })).toHaveCount(0)
         await expect(assistantBubbles(page).filter({ hasText: previousArchive })).toHaveCount(0)
       }
-      const answers = await assistantBubbles(page).allTextContents()
-      expect(answers.findIndex(text => text.includes(run.archive))).toBeLessThan(answers.findIndex(text => text.includes(run.report)))
+      await expectRowsInOrder(assistantBubbles(page), [run.archive, run.report])
       const status = await modelScript.status()
       expect(status.ruleMatches[`dirac-${index}-child`]).toBe(1)
       expect(status.ruleMatches[`dirac-${index}-parent`]).toBe(1)

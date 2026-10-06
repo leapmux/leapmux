@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { expect, lettaTest } from '../letta-fixtures'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
@@ -74,15 +74,7 @@ lettaTest.describe('Letta Code subagents', () => {
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the marker child completion notice'] ?? 0).toBe(1)
       await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_CHILD_FINAL' })).toHaveCount(1)
-      const rows = await messageContents(page).allTextContents()
-      const promptIndex = rows.findIndex(text => text.includes(CHILD_READ_TASK))
-      const earlyIndex = rows.findIndex(text => text.includes('LETTA_CHILD_EARLY'))
-      const readIndex = rows.findIndex(text => text.includes(CHILD_READ_MARKER))
-      const finalIndex = rows.findIndex(text => text.includes('LETTA_CHILD_FINAL'))
-      expect(promptIndex).toBeGreaterThanOrEqual(0)
-      expect(earlyIndex).toBeGreaterThan(promptIndex)
-      expect(readIndex).toBeGreaterThan(earlyIndex)
-      expect(finalIndex).toBeGreaterThan(readIndex)
+      await expectRowsInOrder(messageContents(page), [CHILD_READ_TASK, 'LETTA_CHILD_EARLY', CHILD_READ_MARKER, 'LETTA_CHILD_FINAL'])
       await tabById(page, rootTabID).click()
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_LIVE_ROOT_DONE' })).toHaveCount(1)
       await expectRowBecomesFinal(page, await requireRegistryRow(page))

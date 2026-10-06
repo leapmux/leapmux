@@ -7,7 +7,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 import { allowReadIfAsked } from './readPermission'
@@ -186,15 +186,11 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_EARLY_TEXT' }).first()).toBeVisible()
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'read_text_file' }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_READ_MARKER' }).first()).toBeVisible()
-    const answers = await assistantBubbles(page).allTextContents()
-    const early = answers.findIndex(text => text.includes('FAST_CHILD_EARLY_TEXT'))
-    const result = answers.findIndex(text => text.includes('FAST_CHILD_READ_MARKER'))
-    const final = answers.findIndex(text => text.includes('FAST_AGENT_CHILD_DONE'))
-    expect(early).toBeGreaterThanOrEqual(0)
-    expect(result).toBeGreaterThan(early)
-    expect(final).toBeGreaterThan(result)
-    expect(answers[result]).not.toContain('FAST_CHILD_EARLY_TEXT')
-    expect(answers[result]).not.toContain('FAST_AGENT_CHILD_DONE')
+    await expectRowsInOrder(assistantBubbles(page), ['FAST_CHILD_EARLY_TEXT', 'FAST_CHILD_READ_MARKER', 'FAST_AGENT_CHILD_DONE'])
+    // The row of the Read result holds neither the early text nor the final answer.
+    const readResult = assistantBubbles(page).filter({ hasText: 'FAST_CHILD_READ_MARKER' })
+    await expect(readResult.filter({ hasText: 'FAST_CHILD_EARLY_TEXT' })).toHaveCount(0)
+    await expect(readResult.filter({ hasText: 'FAST_AGENT_CHILD_DONE' })).toHaveCount(0)
     expect((await modelScript.status()).ruleMatches['the Fast Agent child reports its count']).toBe(1)
   })
 
@@ -283,14 +279,10 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'read_text_file' })).toHaveCount(1)
     await expect(messageContents(page).filter({ hasText: 'FAST_CHILD_RESUME_TOOL_MARKER' })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(1)
-    const answers = await assistantBubbles(page).allTextContents()
-    const early = answers.findIndex(text => text.includes('FAST_CHILD_RESUME_EARLY'))
-    const result = answers.findIndex(text => text.includes('FAST_CHILD_RESUME_TOOL_MARKER'))
-    const final = answers.findIndex(text => text.includes('FAST_CHILD_RESUME_FINAL'))
-    expect(early).toBeGreaterThanOrEqual(0)
-    expect(result).toBeGreaterThan(early)
-    expect(final).toBeGreaterThan(result)
-    expect(answers[result]).not.toContain('FAST_CHILD_RESUME_EARLY')
-    expect(answers[result]).not.toContain('FAST_CHILD_RESUME_FINAL')
+    await expectRowsInOrder(assistantBubbles(page), ['FAST_CHILD_RESUME_EARLY', 'FAST_CHILD_RESUME_TOOL_MARKER', 'FAST_CHILD_RESUME_FINAL'])
+    // The row of the Read result holds neither the early text nor the final answer.
+    const readResult = assistantBubbles(page).filter({ hasText: 'FAST_CHILD_RESUME_TOOL_MARKER' })
+    await expect(readResult.filter({ hasText: 'FAST_CHILD_RESUME_EARLY' })).toHaveCount(0)
+    await expect(readResult.filter({ hasText: 'FAST_CHILD_RESUME_FINAL' })).toHaveCount(0)
   })
 })

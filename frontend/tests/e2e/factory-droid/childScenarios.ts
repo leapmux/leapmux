@@ -8,7 +8,7 @@ import { expect } from '../droid-fixtures'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, messageContents, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, messageBubbles, messageContents, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { droidChildNoticeRule } from './childNotice'
 
 const PROVIDER = AgentProvider.DROID
@@ -82,13 +82,7 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'DROID_CHILD_EARLY' }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'DROID_CHILD_READ_MARKER' }).first()).toBeVisible()
-    const heldRows = await page.locator('[data-testid="message-bubble"]:visible').allTextContents()
-    const promptIndex = heldRows.findIndex(text => text.includes(CHILD_TASK))
-    const earlyIndex = heldRows.findIndex(text => text.includes('DROID_CHILD_EARLY'))
-    const resultIndex = heldRows.findIndex(text => text.includes('DROID_CHILD_READ_MARKER'))
-    expect(promptIndex).toBeGreaterThanOrEqual(0)
-    expect(earlyIndex).toBeGreaterThan(promptIndex)
-    expect(resultIndex).toBeGreaterThan(earlyIndex)
+    await expectRowsInOrder(messageBubbles(page), [CHILD_TASK, 'DROID_CHILD_EARLY', 'DROID_CHILD_READ_MARKER'])
     await modelScript.waitForGate(childGate)
     await page.locator(`[data-testid="tab"][data-tab-id="${rootTabID}"]`).click()
     await expect(messageContents(page).filter({ hasText: 'DROID_CHILD_EARLY' })).toHaveCount(0)
@@ -104,9 +98,7 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
   const row = await requireRegistryRow(page)
   await expectRowBecomesFinal(page, row)
   await expect(assistantBubbles(page).filter({ hasText: 'DROID_CHILD_FINAL' }).first()).toBeVisible()
-  const finishedRows = await page.locator('[data-testid="message-bubble"]:visible').allTextContents()
-  expect(finishedRows.findIndex(text => text.includes('DROID_CHILD_FINAL')))
-    .toBeGreaterThan(finishedRows.findIndex(text => text.includes('DROID_CHILD_READ_MARKER')))
+  await expectRowsInOrder(messageBubbles(page), ['DROID_CHILD_READ_MARKER', 'DROID_CHILD_FINAL'])
   const status = await modelScript.status()
   expect(status.ruleMatches['the Droid child reads its note']).toBe(1)
   expect(status.ruleMatches['the Droid child reports the marker']).toBe(1)

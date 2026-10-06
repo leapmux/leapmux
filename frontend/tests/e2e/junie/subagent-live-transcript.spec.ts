@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { junieAnswerToolCall, junieSubagentSubmitToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 
@@ -70,13 +70,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CUSTOM_CHILD_DONE' }).first()).toBeVisible()
-    const rows = await messageContents(page).allTextContents()
-    const promptIndex = rows.findIndex(text => text.includes(CUSTOM_TASK))
-    const readIndex = rows.findIndex(text => text.includes(CUSTOM_READ_MARKER))
-    const answerIndex = rows.findIndex(text => text.includes('JUNIE_CUSTOM_CHILD_DONE'))
-    expect(promptIndex).toBeGreaterThanOrEqual(0)
-    expect(readIndex).toBeGreaterThan(promptIndex)
-    expect(answerIndex).toBeGreaterThan(readIndex)
+    await expectRowsInOrder(messageContents(page), [CUSTOM_TASK, CUSTOM_READ_MARKER, 'JUNIE_CUSTOM_CHILD_DONE'])
 
     await tabById(page, agentId).click()
     await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CUSTOM_ROOT_DONE' }).first()).toBeVisible()
