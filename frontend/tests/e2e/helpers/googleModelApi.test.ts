@@ -1,8 +1,8 @@
-import type { MockModelScenarioSpec, MockModelScenarioStatus } from './mockModelScript'
+import type { MockModelScenarioInput } from './mockModelScenario'
 import type { MockModelServer } from './mockModelServer'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MOCK_MODEL_IDS, MODEL_KEY } from './mockAgentEnvironment'
-import { mockScenarioPrompt } from './mockModelScenario'
+import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 
 const servers: MockModelServer[] = []
@@ -12,21 +12,11 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()))
 })
 
-async function scenario(id: string, script: Partial<MockModelScenarioSpec>) {
+async function scenario(id: string, script: MockModelScenarioInput) {
   const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
   servers.push(server)
-  const response = await fetch(`${server.url}/__e2e/scenarios/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify({ steps: [], rules: [], ...script }),
-  })
-  expect(response.status).toBe(201)
+  await registerMockModelScenario(server.url, id, script)
   return server
-}
-
-async function status(server: MockModelServer, id: string): Promise<MockModelScenarioStatus> {
-  const response = await fetch(`${server.url}/__e2e/scenarios/${id}`)
-  expect(response.status).toBe(200)
-  return await response.json() as MockModelScenarioStatus
 }
 
 function body(id: string) {
@@ -71,7 +61,7 @@ describe('Google model API', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('application/json')
     await response.json()
-    const receipt = await status(server, id)
+    const receipt = await readScenarioStatus(server.url, id)
     expect(receipt.ruleMatches).toEqual({ 'native-context': 1 })
     expect(receipt.unexpectedRequests).toEqual([])
     expect(receipt.requests[0]).toMatchObject({ protocol: 'google-generative-language', path: `${modelPath}:generateContent`, body: body(id), mockCredential: { kind: 'api-key', accepted: true } })
@@ -97,7 +87,7 @@ describe('Google model API', () => {
     expect(parts.filter(part => part.text !== undefined && part.thought !== true).map(part => part.text).join('')).toBe('Answer 🧪')
     expect(parts.at(-1)).toEqual({ functionCall: { id: 'native-call-42', name: 'read_file', args: { zero: 0, disabled: false, empty: '' } } })
     expect(rows.at(-1)).toMatchObject({ candidates: [{ finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 } })
-    expect((await status(server, id)).nextStep).toBe(1)
+    expect((await readScenarioStatus(server.url, id)).nextStep).toBe(1)
   })
 
   it.each(['streamGenerateContent', 'generateContent'])('sends the scripted quota headers with a %s answer and records them', async (operation) => {
@@ -118,7 +108,7 @@ describe('Google model API', () => {
     }
     for (const [name, value] of Object.entries(expected))
       expect(response.headers.get(name), name).toBe(value)
-    const receipt = (await status(server, id)).requests[0]?.response
+    const receipt = (await readScenarioStatus(server.url, id)).requests[0]?.response
     expect(receipt?.status).toBe(200)
     expect(receipt?.headers).toMatchObject(expected)
   })
@@ -130,7 +120,7 @@ describe('Google model API', () => {
     expect(response.status).toBe(200)
     await response.text()
     expect([...response.headers.keys()].filter(name => name.includes('ratelimit'))).toEqual([])
-    expect(Object.keys((await status(server, id)).requests[0]?.response?.headers ?? {}).filter(name => name.includes('ratelimit'))).toEqual([])
+    expect(Object.keys((await readScenarioStatus(server.url, id)).requests[0]?.response?.headers ?? {}).filter(name => name.includes('ratelimit'))).toEqual([])
   })
 
   it('counts tokens without consuming a model turn and handles an empty generation', async () => {
@@ -139,12 +129,12 @@ describe('Google model API', () => {
     const count = await generate(server, id, 'countTokens')
     expect(count.status).toBe(200)
     expect(await count.json()).toEqual({ totalTokens: expect.any(Number) })
-    expect((await status(server, id)).requests).toEqual([])
-    expect((await status(server, id)).nextStep).toBe(0)
+    expect((await readScenarioStatus(server.url, id)).requests).toEqual([])
+    expect((await readScenarioStatus(server.url, id)).nextStep).toBe(0)
     const response = await generate(server, id, 'generateContent')
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({ candidates: [{ content: { role: 'model', parts: [{ text: '' }] }, finishReason: 'STOP' }] })
-    expect((await status(server, id)).nextStep).toBe(1)
+    expect((await readScenarioStatus(server.url, id)).nextStep).toBe(1)
   })
 
   it('counts empty contents as zero without recording a model request', async () => {
@@ -153,7 +143,7 @@ describe('Google model API', () => {
     const response = await generate(server, id, 'countTokens', { body: JSON.stringify({ contents: [] }) })
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ totalTokens: 0 })
-    expect((await status(server, id)).requests).toEqual([])
+    expect((await readScenarioStatus(server.url, id)).requests).toEqual([])
   })
 
   it.each(['', '{broken', 'null', '[]', '{}', '{"contents":null}'])('rejects malformed request bytes before scenario consumption: %j', async (body) => {
@@ -162,7 +152,7 @@ describe('Google model API', () => {
     const response = await generate(server, id, 'generateContent', { body })
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: { code: 400, status: 'INVALID_ARGUMENT' } })
-    expect((await status(server, id)).requests).toEqual([])
+    expect((await readScenarioStatus(server.url, id)).requests).toEqual([])
   })
 
   it('rejects a non-POST method without selecting an answer', async () => {
@@ -170,7 +160,7 @@ describe('Google model API', () => {
     const server = await scenario(id, { steps: [{ text: 'Must remain queued.' }] })
     const response = await fetch(`${server.url}${modelPath}:generateContent`, { headers: { 'x-goog-api-key': MODEL_KEY } })
     expect(response.status).toBe(405)
-    expect((await status(server, id)).requests).toEqual([])
+    expect((await readScenarioStatus(server.url, id)).requests).toEqual([])
   })
 
   it.each([
@@ -183,7 +173,7 @@ describe('Google model API', () => {
     const server = await scenario(id, { steps: [{ text: 'Must remain queued.' }] })
     const response = await fetch(`${server.url}${modelPath}:generateContent${query}`, { method: 'POST', headers, body: JSON.stringify(body(id)) })
     expect(response.status).toBe(401)
-    expect((await status(server, id)).requests).toEqual([])
+    expect((await readScenarioStatus(server.url, id)).requests).toEqual([])
     const log = await fetch(`${server.url}/__e2e/requests`).then(response => response.text())
     expect(log).not.toContain('private-never-log')
     expect(log).not.toContain(MODEL_KEY)
@@ -195,7 +185,7 @@ describe('Google model API', () => {
     const response = await fetch(`${server.url}${modelPath}:generateContent?key=${MODEL_KEY}`, { method: 'POST', body: JSON.stringify(body(id)) })
     expect(response.status).toBe(200)
     await response.text()
-    expect((await status(server, id)).requests[0]?.mockCredential).toEqual({ kind: 'api-key', accepted: true })
+    expect((await readScenarioStatus(server.url, id)).requests[0]?.mockCredential).toEqual({ kind: 'api-key', accepted: true })
     expect(await fetch(`${server.url}/__e2e/requests`).then(response => response.text())).not.toContain(MODEL_KEY)
   })
 
@@ -204,7 +194,7 @@ describe('Google model API', () => {
     const server = await scenario(id, { rules: [{ name: 'nonmatching', when: { user: '^NEVER_MATCH_THIS_PROMPT$' }, respond: { text: 'Must never answer.' } }] })
     const response = await generate(server, id)
     expect(response.status).toBe(409)
-    const receipt = await status(server, id)
+    const receipt = await readScenarioStatus(server.url, id)
     expect(receipt.unexpectedRequests).toHaveLength(1)
     expect(receipt.unexpectedRequests[0]?.body).toEqual(body(id))
   })
@@ -215,7 +205,7 @@ describe('Google model API', () => {
     const response = await generate(server, id)
     expect(response.status).toBe(429)
     expect(await response.json()).toEqual({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'The test quota is exhausted.' } })
-    expect((await status(server, id)).requests[0]?.response).toMatchObject({ status: 429, serviceError: { code: 'RESOURCE_EXHAUSTED' } })
+    expect((await readScenarioStatus(server.url, id)).requests[0]?.response).toMatchObject({ status: 429, serviceError: { code: 'RESOURCE_EXHAUSTED' } })
   })
 
   it('releases a held stream when the native client cancels and stops generation', async () => {
@@ -227,10 +217,10 @@ describe('Google model API', () => {
     const reader = response.body!.getReader()
     const first = await reader.read()
     expect(new TextDecoder().decode(first.value)).toContain('FIRST_')
-    await expect.poll(async () => (await status(server, id)).pendingGates).toEqual(['first-piece'])
+    await expect.poll(async () => (await readScenarioStatus(server.url, id)).pendingGates).toEqual(['first-piece'])
     controller.abort()
     await reader.cancel().catch((error: unknown) => expect(error).toMatchObject({ name: 'AbortError' }))
-    await expect.poll(async () => (await status(server, id)).pendingGates).toEqual([])
-    expect((await status(server, id)).nextStep).toBe(1)
+    await expect.poll(async () => (await readScenarioStatus(server.url, id)).pendingGates).toEqual([])
+    expect((await readScenarioStatus(server.url, id)).nextStep).toBe(1)
   })
 })

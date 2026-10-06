@@ -10,7 +10,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { CURSOR_RUN_PATH, CURSOR_TASK_TOOL } from './cursorSurface'
 import { connectFrame, encodeLengthDelimited, encodeStringField, takeConnectFrames } from './cursorWire'
 import { MOCK_COPILOT_GITHUB_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MODEL_KEY } from './mockAgentEnvironment'
-import { mockScenarioPrompt } from './mockModelScenario'
+import { mockScenarioPrompt, readScenarioStatus } from './mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition } from './providerToolCalls'
@@ -47,17 +47,11 @@ async function registerRawScenario(server: MockModelServer, id: string, script: 
   expect(response.status).toBe(201)
 }
 
-async function readStatus(server: MockModelServer, id: string): Promise<MockModelScenarioStatus> {
-  const response = await fetch(`${server.url}/__e2e/scenarios/${id}`)
-  expect(response.status).toBe(200)
-  return await response.json() as MockModelScenarioStatus
-}
-
 /** Wait until the scenario consumed `count` steps, so no test sizes an interval. */
 async function waitForStep(server: MockModelServer, id: string, count: number): Promise<void> {
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
-    if ((await readStatus(server, id)).nextStep >= count)
+    if ((await readScenarioStatus(server.url, id)).nextStep >= count)
       return
     await new Promise(resolve => setTimeout(resolve, 5))
   }
@@ -68,7 +62,7 @@ async function waitForStep(server: MockModelServer, id: string, count: number): 
 async function waitForGate(server: MockModelServer, id: string, gate: string): Promise<MockModelScenarioStatus> {
   const deadline = Date.now() + 4_000
   while (Date.now() < deadline) {
-    const status = await readStatus(server, id)
+    const status = await readScenarioStatus(server.url, id)
     if (status.pendingGates.includes(gate))
       return status
     await new Promise(resolve => setTimeout(resolve, 5))
@@ -124,7 +118,7 @@ describe('createMockModelServer', () => {
     })
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({ content: [{ type: 'text', text: 'The native prompt selected the intended scenario.' }] })
-    expect(await readStatus(server, scenario)).toMatchObject({ complete: true, nextStep: 1, unexpectedRequests: [] })
+    expect(await readScenarioStatus(server.url, scenario)).toMatchObject({ complete: true, nextStep: 1, unexpectedRequests: [] })
   })
 
   for (const stream of [true, false]) {
@@ -158,7 +152,7 @@ describe('createMockModelServer', () => {
       else {
         expect(await response.json()).toMatchObject({ content: [{ type: 'text', text: report }], stop_reason: 'end_turn' })
       }
-      const status = await readStatus(server, scenarioId)
+      const status = await readScenarioStatus(server.url, scenarioId)
       expect(status.nextStep).toBe(0)
       expect(status.unexpectedRequests).toEqual([])
       expect(status.requests).toHaveLength(1)
@@ -268,7 +262,7 @@ describe('createMockModelServer', () => {
         return response.text()
       })
       await waitForStep(server, 'buffered-json-generation', 1)
-      const status = await readStatus(server, 'buffered-json-generation')
+      const status = await readScenarioStatus(server.url, 'buffered-json-generation')
       expect(status.pendingGates).toContain('buffered-thinking')
       expect(delivered).toBe(false)
       expect(status.requests[0]?.response).toBeUndefined()
@@ -309,11 +303,11 @@ describe('createMockModelServer', () => {
     await waitForGate(server, 'atomic-cancelled-cleanup', 'native-cancelled')
     controller.abort()
     await response
-    await expect.poll(async () => (await readStatus(server, 'atomic-cancelled-cleanup')).pendingGates).toEqual([])
+    await expect.poll(async () => (await readScenarioStatus(server.url, 'atomic-cancelled-cleanup')).pendingGates).toEqual([])
     const cleanup = await fetch(`${server.url}/__e2e/scenarios/atomic-cancelled-cleanup/gates/native-cancelled/release-if-held`, { method: 'POST' })
     expect(cleanup.status).toBe(200)
     expect(await cleanup.json()).toEqual({ released: false })
-    expect((await readStatus(server, 'atomic-cancelled-cleanup')).requests[0]?.response).toBeUndefined()
+    expect((await readScenarioStatus(server.url, 'atomic-cancelled-cleanup')).requests[0]?.response).toBeUndefined()
   })
 
   for (const path of ['/v1/chat/completions', '/v1/responses', '/v1/messages']) {
@@ -328,7 +322,7 @@ describe('createMockModelServer', () => {
         })
         expect(response.status).toBe(400)
         expect(await response.text()).toContain('metadata for provider service tools')
-        const status = await readStatus(server, 'service-only-tool')
+        const status = await readScenarioStatus(server.url, 'service-only-tool')
         expect(status.unexpectedRequests).toHaveLength(1)
         expect(status.complete).toBe(false)
       })
@@ -341,7 +335,7 @@ describe('createMockModelServer', () => {
     const response = await chat(server, mockScenarioPrompt('error-response-receipt', 'Report this error.'), false)
     expect(response.status).toBe(429)
     expect(await response.json()).toMatchObject({ error: { code: 'rate_limit_exceeded', message: 'The quota ended.' } })
-    expect((await readStatus(server, 'error-response-receipt')).requests[0]?.response)
+    expect((await readScenarioStatus(server.url, 'error-response-receipt')).requests[0]?.response)
       .toMatchObject({ status: 429, headers: { 'content-type': 'application/json' }, serviceError: { code: 'rate_limit_exceeded', message: 'The quota ended.' } })
   })
 
@@ -356,7 +350,7 @@ describe('createMockModelServer', () => {
       expect.objectContaining({ choices: [{ index: 0, delta: { role: 'assistant', content: 'partial ' }, finish_reason: null }] }),
       { error: { message: 'The stream broke.', code: 'stream_error' } },
     ])
-    expect((await readStatus(server, 'mid-stream-error')).requests[0]?.response)
+    expect((await readScenarioStatus(server.url, 'mid-stream-error')).requests[0]?.response)
       .toMatchObject({ status: 200, serviceError: { code: 'stream_error', message: 'The stream broke.' } })
   })
 
@@ -396,7 +390,7 @@ describe('createMockModelServer', () => {
     await waitForGate(server, 'cancel-response-receipt', 'cancel-response')
     controller.abort()
     await response
-    expect((await readStatus(server, 'cancel-response-receipt')).requests[0]?.response).toBeUndefined()
+    expect((await readScenarioStatus(server.url, 'cancel-response-receipt')).requests[0]?.response).toBeUndefined()
   })
 
   it('writes the native Copilot quota snapshot header with an explicit mock entitlement', async () => {
@@ -419,7 +413,7 @@ describe('createMockModelServer', () => {
       })
       expect(response.status).toBe(200)
       await response.text()
-      const status = await readStatus(server, 'credential-receipt')
+      const status = await readScenarioStatus(server.url, 'credential-receipt')
       expect(status.requests[0]).toHaveProperty('mockCredential', credential)
       expect(JSON.stringify(status)).not.toContain('private-credential-never-log')
     })
@@ -481,13 +475,13 @@ describe('createMockModelServer', () => {
     const reader = response.body!.getReader()
     await reader.read()
     await waitForGate(server, 'streamed-response-headers', 'delivered-chunk')
-    expect((await readStatus(server, 'streamed-response-headers')).requests[0]?.response).toBeUndefined()
+    expect((await readScenarioStatus(server.url, 'streamed-response-headers')).requests[0]?.response).toBeUndefined()
     expect((await fetch(`${server.url}/__e2e/scenarios/streamed-response-headers/gates/delivered-chunk/release`, { method: 'POST' })).status).toBe(204)
     for (;;) {
       if ((await reader.read()).done)
         break
     }
-    const receipt = (await readStatus(server, 'streamed-response-headers')).requests[0]?.response
+    const receipt = (await readScenarioStatus(server.url, 'streamed-response-headers')).requests[0]?.response
     expect(receipt?.headers['content-type']).toBe(response.headers.get('content-type'))
     expect(receipt?.headers['anthropic-ratelimit-unified-5h-utilization']).toBe(response.headers.get('anthropic-ratelimit-unified-5h-utilization'))
     expect(receipt?.headers['anthropic-ratelimit-unified-5h-utilization']).toBe('0')
@@ -498,7 +492,7 @@ describe('createMockModelServer', () => {
     await registerRawScenario(server, 'captured-unreachable-gate', { steps: [{ text: '{{reply}}', captures: { reply: 'CAPTURE: (x)' }, stream: { chunkChars: 1, delayMs: 0, gates: [{ afterChunk: 2, name: 'unreachable' }] } }] })
     const response = await chat(server, mockScenarioPrompt('captured-unreachable-gate', 'CAPTURE: x'), false)
     expect(response.ok).toBe(false)
-    const status = await readStatus(server, 'captured-unreachable-gate')
+    const status = await readScenarioStatus(server.url, 'captured-unreachable-gate')
     expect(status.complete).toBe(false)
     expect(status.unexpectedRequests).toEqual([expect.objectContaining({ reason: expect.stringContaining('exceeds the emitted chunk count') })])
   })
@@ -547,7 +541,7 @@ describe('createMockModelServer', () => {
       }
       expect(rest).toContain('KING')
       expect(rest).toContain('ANSW')
-      expect((await readStatus(server, id)).pendingGates).toEqual([])
+      expect((await readScenarioStatus(server.url, id)).pendingGates).toEqual([])
     })
   }
 
@@ -590,7 +584,7 @@ describe('createMockModelServer', () => {
       expect(rest).toContain('SECON')
       expect(rest).toContain('TOOLCALLID')
       expect(rest.indexOf('SECON')).toBeLessThan(rest.indexOf('TOOLCALLID'))
-      expect((await readStatus(server, id)).complete).toBe(true)
+      expect((await readScenarioStatus(server.url, id)).complete).toBe(true)
     })
   }
 
@@ -656,7 +650,7 @@ describe('createMockModelServer', () => {
     await cursorRun(server, 'history-id', first)
     await cursorRun(server, 'history-id', 'SECOND_USER')
     await cursorRun(server, 'history-id', 'THIRD_USER')
-    const requests = (await readStatus(server, 'cursor-history')).requests
+    const requests = (await readScenarioStatus(server.url, 'cursor-history')).requests
     expect(requests[0]).toHaveProperty('serverContext', { conversationId: 'history-id', messages: [] })
     expect(requests[1]).toMatchObject({
       body: { prompt: 'SECOND_USER', attachments: [], conversationId: 'history-id' },
@@ -684,7 +678,7 @@ describe('createMockModelServer', () => {
     await cursorRun(server, 'id-b', promptB)
     await cursorRun(server, 'id-a', 'NEXT_USER_A')
     await cursorRun(server, 'id-b', 'NEXT_USER_B')
-    const requests = (await readStatus(server, 'cursor-interleaved')).requests
+    const requests = (await readScenarioStatus(server.url, 'cursor-interleaved')).requests
     expect(requests[1]).toHaveProperty('serverContext', { conversationId: 'id-b', messages: [] })
     expect(requests[2]).toHaveProperty('serverContext', { conversationId: 'id-a', messages: [{ role: 'user', content: promptA }, { role: 'assistant', content: 'ANSWER_A' }] })
     expect(requests[3]).toHaveProperty('serverContext', { conversationId: 'id-b', messages: [{ role: 'user', content: promptB }, { role: 'assistant', content: 'ANSWER_B' }] })
@@ -696,7 +690,7 @@ describe('createMockModelServer', () => {
     await registerScenario(server, 'cursor-owner-b', { steps: [{ text: 'OWNER_B' }] })
     await cursorRun(server, 'shared-id', mockScenarioPrompt('cursor-owner-a', 'A'))
     await cursorRun(server, 'shared-id', mockScenarioPrompt('cursor-owner-b', 'B'))
-    expect((await readStatus(server, 'cursor-owner-b')).requests[0])
+    expect((await readScenarioStatus(server.url, 'cursor-owner-b')).requests[0])
       .toHaveProperty('serverContext', { conversationId: 'shared-id', messages: [] })
   })
 
@@ -712,7 +706,7 @@ describe('createMockModelServer', () => {
     controller.abort()
     await rejection
     await cursorRun(server, 'cancel-id', 'NEXT_USER')
-    expect((await readStatus(server, 'cursor-cancelled')).requests[2])
+    expect((await readScenarioStatus(server.url, 'cursor-cancelled')).requests[2])
       .toHaveProperty('serverContext', { conversationId: 'cancel-id', messages: [{ role: 'user', content: first }, { role: 'assistant', content: 'SAVED_ANSWER' }] })
   })
 
@@ -724,7 +718,7 @@ describe('createMockModelServer', () => {
       expect((await fetch(`${server.url}/__e2e/scenarios/cursor-remove${force ? '?force=true' : ''}`, { method: 'DELETE' })).status).toBe(204)
       await registerScenario(server, AMBIENT_SCENARIO_ID, { steps: [{ text: 'NEW' }] })
       await cursorRun(server, 'removed-id', 'UNMARKED_USER')
-      expect((await readStatus(server, AMBIENT_SCENARIO_ID)).requests[0])
+      expect((await readScenarioStatus(server.url, AMBIENT_SCENARIO_ID)).requests[0])
         .toHaveProperty('serverContext', { conversationId: 'removed-id', messages: [] })
     })
   }
@@ -735,7 +729,7 @@ describe('createMockModelServer', () => {
     const first = mockScenarioPrompt('cursor-empty-answer', 'EMPTY_ANSWER_USER')
     await cursorRun(server, 'empty-id', first)
     await cursorRun(server, 'empty-id', 'NEXT_USER')
-    expect((await readStatus(server, 'cursor-empty-answer')).requests[1])
+    expect((await readScenarioStatus(server.url, 'cursor-empty-answer')).requests[1])
       .toHaveProperty('serverContext', { conversationId: 'empty-id', messages: [{ role: 'user', content: first }, { role: 'assistant', content: '' }] })
   })
 
@@ -745,7 +739,7 @@ describe('createMockModelServer', () => {
     const prompt = mockScenarioPrompt('cursor-no-id', 'NO_ID_USER')
     await cursorRun(server, '', prompt)
     await cursorRun(server, '', prompt)
-    for (const record of (await readStatus(server, 'cursor-no-id')).requests)
+    for (const record of (await readScenarioStatus(server.url, 'cursor-no-id')).requests)
       expect(record).not.toHaveProperty('serverContext')
   })
 
@@ -755,7 +749,7 @@ describe('createMockModelServer', () => {
     await registerScenario(server, AMBIENT_SCENARIO_ID, { steps: [{ text: 'Ambient answer.' }] })
     await cursorRun(server, 'conversation-1', mockScenarioPrompt('cursor-conversation', 'Start this conversation.'))
     await cursorRun(server, 'conversation-1', '/compact')
-    const scripted = await readStatus(server, 'cursor-conversation')
+    const scripted = await readScenarioStatus(server.url, 'cursor-conversation')
     expect(scripted.nextStep).toBe(2)
     expect(scripted.requests[1]?.body).toEqual({ prompt: '/compact', attachments: [], conversationId: 'conversation-1' })
     expect(scripted.requests[1]?.nativeRequest).toEqual({ mode: 0 })
@@ -763,7 +757,7 @@ describe('createMockModelServer', () => {
     const removed = await fetch(`${server.url}/__e2e/scenarios/cursor-conversation`, { method: 'DELETE' })
     expect(removed.status).toBe(204)
     await cursorRun(server, 'conversation-1', '/compact')
-    expect((await readStatus(server, AMBIENT_SCENARIO_ID)).nextStep).toBe(1)
+    expect((await readScenarioStatus(server.url, AMBIENT_SCENARIO_ID)).nextStep).toBe(1)
   })
 
   it('refuses to start without a model identifier', async () => {
@@ -782,7 +776,7 @@ describe('createMockModelServer', () => {
       .map(line => JSON.parse(line.slice('data: '.length)))
     expect(chunks.at(-1)).toMatchObject({ choices: [], usage: { total_tokens: 2 } })
 
-    const status = await readStatus(server, 'chat-text')
+    const status = await readScenarioStatus(server.url, 'chat-text')
     expect(status).toMatchObject({ complete: true, nextStep: 1, stepCount: 1, unexpectedRequests: [] })
     expect(status.requests).toHaveLength(1)
     expect(status.requests[0]).toMatchObject({ protocol: 'openai-chat-completions', stepIndex: 0 })
@@ -805,7 +799,7 @@ describe('createMockModelServer', () => {
     const release = await fetch(`${server.url}/__e2e/scenarios/held-answer/gates/child-answer/release`, { method: 'POST' })
     expect(release.status).toBe(204)
     expect(await answer).toContain('Released answer.')
-    expect(await readStatus(server, 'held-answer')).toMatchObject({ complete: true, pendingGates: [] })
+    expect(await readScenarioStatus(server.url, 'held-answer')).toMatchObject({ complete: true, pendingGates: [] })
     const duplicate = await fetch(`${server.url}/__e2e/scenarios/held-answer/gates/child-answer/release`, { method: 'POST' })
     expect(duplicate.status).toBe(409)
   })
@@ -874,7 +868,7 @@ describe('createMockModelServer', () => {
 
     const log = await fetch(`${server.url}/__e2e/requests`).then(response => response.json())
     expect(log.http).toContainEqual({ method: 'GET', path: '/v1/api/cli/whoami', status: 200 })
-    expect((await readStatus(server, 'droid-whoami')).nextStep).toBe(0)
+    expect((await readScenarioStatus(server.url, 'droid-whoami')).nextStep).toBe(0)
   })
 
   it('returns the endpoint shapes read by both Qoder discovery clients', async () => {
@@ -1181,7 +1175,7 @@ describe('createMockModelServer', () => {
     expect(messagesResponse.headers.get('content-type')).toContain('application/json')
     expect((await messagesResponse.json()).content).toEqual([{ type: 'text', text: 'One body.' }])
 
-    expect(await readStatus(server, 'unstreamed')).toMatchObject({ complete: true })
+    expect(await readScenarioStatus(server.url, 'unstreamed')).toMatchObject({ complete: true })
   })
 
   it('returns a scripted error with the protocol\'s own error shape', async () => {
@@ -1236,8 +1230,8 @@ describe('createMockModelServer', () => {
       }),
     })
     expect((await response.json()).choices[0].message.content).toBe('Newer answer')
-    expect(await readStatus(server, 'older')).toMatchObject({ nextStep: 0 })
-    expect(await readStatus(server, 'newer')).toMatchObject({ nextStep: 1 })
+    expect(await readScenarioStatus(server.url, 'older')).toMatchObject({ nextStep: 0 })
+    expect(await readScenarioStatus(server.url, 'newer')).toMatchObject({ nextStep: 1 })
   })
 
   it('answers through a matching rule without consuming a step', async () => {
@@ -1266,7 +1260,7 @@ describe('createMockModelServer', () => {
     const answer = await request([{ role: 'user', content: marked }])
     expect(answer.choices[0].message.content).toBe('Primary answer')
 
-    const status = await readStatus(server, 'ruled')
+    const status = await readScenarioStatus(server.url, 'ruled')
     expect(status).toMatchObject({ complete: true, nextStep: 1, stepCount: 1, ruleMatches: { summary: 2 } })
     expect(status.requests).toMatchObject([{ rule: 'summary' }, { rule: 'summary' }, { stepIndex: 0 }])
   })
@@ -1280,7 +1274,7 @@ describe('createMockModelServer', () => {
     const prompt = mockScenarioPrompt('once', 'Hello there.')
     expect(await responseText(await chat(server, prompt))).toContain('Rule answer')
     expect(await responseText(await chat(server, prompt))).toContain('Queued answer')
-    expect(await readStatus(server, 'once')).toMatchObject({ complete: true, ruleMatches: { greeting: 1 } })
+    expect(await readScenarioStatus(server.url, 'once')).toMatchObject({ complete: true, ruleMatches: { greeting: 1 } })
   })
 
   it('takes the first rule that matches, so a test rule wins over a later one', async () => {
@@ -1302,9 +1296,9 @@ describe('createMockModelServer', () => {
 
     expect((await chat(server, mockScenarioPrompt('one-step', 'Consume it.'))).status).toBe(200)
     expect((await chat(server, mockScenarioPrompt('one-step', 'Consume it again.'))).status).toBe(409)
-    expect(await readStatus(server, 'spare')).toMatchObject({ nextStep: 0 })
+    expect(await readScenarioStatus(server.url, 'spare')).toMatchObject({ nextStep: 0 })
 
-    const status = await readStatus(server, 'one-step')
+    const status = await readScenarioStatus(server.url, 'one-step')
     expect(status.complete).toBe(false)
     expect(status.unexpectedRequests).toHaveLength(1)
     expect(status.unexpectedRequests[0]).toMatchObject({
@@ -1344,7 +1338,7 @@ describe('createMockModelServer', () => {
 
     // The second step's capture finds no plan path, so the request is unexpected.
     expect((await chat(server, mockScenarioPrompt('captured', 'No reminder.'))).status).toBe(409)
-    const status = await readStatus(server, 'captured')
+    const status = await readScenarioStatus(server.url, 'captured')
     expect(status.complete).toBe(false)
     expect(status.unexpectedRequests).toMatchObject([{ reason: 'Capture planFile matched nothing in the request.' }])
   })
@@ -1389,7 +1383,7 @@ describe('createMockModelServer', () => {
     await expect(aborted).rejects.toThrow()
 
     // The step counts as consumed: the agent asked for it and the server chose it.
-    expect(await readStatus(server, 'interrupted')).toMatchObject({ complete: true, nextStep: 1 })
+    expect(await readScenarioStatus(server.url, 'interrupted')).toMatchObject({ complete: true, nextStep: 1 })
     await registerScenario(server, 'after-abort', { steps: [{ text: 'Still serving' }] })
     expect(await responseText(await chat(server, mockScenarioPrompt('after-abort', 'Run.')))).toContain('Still serving')
   })
@@ -1601,7 +1595,7 @@ describe('createMockModelServer', () => {
     expect(status).toMatchObject({ nextStep: 1, stepCount: 2 })
     expect(status.unexpectedRequests).toHaveLength(1)
     expect(status.unexpectedRequests[0]).toMatchObject({ protocol: 'openai-chat-completions', reason: 'The scenario has no remaining scripted answer.' })
-    expect((await readStatus(server, id)).unexpectedRequests).toHaveLength(1)
+    expect((await readScenarioStatus(server.url, id)).unexpectedRequests).toHaveLength(1)
     expect((await fetch(`${server.url}/__e2e/scenarios/${id}?force=true`, { method: 'DELETE' })).status).toBe(204)
     expect((await fetch(`${server.url}/__e2e/scenarios/${id}`)).status).toBe(404)
   })
@@ -1613,7 +1607,7 @@ describe('createMockModelServer', () => {
     const refused = await fetch(`${server.url}/__e2e/scenarios/${id}?force=true&allow-unconsumed=true`, { method: 'DELETE' })
     expect(refused.status).toBe(400)
     expect(await refused.json()).toEqual({ error: { message: 'Scenario deletion cannot combine force and allow-unconsumed.' } })
-    expect(await readStatus(server, id)).toMatchObject({ nextStep: 0, stepCount: 1 })
+    expect(await readScenarioStatus(server.url, id)).toMatchObject({ nextStep: 0, stepCount: 1 })
     expect((await fetch(`${server.url}/__e2e/scenarios/${id}?force=true`, { method: 'DELETE' })).status).toBe(204)
   })
 })
@@ -1636,7 +1630,7 @@ describe('createMockModelServer Amp service', () => {
     const { socket, frames } = await actorSocket(server, created.threadId)
     socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'client_append_user_msg', params: { content: [{ type: 'text', text: mockScenarioPrompt('amp-text', 'Say it.') }] } }))
     await expect.poll(() => frames.some(frame => JSON.stringify(frame).includes('Amp answer'))).toBe(true)
-    const status = await readStatus(server, 'amp-text')
+    const status = await readScenarioStatus(server.url, 'amp-text')
     expect(status).toMatchObject({ complete: true, nextStep: 1 })
     expect(status.requests[0]).toMatchObject({ protocol: 'anthropic-messages', stepIndex: 0 })
     socket.close()
@@ -1680,8 +1674,8 @@ describe('Cursor delivered response receipts', () => {
     expect(trailer.flags).toBe(2)
     const wire = JSON.parse(new TextDecoder().decode(trailer.payload)) as { error: { code: string, message: string } }
     expect(wire.error).toMatchObject({ code, message: error.message })
-    await expect.poll(async () => (await readStatus(server, id)).requests[0]?.response !== undefined).toBe(true)
-    const receipt = (await readStatus(server, id)).requests[0]?.response
+    await expect.poll(async () => (await readScenarioStatus(server.url, id)).requests[0]?.response !== undefined).toBe(true)
+    const receipt = (await readScenarioStatus(server.url, id)).requests[0]?.response
     expect(receipt).toMatchObject({ status: response.status, serviceError: { code: wire.error.code, message: wire.error.message } })
     expect(receipt?.serviceError?.code).not.toBe('api_error')
   })
@@ -1714,7 +1708,7 @@ describe('allowlisted native request headers', () => {
     })
     expect(response.status).toBe(200)
     await response.arrayBuffer()
-    const record = (await readStatus(server, id)).requests[0]
+    const record = (await readScenarioStatus(server.url, id)).requests[0]
     expect(record).toMatchObject({ requestHeaders: { 'anthropic-beta': 'context-1m-2025-08-07,interleaved-thinking-2025-05-14' } })
     if (!record || !('requestHeaders' in record) || !isObject(record.requestHeaders))
       throw new Error('The native request has no object header receipt.')
@@ -1736,7 +1730,7 @@ describe('allowlisted native request headers', () => {
       expect(response.status).toBe(200)
       await response.arrayBuffer()
     }
-    const records = (await readStatus(server, id)).requests
+    const records = (await readScenarioStatus(server.url, id)).requests
     expect(records).toHaveLength(2)
     expect(records[0]).not.toHaveProperty('requestHeaders')
     expect(records[1]).toMatchObject({ requestHeaders: { 'anthropic-beta': '' } })
@@ -1772,14 +1766,14 @@ describe('native Surface dispatch and accounting', () => {
       const connected = await reader.read()
       expect(connected.done).toBe(false)
       expect(new TextDecoder().decode(connected.value)).toBe('event: connected\ndata: {}\n\n')
-      expect(await readStatus(server, scenario)).toMatchObject({ nextStep: 0, requests: [], unexpectedRequests: [] })
+      expect(await readScenarioStatus(server.url, scenario)).toMatchObject({ nextStep: 0, requests: [], unexpectedRequests: [] })
     }
     finally {
       await reader.cancel()
       controller.abort()
     }
     expect(await responseText(await chat(server, mockScenarioPrompt(scenario, 'Run the actual model request.')))).toContain('Only the actual model request consumes this.')
-    expect(await readStatus(server, scenario)).toMatchObject({ complete: true, nextStep: 1 })
+    expect(await readScenarioStatus(server.url, scenario)).toMatchObject({ complete: true, nextStep: 1 })
   })
 
   it('serves exact Qoder API routes before the broad Amp API prefix without consuming model steps', async () => {
@@ -1802,11 +1796,11 @@ describe('native Surface dispatch and accounting', () => {
       expect(response.status).toBe(200)
       expect(await response.json()).toMatchObject({ token: 'leapmux-e2e-token', access_token: 'leapmux-e2e-token', refresh_token: 'leapmux-e2e-token' })
     }
-    expect(await readStatus(server, 'surface-startup-accounting')).toMatchObject({ nextStep: 0, requests: [], unexpectedRequests: [] })
+    expect(await readScenarioStatus(server.url, 'surface-startup-accounting')).toMatchObject({ nextStep: 0, requests: [], unexpectedRequests: [] })
     const ampUser = await fetch(`${server.url}/api/internal?getUserInfo`)
     expect(ampUser.status).toBe(200)
     expect(await ampUser.json()).toMatchObject({ ok: true, result: { id: 'user_leapmux_e2e' } })
-    expect(await readStatus(server, 'surface-startup-accounting')).toHaveProperty('nextStep', 0)
+    expect(await readScenarioStatus(server.url, 'surface-startup-accounting')).toHaveProperty('nextStep', 0)
   })
 
   it('retains both Qoder v5 discovery shapes and its v3 string URLs on the actual listening origin', async () => {
@@ -1841,9 +1835,9 @@ describe('native Surface dispatch and accounting', () => {
       expect(response.status).toBe(200)
       await response.arrayBuffer()
     }
-    expect(await readStatus(server, 'surface-identity-accounting')).toMatchObject({ nextStep: 0, requests: [], unexpectedRequests: [] })
+    expect(await readScenarioStatus(server.url, 'surface-identity-accounting')).toMatchObject({ nextStep: 0, requests: [], unexpectedRequests: [] })
     expect(await responseText(await chat(server, mockScenarioPrompt('surface-identity-accounting', 'Actual model content.')))).toContain('Actual ordered answer.')
-    expect(await readStatus(server, 'surface-identity-accounting')).toMatchObject({ complete: true, nextStep: 1 })
+    expect(await readScenarioStatus(server.url, 'surface-identity-accounting')).toMatchObject({ complete: true, nextStep: 1 })
   })
 })
 
@@ -1858,7 +1852,7 @@ describe('native Copilot credential receipts', () => {
     })
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('The isolated native bearer reaches the mock.')
-    const status = await readStatus(server, 'copilot-fixed-bearer-receipt')
+    const status = await readScenarioStatus(server.url, 'copilot-fixed-bearer-receipt')
     expect(status).toMatchObject({ complete: true, nextStep: 1, unexpectedRequests: [] })
     expect(status.requests).toHaveLength(1)
     expect(status.requests[0]).toMatchObject({ protocol: 'openai-chat-completions', path: '/chat/completions', stepIndex: 0, mockCredential: { kind: 'bearer', accepted: true } })

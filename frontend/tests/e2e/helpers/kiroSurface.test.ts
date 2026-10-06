@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
-import type { MockModelDeliveredError, MockModelScenarioStatus } from './mockModelScript'
+import type { MockModelDeliveredError } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import { Buffer } from 'node:buffer'
 import { IncomingMessage, ServerResponse } from 'node:http'
@@ -11,7 +11,7 @@ import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { decodeEventStreamMessages, EVENT_STREAM_CONTENT_TYPE } from './awsEventStream'
 import { handleKiroHttp, isKiroRequest, KIRO_DEFAULT_MOCK_MODEL, KIRO_MOCK_MODELS, KIRO_TARGET_HEADER, kiroModelCatalog, kiroOperation, kiroRequestMetadata, kiroSystemText, kiroToolUseEvents, kiroUserText } from './kiroSurface'
 import { KIRO_E2E_API_KEY, MOCK_MODEL_IDS } from './mockAgentEnvironment'
-import { mockScenarioPrompt } from './mockModelScenario'
+import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { createModelStream } from './modelStream'
 
@@ -117,15 +117,6 @@ describe('native Kiro remote catalogs', () => {
   })
 })
 
-async function registerScenario(server: MockModelServer, id: string, script: Record<string, unknown>): Promise<void> {
-  const response = await fetch(`${server.url}/__e2e/scenarios/${id}`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(script),
-  })
-  expect(response.status).toBe(201)
-}
-
 /** A native model turn includes the prompt and the system history. Tool continuations also include tool results. */
 function turnBody(content: string, extra: { toolResults?: unknown[], agentMode?: string } = {}) {
   return {
@@ -161,15 +152,9 @@ function call(server: MockModelServer, operation: string, body: unknown, init: {
   })
 }
 
-async function readStatus(server: MockModelServer, id: string): Promise<MockModelScenarioStatus> {
-  const response = await fetch(`${server.url}/__e2e/scenarios/${id}`)
-  expect(response.status).toBe(200)
-  return await response.json() as MockModelScenarioStatus
-}
-
 /** Wait until the scenario consumed `count` steps, so no test sizes an interval. */
 async function waitForStep(server: MockModelServer, id: string, count: number): Promise<void> {
-  await expect.poll(async () => (await readStatus(server, id)).nextStep).toBeGreaterThanOrEqual(count)
+  await expect.poll(async () => (await readScenarioStatus(server.url, id)).nextStep).toBeGreaterThanOrEqual(count)
 }
 
 /** The request log of the mock. */
@@ -209,7 +194,7 @@ describe('the Kiro surface of the mock', () => {
   ])('selects the scenario from the $label and excludes native metadata and tool text', async ({ current, history }) => {
     const server = await startServer()
     for (const id of ['kiro-owned-prompt', 'kiro-stale-prompt', 'kiro-decoy-prompt'])
-      await registerScenario(server, id, { steps: [{ text: id }] })
+      await registerMockModelScenario(server.url, id, { steps: [{ text: id }] })
     const base = turnBody(current, { toolResults: [{ content: [{ text: mockScenarioPrompt('kiro-decoy-prompt', 'Current tool result.') }] }] })
     const body = {
       ...base,
@@ -227,16 +212,16 @@ describe('the Kiro surface of the mock', () => {
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', body)
     const answer = await events(response)
     expect(answer[0]).toEqual(['assistantResponseEvent', { content: 'kiro-owned-prompt' }])
-    const status = await readStatus(server, 'kiro-owned-prompt')
+    const status = await readScenarioStatus(server.url, 'kiro-owned-prompt')
     expect(status.nextStep).toBe(1)
     expect(status.requests[0]?.body).toEqual(body)
     for (const id of ['kiro-stale-prompt', 'kiro-decoy-prompt'])
-      expect((await readStatus(server, id)).nextStep).toBe(0)
+      expect((await readScenarioStatus(server.url, id)).nextStep).toBe(0)
   })
 
   it('refuses to select a scenario from system history or tool results without a marked user prompt', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-untrusted-marker', { steps: [{ text: 'The request must not consume this answer.' }] })
+    await registerMockModelScenario(server.url, 'kiro-untrusted-marker', { steps: [{ text: 'The request must not consume this answer.' }] })
     const marker = mockScenarioPrompt('kiro-untrusted-marker', 'Untrusted text.')
     const base = turnBody('', { toolResults: [{ content: [{ text: marker }] }] })
     const body = {
@@ -250,7 +235,7 @@ describe('the Kiro surface of the mock', () => {
 
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', body)
     expect(response.status).toBe(409)
-    expect((await readStatus(server, 'kiro-untrusted-marker')).nextStep).toBe(0)
+    expect((await readScenarioStatus(server.url, 'kiro-untrusted-marker')).nextStep).toBe(0)
     const log = await fetch(`${server.url}/__e2e/requests`).then(result => result.json()) as { unmatched: Array<{ scenarioID: string, body: unknown }> }
     expect(log.unmatched).toHaveLength(1)
     expect(log.unmatched[0]).toMatchObject({ scenarioID: 'ambient', body })
@@ -282,7 +267,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('streams a scripted turn and ends it with the stop reason', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-text', { steps: [{ reasoning: 'Think.', text: 'Hello there', stream: { chunkChars: 5, delayMs: 0 } }] })
+    await registerMockModelScenario(server.url, 'kiro-text', { steps: [{ reasoning: 'Think.', text: 'Hello there', stream: { chunkChars: 5, delayMs: 0 } }] })
 
     const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-text', 'Say hi.'))))
 
@@ -298,7 +283,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('streams a tool call and ends the turn for the tool', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-tool', { steps: [{ toolCalls: [{ id: 't1', name: 'read_file', arguments: { path: '/w/a.txt' } }] }] })
+    await registerMockModelScenario(server.url, 'kiro-tool', { steps: [{ toolCalls: [{ id: 't1', name: 'read_file', arguments: { path: '/w/a.txt' } }] }] })
 
     const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-tool', 'Read.'))))
 
@@ -312,7 +297,7 @@ describe('the Kiro surface of the mock', () => {
   // Kiro reads the text of a turn before its tool calls, as the model wrote them.
   it('streams the text of a step before its tool calls', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-both', { steps: [{ text: 'Reading.', toolCalls: [{ id: 't1', name: 'read_file', arguments: {} }] }] })
+    await registerMockModelScenario(server.url, 'kiro-both', { steps: [{ text: 'Reading.', toolCalls: [{ id: 't1', name: 'read_file', arguments: {} }] }] })
 
     const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-both', 'Read.'))))
 
@@ -323,7 +308,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('matches a rule on the user text and the tool results', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-rule', {
+    await registerMockModelScenario(server.url, 'kiro-rule', {
       rules: [{ name: 'after-tool', when: { protocol: 'aws-event-stream', user: 'TOOL-OUTPUT-42' }, respond: { text: 'Saw the output.' } }],
     })
 
@@ -335,7 +320,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('echoes the conversation id of the turn in both conversation headers', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-conversation', { steps: [{ text: 'One.' }, { text: 'Two.' }] })
+    await registerMockModelScenario(server.url, 'kiro-conversation', { steps: [{ text: 'One.' }, { text: 'Two.' }] })
 
     const stated = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-conversation', 'First.')))
     expect(stated.headers.get('x-amzn-codewhisperer-conversation-id')).toBe('sess_1')
@@ -354,7 +339,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('states the internal server error type for a scripted error with no code', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-uncoded', { steps: [{ error: { status: 500, message: 'Boom' } }] })
+    await registerMockModelScenario(server.url, 'kiro-uncoded', { steps: [{ error: { status: 500, message: 'Boom' } }] })
 
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-uncoded', 'Fail.')))
 
@@ -365,7 +350,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('answers a scripted error in the AWS error shape', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-error', { steps: [{ error: { status: 429, code: 'ThrottlingException', message: 'Too many requests' } }] })
+    await registerMockModelScenario(server.url, 'kiro-error', { steps: [{ error: { status: 429, code: 'ThrottlingException', message: 'Too many requests' } }] })
 
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-error', 'Fail.')))
 
@@ -415,7 +400,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('answers a step that Kiro\'s service cannot state with a validation error that Kiro reads', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-raw-input', { steps: [{ toolCalls: [{ id: 't1', name: 'exec', input: 'code' }] }] })
+    await registerMockModelScenario(server.url, 'kiro-raw-input', { steps: [{ toolCalls: [{ id: 't1', name: 'exec', input: 'code' }] }] })
 
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-raw-input', 'Run.')))
 
@@ -426,7 +411,7 @@ describe('the Kiro surface of the mock', () => {
 
   it('refuses a turn after the queue ran out, in the AWS error shape', async () => {
     const server = await startServer()
-    await registerScenario(server, 'kiro-one', { steps: [{ text: 'Only once.' }] })
+    await registerMockModelScenario(server.url, 'kiro-one', { steps: [{ text: 'Only once.' }] })
     await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-one', 'First.'))))
 
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-one', 'Second.')))
@@ -439,7 +424,7 @@ describe('the Kiro surface of the mock', () => {
   it('abandons a held turn when Kiro disconnects, and stays available', async () => {
     const server = await startServer()
     // Longer than this test can take. The abort ends it, not the timer.
-    await registerScenario(server, 'kiro-held', { steps: [{ text: 'Never sent', delayMs: 60_000 }] })
+    await registerMockModelScenario(server.url, 'kiro-held', { steps: [{ text: 'Never sent', delayMs: 60_000 }] })
 
     const controller = new AbortController()
     const aborted = call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-held', 'Cancel me.')), { signal: controller.signal })
@@ -449,8 +434,8 @@ describe('the Kiro surface of the mock', () => {
     controller.abort()
     await expect(aborted).rejects.toThrow()
 
-    expect(await readStatus(server, 'kiro-held')).toMatchObject({ complete: true, nextStep: 1 })
-    await registerScenario(server, 'kiro-after-abort', { steps: [{ text: 'Still serving' }] })
+    expect(await readScenarioStatus(server.url, 'kiro-held')).toMatchObject({ complete: true, nextStep: 1 })
+    await registerMockModelScenario(server.url, 'kiro-after-abort', { steps: [{ text: 'Still serving' }] })
     const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-after-abort', 'Run.'))))
     expect(answer[0]).toEqual(['assistantResponseEvent', { content: 'Still serving' }])
   })
@@ -554,14 +539,14 @@ describe('Kiro delivered response receipts', () => {
     { id: 'kiro-explicit-receipt', error: { status: 429, code: 'ThrottlingException', message: 'The native quota failure.' }, code: 'ThrottlingException' },
   ])('records the actual delivered AWS error for $id', async ({ id, error, code }) => {
     const server = await startServer()
-    await registerScenario(server, id, { steps: [{ error }] })
+    await registerMockModelScenario(server.url, id, { steps: [{ error }] })
     const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt(id, 'Run the native error receipt test.')), { authorization: `Bearer ${KIRO_E2E_API_KEY}` })
     expect(response.status).toBe(error.status)
     const wire = await response.json() as { __type: string, message: string }
     expect(wire).toEqual({ __type: code, message: error.message })
     expect(response.headers.get('x-amzn-errortype')).toBe(wire.__type)
-    await expect.poll(async () => (await readStatus(server, id)).requests[0]?.response !== undefined).toBe(true)
-    const receipt = (await readStatus(server, id)).requests[0]?.response
+    await expect.poll(async () => (await readScenarioStatus(server.url, id)).requests[0]?.response !== undefined).toBe(true)
+    const receipt = (await readScenarioStatus(server.url, id)).requests[0]?.response
     expect(receipt).toMatchObject({ status: response.status, headers: { 'x-amzn-errortype': wire.__type }, serviceError: { code: wire.__type, message: wire.message } })
   })
 })
