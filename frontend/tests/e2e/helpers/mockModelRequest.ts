@@ -1,4 +1,6 @@
+import type { Buffer } from 'node:buffer'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
 import type { DisconnectSignals } from './mockHttp'
 import type { MockModelCredential, MockModelDeliveredError, MockModelProtocol, MockModelRequestRecord, MockModelServerContext, MockModelStep } from './mockModelScript'
 import type { ModelStream } from './modelStream'
@@ -42,4 +44,22 @@ export type SelectedModelAnswer
 export interface MockModelScriptHost {
   hasScenario: (id: string) => boolean
   select: (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }) => SelectedModelAnswer
+}
+
+/**
+ * One native service that the mock model server answers.
+ *
+ * The server offers each request to each surface in the order of its registration
+ * list. The first surface that claims the request answers it. A new surface is one
+ * entry in that list.
+ */
+export interface MockSurface {
+  /** Answer the request and return true, or return false, with nothing written, for a request of another service. */
+  handleHttp: (request: IncomingMessage, response: ServerResponse, url: URL) => boolean | Promise<boolean>
+  /** Answer a WebSocket upgrade and return true, or return false, with nothing written, for an upgrade of another service. */
+  handleUpgrade?: (request: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => boolean
+  /** Forget the state that a deleted scenario left in the surface. */
+  clearScenario?: (scenarioID: string) => void
+  /** Release what the surface holds when the server closes. */
+  close?: () => void
 }

@@ -23,7 +23,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { CursorContextRule, CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
-import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
+import type { MockModelScriptHost, MockSurface, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelDeliveredError, MockModelError, MockModelServerContext, MockModelToolCall, MockModelUsage } from './mockModelScript'
 import type { ModelStream } from './modelStream'
 import { Buffer } from 'node:buffer'
@@ -154,9 +154,10 @@ interface CursorConversationState {
   messages: MockModelServerContext['messages']
 }
 
-export interface CursorSurface {
+/** The Cursor service, which keeps each remote conversation until its scenario ends. */
+export interface CursorSurface extends MockSurface {
   handleHttp: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean>
-  clearScenario: (id: string) => void
+  clearScenario: (scenarioID: string) => void
   close: () => void
 }
 

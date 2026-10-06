@@ -7,8 +7,9 @@ import type { MockModelStep } from './mockModelScript'
 import { Buffer } from 'node:buffer'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AMP_E2E_THREADS_PATH, ampInferenceOf, ampMessageID, ampScriptOptions, ampToolUseID, createAmpSurface, isAmpPath } from './ampSurface'
+import { AMP_E2E_THREADS_PATH, ampInferenceOf, ampMessageID, ampScriptOptions, ampToolUseID, createAmpSurface } from './ampSurface'
 import { MODEL_KEY } from './mockAgentEnvironment'
 import { MAX_MOCK_REQUEST_BYTES } from './mockHttp'
 import { createBufferedModelStream } from './modelStream'
@@ -50,12 +51,17 @@ async function startMock(answers: (MockModelStep | undefined | Promise<MockModel
     },
   })
   const sockets: Duplex[] = []
+  // The mock model server refuses a request or an upgrade that no surface claims, and so does this server.
   const server = createServer((request, response) => {
-    void surface.handleHttp(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
+    void surface.handleHttp(request, response, new URL(request.url ?? '/', 'http://127.0.0.1')).then((owned) => {
+      if (!owned)
+        response.writeHead(404).end()
+    })
   })
   server.on('upgrade', (request, socket, head) => {
     sockets.push(socket)
-    surface.handleUpgrade(request, socket, head, new URL(request.url ?? '/', 'http://127.0.0.1'))
+    if (!surface.handleUpgrade(request, socket, head, new URL(request.url ?? '/', 'http://127.0.0.1')))
+      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
@@ -168,14 +174,44 @@ describe('amp ids', () => {
   })
 })
 
-describe('isAmpPath', () => {
-  it('claims Amp\'s REST routes, the actor gateway and the test route, and nothing of a model API', () => {
-    expect(isAmpPath('/api/internal')).toBe(true)
-    expect(isAmpPath('/api/thread-actors')).toBe(true)
-    expect(isAmpPath('/actors/gateway/threadActor/websocket/')).toBe(true)
-    expect(isAmpPath(AMP_E2E_THREADS_PATH)).toBe(true)
-    for (const path of ['/v1/messages', '/v1/chat/completions', '/copilot_internal/user', '/agent.v1.AgentService/Run'])
-      expect(isAmpPath(path), path).toBe(false)
+describe('the Amp surface claim', () => {
+  it('claims Amp\'s REST routes, the actor gateway and the test route, and nothing of a model API', async () => {
+    const surface = createAmpSurface({ answer: async () => undefined })
+    try {
+      for (const path of ['/api/internal?loadPlugins', '/api/thread-actors', '/api/unknown', '/actors/gateway/threadActor/websocket/', AMP_E2E_THREADS_PATH]) {
+        const response = new ServerResponse(bodyRequest('POST', []))
+        const end = vi.spyOn(response, 'end').mockImplementation(() => response)
+        expect(await surface.handleHttp(bodyRequest('POST', []), response, new URL(path, 'http://127.0.0.1')), path).toBe(true)
+        expect(end, path).toHaveBeenCalledOnce()
+      }
+      for (const path of ['/v1/messages', '/v1/chat/completions', '/copilot_internal/user', '/agent.v1.AgentService/Run']) {
+        const response = new ServerResponse(bodyRequest('POST', []))
+        expect(await surface.handleHttp(bodyRequest('POST', []), response, new URL(path, 'http://127.0.0.1')), path).toBe(false)
+        expect(response.headersSent, path).toBe(false)
+      }
+    }
+    finally {
+      surface.close()
+    }
+  })
+
+  it('leaves an upgrade outside the actor gateway untouched, and refuses one with no thread key', () => {
+    const surface = createAmpSurface({ answer: async () => undefined })
+    try {
+      const outside = new PassThrough()
+      const outsideEnd = vi.spyOn(outside, 'end')
+      expect(surface.handleUpgrade(bodyRequest('GET', []), outside, Buffer.alloc(0), new URL('http://127.0.0.1/v1/responses'))).toBe(false)
+      expect(outsideEnd).not.toHaveBeenCalled()
+      expect(outside.writableEnded).toBe(false)
+
+      const keyless = new PassThrough()
+      const keylessEnd = vi.spyOn(keyless, 'end')
+      expect(surface.handleUpgrade(bodyRequest('GET', []), keyless, Buffer.alloc(0), new URL('http://127.0.0.1/actors/gateway/threadActor/websocket/'))).toBe(true)
+      expect(keylessEnd).toHaveBeenCalledWith('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    }
+    finally {
+      surface.close()
+    }
   })
 })
 

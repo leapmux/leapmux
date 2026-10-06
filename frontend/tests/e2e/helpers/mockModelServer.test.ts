@@ -748,6 +748,7 @@ describe('createMockModelServer', () => {
     for (const record of (await readStatus(server, 'cursor-no-id')).requests)
       expect(record).not.toHaveProperty('serverContext')
   })
+
   it('routes a bare Cursor command through its conversation script and clears that route', async () => {
     const server = await startServer()
     await registerScenario(server, 'cursor-conversation', { steps: [{ text: 'First answer.' }, { text: 'Command answer.' }] })

@@ -20,7 +20,7 @@
 import type { Buffer } from 'node:buffer'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
-import type { MockModelScriptHost, SelectedModelAnswer } from './mockModelRequest'
+import type { MockModelScriptHost, MockSurface, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelCredential, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { WebSocketConnection } from './webSocketServer'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
@@ -84,7 +84,7 @@ export function ampToolUseID(threadID: string, scriptedID: string): string {
 }
 
 /** Whether a request belongs to Amp's service. */
-export function isAmpPath(pathname: string): boolean {
+function isAmpPath(pathname: string): boolean {
   return pathname.startsWith(AMP_API_PREFIX) || pathname.startsWith(AMP_ACTOR_PATH_PREFIX) || pathname === AMP_E2E_THREADS_PATH
 }
 
@@ -178,9 +178,10 @@ function isAmpSeededThread(value: unknown): value is AmpSeededThread {
     isObject(message) && (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
 }
 
-export interface AmpSurface {
-  handleHttp: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<void>
-  handleUpgrade: (request: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => void
+/** The Amp service: its REST paths, and the WebSocket of each thread actor. */
+export interface AmpSurface extends MockSurface {
+  handleHttp: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean>
+  handleUpgrade: (request: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => boolean
   close: () => void
 }
 
@@ -250,7 +251,15 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     return thread
   }
 
-  async function handleHttp(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  async function handleHttp(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
+    if (!isAmpPath(url.pathname))
+      return false
+    await answerHttp(request, response, url)
+    return true
+  }
+
+  /** Answer a request on one of Amp's paths. A path that Amp does not serve gets a 404. */
+  async function answerHttp(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (url.pathname === AMP_E2E_THREADS_PATH) {
       if (request.method === 'POST') {
         const seeded = await readAmpJSON(request)
@@ -366,15 +375,17 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     }
   }
 
-  function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL): void {
+  function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL): boolean {
+    if (!url.pathname.startsWith(AMP_ACTOR_PATH_PREFIX))
+      return false
     const threadID = url.searchParams.get('rvt-key') ?? ''
-    if (!url.pathname.startsWith(AMP_ACTOR_PATH_PREFIX) || threadID === '') {
+    if (threadID === '') {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-      return
+      return true
     }
     const connection = acceptWebSocket(request, socket, head, { protocols: [RIVET_PROTOCOL] })
     if (!connection)
-      return
+      return true
     const thread = threadFor(threadID)
     const credential = mockCredentialReceipt(request.headers)
     if (credential.kind !== 'none')
@@ -389,6 +400,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     })
     // The readiness signal; see the note at the top.
     connection.send('pong')
+    return true
   }
 
   async function handleFrame(thread: ActorThread, member: ThreadSocket, text: string): Promise<void> {

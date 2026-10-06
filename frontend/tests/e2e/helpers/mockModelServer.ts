@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { DisconnectSignals } from './mockHttp'
-import type { MockModelScriptHost, ModelRequestContext } from './mockModelRequest'
+import type { MockModelScriptHost, MockSurface, ModelRequestContext } from './mockModelRequest'
 import type {
   MockModelDeliveredError,
   MockModelError,
@@ -20,7 +20,7 @@ import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
 import { isObject } from '../../../src/lib/jsonPick'
 import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
-import { AMP_ACTOR_PATH_PREFIX, ampScriptOptions, createAmpSurface, isAmpPath } from './ampSurface'
+import { ampScriptOptions, createAmpSurface } from './ampSurface'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
 import { createCursorSurface } from './cursorSurface'
@@ -159,10 +159,8 @@ type ScenarioAnswer
  * - OpenAI Responses.
  * - Google Generative Language.
  *
- * Native agent services:
- * - Cursor.
- * - Kiro.
- * - Amp.
+ * The `surfaces` list below holds the native agent services and the Google API. Each
+ * entry implements `MockSurface`.
  *
  * Scripts supply model answers. Startup calls use isolated model and account metadata.
  * A changed provider prompt can fail a matching rule. The scripted answer stays fixed.
@@ -233,10 +231,23 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       }
     },
   }
-  const amp = createAmpSurface(ampScriptOptions(scriptHost))
-  const cursor = createCursorSurface(scriptHost)
   const copilotOptions = { sessionToken: MOCK_SESSION_TOKEN, defaultModelId: MOCK_MODELS.openai, reasoningModelId: MOCK_MODELS.gooseReasoning }
   const qoderOptions = { origin: () => `http://127.0.0.1:${ownPort}`, identityToken: MOCK_IDENTITY_TOKEN }
+  // The native services, in the order that the server offers them a request. A request
+  // that no surface claims reaches the model routes below.
+  const surfaces: readonly MockSurface[] = [
+    { handleHttp: (request, response, url) => handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }) },
+    { handleHttp: (request, response, url) => handleCopilotHttp(request, response, url, copilotOptions) },
+    { handleHttp: (request, response, url) => handleQoderHttp(request, response, url, qoderOptions) },
+    createAmpSurface(ampScriptOptions(scriptHost)),
+    createCursorSurface(scriptHost),
+    { handleHttp: (request, response, url) => handleKiroHttp(request, response, url, scriptHost) },
+    { handleHttp: (request, response, url) => handleGoogleModelHttp(request, response, url, scriptHost) },
+  ]
+  const clearScenario = (scenarioID: string): void => {
+    for (const surface of surfaces)
+      surface.clearScenario?.(scenarioID)
+  }
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     try {
@@ -264,31 +275,17 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         return
       }
       if (url.pathname.startsWith('/__e2e/scenarios/')) {
-        await handleScenarioControl(request, response, url, scenarios, cursor.clearScenario)
+        await handleScenarioControl(request, response, url, scenarios, clearScenario)
         return
       }
       if (request.method === 'GET' && isModelsPath(url.pathname)) {
         writeJSON(response, 200, modelCatalog(models))
         return
       }
-      if (handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }))
-        return
-      if (handleCopilotHttp(request, response, url, copilotOptions))
-        return
-      if (await handleQoderHttp(request, response, url, qoderOptions))
-        return
-      if (isAmpPath(url.pathname)) {
-        await amp.handleHttp(request, response, url)
-        return
+      for (const surface of surfaces) {
+        if (await surface.handleHttp(request, response, url))
+          return
       }
-      if (await cursor.handleHttp(request, response, url))
-        return
-      if (await handleKiroHttp(request, response, url, scriptHost))
-        return
-
-      if (await handleGoogleModelHttp(request, response, url, scriptHost))
-        return
-
       const protocol = protocolFor(request.method, url.pathname)
       if (!protocol) {
         writeJSON(response, 404, { error: { message: `The mock server has no route for ${request.method ?? 'UNKNOWN'} ${url.pathname}.` } })
@@ -352,9 +349,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   const { server } = listener
   http1.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-    if (url.pathname.startsWith(AMP_ACTOR_PATH_PREFIX))
-      amp.handleUpgrade(request, socket, head, url)
-    else
+    if (!surfaces.some(surface => surface.handleUpgrade?.(request, socket, head, url)))
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
   })
 
@@ -373,8 +368,8 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     close: () => {
       for (const scenario of scenarios.values())
         cancelGates(scenario)
-      cursor.close()
-      amp.close()
+      for (const surface of surfaces)
+        surface.close?.()
       return listener.close()
     },
   }
