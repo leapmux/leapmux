@@ -2,8 +2,8 @@ import type { BrowserContextOptions } from '@playwright/test'
 import type { DevServerHandle } from './helpers/devServer'
 import type { TlsProxyHandle } from './helpers/tlsProxy'
 import { test as base, expect } from '@playwright/test'
-import { mintCLITokenForAdmin, setHubSetting } from './helpers/cli'
-import { startDevServer, stopDevServer } from './helpers/devServer'
+import { setHubSetting } from './helpers/cli'
+import { withAdminConfiguredDevServer } from './helpers/devServer'
 import { startTlsProxy } from './helpers/tlsProxy'
 import { loginViaUI } from './helpers/ui'
 
@@ -20,19 +20,9 @@ import { loginViaUI } from './helpers/ui'
  */
 const test = base.extend<{ server: DevServerHandle, tlsProxy: TlsProxyHandle }>({
   // eslint-disable-next-line no-empty-pattern
-  server: async ({}, use) => {
-    const server = await startDevServer({ dataDirPrefix: 'leapmux-e2e-captcha-https-proxy' })
-    let cliConfigDir: string | undefined
-    try {
-      const cfg = await mintCLITokenForAdmin(server)
-      cliConfigDir = cfg.path
-      await setHubSetting(cfg, 'secure_cookies', 'true')
-      await use(server)
-    }
-    finally {
-      await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
-    }
-  },
+  server: async ({}, use) => withAdminConfiguredDevServer('leapmux-e2e-captcha-https-proxy', async (cfg) => {
+    await setHubSetting(cfg, 'secure_cookies', 'true')
+  }, use),
   tlsProxy: async ({ server }, use) => {
     // Hub stays on http://localhost:<port>; only the browser-facing URL is https.
     expect(server.hubUrl.startsWith('http://localhost:')).toBe(true)

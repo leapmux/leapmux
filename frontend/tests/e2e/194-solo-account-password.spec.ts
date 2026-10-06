@@ -1,10 +1,9 @@
-import type { SoloServerHandle } from './helpers/devServer'
-import { expect, test } from './fixtures'
-import { startSoloServer, stopSoloServer } from './helpers/devServer'
+import type { SoloServerFixtures } from './helpers/solo'
+import { test as base, expect } from './fixtures'
+import { fillSoloPasswordSetup, signInToSoloViaUI, soloServerFixtures } from './helpers/solo'
 import { openSettingsAt } from './helpers/ui'
 
-/** A password the hub's own validator accepts. */
-const SOLO_PASSWORD = 'correct-horse-battery-staple'
+const test = base.extend<SoloServerFixtures>(soloServerFixtures)
 
 /**
  * Preferences → Account → Password, on a real `leapmux solo` hub.
@@ -19,18 +18,8 @@ const SOLO_PASSWORD = 'correct-horse-battery-staple'
  * offers no sign-up, no passkey, no recovery and no provider link.
  */
 test.describe('Account password in solo mode', () => {
-  let solo: SoloServerHandle | undefined
-
-  test.beforeEach(async () => {
-    solo = await startSoloServer()
-  })
-
-  test.afterEach(async () => {
-    await stopSoloServer(solo)
-  })
-
-  test('sets the first password, then signs in with it', async ({ page }) => {
-    await page.goto(`${solo!.hubUrl}/`)
+  test('sets the first password, then signs in with it', async ({ page, soloServer: solo }) => {
+    await page.goto(`${solo.hubUrl}/`)
 
     // The GATE, not Preferences. A solo hub reached over TCP holds the whole
     // app behind this setup page until the account has a password, so there is
@@ -43,8 +32,7 @@ test.describe('Account password in solo mode', () => {
 
     const gateSubmit = page.getByRole('button', { name: 'Set Password' })
     await expect(gateSubmit).toBeDisabled()
-    await page.getByLabel('New Password').fill(SOLO_PASSWORD)
-    await page.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
+    await fillSoloPasswordSetup(page)
     await expect(gateSubmit).toBeEnabled()
     await gateSubmit.click()
 
@@ -70,15 +58,8 @@ test.describe('Account password in solo mode', () => {
     await expect(addresses.getByText(/Change it in Account → Password/)).toBeVisible()
     await expect(addresses.getByLabel('New Password')).toHaveCount(0)
 
-    // And the password SIGNS IN. Storing it is what started demanding one, so
-    // this browser keeps the session the reply handed it -- the cookie has to
-    // go first, or the reload would prove only that a signed-in browser stays
-    // signed in.
-    await page.context().clearCookies()
-    await page.reload()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-    await page.getByLabel('Password').fill(SOLO_PASSWORD)
-    await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
+    // And the password SIGNS IN. Storing it is what started demanding one. The
+    // helper drops the session that the reply handed this browser first.
+    await signInToSoloViaUI(page)
   })
 })

@@ -12,30 +12,9 @@
 import { AppClientType, AppVisibility } from '../../src/generated/proto/leapmux/v1/app_pb'
 import { Scope } from '../../src/generated/proto/leapmux/v1/scope_pb'
 import { expect, test } from './fixtures'
-import { elevateSessionViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
-import { loginViaToken } from './helpers/ui'
-
-/**
- * The built-in control CLI's registration. Every flow here authorizes it,
- * because it is the one app a fresh hub ships with -- and the one whose
- * redirect address is a constant of the build.
- */
-const CONTROL_CLI_CLIENT_ID = 'leapmux-control-cli'
-
-/** A syntactically valid OAuth 2.1 authorization URL for a loopback listener. */
-function startURL(hubUrl: string, extra: Record<string, string> = {}, clientId: string = CONTROL_CLI_CLIENT_ID): string {
-  const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: 'code',
-    code_challenge_method: 'S256',
-    redirect_uri: 'http://127.0.0.1:54321/callback',
-    state: `state-${Date.now()}`,
-    code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-    installation_name: 'e2e-laptop',
-    ...extra,
-  })
-  return `${hubUrl}/oauth/authorize?${params.toString()}`
-}
+import { elevatedAdminSessionViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
+import { authorizeURL, consentForm, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from './helpers/oauthApps'
+import { answerElevationPrompt, loginViaToken } from './helpers/ui'
 
 /**
  * Register an UNVERIFIED app through the Connect RPC, as an elevated session.
@@ -47,38 +26,20 @@ function startURL(hubUrl: string, extra: Record<string, string> = {}, clientId: 
  * of the risk: open registration lets any caller be the registrant.
  */
 async function registerUnverifiedApp(
-  request: import('@playwright/test').APIRequestContext,
   hubUrl: string,
   elevatedCookie: string,
   name: string,
   scopes: number[] = [Scope.WORKSPACE_READ],
 ): Promise<string> {
-  const res = await request.post(`${hubUrl}/leapmux.v1.AppService/RegisterApp`, {
-    headers: { 'Content-Type': 'application/json', 'Cookie': elevatedCookie },
-    data: {
-      clientName: name,
-      clientUri: 'https://example.com',
-      redirectUris: ['http://127.0.0.1:54321/callback'],
-      scopes,
-      visibility: AppVisibility.PRIVATE,
-      clientType: AppClientType.PUBLIC,
-    },
+  const { clientId } = await registerAppViaAPI(hubUrl, elevatedCookie, {
+    clientName: name,
+    clientUri: 'https://example.com',
+    redirectUris: [LOOPBACK_REDIRECT_URI],
+    scopes,
+    visibility: AppVisibility.PRIVATE,
+    clientType: AppClientType.PUBLIC,
   })
-  expect(res.status(), await res.text()).toBe(200)
-  const json = await res.json() as { app: { clientId: string } }
-  return json.app.clientId
-}
-
-/**
- * A FRESH admin session, never elevated.
- *
- * The fixture's shared `adminToken` outlives every test in the file, and an
- * elevation lasts two hours -- so a test that reused it would pass or fail
- * on whether some earlier test happened to elevate it. Each test that needs
- * an un-elevated session mints its own.
- */
-async function freshAdminSession(hubUrl: string): Promise<string> {
-  return loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+  return clientId
 }
 
 test.describe('app consent needs an elevated session', () => {
@@ -86,23 +47,20 @@ test.describe('app consent needs an elevated session', () => {
     // The consent page renders its UNVERIFIED branch for a registered app;
     // the built-in CLI is verified by construction, so its heading carries
     // its own name instead.
-    const registrar = await freshAdminSession(leapmuxServer.hubUrl)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, registrar, TEST_ADMIN_PASSWORD)
-    const clientId = await registerUnverifiedApp(page.request, leapmuxServer.hubUrl, registrar, 'Consent e2e app')
+    const registrar = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
+    const clientId = await registerUnverifiedApp(leapmuxServer.hubUrl, registrar, 'Consent e2e app')
 
     // The BROWSER holds a SECOND, un-elevated session of the same account:
     // the bounce is the first half of what this test walks.
-    await loginViaToken(page, await freshAdminSession(leapmuxServer.hubUrl))
+    await loginViaToken(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl))
 
-    await page.goto(startURL(leapmuxServer.hubUrl, {}, clientId))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, { clientId }))
 
     // Layer one: the hub sends the un-elevated session to the SPA prompt,
-    // with the consent URL as the return address.
+    // with the consent URL as the return address: the standalone /elevate
+    // page, not the dialog of the app.
     await expect(page).toHaveURL(/\/elevate\?redirect=/)
-    await expect(page.getByTestId('elevate-card')).toBeVisible()
-
-    await page.getByTestId('elevate-password').fill(TEST_ADMIN_PASSWORD)
-    await page.getByTestId('elevate-password-submit').click()
+    await answerElevationPrompt(page, TEST_ADMIN_PASSWORD, page.getByTestId('elevate-card'))
 
     // Back on the HUB's page, not the SPA's 404. This is the assertion the
     // whole spec exists for.
@@ -112,23 +70,22 @@ test.describe('app consent needs an elevated session', () => {
   })
 
   test('an already-elevated session reaches the consent page directly', async ({ page, leapmuxServer }) => {
-    const cookie = await freshAdminSession(leapmuxServer.hubUrl)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
     await loginViaToken(page, cookie)
 
-    await page.goto(startURL(leapmuxServer.hubUrl))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl))
 
     await expect(page).toHaveURL(/\/oauth\/authorize\?/)
     await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible()
   })
 
   test('the elevated marker stops the second bounce instead of admitting', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, await freshAdminSession(leapmuxServer.hubUrl))
+    await loginViaToken(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl))
 
     // The marker is what the hub itself appends to the return address. A
     // request that carries it and is STILL not elevated must get an
     // explanation, not another redirect -- and must not be admitted.
-    await page.goto(startURL(leapmuxServer.hubUrl, { elevated: '1' }))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, { extra: { elevated: '1' } }))
 
     await expect(page).toHaveURL(/\/oauth\/authorize\?/)
     await expect(page.getByRole('heading', { name: 'Verify your identity' })).toBeVisible()
@@ -138,19 +95,10 @@ test.describe('app consent needs an elevated session', () => {
   test('refuses the consent POST rather than redirecting it', async ({ page, leapmuxServer }) => {
     // The POST carries the PKCE challenge in its BODY, so a redirect would
     // destroy the flow irrecoverably. The hub refuses it instead.
-    const cookie = await freshAdminSession(leapmuxServer.hubUrl)
+    const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
     const res = await page.request.post(`${leapmuxServer.hubUrl}/oauth/consent`, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
-      form: {
-        client_id: CONTROL_CLI_CLIENT_ID,
-        response_type: 'code',
-        code_challenge_method: 'S256',
-        redirect_uri: 'http://127.0.0.1:54321/callback',
-        state: 'state-post',
-        code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-        installation_name: 'e2e-laptop',
-        decision: 'allow',
-      },
+      form: consentForm({ state: 'state-post' }, 'allow'),
       maxRedirects: 0,
     })
     expect(res.status()).toBe(403)
@@ -169,7 +117,7 @@ test.describe('app consent needs an elevated session', () => {
     )
     await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, password)
 
-    const res = await page.request.get(startURL(leapmuxServer.hubUrl, { scope: 'admin:read' }), {
+    const res = await page.request.get(authorizeURL(leapmuxServer.hubUrl, { extra: { scope: 'admin:read' } }), {
       headers: { Cookie: cookie },
       maxRedirects: 0,
     })
@@ -189,11 +137,10 @@ test.describe('app consent needs an elevated session', () => {
   })
 
   test('states the admin grant on the consent page for an administrator', async ({ page, leapmuxServer }) => {
-    const cookie = await freshAdminSession(leapmuxServer.hubUrl)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
     await loginViaToken(page, cookie)
 
-    await page.goto(startURL(leapmuxServer.hubUrl, { scope: 'admin:read admin:users' }))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, { extra: { scope: 'admin:read admin:users' } }))
 
     // The browser is where the consent happens, so the page -- not only the
     // app that asked -- says what the credential will be able to do, in
@@ -211,12 +158,11 @@ test.describe('app consent needs an elevated session', () => {
   test('keeps an unverified app name out of the heading', async ({ page, leapmuxServer }) => {
     // The phishing shape, stated as the registration's own choice of name.
     const claimed = 'LeapMux Official Security Check'
-    const cookie = await freshAdminSession(leapmuxServer.hubUrl)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
-    const clientId = await registerUnverifiedApp(page.request, leapmuxServer.hubUrl, cookie, claimed)
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
+    const clientId = await registerUnverifiedApp(leapmuxServer.hubUrl, cookie, claimed)
     await loginViaToken(page, cookie)
 
-    await page.goto(startURL(leapmuxServer.hubUrl, {}, clientId))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, { clientId }))
 
     const heading = page.getByRole('heading', { name: 'Authorize an unverified app?' })
     await expect(heading).toBeVisible()
@@ -230,15 +176,14 @@ test.describe('app consent needs an elevated session', () => {
   // row BESIDE its label, the ticked marks read as dimmed because disabled
   // inputs grey out, and long sentences started on a line of their own.
   test('renders the permission catalogue grouped by family', async ({ page, leapmuxServer }) => {
-    const cookie = await freshAdminSession(leapmuxServer.hubUrl)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
     // workspace:read + file:read, which the hub closes with worker:read --
     // three granted scopes across three families, each with an ungranted
     // sibling to dim.
-    const clientId = await registerUnverifiedApp(page.request, leapmuxServer.hubUrl, cookie, 'Catalogue e2e app', [Scope.WORKSPACE_READ, Scope.FILE_READ])
+    const clientId = await registerUnverifiedApp(leapmuxServer.hubUrl, cookie, 'Catalogue e2e app', [Scope.WORKSPACE_READ, Scope.FILE_READ])
     await loginViaToken(page, cookie)
 
-    await page.goto(startURL(leapmuxServer.hubUrl, {}, clientId))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, { clientId }))
 
     // WIDE: the catalogue is the widest thing the hub renders.
     await expect(page.locator('main.wide')).toBeVisible()
@@ -276,21 +221,11 @@ test.describe('app consent needs an elevated session', () => {
   // Without it the app waited out the whole code TTL to learn that a person
   // refused, and a user who clicks Deny got no sign that anything happened.
   test('deny returns access_denied to the app and mints no code', async ({ page, leapmuxServer }) => {
-    const cookie = await freshAdminSession(leapmuxServer.hubUrl)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
 
     const res = await page.request.post(`${leapmuxServer.hubUrl}/oauth/consent`, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
-      form: {
-        client_id: CONTROL_CLI_CLIENT_ID,
-        response_type: 'code',
-        code_challenge_method: 'S256',
-        redirect_uri: 'http://127.0.0.1:54321/callback',
-        state: 'state-deny',
-        code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-        installation_name: 'e2e-laptop',
-        decision: 'deny',
-      },
+      form: consentForm({ state: 'state-deny' }, 'deny'),
       maxRedirects: 0,
     })
 

@@ -11,6 +11,8 @@ import {
   deleteAllWorkspacesViaAPI,
   deletePasskeyViaAPI,
   deleteWorkspaceViaAPI,
+  elevatedAdminSessionViaAPI,
+  freshAdminSessionViaAPI,
   getTestChannel,
   getWorkerId,
   hubRefusal,
@@ -22,6 +24,8 @@ import {
   openAgentViaAPI,
   resetHubSettingsViaAPI,
   sqliteTextLiteral,
+  TEST_ADMIN_PASSWORD,
+  TEST_ADMIN_USERNAME,
   waitForNewOnlineWorkerViaAPI,
 } from './api'
 import { createTestChannelManager } from './e2e-channel'
@@ -583,6 +587,36 @@ describe('loginViaAPI', () => {
   it('states the hub reason of a refused sign-in', async () => {
     recordedRequests(() => new Response('{"code":"unauthenticated","message":"invalid credentials"}', { status: 401 }))
     await expect(loginViaAPI(hubUrl, 'alice', 'wrong')).rejects.toThrow('loginViaAPI failed: AuthService/Login returned HTTP 401: {"code":"unauthenticated","message":"invalid credentials"}')
+  })
+})
+
+describe('freshAdminSessionViaAPI', () => {
+  it('signs in as the test administrator and elevates nothing', async () => {
+    const requests = recordedRequests(() => new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=fresh; Path=/' } }))
+    await expect(freshAdminSessionViaAPI(hubUrl)).resolves.toBe('leapmux-session=fresh')
+    expect(requests.map(request => [request.method, request.body])).toEqual([
+      ['AuthService/Login', { username: TEST_ADMIN_USERNAME, password: TEST_ADMIN_PASSWORD, captchaPayload: 'solved-captcha', honeypot: '' }],
+    ])
+  })
+})
+
+describe('elevatedAdminSessionViaAPI', () => {
+  it('signs in as the test administrator, then elevates that new session with the password', async () => {
+    const requests = recordedRequests(method => method === 'AuthService/Login'
+      ? new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' } })
+      : Response.json({}))
+    await expect(elevatedAdminSessionViaAPI(hubUrl)).resolves.toBe('leapmux-session=own')
+    expect(requests.map(request => [request.method, request.headers.Cookie, request.body])).toEqual([
+      ['AuthService/Login', undefined, { username: TEST_ADMIN_USERNAME, password: TEST_ADMIN_PASSWORD, captchaPayload: 'solved-captcha', honeypot: '' }],
+      ['UserService/ElevateSession', 'leapmux-session=own', { currentPassword: TEST_ADMIN_PASSWORD }],
+    ])
+  })
+
+  it('returns no session when the elevation is refused', async () => {
+    recordedRequests(method => method === 'AuthService/Login'
+      ? new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' } })
+      : new Response('{"code":"permission_denied"}', { status: 403 }))
+    await expect(elevatedAdminSessionViaAPI(hubUrl)).rejects.toThrow('elevateSessionViaAPI failed')
   })
 })
 

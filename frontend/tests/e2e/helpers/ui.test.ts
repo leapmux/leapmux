@@ -9,12 +9,14 @@ import { permissionPresetAvailable } from '../../../src/components/chat/provider
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
 import { startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 import {
   activeWorkspaceId,
   agentTabs,
   answerControl,
+  answerElevationPrompt,
   answerPlanReview,
   applyPermissionPreset,
   archiveWorkspaceViaUI,
@@ -28,6 +30,7 @@ import {
   controlBanner,
   controlButton,
   deleteWorkspaceViaUI,
+  elevationPrompt,
   enterControlFeedback,
   enterMessageText,
   expandSidebarSection,
@@ -38,6 +41,7 @@ import {
   focusComposer,
   isMaybeVisible,
   offeredSettingsOptions,
+  openAppAs,
   openTerminalViaUI,
   openWorkspaceRowMenu,
   platformModifier,
@@ -52,6 +56,7 @@ import {
   sidebarLeaves,
   sidebarSectionHeader,
   subagentReportBubble,
+  submitLoginForm,
   terminalTabs,
   tiles,
   toolCallRow,
@@ -71,6 +76,7 @@ vi.mock('./nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativeScenario')>()
   return { ...actual, nativeAgentById: native.agent }
 })
+vi.mock('./captcha', () => ({ solveCaptchaViaUI: vi.fn(async () => {}) }))
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   const firstAttempt = new Proxy(actual.expect, {
@@ -1104,8 +1110,30 @@ function fakeTree(answer: (expression: string, path: string) => boolean = () => 
       return new FakeLocator(`${this.path} >> text=${text}${options?.exact ? ' exact' : ''}`)
     }
 
+    getByLabel(label: string) {
+      return new FakeLocator(`${this.path} >> label=${label}`)
+    }
+
+    or(other: FakeLocator) {
+      return new FakeLocator(`(${this.path} | ${other.path})`)
+    }
+
     async hover() {
       log.push(`hover ${this.path}`)
+    }
+
+    async fill(value: string) {
+      log.push(`fill ${this.path} with ${value}`)
+    }
+
+    async goto(url: string) {
+      log.push(`goto ${url}`)
+    }
+
+    context() {
+      return { addCookies: async (cookies: Array<{ name: string, value: string }>) => {
+        log.push(`cookies ${cookies.map(cookie => `${cookie.name}=${cookie.value}`).join(', ')}`)
+      } }
     }
 
     async click() {
@@ -1368,5 +1396,72 @@ describe('platformModifier', () => {
 
   it.each(['linux', 'win32', 'freebsd'] as const)('uses Control on %s', (platform) => {
     expect(platformModifier(platform)).toBe('Control')
+  })
+})
+
+describe('submitLoginForm', () => {
+  it('fills both credentials, solves the captcha, and submits once', async () => {
+    const { root, log } = fakeTree()
+    await submitLoginForm(root, 'alice', 'secret')
+    expect(log).toEqual([
+      'fill page >> label=Username with alice',
+      'fill page >> label=Password with secret',
+      'click page >> role=button[name=Sign in]',
+    ])
+    expect(solveCaptchaViaUI).toHaveBeenCalledWith(root)
+  })
+})
+
+describe('openAppAs', () => {
+  const shell = '(page >> testid=app-menu-trigger.first | page >> testid=collapsed-new-tab-button).first'
+
+  it('sets the session cookie before the load, and requires the authenticated shell', async () => {
+    const { root, log } = fakeTree()
+    await openAppAs(root, 'leapmux-session=abc=def')
+    expect(log).toEqual(['cookies leapmux-session=abc=def', 'goto /', `to.be.visible ${shell}`])
+  })
+
+  it('fails when the app does not accept the session', async () => {
+    const { root } = fakeTree((_expression, path) => path !== shell)
+    await expect(openAppAs(root, 'leapmux-session=expired')).rejects.toThrow('the app accepts the session')
+  })
+})
+
+describe('elevationPrompt', () => {
+  it('selects the step-up dialog by its name', () => {
+    const { root } = fakeTree()
+    expect((elevationPrompt(root) as unknown as { path: string }).path).toBe('page >> role=dialog[name=Verify your identity]')
+  })
+})
+
+describe('answerElevationPrompt', () => {
+  const prompt = 'page >> role=dialog[name=Verify your identity]'
+
+  it('requires the prompt, enters the password, submits, and returns the prompt', async () => {
+    const { root, log } = fakeTree()
+    const answered = await answerElevationPrompt(root, 'secret')
+    expect((answered as unknown as { path: string }).path).toBe(prompt)
+    expect(log).toEqual([
+      `to.be.visible ${prompt}`,
+      `fill ${prompt} >> testid=elevate-password with secret`,
+      `click ${prompt} >> testid=elevate-password-submit`,
+    ])
+  })
+
+  it('answers the standalone page when the caller passes its card', async () => {
+    const { root, log } = fakeTree()
+    const card = root.getByTestId('elevate-card')
+    expect(await answerElevationPrompt(root, 'secret', card)).toBe(card)
+    expect(log).toEqual([
+      'to.be.visible page >> testid=elevate-card',
+      'fill page >> testid=elevate-card >> testid=elevate-password with secret',
+      'click page >> testid=elevate-card >> testid=elevate-password-submit',
+    ])
+  })
+
+  it('types nothing when the hub asked for no factor', async () => {
+    const { root, log } = fakeTree((_expression, path) => path !== prompt)
+    await expect(answerElevationPrompt(root, 'secret')).rejects.toThrow('the hub asks the session to prove a factor')
+    expect(log).toEqual([`to.be.visible ${prompt}`])
   })
 })

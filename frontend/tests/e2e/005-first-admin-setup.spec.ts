@@ -1,10 +1,24 @@
+import type { Page } from '@playwright/test'
 import type { UnseededDevServerHandle } from './helpers/devServer'
 import { test as base, expect } from '@playwright/test'
 import { getCurrentUser, listPasskeysViaAPI } from './helpers/api'
 import { solveCaptchaViaUI } from './helpers/captcha'
 import { startUnseededDevServer, stopDevServer } from './helpers/devServer'
-import { loginWithPasskeyViaUI, logoutViaUI } from './helpers/ui'
+import { loginWithPasskeyViaUI, logoutViaUI, readSessionCookie } from './helpers/ui'
 import { enableVirtualAuthenticator } from './helpers/webauthn'
+
+/**
+ * Fill the password form of /setup for a new account, solve its captcha, and submit it.
+ * The caller asserts the outcome: the app, or the refusal of the name.
+ */
+async function submitSetupForm(page: Page, username: string, displayName: string): Promise<void> {
+  await page.getByLabel('Username').fill(username)
+  await page.getByLabel('Display Name').fill(displayName)
+  await page.getByLabel('New Password').fill('strongpass1')
+  await page.getByLabel('Confirm Password').fill('strongpass1')
+  await solveCaptchaViaUI(page)
+  await page.getByRole('button', { name: 'Create account' }).click()
+}
 
 /**
  * Uses a standalone unseeded dev server (no pre-registered admin) so we can
@@ -81,12 +95,7 @@ test.describe('First-admin setup', () => {
   // /login and straight back.
   test('/setup gives way to /login once an administrator exists', async ({ page }) => {
     await page.goto('/setup')
-    await page.getByLabel('Username').fill('firstadmin')
-    await page.getByLabel('Display Name').fill('First Admin')
-    await page.getByLabel('New Password').fill('strongpass1')
-    await page.getByLabel('Confirm Password').fill('strongpass1')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Create account' }).click()
+    await submitSetupForm(page, 'firstadmin', 'First Admin')
     await expect(page).toHaveURL(/\/$/)
 
     await logoutViaUI(page)
@@ -96,33 +105,20 @@ test.describe('First-admin setup', () => {
 
   test('setup rejects reserved username "solo"', async ({ page }) => {
     await page.goto('/setup')
-    await page.getByLabel('Username').fill('solo')
-    await page.getByLabel('Display Name').fill('Solo')
-    await page.getByLabel('New Password').fill('strongpass1')
-    await page.getByLabel('Confirm Password').fill('strongpass1')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Create account' }).click()
+    await submitSetupForm(page, 'solo', 'Solo')
     await expect(page.getByText(/reserved username/i)).toBeVisible()
     await expect(page).toHaveURL(/\/setup$/)
   })
 
-  test('setup accepts username "admin" and marks the user as admin', async ({ page, server, context }) => {
+  test('setup accepts username "admin" and marks the user as admin', async ({ page, server }) => {
     await page.goto('/setup')
-    await page.getByLabel('Username').fill('admin')
-    await page.getByLabel('Display Name').fill('Admin')
-    await page.getByLabel('New Password').fill('strongpass1')
-    await page.getByLabel('Confirm Password').fill('strongpass1')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Create account' }).click()
+    await submitSetupForm(page, 'admin', 'Admin')
     // Flat home route: post-setup lands on `/` (the authenticated home),
     // not an org-scoped path. Matches APP_HOME_URL_RE in the auth specs.
     await expect(page).toHaveURL(/\/$/)
 
     // Verify the backend recorded this user as an admin.
-    const cookies = await context.cookies()
-    const session = cookies.find(c => c.name === 'leapmux-session')
-    expect(session?.value).toBeTruthy()
-    const user = await getCurrentUser(server.hubUrl, `leapmux-session=${session!.value}`)
+    const user = await getCurrentUser(server.hubUrl, await readSessionCookie(page, 'the setup'))
     expect(user.isAdmin).toBe(true)
     expect(user.username).toBe('admin')
   })
@@ -131,7 +127,7 @@ test.describe('First-admin setup', () => {
   // does. The hub used to refuse BeginPasskeySignUp during initial setup and
   // the page hid the method pills to match; one change removed both. The
   // account is still an admin, and it still claims the reserved `admin` name.
-  test('setup accepts a passkey for the first administrator', async ({ page, server, context }) => {
+  test('setup accepts a passkey for the first administrator', async ({ page, server }) => {
     await enableVirtualAuthenticator(page)
 
     await page.goto('/setup')
@@ -146,10 +142,7 @@ test.describe('First-admin setup', () => {
     await page.getByRole('button', { name: 'Sign up with passkey' }).click()
     await expect(page).toHaveURL(/\/$/)
 
-    const cookies = await context.cookies()
-    const session = cookies.find(c => c.name === 'leapmux-session')
-    expect(session?.value).toBeTruthy()
-    const cookie = `leapmux-session=${session!.value}`
+    const cookie = await readSessionCookie(page, 'the passkey setup')
     const user = await getCurrentUser(server.hubUrl, cookie)
     expect(user.isAdmin).toBe(true)
     expect(user.username).toBe('admin')

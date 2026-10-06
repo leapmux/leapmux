@@ -198,6 +198,24 @@ export async function loginViaAPI(hubUrl: string, username: string, password: st
   return extractSessionCookie(res.headers.get('set-cookie'))
 }
 
+/**
+ * Sign in as the test administrator with a session of its own, which no earlier step elevated.
+ *
+ * The suite shares one administrator session (`adminToken`) across the tests of a Playwright worker, and the suite
+ * fixture elevates it, for two hours. A test that needs an unelevated session, or that elevates one and must not
+ * leave the shared session in a state of its own, signs in for itself.
+ */
+export async function freshAdminSessionViaAPI(hubUrl: string): Promise<string> {
+  return loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+}
+
+/** A session of its own for the test administrator, elevated with the password. See `freshAdminSessionViaAPI`. */
+export async function elevatedAdminSessionViaAPI(hubUrl: string): Promise<string> {
+  const cookie = await freshAdminSessionViaAPI(hubUrl)
+  await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
+  return cookie
+}
+
 /** End the session of `cookie` on the hub. A refused logout throws, so a later step cannot run on a live session. */
 export async function logoutViaAPI(hubUrl: string, cookie: string): Promise<void> {
   await callHub(hubUrl, 'AuthService/Logout', {}, { cookie, operation: 'logoutViaAPI' })

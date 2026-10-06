@@ -1,22 +1,11 @@
-import type { Page } from '@playwright/test'
-import type { SoloServerHandle } from './helpers/devServer'
+import type { SoloServerFixtures } from './helpers/solo'
 import { connect } from 'node:net'
-import { expect, test } from './fixtures'
-import { startSoloServer, stopSoloServer } from './helpers/devServer'
+import { test as base, expect } from './fixtures'
 import { findFreePort } from './helpers/server'
-import { loginViaToken, logoutViaUI, openSettingsAt } from './helpers/ui'
+import { completeSoloPasswordSetup, signInToSoloViaUI, soloServerFixtures } from './helpers/solo'
+import { logoutViaUI, openAppAs, openSettingsAt } from './helpers/ui'
 
-/** A password the hub's own validator accepts. */
-const SOLO_PASSWORD = 'correct-horse-battery-staple'
-
-async function completeSoloSetup(page: Page) {
-  const gate = page.getByTestId('password-setup-gate')
-  await expect(gate).toBeVisible()
-  await gate.getByLabel('New Password').fill(SOLO_PASSWORD)
-  await gate.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
-  await gate.getByRole('button', { name: 'Set Password' }).click()
-  await expect(gate).toBeHidden()
-}
+const test = base.extend<SoloServerFixtures>(soloServerFixtures)
 
 /**
  * Whether an address ACCEPTS a TCP connection.
@@ -50,19 +39,9 @@ async function accepts(port: number): Promise<boolean> {
  * row also appears in hub and dev modes.
  */
 test.describe('Network access', () => {
-  let solo: SoloServerHandle | undefined
-
-  test.beforeEach(async () => {
-    solo = await startSoloServer()
-  })
-
-  test.afterEach(async () => {
-    await stopSoloServer(solo)
-  })
-
-  test('publishes an address, then asks every address for the password', async ({ page }) => {
-    await page.goto(`${solo!.hubUrl}/`)
-    await completeSoloSetup(page)
+  test('publishes an address, then asks every address for the password', async ({ page, soloServer: solo }) => {
+    await page.goto(`${solo.hubUrl}/`)
+    await completeSoloPasswordSetup(page)
 
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
@@ -70,7 +49,7 @@ test.describe('Network access', () => {
 
     // -listen is reported read-only: it is a command-line option, never a
     // setting, and the panel adds addresses BESIDE it.
-    await expect(row.getByText(solo!.listen)).toBeVisible()
+    await expect(row.getByText(solo.listen)).toBeVisible()
     await expect(row.getByText('from -listen')).toBeVisible()
 
     // A SECOND port, beside the one the hub already serves on. The row
@@ -88,7 +67,7 @@ test.describe('Network access', () => {
     // The hub answers on the new address straight away -- no restart.
     expect(await accepts(port)).toBe(true)
 
-    // The panel offers no password field: `completeSoloSetup` stored one, and
+    // The panel offers no password field: `completeSoloPasswordSetup` stored one, and
     // the session it returned is what carried this Apply. A panel that still
     // asked for a first password would mean the setup reply never reached it.
     await expect(row.getByText(/Change it in Account → Password/)).toBeVisible()
@@ -103,22 +82,9 @@ test.describe('Network access', () => {
 
     // And the rule is armed: a browser with NO session lands on the sign-in
     // form even at the -listen address, which is loopback. Loopback buys no
-    // exemption once the account holds a password.
-    //
-    // The cookie has to go first: applying handed THIS browser a session, so a
-    // bare reload would prove only that a signed-in browser stays signed in.
-    await page.context().clearCookies()
-    await page.reload()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-
-    // The username is fixed: a solo hub has exactly one account.
-    const username = page.getByLabel('Username')
-    await expect(username).toHaveValue('solo')
-    await expect(username).toHaveAttribute('readonly', '')
-
-    await page.getByLabel('Password').fill(SOLO_PASSWORD)
-    await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
+    // exemption once the account holds a password. The helper also requires
+    // the fixed username: a solo hub has exactly one account.
+    await signInToSoloViaUI(page)
 
     // The session can be ended. This browser holds a real TCP session, and the
     // user must be able to sign out again.
@@ -131,9 +97,9 @@ test.describe('Network access', () => {
     await logoutViaUI(page)
   })
 
-  test('removes an address and stops answering there', async ({ page }) => {
-    await page.goto(`${solo!.hubUrl}/`)
-    await completeSoloSetup(page)
+  test('removes an address and stops answering there', async ({ page, soloServer: solo }) => {
+    await page.goto(`${solo.hubUrl}/`)
+    await completeSoloPasswordSetup(page)
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
 
@@ -163,12 +129,12 @@ test.describe('Network access', () => {
 
     // And the -listen address is never dropped, whatever the list says: Apply
     // merges it back in every time.
-    expect(await accepts(Number(solo!.listen.split(':').pop()))).toBe(true)
+    expect(await accepts(Number(solo.listen.split(':').pop()))).toBe(true)
   })
 
-  test('stores trusted proxy providers symbolically', async ({ page }) => {
-    await page.goto(`${solo!.hubUrl}/`)
-    await completeSoloSetup(page)
+  test('stores trusted proxy providers symbolically', async ({ page, soloServer: solo }) => {
+    await page.goto(`${solo.hubUrl}/`)
+    await completeSoloPasswordSetup(page)
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="trusted_proxy_ranges"]')
 
@@ -201,8 +167,7 @@ test.describe('Network access', () => {
  */
 test.describe('Network access outside solo mode', () => {
   test('keeps the section for the trusted-proxy row when the listen row is hidden', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
 
     const dialog = await openSettingsAt(page, 'admin-network')
     await expect(dialog.getByTestId('preferences-nav-admin-network')).toBeVisible()

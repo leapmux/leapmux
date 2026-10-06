@@ -10,10 +10,9 @@ import {
   signUpViaAPI,
   waitForEmailEnabled,
 } from './helpers/api'
-import { solveCaptchaViaUI } from './helpers/captcha'
 import { withCaptureSmtp } from './helpers/mail'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI } from './helpers/ui'
+import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI, submitLoginForm } from './helpers/ui'
 
 test.describe('Email verification', () => {
   test('signup with SMTP configured routes to verify-email and accepts the code', async ({ page, leapmuxServer }) => {
@@ -69,10 +68,7 @@ test.describe('Email verification', () => {
       await page.goto('/login')
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 
-      await page.getByLabel('Username').fill(username)
-      await page.getByLabel('Password').fill('password123')
-      await solveCaptchaViaUI(page)
-      await page.getByRole('button', { name: 'Sign in' }).click()
+      await submitLoginForm(page, username, 'password123')
       await expect(page).toHaveURL(/\/verify-email/)
     })
   })
@@ -82,14 +78,7 @@ test.describe('Email verification', () => {
     await waitForEmailEnabled(leapmuxServer.hubUrl)
 
     const username = `failclosed-${Date.now()}`
-    await page.goto('/signup')
-    await page.getByLabel('Username').fill(username)
-    await page.getByLabel('Display Name').fill('Fail Closed')
-    await page.getByLabel('Email').fill(`${username}@test.local`)
-    await page.getByLabel('New Password').fill('password123')
-    await page.getByLabel('Confirm Password').fill('password123')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Sign up' }).click()
+    await signUpViaUI(page, username, 'password123', 'Fail Closed', `${username}@test.local`)
     await expect(page.getByText(/sign-up failed|unavailable|failed/i)).toBeVisible()
     await expect(page).toHaveURL(/\/signup/)
 
@@ -112,10 +101,7 @@ test.describe('Email verification', () => {
 
     await withCaptureSmtp(leapmuxServer, async () => {
       await page.goto('/login')
-      await page.getByLabel('Username').fill(username)
-      await page.getByLabel('Password').fill('password123')
-      await solveCaptchaViaUI(page)
-      await page.getByRole('button', { name: 'Sign in' }).click()
+      await submitLoginForm(page, username, 'password123')
       await expect(page).toHaveURL(/\/verify-email/)
     })
   })

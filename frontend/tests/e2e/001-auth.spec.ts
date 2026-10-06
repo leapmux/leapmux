@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
-import { solveCaptchaViaUI } from './helpers/captcha'
-import { loginViaUI, logoutViaUI } from './helpers/ui'
+import { TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { loginViaUI, logoutViaUI, submitLoginForm } from './helpers/ui'
 
 // Where a successful login lands, and stays: `/` is the whole app, and
 // activating a workspace no longer changes the URL.
@@ -19,10 +19,7 @@ test.describe('Authentication', () => {
 
   test('should show error with wrong password', async ({ page }) => {
     await page.goto('/login')
-    await page.getByLabel('Username').fill('admin')
-    await page.getByLabel('Password').fill('wrongpassword')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Sign in' }).click()
+    await submitLoginForm(page, TEST_ADMIN_USERNAME, 'wrongpassword')
 
     // Should remain on the login page with an error. The test asserts the
     // error message FIRST because it is the only assertion here that WAITS for
@@ -93,10 +90,7 @@ test.describe('Authentication', () => {
     expect(page.url()).toContain(`redirect=${encodeURIComponent(REDIRECT_PROBE_PATH)}`)
 
     // Login
-    await page.getByLabel('Username').fill('admin')
-    await page.getByLabel('Password').fill('admin123')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Sign in' }).click()
+    await submitLoginForm(page, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
 
     // Should redirect back to the original page, query intact, not to the bare
     // `/` fallback.

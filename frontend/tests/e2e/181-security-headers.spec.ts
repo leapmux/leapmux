@@ -1,6 +1,7 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { elevateSessionViaAPI, loginViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { elevatedAdminSessionViaAPI } from './helpers/api'
+import { collectCspViolations } from './helpers/csp'
+import { authorizeURL } from './helpers/oauthApps'
 import { openTerminalViaUI } from './helpers/ui'
 
 /**
@@ -14,20 +15,6 @@ import { openTerminalViaUI } from './helpers/ui'
  * this spec watches for violations across a real flow rather than only reading
  * the header.
  */
-
-/** Every CSP violation the browser reports, in arrival order. */
-function collectCspViolations(page: Page): string[] {
-  const violations: string[] = []
-  // The console message is the one signal that covers BOTH a blocked resource
-  // and a blocked inline script; `securitypolicyviolation` needs a listener in
-  // the page, which a blocked script could itself prevent from installing.
-  page.on('console', (msg) => {
-    const text = msg.text()
-    if (text.includes('Content Security Policy') || text.includes('Refused to'))
-      violations.push(text)
-  })
-  return violations
-}
 
 test.describe('security headers', () => {
   test('serves a derived CSP and the transport headers on the app document', async ({ page }) => {
@@ -167,8 +154,6 @@ test.describe('security headers', () => {
  * browser walking a real consent shows either.
  */
 test.describe('the authorization server pages', () => {
-  const CONTROL_CLI_CLIENT_ID = 'leapmux-control-cli'
-
   test('the app document allows no off-origin form post', async ({ page }) => {
     const response = await page.goto('/')
     const csp = response!.headers()['content-security-policy'] ?? ''
@@ -185,20 +170,11 @@ test.describe('the authorization server pages', () => {
     // Anonymously the gate bounces to /login and the response that comes back
     // carries the SPA's policy, which is a different page and a different
     // answer.
-    const cookie = await loginViaAPI(leapmuxServer.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
 
-    const params = new URLSearchParams({
-      client_id: CONTROL_CLI_CLIENT_ID,
-      response_type: 'code',
-      code_challenge_method: 'S256',
-      redirect_uri: 'http://127.0.0.1:54321/callback',
-      state: 'state-csp',
-      code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-      installation_name: 'e2e-laptop',
-    })
+    // The control CLI, whose registered address is a loopback one.
     const res = await page.request.get(
-      `${leapmuxServer.hubUrl}/oauth/authorize?${params.toString()}`,
+      authorizeURL(leapmuxServer.hubUrl, { state: 'state-csp' }),
       { headers: { Cookie: cookie }, maxRedirects: 0 },
     )
     expect(res.status()).toBe(200)

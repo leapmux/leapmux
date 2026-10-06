@@ -1,15 +1,15 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers/ui'
+import { openAppAs } from './helpers/ui'
 import { openNewWorkspaceDialog } from './helpers/worktree'
 
 test.describe('Worker Registration', () => {
   // In dev mode, the worker is auto-registered with name "Local".
   // These tests verify the worker appears online in the UI.
 
-  test('should show worker online in new workspace dialog after approval', async ({ page }) => {
+  test('should show worker online in new workspace dialog after approval', async ({ page, leapmuxServer }) => {
     // Verifies that the auto-registered worker appears online
     // in the new workspace dialog. The initial onMount fetch should find it.
-    await loginViaUI(page)
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // Through the shared helper: the section header's `+` is a MENU now, so
     // "New workspace..." is an item inside it and the accessible name this
@@ -21,8 +21,8 @@ test.describe('Worker Registration', () => {
     await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
   })
 
-  test('should refresh worker list when clicking refresh button', async ({ page }) => {
-    await loginViaUI(page)
+  test('should refresh worker list when clicking refresh button', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // Through the shared helper: the section header's `+` is a MENU now, so
     // "New workspace..." is an item inside it and the accessible name this
@@ -39,8 +39,8 @@ test.describe('Worker Registration', () => {
     await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
   })
 
-  test('should not spin refresh button when selecting a directory', async ({ page }) => {
-    await loginViaUI(page)
+  test('should not spin refresh button when selecting a directory', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // Through the shared helper: the section header's `+` is a MENU now, so
     // "New workspace..." is an item inside it and the accessible name this
@@ -66,8 +66,8 @@ test.describe('Worker Registration', () => {
     expect(animation).toBe('none')
   })
 
-  test('should show updated worker list when dialog is re-opened', async ({ page }) => {
-    await loginViaUI(page)
+  test('should show updated worker list when dialog is re-opened', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
 
     // Through the shared helper: the section header's `+` is a MENU now, so
     // "New workspace..." is an item inside it and the accessible name this

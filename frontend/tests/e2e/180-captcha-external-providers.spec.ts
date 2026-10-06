@@ -1,7 +1,7 @@
 import type { DevServerHandle } from './helpers/devServer'
 import { test as base, expect } from '@playwright/test'
-import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
-import { startDevServer, stopDevServer } from './helpers/devServer'
+import { runCLI } from './helpers/cli'
+import { withAdminConfiguredDevServer } from './helpers/devServer'
 
 // Cloudflare's documented dummy keys: the site key always passes client
 // side and the secret always passes verification, so the spec never
@@ -92,15 +92,11 @@ async function setupServerWithProvider(
   secret: string,
   use: (server: DevServerHandle) => Promise<void>,
 ): Promise<void> {
-  const server = await startDevServer({ dataDirPrefix: `leapmux-e2e-captcha-${provider}` })
-  let cliConfigDir: string | undefined
-  try {
-    // Captcha configuration is an ONLINE admin RPC: `leapmux control admin
-    // captcha set` against the running hub, authenticated as the admin.
-    // There is no offline captcha verb any more, so the CLI needs a minted
-    // bearer rather than the hub's data dir.
-    const cfg = await mintCLITokenForAdmin(server)
-    cliConfigDir = cfg.path
+  // Captcha configuration is an ONLINE admin RPC: `leapmux control admin
+  // captcha set` against the running hub, authenticated as the admin.
+  // There is no offline captcha verb any more, so the CLI needs a minted
+  // bearer rather than the hub's data dir.
+  await withAdminConfiguredDevServer(`leapmux-e2e-captcha-${provider}`, async (cfg, server) => {
     await runCLI(cfg, [
       'admin',
       'captcha',
@@ -119,12 +115,7 @@ async function setupServerWithProvider(
     const shown = await runCLI(cfg, ['admin', 'captcha', 'show']) as Record<string, { effective_json?: unknown }>
     expect(shown['captcha.selected']?.effective_json).toBe(provider)
     expect(JSON.stringify(shown)).not.toContain(secret)
-
-    await use(server)
-  }
-  finally {
-    await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
-  }
+  }, use)
 }
 
 // One dedicated hub per provider, mirroring the 179 spec's per-algorithm

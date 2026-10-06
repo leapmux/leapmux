@@ -1,9 +1,10 @@
-import type { SoloServerHandle } from './helpers/devServer'
-import { expect, test } from './fixtures'
+import type { SoloServerFixtures } from './helpers/solo'
+import { test as base, expect } from './fixtures'
+import { withCleanup } from './helpers/cleanup'
 import { startSoloServer, stopSoloServer } from './helpers/devServer'
+import { fillSoloPasswordSetup, signInToSoloViaUI, soloServerFixtures } from './helpers/solo'
 
-/** A password the hub's own validator accepts. */
-const SOLO_PASSWORD = 'correct-horse-battery-staple'
+const test = base.extend<SoloServerFixtures>(soloServerFixtures)
 
 /**
  * The password-setup screen, on a solo hub reached over TCP.
@@ -16,18 +17,10 @@ const SOLO_PASSWORD = 'correct-horse-battery-staple'
  * address of its own, and this needs none.
  */
 test.describe('Password setup gate', () => {
-  let solo: SoloServerHandle | undefined
+  test.use({ soloListenHost: '0.0.0.0' })
 
-  test.beforeEach(async () => {
-    solo = await startSoloServer({ listenHost: '0.0.0.0' })
-  })
-
-  test.afterEach(async () => {
-    await stopSoloServer(solo)
-  })
-
-  test('blocks the app until the account has a password', async ({ page }) => {
-    await page.goto(`${solo!.hubUrl}/`)
+  test('blocks the app until the account has a password', async ({ page, soloServer: solo }) => {
+    await page.goto(`${solo.hubUrl}/`)
 
     // The whole app, not a dismissible notice. This is the only protected
     // setup action that a passwordless TCP caller can use.
@@ -44,8 +37,7 @@ test.describe('Password setup gate', () => {
     const submit = gate.getByRole('button', { name: 'Set Password' })
     await expect(submit).toBeDisabled()
 
-    await gate.getByLabel('New Password').fill(SOLO_PASSWORD)
-    await gate.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
+    await fillSoloPasswordSetup(gate)
     await expect(submit).toBeEnabled()
     await submit.click()
 
@@ -56,27 +48,20 @@ test.describe('Password setup gate', () => {
     await expect(gate).toBeHidden()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
 
-    // And the rule is armed for everybody ELSE. This browser keeps the session
-    // it was handed, so the cookie has to go before the reload -- otherwise the
-    // test would prove only that a signed-in browser stays signed in.
-    await page.context().clearCookies()
-    await page.reload()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-    await page.getByLabel('Password').fill(SOLO_PASSWORD)
-    await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
+    // And the rule is armed for everybody ELSE. The helper drops the session
+    // that this browser was handed before it reloads.
+    await signInToSoloViaUI(page)
     await expect(page.getByTestId('password-setup-gate')).toBeHidden()
   })
 
+  // A hub of its own on loopback alone, which the `0.0.0.0` hub of this file
+  // cannot show.
   test('restricts loopback TCP to password setup too', async ({ page }) => {
     const loopbackOnly = await startSoloServer()
-    try {
+    await withCleanup(async () => {
       await page.goto(`${loopbackOnly.hubUrl}/`)
       await expect(page.getByTestId('password-setup-gate')).toBeVisible()
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
-    }
-    finally {
-      await stopSoloServer(loopbackOnly)
-    }
+    }, () => stopSoloServer(loopbackOnly))
   })
 })

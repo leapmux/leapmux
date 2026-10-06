@@ -12,7 +12,7 @@ import { hasOptions } from '../../../src/components/chat/settingsGroups'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
-import { callHub, SESSION_COOKIE_NAME } from './api'
+import { callHub, SESSION_COOKIE_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
 import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
 import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
@@ -802,6 +802,28 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
 }
 
 /**
+ * Locate the step-up prompt that asks the user to prove a factor ("Verify your identity").
+ * The hub refuses a sensitive action on a session that proved no factor, and the client then opens this prompt.
+ */
+export function elevationPrompt(page: Page): Locator {
+  return page.getByRole('dialog', { name: 'Verify your identity' })
+}
+
+/**
+ * Require the step-up prompt, answer it with `password`, and return it.
+ * The caller asserts the outcome: the refused action runs again after a correct password, and the prompt shows an
+ * alert after a wrong one.
+ * `prompt` is the dialog of the app by default. The standalone `/elevate` page, where the hub sends a browser from an
+ * authorization request, carries the same password form, so a caller passes that page's card instead.
+ */
+export async function answerElevationPrompt(page: Page, password: string, prompt: Locator = elevationPrompt(page)): Promise<Locator> {
+  await expect(prompt, 'the hub asks the session to prove a factor').toBeVisible()
+  await prompt.getByTestId('elevate-password').fill(password)
+  await prompt.getByTestId('elevate-password-submit').click()
+  return prompt
+}
+
+/**
  * Open the agent info card and return its popover.
  *
  * The card is the popover of the status-bar info trigger. It carries the
@@ -859,15 +881,25 @@ const LOGIN_ATTEMPTS = 3
 const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
 
 /**
- * Login via the UI form. Navigates to /login, fills credentials, solves the
- * captcha, and returns once the authenticated app shell is on screen.
+ * Fill the sign-in form on the current page, solve its captcha, and submit it.
+ * The caller asserts the outcome: a test of a refused sign-in reads the error, and `loginViaUI` waits for the app.
  */
-export async function loginViaUI(page: Page, username = 'admin', password = 'admin123') {
-  await page.goto('/login')
+export async function submitLoginForm(page: Page, username: string, password: string): Promise<void> {
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
   await solveCaptchaViaUI(page)
   await page.getByRole('button', { name: 'Sign in' }).click()
+}
+
+/**
+ * Login via the UI form. Navigates to /login, fills credentials, solves the
+ * captcha, and returns once the authenticated app shell is on screen.
+ * Use it for a test of the sign-in itself. A test that only needs a signed-in app uses `openAppAs`, which costs no
+ * captcha solve.
+ */
+export async function loginViaUI(page: Page, username = TEST_ADMIN_USERNAME, password = TEST_ADMIN_PASSWORD) {
+  await page.goto('/login')
+  await submitLoginForm(page, username, password)
 
   // Login selects /. Workspace activation does not change the path, so the URL check can match exactly.
   // Wait for the authenticated shell trigger. Do not wait for networkidle after an ALTCHA challenge.
@@ -1120,6 +1152,16 @@ export async function readSessionCookie(page: Page, step: string): Promise<strin
   if (!session?.value)
     throw new Error(`${step} did not set a session cookie on the browser context`)
   return `${SESSION_COOKIE_NAME}=${session.value}`
+}
+
+/**
+ * Sign in with the session `token`, load the app, and wait for the authenticated shell.
+ * The shell trigger proves that the app accepted the session, so a later step does not act on the sign-in page.
+ */
+export async function openAppAs(page: Page, token: string): Promise<void> {
+  await loginViaToken(page, token)
+  await page.goto('/')
+  await expect(appMenuTrigger(page), 'the app accepts the session').toBeVisible()
 }
 
 /**

@@ -11,44 +11,17 @@
 
 import { expect, test } from './fixtures'
 import {
+  callHub,
+  elevatedAdminSessionViaAPI,
   elevateSessionViaAPI,
-  loginViaAPI,
+  getUserId,
+  hubRequest,
+  listMyAPITokensViaAPI,
   signUpViaAPI,
-  TEST_ADMIN_PASSWORD,
-  TEST_ADMIN_USERNAME,
   updateSettingViaAPI,
 } from './helpers/api'
+import { authorizeURL, listAppsViaAPI, registerAppViaAPI } from './helpers/oauthApps'
 import { loginViaToken } from './helpers/ui'
-
-/** Register an app through the Connect RPC, as the given session. */
-async function registerApp(
-  request: import('@playwright/test').APIRequestContext,
-  hubUrl: string,
-  cookie: string,
-  body: Record<string, unknown>,
-): Promise<{ clientId: string, clientSecret: string }> {
-  const res = await request.post(`${hubUrl}/leapmux.v1.AppService/RegisterApp`, {
-    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-    data: body,
-  })
-  expect(res.status(), await res.text()).toBe(200)
-  const json = await res.json() as { app: { clientId: string }, clientSecret?: string }
-  return { clientId: json.app.clientId, clientSecret: json.clientSecret ?? '' }
-}
-
-/** A consent URL for one app, with a syntactically valid PKCE challenge. */
-function authorizeURL(hubUrl: string, clientId: string, redirectUri: string): string {
-  const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: 'code',
-    code_challenge_method: 'S256',
-    redirect_uri: redirectUri,
-    state: 'state-visibility',
-    code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-    installation_name: 'e2e-laptop',
-  })
-  return `${hubUrl}/oauth/authorize?${params.toString()}`
-}
 
 test.describe('app registration visibility', () => {
   test('a second account can neither see nor authorize a private app', async ({ page, leapmuxServer }) => {
@@ -60,7 +33,7 @@ test.describe('app registration visibility', () => {
     // Registering is an elevated write on the hub (see appWriteGate), so every
     // account that registers here proves a factor first.
     await elevateSessionViaAPI(hubUrl, ownerCookie, 'password123')
-    const { clientId } = await registerApp(page.request, hubUrl, ownerCookie, {
+    const { clientId } = await registerAppViaAPI(hubUrl, ownerCookie, {
       clientName: 'Owner private app',
       redirectUris: ['https://owner.example.com/callback'],
       scopes: ['SCOPE_WORKSPACE_READ'],
@@ -69,27 +42,19 @@ test.describe('app registration visibility', () => {
     })
 
     // The owner sees it in their own listing.
-    const ownerList = await page.request.post(`${hubUrl}/leapmux.v1.AppService/ListApps`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': ownerCookie },
-      data: {},
-    })
-    expect(await ownerList.text()).toContain(clientId)
+    expect(await listAppsViaAPI(hubUrl, ownerCookie)).toContain(clientId)
 
     // A SECOND account does not.
     const strangerName = `app-stranger-${Date.now()}`
     const strangerCookie = await signUpViaAPI(hubUrl, strangerName, 'password123', 'Stranger', `${strangerName}@test.local`)
-    const strangerList = await page.request.post(`${hubUrl}/leapmux.v1.AppService/ListApps`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': strangerCookie },
-      data: {},
-    })
-    expect(await strangerList.text()).not.toContain(clientId)
+    expect(await listAppsViaAPI(hubUrl, strangerCookie)).not.toContain(clientId)
 
     // And CANNOT authorize it. This is the assertion the spec exists for: a
     // listing that hides a row is worth nothing if the consent form still
     // renders for a stranger who was handed the link.
     await elevateSessionViaAPI(hubUrl, strangerCookie, 'password123')
     const consent = await page.request.get(
-      authorizeURL(hubUrl, clientId, 'https://owner.example.com/callback'),
+      authorizeURL(hubUrl, { clientId, redirectUri: 'https://owner.example.com/callback', state: 'state-visibility' }),
       { headers: { Cookie: strangerCookie }, maxRedirects: 0 },
     )
     const body = await consent.text()
@@ -104,9 +69,8 @@ test.describe('app registration visibility', () => {
   test('an administrator app appears for a second account', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
 
-    const adminCookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, adminCookie, TEST_ADMIN_PASSWORD)
-    const { clientId } = await registerApp(page.request, hubUrl, adminCookie, {
+    const adminCookie = await elevatedAdminSessionViaAPI(hubUrl)
+    const { clientId } = await registerAppViaAPI(hubUrl, adminCookie, {
       clientName: 'Hub-wide app',
       redirectUris: ['https://hubwide.example.com/callback'],
       scopes: ['SCOPE_WORKSPACE_READ'],
@@ -121,7 +85,7 @@ test.describe('app registration visibility', () => {
     // It AUTHORIZES: the consent form renders for an account that does not own
     // it, which is what hub-wide means.
     const consent = await page.request.get(
-      authorizeURL(hubUrl, clientId, 'https://hubwide.example.com/callback'),
+      authorizeURL(hubUrl, { clientId, redirectUri: 'https://hubwide.example.com/callback', state: 'state-visibility' }),
       { headers: { Cookie: userCookie }, maxRedirects: 0 },
     )
     expect(consent.status()).toBe(200)
@@ -131,24 +95,17 @@ test.describe('app registration visibility', () => {
 
     // It is READ-ONLY to them: the listing they may edit does not hold it, and
     // an edit is refused as not-found.
-    const list = await page.request.post(`${hubUrl}/leapmux.v1.AppService/ListApps`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': userCookie },
-      data: {},
-    })
-    expect(await list.text()).not.toContain(clientId)
+    expect(await listAppsViaAPI(hubUrl, userCookie)).not.toContain(clientId)
 
-    const edit = await page.request.post(`${hubUrl}/leapmux.v1.AppService/UpdateApp`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': userCookie },
-      data: { clientId, clientName: 'stolen' },
-    })
-    expect(edit.status()).toBe(404)
+    const edit = await hubRequest(hubUrl, 'AppService/UpdateApp', { clientId, clientName: 'stolen' }, { cookie: userCookie })
+    expect(edit.status).toBe(404)
   })
 
   // A non-administrator cannot register an app whose CEILING reaches hub
   // administration, and the refusal lands at REGISTRATION rather than at the
   // consent screen: a refusal there would arrive after the app existed and its
   // operator was told it was registered.
-  test('refuses an admin ceiling from an ordinary account', async ({ page, leapmuxServer }) => {
+  test('refuses an admin ceiling from an ordinary account', async ({ leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
     const name = `app-escalate-${Date.now()}`
     const cookie = await signUpViaAPI(hubUrl, name, 'password123', 'Escalator', `${name}@test.local`)
@@ -156,22 +113,19 @@ test.describe('app registration visibility', () => {
     // elevation gate one step in front of it.
     await elevateSessionViaAPI(hubUrl, cookie, 'password123')
 
-    const res = await page.request.post(`${hubUrl}/leapmux.v1.AppService/RegisterApp`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-      data: {
-        clientName: 'Escalating app',
-        redirectUris: ['https://escalate.example.com/callback'],
-        scopes: ['SCOPE_WORKSPACE_READ', 'SCOPE_ADMIN_USERS'],
-        visibility: 'APP_VISIBILITY_PRIVATE',
-      },
-    })
-    expect(res.status()).toBe(403)
+    const res = await hubRequest(hubUrl, 'AppService/RegisterApp', {
+      clientName: 'Escalating app',
+      redirectUris: ['https://escalate.example.com/callback'],
+      scopes: ['SCOPE_WORKSPACE_READ', 'SCOPE_ADMIN_USERS'],
+      visibility: 'APP_VISIBILITY_PRIVATE',
+    }, { cookie })
+    expect(res.status).toBe(403)
     expect(await res.text()).toContain('admin:users')
   })
 
   // A hub-wide registration needs an administrator. The visibility field is
   // what a caller asks for; the hub decides.
-  test('refuses a hub-wide registration from an ordinary account', async ({ page, leapmuxServer }) => {
+  test('refuses a hub-wide registration from an ordinary account', async ({ leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
     const name = `app-hubwide-${Date.now()}`
     const cookie = await signUpViaAPI(hubUrl, name, 'password123', 'Hopeful', `${name}@test.local`)
@@ -179,16 +133,13 @@ test.describe('app registration visibility', () => {
     // elevation gate one step in front of it.
     await elevateSessionViaAPI(hubUrl, cookie, 'password123')
 
-    const res = await page.request.post(`${hubUrl}/leapmux.v1.AppService/RegisterApp`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-      data: {
-        clientName: 'Would-be catalogue app',
-        redirectUris: ['https://hopeful.example.com/callback'],
-        scopes: ['SCOPE_WORKSPACE_READ'],
-        visibility: 'APP_VISIBILITY_HUB_WIDE',
-      },
-    })
-    expect(res.status()).toBe(403)
+    const res = await hubRequest(hubUrl, 'AppService/RegisterApp', {
+      clientName: 'Would-be catalogue app',
+      redirectUris: ['https://hopeful.example.com/callback'],
+      scopes: ['SCOPE_WORKSPACE_READ'],
+      visibility: 'APP_VISIBILITY_HUB_WIDE',
+    }, { cookie })
+    expect(res.status).toBe(403)
     expect(await res.text()).toContain('administrator')
   })
 })
@@ -201,39 +152,24 @@ test.describe('disconnecting an app', () => {
    * the rows this test disconnects are the same shape a consent leg produces.
    */
   async function issueCredential(
-    request: import('@playwright/test').APIRequestContext,
     hubUrl: string,
     cookie: string,
     userId: string,
     clientId: string,
     installationName: string,
   ): Promise<void> {
-    const res = await request.post(`${hubUrl}/leapmux.v1.AdminUserService/IssueAPIToken`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-      data: {
-        userId,
-        clientId,
-        installationName,
-        ttlSeconds: '3600',
-        scopes: ['workspace:read'],
-      },
-    })
-    expect(res.status(), await res.text()).toBe(200)
+    await callHub(hubUrl, 'AdminUserService/IssueAPIToken', {
+      userId,
+      clientId,
+      installationName,
+      ttlSeconds: '3600',
+      scopes: ['workspace:read'],
+    }, { cookie, operation: `issueCredential(${installationName})` })
   }
 
   /** Every live credential this session's account holds, by installation. */
-  async function listInstallations(
-    request: import('@playwright/test').APIRequestContext,
-    hubUrl: string,
-    cookie: string,
-  ): Promise<string[]> {
-    const res = await request.post(`${hubUrl}/leapmux.v1.UserService/ListMyAPITokens`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-      data: {},
-    })
-    expect(res.status(), await res.text()).toBe(200)
-    const body = await res.json() as { tokens?: Array<{ installationName?: string }> }
-    return (body.tokens ?? []).map(t => t.installationName ?? '')
+  async function listInstallations(hubUrl: string, cookie: string): Promise<string[]> {
+    return (await listMyAPITokensViaAPI(hubUrl, cookie)).map(token => token.installationName)
   }
 
   // Disconnecting takes EVERY machine the app runs on, in one call.
@@ -242,25 +178,19 @@ test.describe('disconnecting an app', () => {
   // ending that took one installation would leave the app working everywhere
   // else, which is exactly what somebody who stopped trusting an app is trying
   // to prevent -- and with a flat credential list they could not tell.
-  test('kills every credential the app holds, and no other app\'s', async ({ page, leapmuxServer }) => {
+  test('kills every credential the app holds, and no other app\'s', async ({ leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const adminCookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, adminCookie, TEST_ADMIN_PASSWORD)
+    const adminCookie = await elevatedAdminSessionViaAPI(hubUrl)
+    const userId = await getUserId(hubUrl, adminCookie)
 
-    const me = await page.request.post(`${hubUrl}/leapmux.v1.AuthService/GetCurrentUser`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': adminCookie },
-      data: {},
-    })
-    const userId = ((await me.json()) as { user: { id: string } }).user.id
-
-    const { clientId } = await registerApp(page.request, hubUrl, adminCookie, {
+    const { clientId } = await registerAppViaAPI(hubUrl, adminCookie, {
       clientName: 'Two-machine app',
       redirectUris: ['https://two.example.com/callback'],
       scopes: ['SCOPE_WORKSPACE_READ'],
       visibility: 'APP_VISIBILITY_HUB_WIDE',
       clientType: 'APP_CLIENT_TYPE_PUBLIC',
     })
-    const other = await registerApp(page.request, hubUrl, adminCookie, {
+    const other = await registerAppViaAPI(hubUrl, adminCookie, {
       clientName: 'Untouched app',
       redirectUris: ['https://untouched.example.com/callback'],
       scopes: ['SCOPE_WORKSPACE_READ'],
@@ -268,21 +198,19 @@ test.describe('disconnecting an app', () => {
       clientType: 'APP_CLIENT_TYPE_PUBLIC',
     })
 
-    await issueCredential(page.request, hubUrl, adminCookie, userId, clientId, 'laptop')
-    await issueCredential(page.request, hubUrl, adminCookie, userId, clientId, 'desktop')
-    await issueCredential(page.request, hubUrl, adminCookie, userId, other.clientId, 'ci-runner')
-    expect(await listInstallations(page.request, hubUrl, adminCookie))
+    await issueCredential(hubUrl, adminCookie, userId, clientId, 'laptop')
+    await issueCredential(hubUrl, adminCookie, userId, clientId, 'desktop')
+    await issueCredential(hubUrl, adminCookie, userId, other.clientId, 'ci-runner')
+    expect(await listInstallations(hubUrl, adminCookie))
       .toEqual(expect.arrayContaining(['laptop', 'desktop', 'ci-runner']))
 
-    const disconnect = await page.request.post(`${hubUrl}/leapmux.v1.UserService/DisconnectApp`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': adminCookie },
-      data: { clientId },
+    const disconnect = await callHub<{ revokedCredentialCount?: string }>(hubUrl, 'UserService/DisconnectApp', { clientId }, {
+      cookie: adminCookie,
+      operation: 'DisconnectApp',
     })
-    expect(disconnect.status(), await disconnect.text()).toBe(200)
-    expect((await disconnect.json() as { revokedCredentialCount?: string }).revokedCredentialCount)
-      .toBe('2')
+    expect(disconnect.revokedCredentialCount).toBe('2')
 
-    const left = await listInstallations(page.request, hubUrl, adminCookie)
+    const left = await listInstallations(hubUrl, adminCookie)
     expect(left).not.toContain('laptop')
     expect(left).not.toContain('desktop')
     expect(left).toContain('ci-runner')
@@ -328,8 +256,8 @@ test.describe('open registration', () => {
   // breath, or a conformant library never finds it.
   test('succeeds once an administrator turns the setting on', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const adminCookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, adminCookie, TEST_ADMIN_PASSWORD)
+    const adminCookie = await elevatedAdminSessionViaAPI(hubUrl)
+    // The suite reset turns the setting off again before the next test.
     await updateSettingViaAPI(hubUrl, adminCookie, 'open_app_registration', 'true')
 
     const res = await page.request.post(`${hubUrl}/oauth/register`, {
@@ -355,7 +283,7 @@ test.describe('open registration', () => {
     // The registered app is authorizable, and the consent screen labels it
     // UNVERIFIED -- nobody vouched for something that registered itself.
     await loginViaToken(page, adminCookie)
-    await page.goto(authorizeURL(hubUrl, registered.client_id as string, 'https://anon.example.com/callback'))
+    await page.goto(authorizeURL(hubUrl, { clientId: registered.client_id as string, redirectUri: 'https://anon.example.com/callback', state: 'state-visibility' }))
     await expect(page.getByRole('heading', { name: /unverified app/i })).toBeVisible()
   })
 })

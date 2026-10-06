@@ -1,7 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import type { DevServerHandle } from './devServer'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { startSoloServer, startUnseededDevServer } from './devServer'
+import { mintCLITokenForAdmin } from './cli'
+import { startSoloServer, startUnseededDevServer, withAdminConfiguredDevServer } from './devServer'
+import { stopProcess } from './process'
 
 const state = vi.hoisted(() => ({
   tmpDir: '',
@@ -16,6 +19,18 @@ vi.mock('./server', async importOriginal => ({
   findFreePort: () => { throw new Error('the hub must assign its own port') },
   waitForHubReady: async (url: string) => { state.waitedURL = url },
 }))
+
+vi.mock('./api', async importOriginal => ({
+  ...await importOriginal<typeof import('./api')>(),
+  closeTestChannels: vi.fn(async () => {}),
+  getUserId: vi.fn(async () => 'admin-user'),
+  getWorkerId: vi.fn(async () => 'worker-1'),
+  signUpViaAPI: vi.fn(async () => 'leapmux-session=admin'),
+}))
+
+vi.mock('./cli', () => ({ mintCLITokenForAdmin: vi.fn() }))
+
+vi.mock('./process', () => ({ stopProcess: vi.fn(async () => {}) }))
 
 vi.mock('./processRegistry', async (importOriginal) => {
   const { EventEmitter } = await import('node:events')
@@ -80,5 +95,56 @@ describe('startUnseededDevServer', () => {
     expect(server.listen).toBe('0.0.0.0:49123')
     expect(server.hubUrl).toBe('http://127.0.0.1:49123')
     expect(state.waitedURL).toBe(server.hubUrl)
+  })
+})
+
+describe('withAdminConfiguredDevServer', () => {
+  /** Mint a CLI credential directory that exists on disk, as the real mint writes one. */
+  function mintCredentialDirectory(): string {
+    const path = join(state.tmpDir, 'cli-credentials')
+    mkdirSync(path, { recursive: true })
+    vi.mocked(mintCLITokenForAdmin).mockResolvedValue({ path, hubURL: 'http://localhost:49123' } as Awaited<ReturnType<typeof mintCLITokenForAdmin>>)
+    return path
+  }
+
+  it('configures the seeded server through the CLI, runs the test, then stops the server and removes the credentials', async () => {
+    createScratchRoot()
+    vi.mocked(stopProcess).mockClear()
+    const credentials = mintCredentialDirectory()
+    const steps: string[] = []
+    let served: DevServerHandle | undefined
+    await withAdminConfiguredDevServer('captcha-test', async (cli, server) => {
+      steps.push(`configure ${cli.path === credentials} ${server.adminToken}`)
+    }, async (server) => {
+      served = server
+      steps.push(`use ${server.hubUrl}`)
+      expect(stopProcess).not.toHaveBeenCalled()
+    })
+    expect(steps).toEqual(['configure true leapmux-session=admin', 'use http://localhost:49123'])
+    expect(stopProcess).toHaveBeenCalledTimes(1)
+    expect(existsSync(credentials)).toBe(false)
+    expect(existsSync(served!.dataDir)).toBe(false)
+  })
+
+  it('stops the server and removes the credentials when the configuration fails, and never runs the test', async () => {
+    createScratchRoot()
+    vi.mocked(stopProcess).mockClear()
+    const credentials = mintCredentialDirectory()
+    const failure = new Error('The captcha setting was refused.')
+    const use = vi.fn(async () => {})
+    await expect(withAdminConfiguredDevServer('captcha-test', async () => {
+      throw failure
+    }, use)).rejects.toBe(failure)
+    expect(use).not.toHaveBeenCalled()
+    expect(stopProcess).toHaveBeenCalledTimes(1)
+    expect(existsSync(credentials)).toBe(false)
+  })
+
+  it('stops the server when the CLI credential cannot be minted', async () => {
+    createScratchRoot()
+    vi.mocked(stopProcess).mockClear()
+    vi.mocked(mintCLITokenForAdmin).mockRejectedValue(new Error('The mint was refused.'))
+    await expect(withAdminConfiguredDevServer('captcha-test', async () => {}, async () => {})).rejects.toThrow('The mint was refused.')
+    expect(stopProcess).toHaveBeenCalledTimes(1)
   })
 })

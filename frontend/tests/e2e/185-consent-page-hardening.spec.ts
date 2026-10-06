@@ -13,63 +13,45 @@
  */
 
 import { expect, test } from './fixtures'
-import { elevateSessionViaAPI, loginViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { elevatedAdminSessionViaAPI } from './helpers/api'
+import { collectCspViolations } from './helpers/csp'
+import { authorizeURL, registerAppViaAPI } from './helpers/oauthApps'
 import { loginViaToken } from './helpers/ui'
 
-/** Register an app whose name is chosen to be hostile. */
-async function registerApp(
-  request: import('@playwright/test').APIRequestContext,
-  hubUrl: string,
-  cookie: string,
-  clientName: string,
-): Promise<string> {
-  const res = await request.post(`${hubUrl}/leapmux.v1.AppService/RegisterApp`, {
-    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-    data: {
-      clientName,
-      redirectUris: ['https://hostile.example.com/callback'],
-      scopes: ['SCOPE_WORKSPACE_READ'],
-      visibility: 'APP_VISIBILITY_HUB_WIDE',
-      clientType: 'APP_CLIENT_TYPE_PUBLIC',
-    },
+/** The callback of every app that this spec registers: an address that is not loopback. */
+const HOSTILE_REDIRECT_URI = 'https://hostile.example.com/callback'
+
+/** Register a hub-wide app whose name is chosen to be hostile. */
+async function registerApp(hubUrl: string, cookie: string, clientName: string): Promise<string> {
+  const { clientId } = await registerAppViaAPI(hubUrl, cookie, {
+    clientName,
+    redirectUris: [HOSTILE_REDIRECT_URI],
+    scopes: ['SCOPE_WORKSPACE_READ'],
+    visibility: 'APP_VISIBILITY_HUB_WIDE',
+    clientType: 'APP_CLIENT_TYPE_PUBLIC',
   })
-  expect(res.status(), await res.text()).toBe(200)
-  const json = await res.json() as { app: { clientId: string } }
-  return json.app.clientId
+  return clientId
 }
 
-function authorizeURL(hubUrl: string, clientId: string): string {
-  const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: 'code',
-    code_challenge_method: 'S256',
-    redirect_uri: 'https://hostile.example.com/callback',
-    state: 'state-hardening',
-    code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-    installation_name: 'e2e-laptop',
-  })
-  return `${hubUrl}/oauth/authorize?${params.toString()}`
+/** The consent page of one app of this spec. */
+function consentURL(hubUrl: string, clientId: string): string {
+  return authorizeURL(hubUrl, { clientId, redirectUri: HOSTILE_REDIRECT_URI, state: 'state-hardening' })
 }
 
 test.describe('consent page hardening', () => {
   test('an app name carrying markup renders as text', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(hubUrl)
 
     // A name that is markup, an attribute break-out, and a quotation mark at
     // once. Each would land somewhere different if the template interpolated
     // rather than escaped.
     const hostile = '<img src=x onerror=alert(1)>" autofocus x="'
-    const clientId = await registerApp(page.request, hubUrl, cookie, hostile)
+    const clientId = await registerApp(hubUrl, cookie, hostile)
 
     await loginViaToken(page, cookie)
-    const violations: string[] = []
-    page.on('console', (msg) => {
-      if (msg.text().includes('Content Security Policy') || msg.text().includes('Refused to'))
-        violations.push(msg.text())
-    })
-    await page.goto(authorizeURL(hubUrl, clientId))
+    const violations = collectCspViolations(page)
+    await page.goto(consentURL(hubUrl, clientId))
 
     // The name is TEXT. No element came from it, and the page's own document
     // carries no image the registrant chose.
@@ -92,14 +74,13 @@ test.describe('consent page hardening', () => {
   // hub-authored and the name appears inside a paragraph that attributes it.
   test('keeps the chosen name out of the heading', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(hubUrl)
 
     const impersonating = 'LeapMux Security Check'
-    const clientId = await registerApp(page.request, hubUrl, cookie, impersonating)
+    const clientId = await registerApp(hubUrl, cookie, impersonating)
 
     await loginViaToken(page, cookie)
-    await page.goto(authorizeURL(hubUrl, clientId))
+    await page.goto(consentURL(hubUrl, clientId))
 
     const heading = page.getByRole('heading', { level: 1 })
     await expect(heading).toBeVisible()
@@ -114,23 +95,17 @@ test.describe('consent page hardening', () => {
   // telling them it runs any command on their machine.
   test('states each permission in a sentence a person can act on', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
+    const cookie = await elevatedAdminSessionViaAPI(hubUrl)
 
-    const res = await page.request.post(`${hubUrl}/leapmux.v1.AppService/RegisterApp`, {
-      headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-      data: {
-        clientName: 'Wide app',
-        redirectUris: ['https://hostile.example.com/callback'],
-        scopes: ['SCOPE_TERMINAL_WRITE', 'SCOPE_TUNNEL_OPEN'],
-        visibility: 'APP_VISIBILITY_HUB_WIDE',
-      },
+    const { clientId } = await registerAppViaAPI(hubUrl, cookie, {
+      clientName: 'Wide app',
+      redirectUris: [HOSTILE_REDIRECT_URI],
+      scopes: ['SCOPE_TERMINAL_WRITE', 'SCOPE_TUNNEL_OPEN'],
+      visibility: 'APP_VISIBILITY_HUB_WIDE',
     })
-    expect(res.status(), await res.text()).toBe(200)
-    const clientId = ((await res.json()) as { app: { clientId: string } }).app.clientId
 
     await loginViaToken(page, cookie)
-    await page.goto(authorizeURL(hubUrl, clientId))
+    await page.goto(consentURL(hubUrl, clientId))
 
     // The CONSEQUENCE, always beside the token -- never a token on its own.
     await expect(page.getByText(/runs any command on your machine/)).toBeVisible()
@@ -158,9 +133,8 @@ test.describe('consent page hardening', () => {
   // fetches nothing at all.
   test('fetches no third-party resource', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
-    const clientId = await registerApp(page.request, hubUrl, cookie, 'Beacon app')
+    const cookie = await elevatedAdminSessionViaAPI(hubUrl)
+    const clientId = await registerApp(hubUrl, cookie, 'Beacon app')
 
     const offOrigin: string[] = []
     page.on('request', (req) => {
@@ -169,7 +143,7 @@ test.describe('consent page hardening', () => {
     })
 
     await loginViaToken(page, cookie)
-    await page.goto(authorizeURL(hubUrl, clientId))
+    await page.goto(consentURL(hubUrl, clientId))
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
 
     expect(offOrigin, 'a consent page must fetch nothing off-origin').toEqual([])
@@ -192,15 +166,10 @@ test.describe('consent page hardening', () => {
    */
   test('a browser completes the redirect to a non-loopback app', async ({ page, leapmuxServer }) => {
     const hubUrl = leapmuxServer.hubUrl
-    const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
-    const clientId = await registerApp(page.request, hubUrl, cookie, 'HTTPS app')
+    const cookie = await elevatedAdminSessionViaAPI(hubUrl)
+    const clientId = await registerApp(hubUrl, cookie, 'HTTPS app')
 
-    const violations: string[] = []
-    page.on('console', (msg) => {
-      if (msg.text().includes('Content Security Policy') || msg.text().includes('Refused to'))
-        violations.push(msg.text())
-    })
+    const violations = collectCspViolations(page)
 
     // The redirect target is off-origin and unreachable, so the navigation fails
     // to load. Record what the browser tried to reach rather than waiting for a
@@ -212,15 +181,19 @@ test.describe('consent page hardening', () => {
     })
 
     await loginViaToken(page, cookie)
-    await page.goto(authorizeURL(hubUrl, clientId))
+    await page.goto(consentURL(hubUrl, clientId))
     await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Allow' }).click().catch(() => {
     // The navigation fails to resolve the host, which is expected.
     })
-    await page.waitForTimeout(500)
 
-    expect(violations.filter(v => v.includes('form-action')), 'the browser must not block the consent form from reaching the app').toEqual([])
+    // Wait for the outcome of the submit rather than for a fixed time: the
+    // browser either attempts the redirect or reports that the policy refused
+    // it. Then the refusal is read first, because it names the directive.
+    const formActionRefusals = () => violations.filter(v => v.includes('form-action'))
+    await expect.poll(() => attempted.length + formActionRefusals().length, { message: 'the submit reaches an outcome' }).toBeGreaterThan(0)
+    expect(formActionRefusals(), 'the browser must not block the consent form from reaching the app').toEqual([])
     expect(attempted.length, 'the browser must have attempted the redirect to the app\'s own address').toBeGreaterThan(0)
     expect(attempted[0]).toContain('code=')
   })

@@ -9,6 +9,7 @@ import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import {
   closeTestChannels,
   deleteAllWorkspacesViaAPI,
+  elevateSessionViaAPI,
   openPinnedModeAgentViaAPI,
   resetAllUserSettingsViaAPI,
   resetHubSettingsViaAPI,
@@ -257,12 +258,15 @@ export const test = base.extend<
   // without a visible cause. For example, a custom terminal palette enables its
   // theme-mode control and can break a later disabled-control assertion.
   // A hub setting reaches every later test. For example, a broken SMTP setting makes a later signup fail closed.
+  // A test can also drop the elevation of the shared session, as 083 does, and every hub-settings write through that
+  // session then fails. So the reset elevates the session again, also when no setting needs a reset.
   // Each workspace fixture depends on this reset, so the reset cannot remove
   // a workspace that the current test creates.
-  // The three resets are independent, so they run together, and the fixture reports every failure in one error.
+  // The four steps are independent, so they run together, and the fixture reports every failure in one error.
   hubStateReset: [async ({ leapmuxServer }, use) => {
     const { hubUrl, adminToken, baselineHubSettings } = leapmuxServer
     await finishCleanup([
+      elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD),
       deleteAllWorkspacesViaAPI(hubUrl, adminToken),
       resetAllUserSettingsViaAPI(hubUrl, adminToken),
       resetHubSettingsViaAPI(hubUrl, adminToken, { baseline: baselineHubSettings, password: TEST_ADMIN_PASSWORD }),

@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI } from './helpers/ui'
+import { openAppAs } from './helpers/ui'
 import { openNewWorkspaceDialog } from './helpers/worktree'
 
 /**
@@ -15,8 +15,8 @@ import { openNewWorkspaceDialog } from './helpers/worktree'
  * here. `DriveSelector.test.tsx` and `DirectorySelector.test.tsx` carry it.
  */
 test.describe('Directory picker root', () => {
-  test('roots the tree at the filesystem root', async ({ page }) => {
-    await loginViaUI(page)
+  test('roots the tree at the filesystem root', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
     await openNewWorkspaceDialog(page)
 
     const rootNode = page.locator('[data-testid="tree-root-node"]:visible')
@@ -24,8 +24,8 @@ test.describe('Directory picker root', () => {
     await expect(rootNode.locator('[data-testid="tree-row-name"]')).toHaveText('/')
   })
 
-  test('can browse to a directory outside the home directory', async ({ page }) => {
-    await loginViaUI(page)
+  test('can browse to a directory outside the home directory', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
     await openNewWorkspaceDialog(page)
 
     await expect(page.locator('[data-testid="tree-root-node"]:visible')).toBeVisible()
@@ -51,8 +51,8 @@ test.describe('Directory picker root', () => {
     await expect(pathBox).toHaveValue(/^\/(private|tmp)/)
   })
 
-  test('reveals the home directory without a click', async ({ page }) => {
-    await loginViaUI(page)
+  test('reveals the home directory without a click', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
     await openNewWorkspaceDialog(page)
 
     await expect(page.locator('[data-testid="tree-root-node"]:visible')).toBeVisible()
@@ -70,8 +70,8 @@ test.describe('Directory picker root', () => {
     await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(0)
   })
 
-  test('the home button selects the home directory', async ({ page }) => {
-    await loginViaUI(page)
+  test('the home button selects the home directory', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
     await openNewWorkspaceDialog(page)
 
     await expect(page.locator('[data-testid="tree-root-node"]:visible')).toBeVisible()

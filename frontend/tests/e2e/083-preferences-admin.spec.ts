@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
-import { loginViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
-import { loginViaToken, openSettingsAt } from './helpers/ui'
+import { freshAdminSessionViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
+import { answerElevationPrompt, elevationPrompt, loginViaToken, openSettingsAt } from './helpers/ui'
 
 test.describe('Preferences administration groups', () => {
   test('admin sees the administration groups and can change session duration', async ({ page, leapmuxServer }) => {
@@ -27,11 +27,7 @@ test.describe('Preferences administration groups', () => {
     await expect(dialog).not.toBeVisible()
     const reopened = await openSettingsAt(page, 'admin-general')
     await expect(reopened.locator('[data-setting-id="session_duration_seconds"] input[type="number"]')).toHaveValue('7200')
-
-    // Reset back to the default so the change cannot leak into a later test
-    // on this worker's shared hub.
-    await reopened.locator('[data-testid="setting-reset-session_duration_seconds"]').click()
-    await expect(reopened.locator('[data-setting-id="session_duration_seconds"] input[type="number"]')).toHaveValue('604800')
+    // The suite reset restores the setting before the next test.
   })
 
   /**
@@ -114,9 +110,7 @@ test.describe('Preferences administration groups', () => {
     await expect(addPasskey).toBeDisabled()
     await expect(passkeyRow.getByRole('alert')).toContainText(/configured URL/i)
 
-    // And back, so the affordance follows the setting in both directions --
-    // and so the change cannot leak into a later test on this worker's
-    // shared hub.
+    // And back, so the affordance follows the setting in both directions.
     await dialog.getByTestId('preferences-nav-admin-general').click()
     await dialog.getByTestId('setting-reset-public_url').click()
     await expect(row.getByText('Customized')).toBeHidden()
@@ -149,19 +143,10 @@ test.describe('Preferences administration groups', () => {
  * after they do.
  */
 test.describe('administration settings need a verified session', () => {
-  /**
-   * A FRESH admin session, never elevated.
-   *
-   * The fixture elevates the worker's shared `adminToken` -- every other
-   * spec here writes settings through it -- so a test about the gate has to
-   * mint its own, exactly as 006-passkey and 143-cli-elevation do.
-   */
-  async function unelevatedAdminSession(hubUrl: string): Promise<string> {
-    return loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-  }
-
   test('prompts on the first write and applies it once the user verifies', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, await unelevatedAdminSession(leapmuxServer.hubUrl))
+    // A FRESH admin session: the fixture elevates the worker's shared
+    // `adminToken`, so the gate under test would never refuse it.
+    await loginViaToken(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl))
     await page.goto('/')
     const dialog = await openSettingsAt(page, 'admin-general')
 
@@ -175,14 +160,11 @@ test.describe('administration settings need a verified session', () => {
     await input.press('Enter')
 
     // The hub refuses the un-elevated session; the transport prompts.
-    const verify = page.getByRole('dialog', { name: 'Verify your identity' })
-    await expect(verify).toBeVisible()
-    await verify.getByTestId('elevate-password').fill(TEST_ADMIN_PASSWORD)
-    await verify.getByTestId('elevate-password-submit').click()
+    await answerElevationPrompt(page, TEST_ADMIN_PASSWORD)
 
     // The refused write ran again and succeeded, with no second click.
     await expect(row.getByText('Customized')).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
 
     // And the panel now says the session is verified, at the TOP of the group
     // -- the state used to live inside one account editor, so no
@@ -192,7 +174,7 @@ test.describe('administration settings need a verified session', () => {
     // A SECOND write in the same window: no second prompt.
     await dialog.locator('[data-testid="setting-reset-session_duration_seconds"]').click()
     await expect(input).toHaveValue('604800')
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
   })
 
   // "End now" is the control the docs point at for "I am stepping away from a
@@ -206,20 +188,7 @@ test.describe('administration settings need a verified session', () => {
     await expect(dialog.getByTestId('elevation-status')).toBeVisible()
     await dialog.getByTestId('elevation-drop').click()
     await expect(dialog.getByTestId('elevation-status')).toHaveCount(0)
-
-    // Re-elevate, so this test leaves the worker's shared session as the
-    // fixture made it, and the hub does not refuse a later spec's settings
-    // write.
-    const row = dialog.locator('[data-setting-id="session_duration_seconds"]')
-    const input = row.locator('input[type="number"]')
-    await input.fill('7200')
-    await input.press('Enter')
-    const verify = page.getByRole('dialog', { name: 'Verify your identity' })
-    await expect(verify).toBeVisible()
-    await verify.getByTestId('elevate-password').fill(TEST_ADMIN_PASSWORD)
-    await verify.getByTestId('elevate-password-submit').click()
-    await expect(row.getByText('Customized')).toBeVisible()
-    await dialog.locator('[data-testid="setting-reset-session_duration_seconds"]').click()
-    await expect(input).toHaveValue('604800')
+    // The suite reset elevates the worker's shared session again before the
+    // next test, so this test leaves no unelevated session behind.
   })
 })

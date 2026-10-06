@@ -5,6 +5,7 @@
  */
 import type { Buffer } from 'node:buffer'
 import type { ChildProcess } from 'node:child_process'
+import type { CLIConfigDir } from './cli'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -16,7 +17,8 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './api'
-import { cleanupOnFailure, finishCleanup } from './cleanup'
+import { cleanupOnFailure, finishCleanup, withCleanup } from './cleanup'
+import { mintCLITokenForAdmin } from './cli'
 import { stopProcess } from './process'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
@@ -96,6 +98,28 @@ export async function stopDevServer(handle: DevServerHandle | UnseededDevServerH
   rmSync(handle.dataDir, { recursive: true, force: true })
   for (const p of extraPaths)
     rmSync(p, { recursive: true, force: true })
+}
+
+/**
+ * Start a private dev server, let `configure` change it through the control CLI as its administrator, and run `use`
+ * with it. A spec uses it for a hub setting that must not reach the shared hub, such as the captcha provider.
+ *
+ * The server and the credential directory of the CLI go away after `use`, and also after a failed setup. A failed
+ * `configure` never reaches `use`.
+ */
+export async function withAdminConfiguredDevServer(
+  dataDirPrefix: string,
+  configure: (cli: CLIConfigDir, server: DevServerHandle) => Promise<void>,
+  use: (server: DevServerHandle) => Promise<void>,
+): Promise<void> {
+  const server = await startDevServer({ dataDirPrefix })
+  const extraPaths: string[] = []
+  await withCleanup(async () => {
+    const cli = await mintCLITokenForAdmin(server)
+    extraPaths.push(cli.path)
+    await configure(cli, server)
+    await use(server)
+  }, () => stopDevServer(server, extraPaths))
 }
 
 export interface SoloServerHandle {
