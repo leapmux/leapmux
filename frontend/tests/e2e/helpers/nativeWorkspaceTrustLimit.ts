@@ -5,7 +5,6 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
@@ -177,11 +176,18 @@ export function instructionFileConfiguration(
 
 /** The private MCP server that `mcpServerProjectConfiguration` registers, as the configuration of a provider states it. */
 export interface ProjectMcpServer {
-  /** The server name in the configuration. */
+  /** The server name in the configuration: {@link PROJECT_MCP_SERVER_NAME}. */
   name: string
   command: string
   args: string[]
 }
+
+/**
+ * The name under which a project configuration registers its echo server. The suite's own configuration of several
+ * providers registers the same server under its reported name `echo_probe`, so the project uses a name of its own:
+ * then the tool names of the project server differ from those of the suite's registration.
+ */
+export const PROJECT_MCP_SERVER_NAME = 'trust_probe'
 
 /** The receipt file of the server that `mcpServerProjectConfiguration` registers, in the project directory. */
 const PROJECT_MCP_RECEIPT = 'workspace-mcp-receipt.json'
@@ -196,8 +202,8 @@ export function mcpServerProjectConfiguration(writeConfiguration: (directory: st
   return {
     prepare: ({ directory }) => {
       ensureGitRepositoryRoot(directory)
-      const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
-      writeConfiguration(directory, { name: 'trust_probe', command: process.execPath, args: [script] })
+      const echo = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
+      writeConfiguration(directory, { name: PROJECT_MCP_SERVER_NAME, command: echo.command, args: [...echo.args] })
     },
     prove: async (context, { directory }) => {
       await sendNativeAnswer(context, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')

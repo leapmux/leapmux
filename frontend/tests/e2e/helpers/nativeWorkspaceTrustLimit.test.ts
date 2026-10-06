@@ -12,7 +12,7 @@ import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, PROJECT_MCP_SERVER_NAME, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
 import { gitRepositoryWorkingDir } from './worktree'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
@@ -314,7 +314,7 @@ describe('mcpServerProjectConfiguration', () => {
       servers.push(server)
     }).prepare({ directory, marker: 'UNUSED' })
     expect(calls.events).toEqual(['repository root before the file'])
-    expect(servers).toEqual([{ name: 'trust_probe', command: process.execPath, args: [expect.stringContaining(directory)] }])
+    expect(servers).toEqual([{ name: PROJECT_MCP_SERVER_NAME, command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] }])
     expect(existsSync(servers[0]!.args[0]!)).toBe(true)
   })
 
