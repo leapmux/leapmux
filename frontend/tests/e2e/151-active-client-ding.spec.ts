@@ -32,6 +32,11 @@ import { waitForActiveClient, waitForSubscriberClientId, watchUserEvents } from 
  * starts, and its input heartbeats are throttled for five seconds after that.
  * So the test makes a client active by starting its stream last, not by
  * typing into it.
+ *
+ * The hub sends a presence update only when the active client changes. So a
+ * reload of the client that already leads tells no page anything, and the
+ * new document of that client knows no active client. The test therefore
+ * makes a client active only while another client leads.
  */
 
 async function recordDing(page: Page) {
@@ -55,18 +60,27 @@ interface Client {
 }
 
 /**
- * Open the workspace in `client` with the turn-end sound armed, and require that the hub then names `client` the
- * active client of the workspace in every watch of `watches`. The stream that starts last claims presence last.
+ * Open the workspace in `client` with the turn-end sound armed, and return the identity that the hub gave the page.
+ * The arm reloads the page, so the stream starts again after it, and the ding record starts after it too.
  */
-async function openAsActiveClient(client: Client, session: string, workspaceId: string, userId: string, watches: readonly UserEventsWatch[]): Promise<string> {
+async function openArmed(client: Client, session: string, workspaceId: string, userId: string): Promise<string> {
   await gotoWorkspace(client.page, session, workspaceId)
-  // The arm reloads the page, so the stream starts again after it, and the ding record starts after it too.
   await armTurnEndSound(client.page, userId, 'ding-dong')
   await waitForWorkspaceReady(client.page)
   await recordDing(client.page)
-  const clientId = await waitForSubscriberClientId(client.watch)
+  return waitForSubscriberClientId(client.watch)
+}
+
+/**
+ * Reload `client`, so that its stream starts last and claims presence, and require that every watch of `watches` then
+ * names `clientId` the active client of the workspace. Another client must lead before the reload: the hub sends no
+ * update when the leader does not change. The ding record starts again after the reload.
+ */
+async function becomeActive(client: Client, clientId: string, workspaceId: string, watches: readonly UserEventsWatch[]): Promise<void> {
+  await client.page.reload()
+  await waitForWorkspaceReady(client.page)
+  await recordDing(client.page)
   await waitForActiveClient(watches, workspaceId, clientId)
-  return clientId
 }
 
 /**
@@ -102,10 +116,12 @@ test.describe('Active-client ding gate', () => {
       const b: Client = { page: pageB, watch: watchUserEvents(pageB) }
       const watches = [a.watch, b.watch]
 
-      // B opens first and A last, so A is the active client.
-      const clientB = await openAsActiveClient(b, sessions[1], wsId, adminUserId, [b.watch])
-      const clientA = await openAsActiveClient(a, sessions[0], wsId, adminUserId, watches)
+      // A opens first and B last, so B leads. Then A starts its stream last
+      // and takes the lead from B, and the hub tells both pages.
+      const clientA = await openArmed(a, sessions[0], wsId, adminUserId)
+      const clientB = await openArmed(b, sessions[1], wsId, adminUserId)
       expect(clientA, 'the hub names the two sessions apart').not.toBe(clientB)
+      await becomeActive(a, clientA, wsId, watches)
 
       // A is active: only A plays the ding. B has never played, so its
       // cooldown cannot be what silences it.
@@ -117,10 +133,7 @@ test.describe('Active-client ding gate', () => {
       // ding of the next turn. A's silence here is no proof of the gate,
       // because A's own sixty-second cooldown also holds it. B's silence
       // above is the proof, and B's ding here shows that B could play.
-      await pageB.reload()
-      await waitForWorkspaceReady(pageB)
-      await recordDing(pageB)
-      await waitForActiveClient(watches, wsId, clientB)
+      await becomeActive(b, clientB, wsId, watches)
       await settledTurn({ active: b, clients: [a, b], activeClientId: clientB, workspaceId: wsId, modelScript, gate: 'turn-of-b' })
       expect(await readDings(pageB), 'the client that became active plays the ding').toBe(1)
       expect(await readDings(pageA), 'the client that is no longer active plays no further ding').toBe(1)

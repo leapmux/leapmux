@@ -87,7 +87,7 @@ describe('applyUserEvent', () => {
 })
 
 describe('watchUserEvents', () => {
-  /** A page that emits its own `websocket` and `framenavigated` events. */
+  /** A page that emits its own `websocket`, `request`, and `framenavigated` events. */
   function fakePage() {
     const emitter = new EventEmitter()
     const mainFrame = {}
@@ -97,7 +97,9 @@ describe('watchUserEvents', () => {
       emitter.emit('websocket', socket)
       return (payload: string | Buffer) => socket.emit('framereceived', { payload })
     }
-    return { page, mainFrame, emitter, openSocket }
+    /** Emit the request that a navigation of `frame` makes, as a reload or a `goto` does. */
+    const requestDocument = (frame: object) => emitter.emit('request', { isNavigationRequest: () => true, frame: () => frame })
+    return { page, mainFrame, emitter, openSocket, requestDocument }
   }
 
   it('reads the identity and the presence from the user events stream only', () => {
@@ -116,16 +118,36 @@ describe('watchUserEvents', () => {
   })
 
   it('starts a new state for a new document, as the app does after a reload', () => {
-    const { page, mainFrame, emitter, openSocket } = fakePage()
+    const { page, mainFrame, emitter, openSocket, requestDocument } = fakePage()
     const watch = watchUserEvents(page)
     const events = openSocket(WS_USER_EVENTS_ROUTE)
     events(frame(INITIAL))
     events(frame(presence('ws-1', 'session:a')))
-    emitter.emit('framenavigated', {})
+    const childFrame = {}
+    requestDocument(childFrame)
+    emitter.emit('framenavigated', childFrame)
     expect(watch.activeClient('ws-1'), 'a child frame keeps the state').toBe('session:a')
+    requestDocument(mainFrame)
     emitter.emit('framenavigated', mainFrame)
     expect(watch.subscriberClientId()).toBe('')
     expect(watch.activeClient('ws-1')).toBe('')
+  })
+
+  // Playwright emits `framenavigated` for a history navigation of the same document too, and the app keeps its stores
+  // over one. Only a new document makes a navigation request.
+  it('keeps the state over a navigation within the same document', () => {
+    const { page, mainFrame, emitter, openSocket, requestDocument } = fakePage()
+    const watch = watchUserEvents(page)
+    const events = openSocket(WS_USER_EVENTS_ROUTE)
+    events(frame(INITIAL))
+    events(frame(presence('ws-1', 'session:a')))
+    emitter.emit('framenavigated', mainFrame)
+    expect(watch.subscriberClientId()).toBe('session:a')
+    expect(watch.activeClient('ws-1')).toBe('session:a')
+    // A document request of a child frame starts no new state of the main document.
+    requestDocument({})
+    emitter.emit('framenavigated', mainFrame)
+    expect(watch.activeClient('ws-1')).toBe('session:a')
   })
 })
 

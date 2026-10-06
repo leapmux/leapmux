@@ -68,12 +68,24 @@ export function applyUserEvent(state: UserEventsState, event: WatchUserEvent): v
  * Watch the `/ws/userevents` stream of `page` from now on. Call it before the page opens the app, because the stream
  * states the identity of the page only in its first frame. A new document starts a new state, as the app starts with
  * empty stores after a reload.
+ *
+ * The hub sends a presence update only when the active client of a workspace changes, and a new stream gets no copy
+ * of the current one. So after a reload, the page knows no active client until the next change.
  */
 export function watchUserEvents(page: Page): UserEventsWatch {
   let state: UserEventsState = { subscriberClientId: '', activeClients: new Map() }
+  // Playwright emits `framenavigated` also for a history navigation within the same document, which keeps the app's
+  // stores. Only a new document makes a navigation request, so the state starts again only after one.
+  let newDocumentRequested = false
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      newDocumentRequested = true
+  })
   page.on('framenavigated', (frame) => {
-    if (frame === page.mainFrame())
-      state = { subscriberClientId: '', activeClients: new Map() }
+    if (frame !== page.mainFrame() || !newDocumentRequested)
+      return
+    newDocumentRequested = false
+    state = { subscriberClientId: '', activeClients: new Map() }
   })
   page.on('websocket', (socket) => {
     if (new URL(socket.url()).pathname !== WS_USER_EVENTS_ROUTE)
