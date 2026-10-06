@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { codebuddyTest } from '../codebuddy-fixtures'
-import { exerciseNativePlanInstructions } from '../helpers/nativeReadOnlyPlan'
+import { exerciseNativePlanInstructions } from '../helpers/nativePlanMode'
 import { codebuddyPlanOptionSnapshot } from './planMode'
 
 codebuddyTest('adds actual native planning instructions and preserves the selected mode after reload', async ({ native }) => {

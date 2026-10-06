@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { exerciseNativePlanInstructions } from '../helpers/nativeReadOnlyPlan'
+import { exerciseNativePlanInstructions } from '../helpers/nativePlanMode'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { qoderTest } from '../qoder-fixtures'
 

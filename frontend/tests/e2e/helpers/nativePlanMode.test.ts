@@ -6,7 +6,7 @@ import type { Page } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { addedInstructionLines, exerciseNativePlanInstructions } from './nativeReadOnlyPlan'
+import { addedInstructionLines, exerciseNativePlanInstructions } from './nativePlanMode'
 
 const fake = vi.hoisted(() => ({ events: [] as string[], instructions: [] as string[], agents: [] as unknown[] }))
 
