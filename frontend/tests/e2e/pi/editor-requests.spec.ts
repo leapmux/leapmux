@@ -2,9 +2,11 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { isObject } from '../../../src/lib/jsonPick'
 import { openAgentViaAPI } from '../helpers/api'
 import { piEditorProbeToolCall } from '../helpers/providerToolCalls'
-import { readEntry, storageKeys } from '../helpers/storage'
+import { waitForStoredEntry } from '../helpers/storage'
 import { composerEditor, controlBanner, controlButton, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
@@ -54,6 +56,7 @@ export default function (pi) {
       const editor = banner.getByTestId('dialog-editor')
       await expect(banner).toContainText('Edit the probe text')
       await expect(editor).toBeVisible()
+      // `composerEditor` matches only a visible composer, so a hidden check through it passes always.
       await expect(page.getByTestId('composer-editor')).toBeHidden()
       expect(await editor.evaluate((element) => {
         const banner = element.closest('[data-testid="control-banner"]')!
@@ -64,11 +67,12 @@ export default function (pi) {
       await expect(editor).toHaveValue('Original prefill')
       await editor.fill(scenario.text)
       // Verify the committed draft before reload tests recovery.
-      await expect.poll(async () => {
-        const key = (await storageKeys(page)).find(key => key.includes(`control-state:${agentId}:`))
-        const value = key ? (await readEntry(page, key))?.v as { choices?: Record<string, string> } | undefined : undefined
-        return value?.choices?.['dialog-text']
-      }).toBe(scenario.text)
+      await waitForStoredEntry(
+        page,
+        accountStorageKey(leapmuxServer.adminUserId, `${PREFIX_CONTROL_STATE}${agentId}:`),
+        value => isObject(value) && isObject(value.choices) && value.choices['dialog-text'] === scenario.text,
+        'the editor draft must be persisted before the reload',
+      )
       await page.reload()
       await expect(editor).toHaveValue(scenario.text)
       await expect(page.getByTestId('queue-pause-button')).toHaveCount(0)
