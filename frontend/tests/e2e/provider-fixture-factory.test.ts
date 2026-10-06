@@ -1,7 +1,7 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from './helpers/nativeScenario'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { cliSkipFixture } from './provider-fixture-factory'
 
@@ -111,8 +111,25 @@ const UNIT_FIXTURES = {
   workspaceId: 'unit-workspace',
 } as unknown as NativeContextFixtures
 
+/** The members of a scenario module that the checks read: its `nativeContext`, and its `ProviderAgent` by name. */
+type ScenarioModule = Record<string, unknown> & { nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext> }
+
 describe('provider test objects', () => {
   const objects = providerTestObjects()
+  /** The scenario module of each test object, in the order of `objects`. */
+  let scenarioModules: ScenarioModule[] = []
+
+  // The limit is explicit because the default limit does not fit the work.
+  //
+  // This hook imports the scenario module of each of the 29 providers. Each import
+  // transforms and runs the module and the shared helpers that it reads, which is
+  // CPU-bound work and the subject of the check. It takes about 1.4 seconds alone,
+  // and a full vitest run at a load average near 37 starved it past vitest's
+  // 5-second default. The hook starts the imports together, so their transforms
+  // overlap, and sixty seconds lets only a real hang reach the limit.
+  beforeAll(async () => {
+    scenarioModules = await Promise.all(objects.map(async object => await import(`./${object.scenarioDirectory}/scenarios.ts`) as ScenarioModule))
+  }, 60_000)
 
   it('gives every provider exactly one test object', () => {
     const providers = Object.values(AgentProvider).filter((value): value is AgentProvider => typeof value === 'number' && value !== AgentProvider.UNSPECIFIED)
@@ -125,8 +142,9 @@ describe('provider test objects', () => {
   })
 
   it('builds each native fixture through the nativeContext of the provider that its workspace opens', async () => {
-    for (const object of objects) {
-      const scenarios = await import(`./${object.scenarioDirectory}/scenarios.ts`) as Record<string, unknown> & { nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext> }
+    expect(scenarioModules).toHaveLength(objects.length)
+    for (const [index, object] of objects.entries()) {
+      const scenarios = scenarioModules[index]!
       const context = await scenarios.nativeContext(UNIT_FIXTURES)
       expect(AgentProvider[context.provider], object.file).toBe(object.providerName)
       // A helper that opens a new native agent creates its working directory by the rule of this agent.
