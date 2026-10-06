@@ -8,7 +8,7 @@ import { SCENARIO_MARKER } from '../helpers/mockModelScript'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { controlActions, controlBanner, expectNoControlBanner, openWorkspace, tabById, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { answerControl, controlBanner, expectNoControlBanner, openWorkspace, tabById, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { PI_AGENT } from './scenarios'
 
@@ -18,7 +18,7 @@ import { PI_AGENT } from './scenarios'
  */
 async function approvePiGoalClear(page: Page): Promise<void> {
   await expect(controlBanner(page)).toContainText('Clear goal?')
-  await controlActions(page).getByRole('button', { name: 'Approve', exact: true }).click()
+  await answerControl(page, 'allow')
 }
 
 /**
