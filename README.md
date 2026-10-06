@@ -141,7 +141,7 @@ Before you begin, ensure you have the following installed:
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
 - **SQLite** (usually pre-installed on most systems)
-- **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
+- **Docker** - Required for building Docker images (on macOS, the project recommends [Rancher Desktop](https://rancherdesktop.io/))
 - **dekit** - Multi-process runner (required for `task dev`, `task dev-solo`, and `task dev-desktop`)
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
@@ -566,7 +566,7 @@ You can override the platform and tag:
 task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
-The image uses a multi-stage build (buf, Bun, Go). Tool and base image versions are centralized in `versions.env` at the repository root.
+The image uses a multi-stage build (buf, Bun, Go). `versions.env` at the repository root holds the versions of the tools and the base images.
 
 ### Tool versions
 
@@ -583,7 +583,7 @@ Task generates these values from `versions.env`:
 
 ```bash
 task sync-versions   # rewrite those copies from versions.env
-task lint-versions   # fail if one has drifted (runs as part of task lint)
+task lint-versions   # fail if a copy differs from versions.env (task lint runs this also)
 ```
 
 After you edit `versions.env`, run `task sync-versions`.
