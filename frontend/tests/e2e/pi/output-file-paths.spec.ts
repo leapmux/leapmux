@@ -1,5 +1,4 @@
 import { join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
@@ -9,7 +8,7 @@ import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { piCodemodeToolCall } from '../helpers/providerToolCalls'
+import { mcpToolCall, piCodemodeToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
 import { newProviderWorkingDir } from '../helpers/workspace'
@@ -48,15 +47,17 @@ piTest('keeps the native codemode output path and exact preview after reload', a
 piTest('keeps the native real MCP output path and exact preview after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = newProviderWorkingDir(PI_AGENT, 'pi-output-path-feature-mcp-')
   const receiptLog = join(directory, 'native-output-path-mcp-receipt.json')
-  const server = writeMcpResultServer(directory, { receiptLog }).script
-  writePiMcpConfiguration(directory, getGlobalState().tmpDir, { result_probe: { command: process.execPath, args: [server] } })
+  const server = writeMcpResultServer(directory, { receiptLog })
+  writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })
+  // The codemode binding of an MCP tool has the name of the native MCP tool.
+  const inspectTool = mcpToolCall(AgentProvider.PI, 'inspect-name', { server: server.name, tool: 'inspect', input: {} }).name
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   const output = computedNativeToolOutput()
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, context.workspaceId)
-    const code = `// @options: {"max_output_tokens": 100}\n${output.source}\nconst result = await tools.mcp__result_probe__inspect({count:0,enabled:false,text:completeOutput});\ntext(result.structuredContent.text);`
+    const code = `// @options: {"max_output_tokens": 100}\n${output.source}\nconst result = await tools.${inspectTool}({count:0,enabled:false,text:completeOutput});\ntext(result.structuredContent.text);`
     expect(code).not.toContain(output.text)
     expect(code).not.toContain(output.omittedMarker)
     const call = piCodemodeToolCall('native-output-path-real-mcp', code)
@@ -66,7 +67,7 @@ piTest('keeps the native real MCP output path and exact preview after reload', a
       answer: 'The real native MCP output file completed.',
     })
     expect(nativeToolResult(resultRequest, call.id)).not.toContain(output.omittedMarker)
-    const nested = await readPiMcpResult(context, `${call.id}/1`, 'mcp__result_probe__inspect')
+    const nested = await readPiMcpResult(context, `${call.id}/1`, inspectTool)
     expect(nested.failed).toBe(false)
     expect(nested.result.structuredContent).toMatchObject({ structuredContent: { nextCount: 1, enabled: false, text: output.text } })
     const exchange = readMcpCallExchange(receiptLog)

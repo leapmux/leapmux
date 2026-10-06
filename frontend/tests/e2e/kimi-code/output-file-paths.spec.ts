@@ -2,6 +2,7 @@ import type { TestInfo } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeToolOutput } from '../helpers/nativeToolOutput'
 import { expect } from '@playwright/test'
+import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
@@ -23,7 +24,7 @@ async function proveKimiOutputFilePaths(options: {
   await captureNativeToolOutput(native, testInfo, {
     output: options.output,
     callId: format === 'header' ? KIMI_OUTPUT_PATH_CALL_IDS.Header : format === 'per-line' ? KIMI_OUTPUT_PATH_CALL_IDS.PerLine : KIMI_OUTPUT_PATH_CALL_IDS.AmbiguousMcp,
-    ...(format === 'mcp' ? { call: (output: NativeToolOutput, id: string) => mcpToolCall(native.provider, id, { server: 'echo_probe', tool: 'echo', input: { value: output.text } }) } : {}),
+    ...(format === 'mcp' ? { call: (output: NativeToolOutput, id: string) => mcpToolCall(native.provider, id, { server: MCP_ECHO_SERVER_NAME, tool: 'echo', input: { value: output.text } }) } : {}),
     // Kimi's reader also checks the tool name that its pointer header states.
     proof: capture => proveNativeOutputReceipt(capture, testInfo, (snapshot, callId) => readKimiNativeOutput(snapshot, callId, capture.call.name), {
       // The MCP echo call takes the complete output as its argument, and the result row draws that argument.

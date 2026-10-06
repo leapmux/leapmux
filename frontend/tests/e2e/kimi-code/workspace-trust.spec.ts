@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { kimiExtractControl } from '../../../src/components/chat/providers/kimi/extractControl'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
@@ -17,10 +16,11 @@ kimiTest('keeps untrusted project MCP configuration unloaded without a browser t
   await exerciseNativeWorkspaceTrustLimit(native, {
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
+        const server = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
         const config = join(directory, '.mcp.json')
         mkdirSync(dirname(config), { recursive: true })
-        writeFileSync(config, JSON.stringify({ mcpServers: { [marker]: { transport: 'stdio', command: process.execPath, args: [script] } } }))
+        // The marker is the key of the server, so a tool name that holds the marker can only come from this project file.
+        writeFileSync(config, JSON.stringify({ mcpServers: { [marker]: { transport: 'stdio', command: server.command, args: [...server.args] } } }))
       },
       prove: async (privateContext, { directory, marker }) => {
         const request = await sendNativeAnswer(privateContext, 'Reply once in the new untrusted project.', 'The native project turn completed.')

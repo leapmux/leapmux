@@ -7,15 +7,18 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rea
 import { basename, isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanupSync } from '../helpers/cleanup'
+import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { resolveNativeProcessOwnership, workerDataDirectory } from '../helpers/nativeProcessOwnership'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { writeNodeLauncher } from '../helpers/nodeLauncher'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
+import { mcpToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 
@@ -358,6 +361,9 @@ export async function readKimiCompleteCatalog(context: ManagedNativeScenarioCont
   return catalog
 }
 
+/** The catalog name of the echo tool of the MCP echo server that the run environment registers for Kimi Code. */
+const KIMI_ECHO_TOOL = mcpToolCall(AgentProvider.KIMI_CODE, 'catalog', { server: MCP_ECHO_SERVER_NAME, tool: 'echo', input: {} }).name
+
 /** These native registrations manage files, shell commands, sessions, and domain features. */
 export function assertKimiShellCatalog(tools: readonly KimiCatalogTool[]): void {
   const audited = new Set([
@@ -392,7 +398,7 @@ export function assertKimiShellCatalog(tools: readonly KimiCatalogTool[]): void 
     'NotifyUser',
   ])
   const allowed = (tool: KimiCatalogTool) => (tool.source === 'builtin' && audited.has(tool.name))
-    || (tool.source === 'mcp' && tool.name === 'mcp__echo_probe__echo' && tool.mcp_server_id === 'echo_probe')
+    || (tool.source === 'mcp' && tool.name === KIMI_ECHO_TOOL && tool.mcp_server_id === MCP_ECHO_SERVER_NAME)
   if (!tools.some(tool => tool.name === 'Bash' && tool.active) || tools.some(tool => !allowed(tool)))
     throw new Error('The full native Kimi registry contains an unaudited capability or lacks its actual active shell tool.')
 }

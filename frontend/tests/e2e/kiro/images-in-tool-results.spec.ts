@@ -1,14 +1,13 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import process from 'node:process'
+import { existsSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { writeMcpImageServer } from '../helpers/mcpImageServer'
+import { MCP_IMAGE_SERVER_NAME, writeMcpImageServer } from '../helpers/mcpImageServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
 import { expectSettingsOptionChosen, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { kiroTest } from '../kiro-fixtures'
+import { writeKiroProjectMcpServers } from './mcpConfiguration'
 import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro images in tool results', () => {
@@ -36,17 +35,15 @@ kiroTest.describe('Kiro images in tool results', () => {
       imageName = writeToolImage(workingDir, 'kiro-mcp')
       const server = writeMcpImageServer(workingDir, imageName)
       ready = server.ready
-      const settings = join(workingDir, '.kiro', 'settings')
-      mkdirSync(settings, { recursive: true })
-      writeFileSync(join(settings, 'mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: process.execPath, args: server.args } } }))
+      writeKiroProjectMcpServers(workingDir, server)
     } })
     await openWorkspace(page, context.workspaceId)
     await expect.poll(() => existsSync(ready)).toBe(true)
 
     const callID = 'show-kiro-image'
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, callID, { server: 'image_probe', tool: 'show', input: {} })],
-      prompt: 'Call the image_probe show tool.',
+      toolCalls: [mcpToolCall(context.provider, callID, { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} })],
+      prompt: `Call the ${MCP_IMAGE_SERVER_NAME} show tool.`,
       answer: 'The MCP tool returned an image.',
     })
     expect(JSON.stringify(resultRequest.body)).toContain(`MCP image ${imageName}`)

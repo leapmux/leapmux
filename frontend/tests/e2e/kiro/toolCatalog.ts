@@ -1,7 +1,10 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { NativeToolDescriptor } from '../helpers/nativeScenario'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { kiroCurrentUserInput } from '../helpers/kiroSurface'
+import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
+import { mcpToolCall } from '../helpers/providerToolCalls'
 
 function currentTools(request: MockModelRequestRecord): unknown[] {
   if (request.protocol !== 'aws-event-stream')
@@ -75,6 +78,9 @@ const KIRO_ACTIVE_BUILTIN_FIELDS: ReadonlyMap<string, readonly string[]> = new M
   ['send_message', ['sessionId', 'message', 'severity']],
 ])
 
+/** The catalog name of the echo tool of the MCP echo server that `kiro/code-execution.spec.ts` registers. */
+const KIRO_ECHO_TOOL = mcpToolCall(AgentProvider.KIRO, 'catalog', { server: MCP_ECHO_SERVER_NAME, tool: 'echo', input: {} }).name
+
 /** Require only source-audited native tools and the one controlled MCP descriptor. */
 export function assertKiroActiveCatalog(catalog: readonly NativeToolDescriptor[]): void {
   if (catalog.length === 0)
@@ -84,7 +90,7 @@ export function assertKiroActiveCatalog(catalog: readonly NativeToolDescriptor[]
     if (names.has(tool.name))
       throw new Error('The native Kiro active inventory contains duplicate identities.')
     names.add(tool.name)
-    const fields = tool.name === 'mcp_echo_probe_echo' ? ['value'] : KIRO_ACTIVE_BUILTIN_FIELDS.get(tool.name)
+    const fields = tool.name === KIRO_ECHO_TOOL ? ['value'] : KIRO_ACTIVE_BUILTIN_FIELDS.get(tool.name)
     if (!fields || !isObject(tool.inputSchema.properties))
       throw new Error(`The native Kiro tool ${tool.name} has no audited active descriptor.`)
     if (Object.keys(tool.inputSchema.properties).some(field => !fields.includes(field)))
@@ -109,13 +115,13 @@ export function assertKiroActiveCatalog(catalog: readonly NativeToolDescriptor[]
         throw new Error(`The native Kiro tool ${tool.name} contains an unaudited source-language field.`)
       schemaValues.push(...Object.values(value))
     }
-    if (tool.name === 'execute_bash' || tool.name === 'execute_pwsh' || tool.name === 'read_file' || tool.name === 'mcp_echo_probe_echo') {
-      const field = tool.name === 'read_file' ? 'path' : tool.name === 'mcp_echo_probe_echo' ? 'value' : 'command'
+    if (tool.name === 'execute_bash' || tool.name === 'execute_pwsh' || tool.name === 'read_file' || tool.name === KIRO_ECHO_TOOL) {
+      const field = tool.name === 'read_file' ? 'path' : tool.name === KIRO_ECHO_TOOL ? 'value' : 'command'
       const property = tool.inputSchema.properties[field]
       if (!isObject(property) || property.type !== 'string' || !Array.isArray(tool.inputSchema.required) || !tool.inputSchema.required.includes(field))
         throw new Error(`The native Kiro tool ${tool.name} lacks its required string input.`)
     }
   }
-  if (!names.has('execute_bash') || !names.has('read_file') || !names.has('mcp_echo_probe_echo'))
+  if (!names.has('execute_bash') || !names.has('read_file') || !names.has(KIRO_ECHO_TOOL))
     throw new Error('The native Kiro active inventory lacks its shell, file, or controlled MCP descriptor.')
 }

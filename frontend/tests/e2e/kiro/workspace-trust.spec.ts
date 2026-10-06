@@ -1,6 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { kiroExtractControl } from '../../../src/components/chat/providers/kiro/extractControl'
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
@@ -24,10 +23,11 @@ kiroTest('loads project MCP configuration without a workspace trust decision', a
     optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll },
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
+        const server = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
         const config = join(directory, '.kiro', 'settings', 'mcp.json')
         mkdirSync(dirname(config), { recursive: true })
-        writeFileSync(config, JSON.stringify({ mcpServers: { [marker]: { command: process.execPath, args: [script] } } }))
+        // The marker is the key of the server, so a tool name that holds the marker can only come from this project file.
+        writeFileSync(config, JSON.stringify({ mcpServers: { [marker]: { command: server.command, args: [...server.args] } } }))
       },
       prove: async (privateContext, { directory, marker }) => {
         const request = await sendNativeAnswer(privateContext, 'Reply once after project MCP configuration loads.', 'The project MCP turn completed.')

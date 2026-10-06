@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { openAgentViaAPI } from '../helpers/api'
@@ -33,15 +32,15 @@ piTest('shows one decoded native MCP image and resource image after reload', asy
   const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-images-')
   const imageName = writeToolImage(directory, 'native-pi-mcp')
   const image = writeMcpImageServer(directory, imageName)
-  const resource = writeMcpResultServer(directory, { receiptLog: join(directory, 'resource-receipt.json'), imagePath: join(directory, imageName) }).script
-  writePiMcpConfiguration(directory, getGlobalState().tmpDir, { image_probe: { command: image.command, args: image.args }, result_probe: { command: process.execPath, args: [resource] } })
+  const resource = writeMcpResultServer(directory, { receiptLog: join(directory, 'resource-receipt.json'), imagePath: join(directory, imageName) })
+  writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [image.name]: image, [resource.name]: resource })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, context.workspaceId)
     const calls = [
-      mcpToolCall(AgentProvider.PI, 'native-pi-mcp-image', { server: 'image_probe', tool: 'show', input: {} }),
-      piMcpResourceToolCall('native-pi-resource-image', { operation: 'read', server: 'result_probe', uri: 'probe://image' }),
+      mcpToolCall(AgentProvider.PI, 'native-pi-mcp-image', { server: image.name, tool: 'show', input: {} }),
+      piMcpResourceToolCall('native-pi-resource-image', { operation: 'read', server: resource.name, uri: 'probe://image' }),
     ]
     const imageData = readFileSync(join(directory, imageName)).toString('base64')
     const resourceResult = toolCallRow(page, 'native-pi-resource-image')
@@ -55,7 +54,7 @@ piTest('shows one decoded native MCP image and resource image after reload', asy
         await expectMcpToolImage(page, imageName, call.id)
       }
       else {
-        expect(native.result.structuredContent).toEqual({ server: 'result_probe', uri: 'probe://image', contents: [{ uri: 'probe://image', mimeType: 'image/png', blob: imageData }] })
+        expect(native.result.structuredContent).toEqual({ server: resource.name, uri: 'probe://image', contents: [{ uri: 'probe://image', mimeType: 'image/png', blob: imageData }] })
         await expect(resourceResult).toHaveCount(1)
         await expectDecodedImageInBubble(resourceResult)
       }
