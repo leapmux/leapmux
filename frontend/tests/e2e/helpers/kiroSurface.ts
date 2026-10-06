@@ -28,10 +28,9 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStream'
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
-import { holdOpen, readJSONBody, readMockBody, writeMockJSON } from './mockHttp'
+import { holdOpen, readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import { contentText, selectScenarioID } from './mockModelScript'
 import { createModelStream } from './modelStream'
-import { writeResponseHeaders } from './responseHeaders'
 
 /** The header that states the operation of an AWS JSON 1.0 call. */
 export const KIRO_TARGET_HEADER = 'x-amz-target'

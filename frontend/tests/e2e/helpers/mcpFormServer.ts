@@ -121,3 +121,8 @@ export function writeMcpFormServer(directory: string, filename: string, options:
   writeFileSync(script, serverScript(options, writeMcpReceiptRuntime(directory), writeMcpStdioRuntime(directory)))
   return mcpProbeServer(MCP_FORM_SERVER_NAME, script)
 }
+
+/** Write a local MCP tool that asks for an empty confirmation form. The server reports the form server's name. */
+export function writeMcpConfirmationServer(directory: string): McpProbeServer {
+  return writeMcpFormServer(directory, 'mcp-confirmation.mjs', { confirmationOnly: true })
+}

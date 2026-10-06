@@ -6,10 +6,9 @@ import { Buffer } from 'node:buffer'
 import { isObject } from '../../../src/lib/jsonPick'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
 import { mockCredentialReceipt } from './mockCredentials'
-import { holdOpen, readJSONBody, writeMockJSON } from './mockHttp'
+import { holdOpen, readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
-import { writeResponseHeaders } from './responseHeaders'
 
 const MODEL_ROUTE = /^\/v1beta\/models\/([\w.-]+):(streamGenerateContent|generateContent|countTokens)$/
 

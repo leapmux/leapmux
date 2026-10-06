@@ -28,7 +28,7 @@ import { handleGoogleModelHttp } from './googleModelApi'
 import { handleKiroHttp, kiroRequestMetadata } from './kiroSurface'
 import { MOCK_IDENTITY_TOKEN, MOCK_MODELS, MOCK_SESSION_TOKEN, MODEL_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
-import { holdOpen, readJSONBody, writeMockJSON } from './mockHttp'
+import { holdOpen, readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import {
   lastUserText,
   matchesRequest,
@@ -44,7 +44,6 @@ import {
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput, createBufferedModelStream, createModelStream } from './modelStream'
 import { handleQoderHttp } from './qoderSurface'
-import { writeResponseHeaders } from './responseHeaders'
 
 const MAX_HTTP_REQUEST_RECORDS = 10_000
 const MAX_UNMATCHED_RECORDS = 200

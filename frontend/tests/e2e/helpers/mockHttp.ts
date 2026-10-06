@@ -1,7 +1,17 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from 'node:http'
 import { Buffer } from 'node:buffer'
-import { MAX_MOCK_REQUEST_BYTES } from './mockRequestLimits'
-import { writeResponseHeaders } from './responseHeaders'
+
+/** Limit encoded and decoded model requests to the same maximum size. */
+export const MAX_MOCK_REQUEST_BYTES = 16 * 1024 * 1024
+
+/** Keep delivered headers available through the public response API for native receipts. */
+export function writeResponseHeaders(response: ServerResponse, status: number, headers: OutgoingHttpHeaders): void {
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined)
+      response.setHeader(name, value)
+  }
+  response.writeHead(status)
+}
 
 /** Read the complete request bytes and enforce the shared size limit. */
 export async function readMockBody(request: IncomingMessage): Promise<Buffer> {

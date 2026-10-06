@@ -63,10 +63,9 @@ import {
   takeConnectFrames,
 } from './cursorWire'
 import { mockCredentialReceipt } from './mockCredentials'
+import { MAX_MOCK_REQUEST_BYTES, writeResponseHeaders } from './mockHttp'
 import { AMBIENT_SCENARIO_ID, selectScenarioID } from './mockModelScript'
-import { MAX_MOCK_REQUEST_BYTES } from './mockRequestLimits'
 import { createModelStream } from './modelStream'
-import { writeResponseHeaders } from './responseHeaders'
 
 /** The bidirectional stream that carries one whole Cursor turn. */
 export const CURSOR_RUN_PATH = '/agent.v1.AgentService/Run'

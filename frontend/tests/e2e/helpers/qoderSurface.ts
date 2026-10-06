@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isObject } from '../../../src/lib/jsonPick'
-import { readJSONBody, writeMockJSON } from './mockHttp'
-import { writeResponseHeaders } from './responseHeaders'
+import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 
 export interface QoderSurfaceOptions {
   origin: () => string

@@ -2,8 +2,7 @@ import { Buffer } from 'node:buffer'
 import { IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { holdOpen, readJSONBody, readMockBody, writeMockJSON } from './mockHttp'
-import { MAX_MOCK_REQUEST_BYTES } from './mockRequestLimits'
+import { holdOpen, MAX_MOCK_REQUEST_BYTES, readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 
 function request(chunks: readonly Buffer[]): IncomingMessage {
   const message = new IncomingMessage(new Socket())
@@ -84,6 +83,18 @@ describe('writeMockJSON', () => {
     expect(response.getHeader('content-type')).toBe('application/json')
     expect(response.getHeader('x-native-receipt')).toBe('actual-value')
     expect(end).toHaveBeenCalledWith(JSON.stringify(body))
+  })
+})
+
+describe('writeResponseHeaders', () => {
+  it('keeps each delivered header readable through the response API, and skips an undefined one', () => {
+    const response = new ServerResponse(request([]))
+    writeResponseHeaders(response, 429, { 'retry-after': '7', 'x-native-limit': ['first', 'second'], 'x-absent': undefined })
+    expect(response.statusCode).toBe(429)
+    expect(response.getHeader('retry-after')).toBe('7')
+    expect(response.getHeader('x-native-limit')).toEqual(['first', 'second'])
+    expect(response.hasHeader('x-absent')).toBe(false)
+    expect(response.headersSent).toBe(true)
   })
 })
 
