@@ -12,7 +12,7 @@ import { backgroundBashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, requireRegistryRow } from '../helpers/subagentRegistry'
 import { createToolOutputControl } from '../helpers/toolOutputControl'
-import { assistantBubbles, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, interruptButton, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openOpaqueAmpTask } from './opaqueTask'
 
 /**
@@ -86,7 +86,7 @@ ampTest.describe('Amp subagent registry', () => {
       modelScript.allowUnconsumed('The native Amp interruption cancels this held answer.')
       await sendMessage(page, modelScript.prompt('Write a long essay about the history of computing.'))
       await modelScript.waitForGate(gate)
-      await page.locator('[data-testid="interrupt-button"]:visible').click()
+      await interruptButton(page).click()
       await waitForAgentIdle(page)
       await expectRowBecomesFinal(page, row)
       await expect(row).toHaveAttribute('data-status', 'stopped')

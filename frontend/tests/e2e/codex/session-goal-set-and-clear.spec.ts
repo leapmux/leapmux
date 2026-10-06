@@ -6,7 +6,7 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
 import { initialTodoList, TODO_LIST_STEPS } from '../helpers/todoSidebar'
-import { sendMessage, stableBox, transcriptRows } from '../helpers/ui'
+import { interruptButton, sendMessage, stableBox, transcriptRows } from '../helpers/ui'
 
 /** Test acknowledged native goal commands and the Worker goal state. */
 codexTest.describe('Codex session goal', () => {
@@ -197,6 +197,6 @@ codexTest.describe('Codex session goal', () => {
 
     // End the turn, so teardown does not race a running generation.
     await page.keyboard.press('Escape')
-    await page.locator('[data-testid="interrupt-button"]:visible').click()
+    await interruptButton(page).click()
   })
 })

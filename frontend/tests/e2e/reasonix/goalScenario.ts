@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal, submitGoal } from '../helpers/goalsAndTodos'
-import { openWorkspace } from '../helpers/ui'
+import { interruptButton, openWorkspace } from '../helpers/ui'
 
 /** Preserve a native goal through busy refusal, cancellation, clear, and browser reload. */
 export async function exerciseReasonixGoalLifecycle(context: ManagedNativeScenarioContext): Promise<void> {
@@ -16,7 +16,7 @@ export async function exerciseReasonixGoalLifecycle(context: ManagedNativeScenar
   )
   await withCleanup(async () => {
     // Reasonix runs a goal round at once, so the interrupt control proves that the goal turn started.
-    const interrupt = page.getByTestId('interrupt-button').filter({ visible: true })
+    const interrupt = interruptButton(page)
     const setRunningGoal = async () => {
       await setGoal(page, objective)
       await expect(interrupt).toBeVisible()

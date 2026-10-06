@@ -7,7 +7,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSessionRow, openStoredSessionRow, sessionMenu, sessionMenuTrigger } from '../helpers/nativeResume'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, interruptButton, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI } from '../helpers/worktree'
 import { restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
 import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from './workerRestart'
@@ -37,8 +37,7 @@ test.describe('worker restart thinking indicator', () => {
         await expect(thinkingIndicator).not.toBeVisible()
 
         // Interrupt button should also disappear
-        const interruptButton = page.locator('[data-testid="interrupt-button"]')
-        await expect(interruptButton).not.toBeVisible()
+        await expect(interruptButton(page)).toHaveCount(0)
       }, () => restartWorker(separateHubWorker))
     })
   })

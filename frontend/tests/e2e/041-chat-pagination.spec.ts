@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
-import { chatScrollContainer, readAttached } from './helpers/ui'
+import { chatScrollContainer, interruptButton, readAttached } from './helpers/ui'
 
 /**
  * Check chat layout and scroll position after a real streamed response.
@@ -15,7 +15,7 @@ test.describe('Chat Pagination & Scroll', () => {
     await sendScriptedTurn(page, modelScript, { prompt: 'Say hello.', answer: 'Hello.' })
 
     // After the turn completes, no copy of the indicator and no Interrupt button remains.
-    await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible()
+    await expect(interruptButton(page)).toHaveCount(0)
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
 
     // Each rendered message wrapper carries a positive data-seq from the

@@ -188,6 +188,14 @@ export function queuePauseButton(page: Page): Locator {
   return page.locator('[data-testid="queue-pause-button"]:visible')
 }
 
+/**
+ * Locate the Interrupt button of the visible composer. It shows while the browser holds the agent on screen as working
+ * or as waiting for the user, so a count of 0 states that the browser holds no running turn of that agent.
+ */
+export function interruptButton(page: Page): Locator {
+  return page.locator('[data-testid="interrupt-button"]:visible')
+}
+
 /** Locate the input queue of the visible composer: the messages that wait for the end of the running turn. */
 export function inputQueue(page: Page): Locator {
   return page.locator('[data-testid="agent-input-queue"]:visible')

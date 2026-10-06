@@ -3,7 +3,7 @@ import { codexTest } from '../codex-fixtures'
 import { submitGoal } from '../helpers/goalsAndTodos'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 import { steerQueuedInput } from '../helpers/steer'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { interruptButton, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('Codex session goal', () => {
   codexTest('offers Steer for input queued during a goal turn', async ({
@@ -28,7 +28,7 @@ codexTest.describe('Codex session goal', () => {
 
     // The Interrupt button proves that the provider-started goal turn runs.
     // Send while that condition still holds, so the message enters the queue.
-    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toBeVisible()
+    await expect(interruptButton(page)).toBeVisible()
     await steerQueuedInput(page, {
       message: modelScript.prompt('Stop now, mark the goal complete, and reply with STEERED.'),
       match: 'Stop now',

@@ -5,7 +5,7 @@ import { expectNativePdfPart, nativeUserStrings } from '../helpers/attachmentMod
 import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpers/attachments'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 import { queuedInputRow, steerButton, steerQueuedInput } from '../helpers/steer'
-import { chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, interruptButton, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 test.describe('agent input queue', () => {
   test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -19,7 +19,7 @@ test.describe('agent input queue', () => {
     modelScript.allowUnconsumed('the steer ends the turn before the held answer arrives')
     await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
     await modelScript.waitForSteps(start + 1)
-    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toBeVisible()
+    await expect(interruptButton(page)).toBeVisible()
 
     await steerQueuedInput(page, {
       message: modelScript.prompt('Stop the report now and reply with the single word STEERED.'),

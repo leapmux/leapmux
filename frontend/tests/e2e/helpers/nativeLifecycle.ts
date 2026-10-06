@@ -24,7 +24,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, controlButton, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI } from './worktree'
 
 interface LifecyclePreparation {
@@ -160,7 +160,7 @@ export async function exerciseInterruptTurn(
     else {
       await context.modelScript.waitForGate(gate)
     }
-    const interrupt = context.page.locator('[data-testid="interrupt-button"]:visible')
+    const interrupt = interruptButton(context.page)
     await expect(interrupt).toBeVisible()
     await interrupt.click()
     await waitForAgentIdle(context.page)

@@ -4,7 +4,7 @@ import { codexTest } from '../codex-fixtures'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, interruptButton, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const INTERRUPTION_MARKER = 'Text truncated by interruption.'
 
@@ -28,7 +28,7 @@ codexTest.describe('generation progress', () => {
 
     const indicator = page.locator('[data-testid="thinking-indicator"]:visible')
     await expect(indicator).toContainText('tokens')
-    await page.locator('[data-testid="interrupt-button"]:visible').click()
+    await interruptButton(page).click()
     await waitForAgentIdle(page)
 
     await expect(assistantBubbles(page).filter({ hasText: INTERRUPTION_MARKER }).first()).toBeVisible()
@@ -70,7 +70,7 @@ codexTest.describe('codex interrupt', () => {
     const row = await requireRegistryRow(page)
     await expect(row).toHaveAttribute('data-status', 'running')
 
-    const interruptBtn = page.locator('[data-testid="interrupt-button"]:visible')
+    const interruptBtn = interruptButton(page)
     await expect(interruptBtn).toBeVisible()
     await interruptBtn.click()
     await expect(interruptBtn).toHaveText('Interrupting...')

@@ -11,7 +11,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
 
 /** Click the displayed question option of the visible banner. Its control and label forward selection to the native input. */
 async function clickOption(page: Page, label: string) {
@@ -446,7 +446,7 @@ claudeTest.describe('Agent Settings', () => {
     // while the browser holds WORKING or WAITING_FOR_USER, so its absence proves that
     // the browser applied the IDLE report. The browser records a receipt in the same
     // task as that state change, so the check below cannot run before it.
-    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toHaveCount(0)
+    await expect(interruptButton(page)).toHaveCount(0)
     // WAITING_FOR_USER to IDLE is not a settle edge, because the agent was not
     // working. The stop therefore rings no second alert and records no receipt.
     expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()

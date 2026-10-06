@@ -109,17 +109,14 @@ function fakeContext(): ManagedNativeScenarioContext {
     locator: (selector: string) => {
       if (selector === `[data-placeholder="${READ_ONLY_SUBAGENT_REASON}"]:visible`)
         return probe(fake.placeholders)
+      if (selector === '[data-testid="interrupt-button"]:visible')
+        return probe(0)
       throw new Error(`The fake page has no locator for ${selector}.`)
     },
     getByText: (text: string) => {
       if (text !== READ_ONLY_SUBAGENT_REASON)
         throw new Error(`The fake page has no text locator for ${text}.`)
       return { filter: () => probe(fake.visibleReasons) }
-    },
-    getByTestId: (testId: string) => {
-      if (testId !== 'interrupt-button')
-        throw new Error(`The fake page has no test ID locator for ${testId}.`)
-      return { filter: () => probe(0) }
     },
   })
   const modelScript = Object.assign({} as ModelScript, {

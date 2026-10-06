@@ -10,7 +10,7 @@ import { withCleanup } from './cleanup'
 import { nativeAgentsByIds } from './nativeScenario'
 import { uniqueMarker } from './shellArguments'
 import { openChildTabFromRow } from './subagentRegistry'
-import { composerEditor } from './ui'
+import { composerEditor, interruptButton } from './ui'
 
 export interface RunningNativeChild {
   row: Locator
@@ -79,7 +79,7 @@ export async function expectUnsupportedSubagent(
     if (options.operation === 'interrupt') {
       expect(info.acceptsInterrupt).toBe(false)
       expect(parent.acceptsInterrupt).toBe(true)
-      await expect(context.page.getByTestId('interrupt-button').filter({ visible: true })).toHaveCount(0)
+      await expect(interruptButton(context.page)).toHaveCount(0)
       await expect(channel.callWorker(workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, {
         agentId: child.childId,
       })).rejects.toMatchObject({ source: 'rpc', code: Code.FailedPrecondition, message: 'this subagent cannot be interrupted' })

@@ -56,6 +56,7 @@ vi.mock('./ui', () => ({
     harness.events.push(`answer:${decision}`)
   },
   assistantBubbles: () => fake('answer'),
+  interruptButton: () => fake('[data-testid="interrupt-button"]:visible'),
   messageContents: () => fake('content'),
   userBubbles: () => fake('user'),
 }))

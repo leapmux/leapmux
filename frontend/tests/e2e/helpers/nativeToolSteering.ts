@@ -11,7 +11,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
 import { expectSteeredReply, queuedInputRow, steerQueuedInput } from './steer'
 import { createToolOutputControl } from './toolOutputControl'
-import { answerControl, assistantBubbles, messageContents, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, interruptButton, messageContents, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /**
  * Steer only after a real native shell command reports that it runs.
@@ -47,7 +47,7 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
     })
     if (options.expectDisplayedOutput ?? true)
       await expect(messageContents(context.page).filter({ hasText: output.firstLiveTail }).first()).toBeVisible()
-    await expect(context.page.locator('[data-testid="interrupt-button"]:visible')).toBeVisible()
+    await expect(interruptButton(context.page)).toBeVisible()
     await steerQueuedInput(context.page, { message: steering, match: 'Also append the word steered' })
     await output.releaseFirstOutput()
     await output.waitForSecondOutput()

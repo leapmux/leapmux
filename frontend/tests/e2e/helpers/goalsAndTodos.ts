@@ -19,7 +19,7 @@ import { countGoalTransitionsInMessages } from './goalTransitions'
 import { SCENARIO_MARKER } from './mockModelScript'
 import { sendNativeAnswer } from './nativeConversation'
 import { readAllAgentMessages } from './nativeMessages'
-import { composerEditor, expandSidebarSection, inputQueue, queuePauseButton, stableBox } from './ui'
+import { composerEditor, expandSidebarSection, inputQueue, interruptButton, queuePauseButton, stableBox } from './ui'
 
 /** Locator for the Goals & To-dos section header in the right sidebar. */
 export function goalsAndTodosSection(page: Page): Locator {
@@ -247,7 +247,7 @@ export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase)
  * The final assertion proves that the turn ended even when the click races it.
  */
 async function endActiveTurn(page: Page): Promise<void> {
-  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
+  const interrupt = interruptButton(page)
   await interrupt.click().catch(() => {})
   await expect(interrupt).toHaveCount(0)
 }

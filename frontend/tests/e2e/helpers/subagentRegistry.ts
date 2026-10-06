@@ -21,16 +21,7 @@ import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
-import {
-  ARITHMETIC_ANSWER_TEXT,
-  ARITHMETIC_PROMPT,
-  assistantBubbles,
-  expandSidebarSection,
-  expectAssistantAnswer,
-  sendMessage,
-  tabById,
-  waitForAgentIdle,
-} from './ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expandSidebarSection, expectAssistantAnswer, interruptButton, sendMessage, tabById, waitForAgentIdle } from './ui'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
 
@@ -380,7 +371,7 @@ export function subagentEndDivider(page: Page): Locator {
  * - The Interrupt control leaves the tab.
  */
 export async function stopChildWithInterrupt(page: Page, row: Locator, finalStatus: 'stopped' | 'interrupted' | 'paused'): Promise<void> {
-  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
+  const interrupt = interruptButton(page)
   await expect(interrupt).toBeVisible()
   await interrupt.click()
   await expect(row).toHaveAttribute('data-status', finalStatus)

@@ -2,7 +2,7 @@
 import { expect } from '@playwright/test'
 import { codexTest } from '../codex-fixtures'
 import { HELD_CHILD_NAME, HELD_CHILD_TASK, openHeldChildTab, stopChildWithInterrupt } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, interruptButton, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('codex subagent lifecycle', () => {
   codexTest('interrupts one running child and leaves the root able to answer', async ({ native }) => {
@@ -26,6 +26,6 @@ codexTest.describe('codex subagent lifecycle', () => {
     await expect(assistantBubbles(page).filter({ hasText: 'The root still answers.' }).first()).toBeVisible()
     expect(await child.heldTurns()).toBe(1)
     await tabById(page, child.childId).click()
-    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toHaveCount(0)
+    await expect(interruptButton(page)).toHaveCount(0)
   })
 })

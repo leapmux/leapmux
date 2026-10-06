@@ -6,7 +6,7 @@ import { withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
 import { waitForNativeInputQueueIdle } from '../helpers/nativeInputQueueIdle'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
-import { inputQueue, queuePauseButton } from '../helpers/ui'
+import { inputQueue, interruptButton, queuePauseButton } from '../helpers/ui'
 
 /** Kilo's fixed ACP idle fallback, which a Pause and a Clear wait for. A goal spec sets its timeout from it. */
 export const KILO_ACP_IDLE_FALLBACK_MS = 60_000
@@ -55,7 +55,7 @@ export async function exerciseKiloGoal(context: ManagedNativeScenarioContext): P
 async function deliverQueuedKiloGoalCommand(page: Page, command: string): Promise<void> {
   const queue = inputQueue(page)
   await expect(queue).toContainText(command)
-  const interrupt = page.locator('[data-testid="interrupt-button"]:visible')
+  const interrupt = interruptButton(page)
   if (await interrupt.isVisible()) {
     try {
       await interrupt.click()
