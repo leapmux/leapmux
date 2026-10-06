@@ -135,7 +135,7 @@ test.describe('Agent Settings', () => {
     expect(sawThinking).toBe(false)
 
     // Direct check too
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
   })
 
   test('permission mode change in new agent tab targets correct agent', async ({ authenticatedWorkspace, page }) => {

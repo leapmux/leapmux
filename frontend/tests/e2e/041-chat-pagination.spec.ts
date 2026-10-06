@@ -14,9 +14,9 @@ test.describe('Chat Pagination & Scroll', () => {
     // thinking indicator of the visible chat to go away.
     await sendScriptedTurn(page, modelScript, { prompt: 'Say hello.', answer: 'Hello.' })
 
-    // After the turn completes, no copy of the indicator and no Interrupt button remains.
+    // After the turn completes, no visible indicator and no Interrupt button remains.
     await expect(interruptButton(page)).toHaveCount(0)
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
 
     // Each rendered message wrapper carries a positive data-seq from the
     // server — this is what powers chat.store's pagination ordering.

@@ -14,6 +14,9 @@ import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 // - messageBubbles.
 // - messageContents.
 // - visibleOnly.
+// The thinking indicator has the same hazard for another reason.
+// Each tab of a tile mounts its own ChatView, and a hidden pane keeps its indicator.
+// A second tab therefore gives a page-root indicator locator two matches.
 // This guard rejects an unscoped locator before the intermittent browser failure occurs.
 // Apply the filter to the outermost locator. Descendants of a visible bubble need no second filter.
 // The scan permits bubble.locator('[data-testid="message-content"]') for that reason.
@@ -21,9 +24,10 @@ import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 const CHAT_TEST_IDS = [
   'message-bubble',
   'message-content',
+  'thinking-indicator',
 ]
 
-/** `page.locator('[data-testid="<chat id>"...]')` without a `:visible` filter. */
+/** `page.locator('[data-testid="<chat id>"...]')`. `unscopedChatLocators` keeps a match that has no `:visible` filter. */
 const UNSCOPED = new RegExp(
   `page\\s*\\.\\s*locator\\(\\s*(['\`])\\[data-testid="(?:${CHAT_TEST_IDS.join('|')})"\\][^'\`]*\\1`,
   'g',
@@ -50,7 +54,18 @@ const UNSCOPED_TEXT_ENGINE = /page\s*\.\s*locator\(\s*(['`])text=[^'`]*\1\)(?!\s
 /** A startup overlay belongs to the same visible ChatView as its composer. */
 const UNSCOPED_STARTUP_OVERLAY = /page\s*\.\s*getByTestId\(\s*(['"`])agent-startup-overlay\1\s*\)(?!\s*\.\s*filter\(\s*\{\s*visible\s*:\s*true)/g
 
+/** Return each page-root chat locator of `source` that has no `:visible` filter, with its offset in `source`. */
+function unscopedChatLocators(source: string): RegExpMatchArray[] {
+  return [...source.matchAll(UNSCOPED)].filter(match => !match[0].includes(':visible'))
+}
+
 describe('e2e chat locators', () => {
+  it('detects an unscoped thinking indicator while allowing visible scoping', () => {
+    expect(unscopedChatLocators('page.locator(\'[data-testid="thinking-indicator"]\')')).toHaveLength(1)
+    expect(unscopedChatLocators('context.page.locator(`[data-testid="thinking-indicator"]`)')).toHaveLength(1)
+    expect(unscopedChatLocators('page.locator(\'[data-testid="thinking-indicator"]:visible\')')).toEqual([])
+  })
+
   it('detects an unscoped startup overlay while allowing visible scoping', () => {
     expect('context.page.getByTestId(\'agent-startup-overlay\')'.match(UNSCOPED_STARTUP_OVERLAY)).toHaveLength(1)
     expect('context.page.getByTestId(\'agent-startup-overlay\').filter({ visible: true })'.match(UNSCOPED_STARTUP_OVERLAY)).toBeNull()
@@ -73,11 +88,8 @@ describe('e2e chat locators', () => {
         const line = source.slice(0, match.index).split('\n').length
         offenders.push(`${posixRelative(frontendRoot, file)}:${line}  ${match[0]}`)
       }
-      for (const match of source.matchAll(UNSCOPED)) {
-        if (match[0].includes(':visible'))
-          continue
+      for (const match of unscopedChatLocators(source))
         report(match)
-      }
       for (const match of source.matchAll(UNSCOPED_TEXT_ENGINE))
         report(match)
       for (const match of source.matchAll(UNSCOPED_STARTUP_OVERLAY)) {
@@ -88,9 +100,10 @@ describe('e2e chat locators', () => {
       }
     }
     const hint = [
-      'A page-root chat locator can match the hidden premeasure copy and the visible row.',
+      'A page-root chat locator can match a hidden copy beside the visible one:',
+      'the premeasure copy of a row, or the thinking indicator of a hidden pane.',
       'That duplicate causes an intermittent Playwright strict-mode failure.',
-      'Use the scoped chat helpers in tests/e2e/helpers/ui.ts:',
+      'Use the scoped chat helpers in tests/e2e/helpers/ui.ts, or add :visible to the outermost locator:',
     ].join(' ')
     expect(offenders, `${hint}\n  ${offenders.join('\n  ')}`).toEqual([])
   })
