@@ -392,18 +392,54 @@ describe('nativeModelInstructionText', () => {
     expect(nativeModelInstructionText({ protocol: 'google-generative-language', path: '/google', body })).toBe('ACTUAL_SYSTEM\nACTUAL_USER')
   })
 
-  it('includes actual instructions and user text while excluding schemas, results, and assistant text', () => {
+  it('includes Anthropic instructions and user text while excluding schemas, results, and assistant text', () => {
     const request: MockModelRequestRecord = { protocol: 'anthropic-messages', path: '/v1/messages', body: {
       system: [{ type: 'text', text: 'SYSTEM_INSTRUCTION' }],
       tools: [{ name: 'tool', description: 'SCHEMA_PLAN_MODE' }],
       messages: [
-        { role: 'developer', content: 'DEVELOPER_INSTRUCTION' },
         { role: 'user', content: [{ type: 'text', text: 'USER_PROMPT' }, { type: 'tool_result', content: 'TOOL_RESULT_PLAN_MODE' }] },
         { role: 'assistant', content: 'ASSISTANT_PLAN_MODE' },
-        { role: 'tool', content: 'TOOL_ROLE_PLAN_MODE' },
       ],
     } }
-    expect(nativeModelInstructionText(request)).toBe('SYSTEM_INSTRUCTION\nDEVELOPER_INSTRUCTION\nUSER_PROMPT')
+    expect(nativeModelInstructionText(request)).toBe('SYSTEM_INSTRUCTION\nUSER_PROMPT')
+  })
+
+  it('includes Chat Completions system and developer rows and user text in conversation order', () => {
+    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/chat/completions', body: {
+      tools: [{ type: 'function', function: { name: 'tool', description: 'SCHEMA_PLAN_MODE' } }],
+      messages: [
+        { role: 'system', content: 'SYSTEM_ROW' },
+        { role: 'user', content: [{ type: 'text', text: 'FIRST_PROMPT' }] },
+        { role: 'developer', content: 'DEVELOPER_INSTRUCTION' },
+        { role: 'assistant', content: 'ASSISTANT_PLAN_MODE' },
+        { role: 'tool', content: 'TOOL_ROLE_PLAN_MODE' },
+        { role: 'user', content: 'SECOND_PROMPT' },
+      ],
+    } }
+    expect(nativeModelInstructionText(request)).toBe('SYSTEM_ROW\nFIRST_PROMPT\nDEVELOPER_INSTRUCTION\nSECOND_PROMPT')
+  })
+
+  // One body that states the instructions of every protocol. Each protocol must read only its own places.
+  const everyInstructionPlace = {
+    system: 'ANTHROPIC_SYSTEM',
+    instructions: 'RESPONSES_INSTRUCTIONS',
+    systemInstruction: { parts: [{ text: 'GOOGLE_SYSTEM' }] },
+    messages: [{ role: 'developer', content: 'MESSAGES_DEVELOPER' }, { role: 'user', content: 'MESSAGES_USER' }],
+    input: [{ role: 'user', content: 'INPUT_USER' }],
+    contents: [{ role: 'user', parts: [{ text: 'CONTENTS_USER' }] }],
+  }
+
+  it.each([
+    { protocol: 'openai-chat-completions', expected: 'MESSAGES_DEVELOPER\nMESSAGES_USER' },
+    { protocol: 'anthropic-messages', expected: 'ANTHROPIC_SYSTEM\nMESSAGES_USER' },
+    { protocol: 'openai-responses', expected: 'RESPONSES_INSTRUCTIONS\nINPUT_USER' },
+    { protocol: 'google-generative-language', expected: 'GOOGLE_SYSTEM\nCONTENTS_USER' },
+  ] as const)('reads only the instruction places of $protocol', ({ protocol, expected }) => {
+    expect(nativeModelInstructionText({ protocol, path: '/', body: everyInstructionPlace })).toBe(expected)
+  })
+
+  it('reads a Responses input string as user text', () => {
+    expect(nativeModelInstructionText({ protocol: 'openai-responses', path: '/responses', body: { input: 'DIRECT_PROMPT' } })).toBe('DIRECT_PROMPT')
   })
 
   it('reads Responses instructions and input text without function output', () => {

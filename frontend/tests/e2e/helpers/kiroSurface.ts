@@ -29,7 +29,7 @@ import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStr
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
-import { contentText, selectScenarioID } from './mockModelScript'
+import { contentText, scenarioIDFromTexts } from './mockModelScript'
 import { createModelStream } from './modelStream'
 
 /** The header that states the operation of an AWS JSON 1.0 call. */
@@ -242,18 +242,18 @@ export function kiroCurrentUserInput(body: unknown): Record<string, unknown> | u
 
 /** Select from actual user prompts. Native system history and tool results cannot select a scenario. */
 function kiroScenarioID(body: unknown): string {
-  const messages: Array<{ role: 'user', content: string }> = []
+  const prompts: string[] = []
   if (isObject(body) && isObject(body.conversationState) && Array.isArray(body.conversationState.history)) {
     // The first native history entry holds the system prompt, as kiroSystemText documents.
     for (const entry of body.conversationState.history.slice(1)) {
       if (isObject(entry) && isObject(entry.userInputMessage) && typeof entry.userInputMessage.content === 'string')
-        messages.push({ role: 'user', content: entry.userInputMessage.content })
+        prompts.push(entry.userInputMessage.content)
     }
   }
   const current = kiroCurrentUserInput(body)
   if (typeof current?.content === 'string')
-    messages.push({ role: 'user', content: current.content })
-  return selectScenarioID({ messages })
+    prompts.push(current.content)
+  return scenarioIDFromTexts(prompts)
 }
 
 /**

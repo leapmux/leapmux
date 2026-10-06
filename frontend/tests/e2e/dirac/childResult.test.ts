@@ -12,7 +12,7 @@ function matches(body: unknown, taskMarker = TASK_MARKER): boolean {
   return matchesRequest(rule.when, {
     protocol: 'openai-chat-completions',
     systemText: 'The native Dirac parent.',
-    userText: lastUserText(body),
+    userText: lastUserText('openai-chat-completions', body),
     body,
   })
 }

@@ -64,8 +64,8 @@ codebuddyTest.describe('CodeBuddy Code steering', () => {
     // a user_query text part and a typed image_url part with the source bytes.
     const nextTurn = await modelScript.requestAt(start + 2)
     expect(nextTurn.protocol).toBe('openai-chat-completions')
-    expect(lastUserText(nextTurn.body)).toContain('Also inspect the image I attached.')
-    expect(lastUserText(nextTurn.body)).toContain('Attached file "codebuddy-steer.png" (image/png)')
+    expect(lastUserText(nextTurn.protocol, nextTurn.body)).toContain('Also inspect the image I attached.')
+    expect(lastUserText(nextTurn.protocol, nextTurn.body)).toContain('Attached file "codebuddy-steer.png" (image/png)')
     await expectNativeAttachmentProof(page, status, 'image', attachment, { protocol: 'openai-chat-completions', stepIndex: start + 2 })
     await expect(assistantBubbles(page).filter({ hasText: 'I saw the queued text.' })).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I saw the queued image.' })).toBeVisible()

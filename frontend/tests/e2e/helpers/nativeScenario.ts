@@ -10,7 +10,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
 import { jsonStringValues } from './jsonStringValues'
-import { requestRows, requestToolDescriptors } from './modelRequestBody'
+import { isSystemRow, requestRows, requestSystemFields, requestToolDescriptors, rowContent } from './modelRequestBody'
 import { nativeToolResult } from './nativeToolResult'
 import { retryUntilPass } from './retryUntilPass'
 import { AGENT_TAB_SELECTOR } from './tabSelectors'
@@ -330,13 +330,13 @@ export function nativeModelLastUserText(request: MockModelRequestRecord): string
   const body = request.body
   if (!isObject(body))
     throw new Error('The native user request body must be an object.')
+  const rows = requestRows(request.protocol, body)
   if (request.protocol === 'google-generative-language') {
-    const text = googleLastUserText(body.contents)
+    const text = googleLastUserText(rows)
     if (text === '')
       throw new Error('The native model request contains no last user text.')
     return text
   }
-  const rows = requestRows(request.protocol, body)
   let parts: string[]
   if (request.protocol === 'openai-responses' && typeof rows === 'string') {
     parts = [rows]
@@ -355,43 +355,27 @@ export function nativeModelLastUserText(request: MockModelRequestRecord): string
   return text
 }
 
-/** Read generic model instructions without tool schemas, results, or assistant answers. */
+/**
+ * Read generic model instructions without tool schemas, results, or assistant answers: the system fields outside the
+ * rows, then the text of each system row and each user row in conversation order, in the places that
+ * ./modelRequestBody.ts states for the protocol. A Responses `input` string is user text. A Google part has no block
+ * type, so the text of each text part counts.
+ */
 export function nativeModelInstructionText(request: MockModelRequestRecord): string {
-  if (request.protocol === 'aws-event-stream')
+  const { protocol, body } = request
+  if (protocol === 'aws-event-stream')
     throw new Error('The native service must supply its own instruction reader.')
-  const body = request.body
   if (!isObject(body))
     throw new Error('The native instruction request body must be an object.')
-  const parts: string[] = []
-  if (request.protocol === 'google-generative-language') {
-    if (isObject(body.systemInstruction))
-      parts.push(googlePartsText(body.systemInstruction.parts))
-    if (Array.isArray(body.contents)) {
-      for (const row of body.contents) {
-        if (isObject(row) && row.role === 'user')
-          parts.push(googlePartsText(row.parts))
-      }
-    }
+  const parts = requestSystemFields(protocol, body).flatMap(content => nativeTextBlocks(content))
+  const rows = requestRows(protocol, body)
+  if (protocol === 'openai-responses' && typeof rows === 'string') {
+    parts.push(rows)
   }
-  if ('system' in body)
-    parts.push(...nativeTextBlocks(body.system))
-  if ('instructions' in body)
-    parts.push(...nativeTextBlocks(body.instructions))
-  for (const key of ['messages', 'input']) {
-    if (!(key in body))
-      continue
-    const rows = body[key]
-    if (typeof rows === 'string' && key === 'input') {
-      parts.push(rows)
-      continue
-    }
-    if (!Array.isArray(rows))
-      continue
+  else if (Array.isArray(rows)) {
     for (const row of rows) {
-      if (typeof row !== 'object' || row === null || !('role' in row) || !('content' in row))
-        continue
-      if (row.role === 'system' || row.role === 'developer' || row.role === 'user')
-        parts.push(...nativeTextBlocks(row.content))
+      if (isObject(row) && (isSystemRow(protocol, row) || row.role === 'user'))
+        parts.push(...nativeTextBlocks(rowContent(protocol, row)))
     }
   }
   const text = parts.filter(part => part !== '').join('\n')

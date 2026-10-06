@@ -13,7 +13,7 @@ function matches(messages: unknown[], description = 'Inspect the child note', to
   return matchesRequest(droidChildNoticeRule(description, { text: 'The child completed.' }).when, {
     protocol: 'openai-chat-completions',
     systemText: '',
-    userText: lastUserText(body),
+    userText: lastUserText('openai-chat-completions', body),
     body,
   })
 }

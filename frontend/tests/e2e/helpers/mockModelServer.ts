@@ -188,7 +188,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
 
   // Record unregistered scenario requests consistently across all supported model routes.
   const answerFor = (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }): ScenarioAnswer => {
-    const scenarioID = context.scenarioID ?? selectScenarioID(context.body)
+    const scenarioID = context.scenarioID ?? selectScenarioID(context.protocol, context.body)
     const scenario = scenarios.get(scenarioID)
     if (!scenario) {
       recordUnmatched(unmatched, { ...context, scenarioID, reason: 'The scenario is not registered.' })
@@ -296,8 +296,8 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         protocol,
         path: url.pathname,
         body,
-        systemText: systemText(body),
-        userText: lastUserText(body),
+        systemText: systemText(protocol, body),
+        userText: lastUserText(protocol, body),
         mockCredential: mockCredentialReceipt(request.headers),
         ...(request.headers['anthropic-beta'] === undefined
           ? {}

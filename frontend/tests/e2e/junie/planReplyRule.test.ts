@@ -18,7 +18,7 @@ const SUMMARIZER_SYSTEM = 'You are a programming task description summarizer'
 
 function chatRequest(system: string, user: string) {
   const body = { model: 'junie-e2e', temperature: 0, stream: false, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }
-  return { protocol: 'openai-chat-completions' as const, systemText: systemText(body), userText: lastUserText(body), body }
+  return { protocol: 'openai-chat-completions' as const, systemText: systemText('openai-chat-completions', body), userText: lastUserText('openai-chat-completions', body), body }
 }
 
 describe('JUNIE_PLAN_REPLY_RULE', () => {

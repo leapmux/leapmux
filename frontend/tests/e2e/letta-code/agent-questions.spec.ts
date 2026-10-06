@@ -54,7 +54,8 @@ lettaTest.describe('Letta Code control requests', () => {
     expect(receipt.toolCallId).toBe('ask-1')
     // The answer reached the model as the notification. It states Red and never Blue as the answer,
     // although the questions it repeats offer both.
-    const response = notifiedResponse(lastUserText((await modelScript.requestAt(start + 2)).body))
+    const notified = await modelScript.requestAt(start + 2)
+    const response = notifiedResponse(lastUserText(notified.protocol, notified.body))
     expect(response.type).toBe('ask_user_question_response')
     expect(response.toolCallId).toBe('ask-1')
     expect(response.status).toBe('answered')

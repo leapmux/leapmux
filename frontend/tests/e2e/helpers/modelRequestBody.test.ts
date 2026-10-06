@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { requestRows, requestToolDescriptors, toolDescriptor, toolInputSchema } from './modelRequestBody'
+import { isSystemRow, requestRows, requestSystemFields, requestToolDescriptors, rowContent, toolDescriptor, toolInputSchema } from './modelRequestBody'
 
 describe('requestRows', () => {
   const rows = [{ role: 'user', content: 'ROW' }]
@@ -23,6 +23,69 @@ describe('requestRows', () => {
 
   it('returns undefined for the AWS event stream, whose service states no generic rows', () => {
     expect(requestRows('aws-event-stream', { messages: rows })).toBeUndefined()
+  })
+})
+
+describe('rowContent', () => {
+  it.each([
+    { protocol: 'openai-chat-completions', row: { content: 'ROW', parts: 'OTHER' } },
+    { protocol: 'openai-responses', row: { content: 'ROW', parts: 'OTHER' } },
+    { protocol: 'anthropic-messages', row: { content: 'ROW', parts: 'OTHER' } },
+    { protocol: 'google-generative-language', row: { parts: 'ROW', content: 'OTHER' } },
+  ] as const)('reads the content field of a $protocol row', ({ protocol, row }) => {
+    expect(rowContent(protocol, row)).toBe('ROW')
+  })
+
+  it('returns undefined for a row that states no content', () => {
+    expect(rowContent('anthropic-messages', { role: 'user' })).toBeUndefined()
+  })
+})
+
+describe('isSystemRow', () => {
+  it.each(['openai-chat-completions', 'openai-responses'] as const)('takes a system row and a developer row of %s', (protocol) => {
+    expect(isSystemRow(protocol, { role: 'system' })).toBe(true)
+    expect(isSystemRow(protocol, { role: 'developer' })).toBe(true)
+    expect(isSystemRow(protocol, { role: 'user' })).toBe(false)
+    expect(isSystemRow(protocol, { role: 'assistant' })).toBe(false)
+    expect(isSystemRow(protocol, {})).toBe(false)
+  })
+
+  it.each(['anthropic-messages', 'google-generative-language'] as const)('takes no row of %s, which keeps its system instructions outside the rows', (protocol) => {
+    expect(isSystemRow(protocol, { role: 'system' })).toBe(false)
+    expect(isSystemRow(protocol, { role: 'developer' })).toBe(false)
+  })
+})
+
+describe('requestSystemFields', () => {
+  const blocks = [{ type: 'text', text: 'SYSTEM' }]
+  const parts = [{ text: 'SYSTEM' }]
+  const body = { instructions: 'INSTRUCTIONS', system: blocks, systemInstruction: { parts }, messages: [{ role: 'system', content: 'ROW' }] }
+
+  it.each([
+    { protocol: 'openai-responses', expected: ['INSTRUCTIONS'] },
+    { protocol: 'anthropic-messages', expected: [blocks] },
+    { protocol: 'google-generative-language', expected: [parts] },
+    { protocol: 'openai-chat-completions', expected: [] },
+    { protocol: 'aws-event-stream', expected: [] },
+  ] as const)('reads only the system field of $protocol, unchanged', ({ protocol, expected }) => {
+    const fields = requestSystemFields(protocol, body)
+    expect(fields).toEqual(expected)
+    for (const [index, field] of fields.entries())
+      expect(field).toBe(expected[index])
+  })
+
+  it.each([
+    { protocol: 'openai-responses', body: { input: [] } },
+    { protocol: 'anthropic-messages', body: { messages: [] } },
+    { protocol: 'google-generative-language', body: { contents: [] } },
+    { protocol: 'google-generative-language', body: { systemInstruction: 'SYSTEM' } },
+    { protocol: 'google-generative-language', body: { systemInstruction: {} } },
+  ] as const)('returns no field for a $protocol body that states none: %j', ({ protocol, body }) => {
+    expect(requestSystemFields(protocol, body)).toEqual([])
+  })
+
+  it.each([undefined, null, 'body', [], 0])('returns no field for a body that is not an object: %j', (value) => {
+    expect(requestSystemFields('anthropic-messages', value)).toEqual([])
   })
 })
 

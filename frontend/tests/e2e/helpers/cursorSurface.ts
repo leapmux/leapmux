@@ -64,7 +64,7 @@ import {
 } from './cursorWire'
 import { mockCredentialReceipt } from './mockCredentials'
 import { MAX_MOCK_REQUEST_BYTES, writeResponseHeaders } from './mockHttp'
-import { AMBIENT_SCENARIO_ID, selectScenarioID } from './mockModelScript'
+import { AMBIENT_SCENARIO_ID, scenarioIDFromTexts } from './mockModelScript'
 import { createModelStream } from './modelStream'
 
 /** The bidirectional stream that carries one whole Cursor turn. */
@@ -210,7 +210,7 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
       await serveCursorRun(request, response, {
         answer: async (prompt, requestFrame) => {
           const conversationID = cursorConversationIdOf(requestFrame)
-          const currentScenarioID = selectScenarioID(prompt)
+          const currentScenarioID = scenarioIDFromTexts([prompt])
           let scenarioID = currentScenarioID
           let conversation: CursorConversationState | undefined
           if (conversationID) {

@@ -19,7 +19,7 @@ describe('reasonixChildTaskMatcher', () => {
     for (const userText of [actualPack.replace(marker, 'ANOTHER_CHILD'), prompt, actualPack.replace('## Task\n', '## Other\n')])
       expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText, systemText: actualPack, body: {} })).toBe(false)
     const body = { messages: [{ role: 'user', content: actualPack }, { role: 'user', content: 'Run the next root task.' }], tools: [{ description: actualPack }] }
-    expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText: lastUserText(body), systemText: '', body })).toBe(false)
+    expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText: lastUserText('openai-chat-completions', body), systemText: '', body })).toBe(false)
   })
 
   it('escapes marker punctuation and refuses an empty marker', () => {

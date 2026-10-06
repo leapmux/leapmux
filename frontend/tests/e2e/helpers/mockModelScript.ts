@@ -1,7 +1,8 @@
 import type { CursorRunRequestWitness } from './cursorRequestWire'
+import type { GenericModelProtocol } from './modelRequestBody'
 import { isObject } from '../../../src/lib/jsonPick'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
-import { requestRows } from './modelRequestBody'
+import { isSystemRow, requestRows, requestSystemFields, rowContent } from './modelRequestBody'
 
 /**
  * The vocabulary a test injects into the mock model server.
@@ -825,25 +826,30 @@ function parseModelError(value: unknown, label: string): MockModelError {
 }
 
 /**
- * The scenario the request selects.
+ * The scenario that a generic model request selects, through {@link scenarioIDFromTexts}: the user texts of its rows
+ * in conversation order, and its system text. Native session metadata and tool replies cannot select the scenario.
+ */
+export function selectScenarioID(protocol: MockModelProtocol, body: unknown): string {
+  return scenarioIDFromTexts(scenarioUserTexts(protocol, body), systemText(protocol, body))
+}
+
+/**
+ * The scenario that the texts of one request select.
  *
  * The newest marker in actual user text wins.
  * Replayed conversations can contain several prompt markers.
- * Native session metadata and tool replies cannot select the scenario.
  *
  * The system text selects the scenario only when no user text holds a marker.
  * A native summary request can quote the conversation in its system prompt
  * and send a fixed instruction as its only user text. Goose 1.53.0 does this
  * for `/compact`, so its user text never holds the marker of the prompts that
  * it summarizes.
+ *
+ * A native surface whose request is not a generic body, such as the Cursor protobuf prompt or the Kiro event stream,
+ * reads its own user texts and selects through this function.
  */
-export function selectScenarioID(body: unknown): string {
-  return collectScenarioIDs(body).at(-1) ?? scenarioMarkers(systemText(body)).at(-1) ?? AMBIENT_SCENARIO_ID
-}
-
-/** Read markers from user prompts in their conversation order. */
-export function collectScenarioIDs(value: unknown): string[] {
-  return scenarioUserTexts(value).flatMap(text => scenarioMarkers(text))
+export function scenarioIDFromTexts(userTexts: readonly string[], systemPrompt = ''): string {
+  return userTexts.flatMap(text => scenarioMarkers(text)).at(-1) ?? scenarioMarkers(systemPrompt).at(-1) ?? AMBIENT_SCENARIO_ID
 }
 
 /** Read the markers of one text in their order. */
@@ -852,26 +858,32 @@ function scenarioMarkers(text: string): string[] {
   return [...text.matchAll(pattern)].flatMap(match => match[1] ? [match[1]] : [])
 }
 
-function scenarioUserTexts(body: unknown): string[] {
-  if (typeof body === 'string')
-    return [body]
-  if (!isObject(body))
+/**
+ * The texts of the user rows that can select a scenario, in conversation order. A Responses `input` string is one
+ * user text. A Google row gives the text of its text parts. Another row gives its string content, or each `text` and
+ * `input_text` block of its content, so a tool result block cannot select a scenario.
+ */
+function scenarioUserTexts(protocol: MockModelProtocol, body: unknown): string[] {
+  if (protocol === 'aws-event-stream')
     return []
-  if (typeof body.input === 'string')
-    return [body.input]
-  if (Array.isArray(body.contents)) {
-    return body.contents.filter(isObject).filter(message => message.role === 'user').map(message => googlePartsText(message.parts))
-  }
-  const rows = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : []
+  const rows = requestRows(protocol, body)
+  if (protocol === 'openai-responses' && typeof rows === 'string')
+    return [rows]
+  if (!Array.isArray(rows))
+    return []
   const prompts: string[] = []
-  for (const message of rows) {
-    if (!isObject(message) || message.role !== 'user')
+  for (const row of rows) {
+    if (!isObject(row) || row.role !== 'user')
       continue
-    if (typeof message.content === 'string') {
-      prompts.push(message.content)
+    const content = rowContent(protocol, row)
+    if (protocol === 'google-generative-language') {
+      prompts.push(googlePartsText(content))
     }
-    else if (Array.isArray(message.content)) {
-      for (const block of message.content) {
+    else if (typeof content === 'string') {
+      prompts.push(content)
+    }
+    else if (Array.isArray(content)) {
+      for (const block of content) {
         if (isObject(block) && (block.type === 'text' || block.type === 'input_text') && typeof block.text === 'string')
           prompts.push(block.text)
       }
@@ -895,11 +907,14 @@ export function matchesRequest(
   if (matcher.body !== undefined && !matchesPattern(matcher.body, JSON.stringify(request.body ?? null)))
     return false
   if (matcher.lastMessage !== undefined) {
+    // The AWS event stream states no generic rows, so no last message matches.
+    if (request.protocol === 'aws-event-stream')
+      return false
     const rows = requestRows(request.protocol, request.body)
     const message: unknown = Array.isArray(rows) ? rows.at(-1) : undefined
     if (!isObject(message) || (matcher.lastMessage.role !== undefined && matcher.lastMessage.role !== message.role))
       return false
-    if (!matchesPattern(matcher.lastMessage.text, request.protocol === 'google-generative-language' ? googlePartsText(message.parts) : contentText(message.content)))
+    if (!matchesPattern(matcher.lastMessage.text, rowText(request.protocol, rowContent(request.protocol, message))))
       return false
   }
   return true
@@ -913,52 +928,46 @@ function matchesPattern(pattern: MockModelPattern | undefined, subject: string):
 }
 
 /**
- * The joined system text of a request.
- *
- * The three protocols each state the system prompt differently: Chat
- * Completions uses a `system` role inside `messages`, Responses uses
- * `instructions` plus a `system` or `developer` role inside `input`, and
- * Anthropic uses a top-level `system` field.
+ * The text of one content value of `protocol`, for a lenient matcher: the text parts of Google parts, else every
+ * string that {@link contentText} finds.
  */
-export function systemText(body: unknown): string {
-  if (!isObject(body))
-    return ''
-  const parts: string[] = []
-  if (isObject(body.systemInstruction))
-    parts.push(googlePartsText(body.systemInstruction.parts))
-  if (body.system !== undefined)
-    parts.push(contentText(body.system))
-  if (typeof body.instructions === 'string')
-    parts.push(body.instructions)
-  for (const key of ['messages', 'input'] as const) {
-    const items = body[key]
-    if (!Array.isArray(items))
-      continue
-    for (const item of items) {
-      if (isObject(item) && (item.role === 'system' || item.role === 'developer'))
-        parts.push(contentText(item.content))
-    }
-  }
-  return parts.filter(Boolean).join('\n')
+function rowText(protocol: GenericModelProtocol, content: unknown): string {
+  return protocol === 'google-generative-language' ? googlePartsText(content) : contentText(content)
 }
 
-/** Read the last user prompt across the supported model APIs. */
-export function lastUserText(body: unknown): string {
-  if (!isObject(body))
+/**
+ * The joined system text of a request: the system fields outside the rows, then each system row, in the places that
+ * ./modelRequestBody.ts states for `protocol`. The answer is empty for the AWS event stream, whose surface reads its
+ * own system text.
+ */
+export function systemText(protocol: MockModelProtocol, body: unknown): string {
+  if (protocol === 'aws-event-stream')
     return ''
-  if (Array.isArray(body.contents))
-    return googleLastUserText(body.contents)
-  for (const key of ['messages', 'input'] as const) {
-    const items = body[key]
-    if (!Array.isArray(items))
-      continue
-    for (let index = items.length - 1; index >= 0; index--) {
-      const item = items[index]
-      if (isObject(item) && item.role === 'user')
-        return contentText(item.content)
-    }
-  }
-  return ''
+  const rows = requestRows(protocol, body)
+  const contents = [
+    ...requestSystemFields(protocol, body),
+    ...(Array.isArray(rows) ? rows.filter(isObject).filter(row => isSystemRow(protocol, row)).map(row => rowContent(protocol, row)) : []),
+  ]
+  return contents.map(content => rowText(protocol, content)).filter(Boolean).join('\n')
+}
+
+/**
+ * The last user prompt of a request. A Google row whose parts hold no text, such as a function response, gives way to
+ * the user row before it. Another protocol takes its last user row whatever it holds, and a Responses `input` string
+ * is the prompt. The answer is empty for the AWS event stream, whose surface reads its own user text.
+ */
+export function lastUserText(protocol: MockModelProtocol, body: unknown): string {
+  if (protocol === 'aws-event-stream')
+    return ''
+  const rows = requestRows(protocol, body)
+  if (protocol === 'google-generative-language')
+    return googleLastUserText(rows)
+  if (protocol === 'openai-responses' && typeof rows === 'string')
+    return rows
+  if (!Array.isArray(rows))
+    return ''
+  const last: unknown = rows.findLast(row => isObject(row) && row.role === 'user')
+  return isObject(last) ? contentText(rowContent(protocol, last)) : ''
 }
 
 /** Flatten any nested content shape into its text. */

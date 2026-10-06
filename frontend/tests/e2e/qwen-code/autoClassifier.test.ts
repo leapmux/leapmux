@@ -36,7 +36,7 @@ describe('qwenClassifierWithoutVerdict', () => {
 
   it('matches the classifier request and no turn of the conversation', () => {
     const { when } = qwenClassifierWithoutVerdict('classifier')
-    const request = (body: unknown) => ({ protocol: 'openai-chat-completions' as const, systemText: systemText(body), userText: '', body })
+    const request = (body: unknown) => ({ protocol: 'openai-chat-completions' as const, systemText: systemText('openai-chat-completions', body), userText: '', body })
     const classifier = { messages: [{ role: 'system', content: 'You are a security classifier for an AI coding agent operating in auto mode.' }, { role: 'user', content: '## Pending tool call to classify' }] }
     const turn = { messages: [{ role: 'system', content: 'You are Qwen Code, an interactive CLI agent.' }, { role: 'user', content: 'Run the scripted permission probe.' }] }
     expect(matchesRequest(when, request(classifier))).toBe(true)

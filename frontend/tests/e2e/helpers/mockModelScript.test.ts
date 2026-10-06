@@ -2,7 +2,6 @@ import type { MockModelScenarioStatus } from './mockModelScript'
 import { describe, expect, it } from 'vitest'
 import {
   AMBIENT_SCENARIO_ID,
-  collectScenarioIDs,
   contentText,
   describeScenarioStatus,
   lastUserText,
@@ -13,6 +12,7 @@ import {
   resolveStepCaptures,
   ruleRequest,
   SCENARIO_MARKER,
+  scenarioIDFromTexts,
   selectScenarioID,
   stepRequest,
   systemText,
@@ -42,8 +42,8 @@ describe('Google request text', () => {
   }
 
   it('reads only native instructions and the last real user text', () => {
-    expect(systemText(body)).toBe('ACTUAL_SYSTEM')
-    expect(lastUserText(body)).toBe('ACTUAL_USER')
+    expect(systemText('google-generative-language', body)).toBe('ACTUAL_SYSTEM')
+    expect(lastUserText('google-generative-language', body)).toBe('ACTUAL_USER')
   })
 
   it('matches the actual final Google user row without reading nested function responses as text', () => {
@@ -71,52 +71,76 @@ describe('selectScenarioID', () => {
       messages: [{ role: 'user', content: `Compact this context.\n${SCENARIO_MARKER}native-deepseek-compaction` }],
       dsh_session_log: { events: [{ type: 'session/title', data: { title: `${SCENARIO_MARKER}native-deepseek-compa` } }] },
     }
-    expect(selectScenarioID(body)).toBe('native-deepseek-compaction')
+    expect(selectScenarioID('openai-chat-completions', body)).toBe('native-deepseek-compaction')
   })
 
   it.each([
-    { messages: [{ role: 'user', content: `${SCENARIO_MARKER}current` }, { role: 'assistant', content: `${SCENARIO_MARKER}stale` }] },
-    { messages: [{ role: 'user', content: `${SCENARIO_MARKER}current` }, { role: 'tool', content: `${SCENARIO_MARKER}stale` }] },
-    { messages: [{ role: 'user', content: `${SCENARIO_MARKER}current` }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'old-call', content: `${SCENARIO_MARKER}stale` }] }] },
-    { input: [{ role: 'user', content: [{ type: 'input_text', text: `${SCENARIO_MARKER}current` }] }, { type: 'function_call_output', call_id: 'old-call', output: `${SCENARIO_MARKER}stale` }] },
-    { contents: [{ role: 'user', parts: [{ text: `${SCENARIO_MARKER}current` }] }, { role: 'user', parts: [{ functionResponse: { name: 'old-call', response: { output: `${SCENARIO_MARKER}stale` } } }] }] },
-  ])('does not let model replies or tool outputs choose another scenario: %j', (body) => {
-    expect(selectScenarioID(body)).toBe('current')
+    { protocol: 'openai-chat-completions', body: { messages: [{ role: 'user', content: `${SCENARIO_MARKER}current` }, { role: 'assistant', content: `${SCENARIO_MARKER}stale` }] } },
+    { protocol: 'openai-chat-completions', body: { messages: [{ role: 'user', content: `${SCENARIO_MARKER}current` }, { role: 'tool', content: `${SCENARIO_MARKER}stale` }] } },
+    { protocol: 'anthropic-messages', body: { messages: [{ role: 'user', content: `${SCENARIO_MARKER}current` }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'old-call', content: `${SCENARIO_MARKER}stale` }] }] } },
+    { protocol: 'openai-responses', body: { input: [{ role: 'user', content: [{ type: 'input_text', text: `${SCENARIO_MARKER}current` }] }, { type: 'function_call_output', call_id: 'old-call', output: `${SCENARIO_MARKER}stale` }] } },
+    { protocol: 'google-generative-language', body: { contents: [{ role: 'user', parts: [{ text: `${SCENARIO_MARKER}current` }] }, { role: 'user', parts: [{ functionResponse: { name: 'old-call', response: { output: `${SCENARIO_MARKER}stale` } } }] }] } },
+  ] as const)('does not let model replies or tool outputs of $protocol choose another scenario: %j', ({ protocol, body }) => {
+    expect(selectScenarioID(protocol, body)).toBe('current')
   })
 
-  it('keeps direct Cursor prompts and Responses string input without scanning root metadata', () => {
-    expect(selectScenarioID(`Run.\n${SCENARIO_MARKER}cursor-direct`)).toBe('cursor-direct')
-    expect(selectScenarioID({ input: `Run.\n${SCENARIO_MARKER}response-direct`, metadata: { title: `${SCENARIO_MARKER}foreign` } })).toBe('response-direct')
+  it('reads a Responses string input without scanning root metadata', () => {
+    expect(selectScenarioID('openai-responses', { input: `Run.\n${SCENARIO_MARKER}response-direct`, metadata: { title: `${SCENARIO_MARKER}foreign` } })).toBe('response-direct')
+  })
+
+  it.each(['openai-chat-completions', 'anthropic-messages', 'google-generative-language'] as const)('takes no string as the rows of %s', (protocol) => {
+    const marker = `${SCENARIO_MARKER}not-rows`
+    expect(selectScenarioID(protocol, { messages: marker, contents: marker })).toBe(AMBIENT_SCENARIO_ID)
+  })
+
+  // One body that states the rows of every protocol. Each protocol must read only its own rows field.
+  const everyRowsField = {
+    messages: [{ role: 'user', content: `${SCENARIO_MARKER}messages-rows` }],
+    input: [{ role: 'user', content: [{ type: 'input_text', text: `${SCENARIO_MARKER}input-rows` }] }],
+    contents: [{ role: 'user', parts: [{ text: `${SCENARIO_MARKER}contents-rows` }] }],
+  }
+
+  it.each([
+    { protocol: 'openai-chat-completions', expected: 'messages-rows' },
+    { protocol: 'anthropic-messages', expected: 'messages-rows' },
+    { protocol: 'openai-responses', expected: 'input-rows' },
+    { protocol: 'google-generative-language', expected: 'contents-rows' },
+  ] as const)('reads only the rows field of $protocol', ({ protocol, expected }) => {
+    expect(selectScenarioID(protocol, everyRowsField)).toBe(expected)
+  })
+
+  it('selects the ambient scenario for the AWS event stream, whose surface reads its own texts', () => {
+    expect(selectScenarioID('aws-event-stream', everyRowsField)).toBe(AMBIENT_SCENARIO_ID)
   })
 
   it('falls back to the ambient scenario when no marker is present', () => {
-    expect(selectScenarioID({ messages: [{ role: 'user', content: 'No marker' }] })).toBe(AMBIENT_SCENARIO_ID)
+    expect(selectScenarioID('openai-chat-completions', { messages: [{ role: 'user', content: 'No marker' }] })).toBe(AMBIENT_SCENARIO_ID)
   })
 
   // Goose 1.53.0 `/compact` quotes the conversation in the system prompt.
   // Its only user text is a fixed instruction that holds no marker.
   it.each([
-    { messages: [{ role: 'system', content: `**Conversation History:**\n[user]: Keep it.\n\n${SCENARIO_MARKER}quoted-history\n[assistant]: Kept.` }, { role: 'user', content: 'Please summarize the conversation history provided in the system prompt.' }] },
-    { system: [{ type: 'text', text: `History: ${SCENARIO_MARKER}quoted-history` }], messages: [{ role: 'user', content: 'Summarize the history.' }] },
-    { instructions: `History: ${SCENARIO_MARKER}quoted-history`, input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize the history.' }] }] },
-    { systemInstruction: { parts: [{ text: `History: ${SCENARIO_MARKER}quoted-history` }] }, contents: [{ role: 'user', parts: [{ text: 'Summarize the history.' }] }] },
-  ])('reads the system text when no user text holds a marker: %j', (body) => {
-    expect(selectScenarioID(body)).toBe('quoted-history')
+    { protocol: 'openai-chat-completions', body: { messages: [{ role: 'system', content: `**Conversation History:**\n[user]: Keep it.\n\n${SCENARIO_MARKER}quoted-history\n[assistant]: Kept.` }, { role: 'user', content: 'Please summarize the conversation history provided in the system prompt.' }] } },
+    { protocol: 'anthropic-messages', body: { system: [{ type: 'text', text: `History: ${SCENARIO_MARKER}quoted-history` }], messages: [{ role: 'user', content: 'Summarize the history.' }] } },
+    { protocol: 'openai-responses', body: { instructions: `History: ${SCENARIO_MARKER}quoted-history`, input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize the history.' }] }] } },
+    { protocol: 'google-generative-language', body: { systemInstruction: { parts: [{ text: `History: ${SCENARIO_MARKER}quoted-history` }] }, contents: [{ role: 'user', parts: [{ text: 'Summarize the history.' }] }] } },
+  ] as const)('reads the $protocol system text when no user text holds a marker', ({ protocol, body }) => {
+    expect(selectScenarioID(protocol, body)).toBe('quoted-history')
   })
 
   it('takes the newest system text marker when the system text quotes several prompts', () => {
     const body = { messages: [{ role: 'system', content: `[user]: ${SCENARIO_MARKER}older\n[user]: ${SCENARIO_MARKER}newer` }, { role: 'user', content: 'Summarize the history.' }] }
-    expect(selectScenarioID(body)).toBe('newer')
+    expect(selectScenarioID('openai-chat-completions', body)).toBe('newer')
   })
 
   it('prefers a user text marker to a system text marker', () => {
     const body = { messages: [{ role: 'system', content: `Earlier: ${SCENARIO_MARKER}stale` }, { role: 'user', content: `Run.\n\n${SCENARIO_MARKER}current` }] }
-    expect(selectScenarioID(body)).toBe('current')
+    expect(selectScenarioID('openai-chat-completions', body)).toBe('current')
   })
 
   it('does not let model replies or tool outputs choose the scenario when only they hold a marker', () => {
     const body = { messages: [{ role: 'system', content: 'No marker.' }, { role: 'assistant', content: `${SCENARIO_MARKER}reply` }, { role: 'tool', content: `${SCENARIO_MARKER}tool` }, { role: 'user', content: 'No marker' }] }
-    expect(selectScenarioID(body)).toBe(AMBIENT_SCENARIO_ID)
+    expect(selectScenarioID('openai-chat-completions', body)).toBe(AMBIENT_SCENARIO_ID)
   })
 
   it('takes the newest marker, so one chat can run several scenarios', () => {
@@ -127,61 +151,132 @@ describe('selectScenarioID', () => {
         { role: 'user', content: `Second\n\n${SCENARIO_MARKER}newer` },
       ],
     }
-    expect(collectScenarioIDs(body)).toEqual(['older', 'newer'])
-    expect(selectScenarioID(body)).toBe('newer')
+    expect(selectScenarioID('openai-chat-completions', body)).toBe('newer')
   })
 
   it('finds a marker nested inside a structured content block', () => {
     const body = { input: [{ role: 'user', content: [{ type: 'input_text', text: `Run\n${SCENARIO_MARKER}deep-1` }] }] }
-    expect(selectScenarioID(body)).toBe('deep-1')
+    expect(selectScenarioID('openai-responses', body)).toBe('deep-1')
   })
 
-  it('ignores a marker whose identifier is empty', () => {
-    expect(collectScenarioIDs({ messages: [{ content: `${SCENARIO_MARKER} ` }] })).toEqual([])
+  it('ignores a user marker whose identifier is empty', () => {
+    expect(selectScenarioID('openai-chat-completions', { messages: [{ role: 'user', content: `${SCENARIO_MARKER} ` }] })).toBe(AMBIENT_SCENARIO_ID)
+  })
+})
+
+describe('scenarioIDFromTexts', () => {
+  it('takes the newest marker of a direct Cursor prompt', () => {
+    expect(scenarioIDFromTexts([`Run.\n${SCENARIO_MARKER}cursor-direct`])).toBe('cursor-direct')
+  })
+
+  it('takes the newest marker across the user texts, and within one text', () => {
+    expect(scenarioIDFromTexts([`${SCENARIO_MARKER}older`, `Run.\n${SCENARIO_MARKER}middle ${SCENARIO_MARKER}newer`, 'No marker'])).toBe('newer')
+  })
+
+  it('reads the system prompt only when no user text holds a marker', () => {
+    expect(scenarioIDFromTexts(['No marker'], `History: ${SCENARIO_MARKER}quoted`)).toBe('quoted')
+    expect(scenarioIDFromTexts([`${SCENARIO_MARKER}current`], `History: ${SCENARIO_MARKER}quoted`)).toBe('current')
+  })
+
+  it('selects the ambient scenario for no text, an empty text, and a marker with an empty identifier', () => {
+    expect(scenarioIDFromTexts([])).toBe(AMBIENT_SCENARIO_ID)
+    expect(scenarioIDFromTexts([''], '')).toBe(AMBIENT_SCENARIO_ID)
+    expect(scenarioIDFromTexts([`${SCENARIO_MARKER} `], `${SCENARIO_MARKER}`)).toBe(AMBIENT_SCENARIO_ID)
   })
 })
 
 describe('systemText', () => {
   it('joins a Chat Completions system role', () => {
-    expect(systemText({ messages: [{ role: 'system', content: 'Be brief.' }, { role: 'user', content: 'Hi' }] })).toBe('Be brief.')
+    expect(systemText('openai-chat-completions', { messages: [{ role: 'system', content: 'Be brief.' }, { role: 'user', content: 'Hi' }] })).toBe('Be brief.')
   })
 
   it('joins Responses instructions with a developer role', () => {
-    expect(systemText({
+    expect(systemText('openai-responses', {
       instructions: 'Top level.',
       input: [{ role: 'developer', content: [{ type: 'input_text', text: 'Nested.' }] }],
     })).toBe('Top level.\nNested.')
   })
 
   it('reads the Anthropic top-level system field, whether text or blocks', () => {
-    expect(systemText({ system: 'Plain.' })).toBe('Plain.')
-    expect(systemText({ system: [{ type: 'text', text: 'Block one.' }, { type: 'text', text: 'Block two.' }] }))
+    expect(systemText('anthropic-messages', { system: 'Plain.' })).toBe('Plain.')
+    expect(systemText('anthropic-messages', { system: [{ type: 'text', text: 'Block one.' }, { type: 'text', text: 'Block two.' }] }))
       .toBe('Block one.\nBlock two.')
   })
 
+  it('reads only the text parts of the Google system instruction', () => {
+    expect(systemText('google-generative-language', { systemInstruction: { parts: [{ text: 'Part one.' }, { inlineData: { data: 'BYTES' } }, { text: 'Part two.' }] } }))
+      .toBe('Part one.\nPart two.')
+  })
+
+  // One body that states the system text of every protocol. Each protocol must read only its own places.
+  const everySystemPlace = {
+    instructions: 'INSTRUCTIONS',
+    system: 'ANTHROPIC_SYSTEM',
+    systemInstruction: { parts: [{ text: 'GOOGLE_SYSTEM' }] },
+    messages: [{ role: 'system', content: 'MESSAGES_SYSTEM' }, { role: 'developer', content: 'MESSAGES_DEVELOPER' }],
+    input: [{ role: 'system', content: 'INPUT_SYSTEM' }],
+  }
+
+  it.each([
+    { protocol: 'openai-chat-completions', expected: 'MESSAGES_SYSTEM\nMESSAGES_DEVELOPER' },
+    { protocol: 'openai-responses', expected: 'INSTRUCTIONS\nINPUT_SYSTEM' },
+    { protocol: 'anthropic-messages', expected: 'ANTHROPIC_SYSTEM' },
+    { protocol: 'google-generative-language', expected: 'GOOGLE_SYSTEM' },
+    { protocol: 'aws-event-stream', expected: '' },
+  ] as const)('reads only the system places of $protocol', ({ protocol, expected }) => {
+    expect(systemText(protocol, everySystemPlace)).toBe(expected)
+  })
+
   it('returns an empty string for a body with no system text', () => {
-    expect(systemText({ messages: [{ role: 'user', content: 'Hi' }] })).toBe('')
-    expect(systemText(null)).toBe('')
-    expect(systemText([])).toBe('')
+    expect(systemText('openai-chat-completions', { messages: [{ role: 'user', content: 'Hi' }] })).toBe('')
+    expect(systemText('anthropic-messages', null)).toBe('')
+    expect(systemText('openai-responses', [])).toBe('')
   })
 })
 
 describe('lastUserText', () => {
   it('takes the last user turn, not the first', () => {
-    expect(lastUserText({
+    expect(lastUserText('openai-chat-completions', {
       messages: [{ role: 'user', content: 'First' }, { role: 'assistant', content: 'Reply' }, { role: 'user', content: 'Second' }],
     })).toBe('Second')
   })
 
-  it('reads a Responses input array', () => {
-    expect(lastUserText({ input: [{ role: 'user', content: [{ type: 'input_text', text: 'From input' }] }] })).toBe('From input')
+  it('reads a Responses input array, and takes a Responses input string as the prompt', () => {
+    expect(lastUserText('openai-responses', { input: [{ role: 'user', content: [{ type: 'input_text', text: 'From input' }] }] })).toBe('From input')
+    expect(lastUserText('openai-responses', { input: 'Direct prompt' })).toBe('Direct prompt')
+  })
+
+  it('reads a Google user row before a row of function responses alone', () => {
+    expect(lastUserText('google-generative-language', { contents: [
+      { role: 'user', parts: [{ text: 'ACTUAL_USER' }] },
+      { role: 'model', parts: [{ text: 'MODEL_ONLY' }] },
+      { role: 'user', parts: [{ functionResponse: { response: { text: 'RESULT_ONLY' } } }] },
+    ] })).toBe('ACTUAL_USER')
+  })
+
+  // One body that states the user rows of every protocol. Each protocol must read only its own rows field.
+  const everyRowsField = {
+    messages: [{ role: 'user', content: 'MESSAGES_USER' }],
+    input: [{ role: 'user', content: 'INPUT_USER' }],
+    contents: [{ role: 'user', parts: [{ text: 'CONTENTS_USER' }] }],
+  }
+
+  it.each([
+    { protocol: 'openai-chat-completions', expected: 'MESSAGES_USER' },
+    { protocol: 'anthropic-messages', expected: 'MESSAGES_USER' },
+    { protocol: 'openai-responses', expected: 'INPUT_USER' },
+    { protocol: 'google-generative-language', expected: 'CONTENTS_USER' },
+    { protocol: 'aws-event-stream', expected: '' },
+  ] as const)('reads only the rows field of $protocol', ({ protocol, expected }) => {
+    expect(lastUserText(protocol, everyRowsField)).toBe(expected)
   })
 
   it('returns an empty string when no user turn exists', () => {
-    expect(lastUserText({ messages: [{ role: 'system', content: 'Only system' }] })).toBe('')
+    expect(lastUserText('openai-chat-completions', { messages: [{ role: 'system', content: 'Only system' }] })).toBe('')
+    expect(lastUserText('openai-chat-completions', { messages: 'Not rows' })).toBe('')
+    expect(lastUserText('anthropic-messages', null)).toBe('')
   })
 })
-
 describe('contentText', () => {
   it('flattens a string, an array, and a text block', () => {
     expect(contentText('plain')).toBe('plain')
@@ -684,6 +779,9 @@ describe('matchesRequest lastMessage', () => {
   it('rejects absent, empty, malformed, and nontext final messages', () => {
     for (const body of [undefined, {}, { messages: [] }, { messages: [completion, null] }, { messages: [completion, 42] }, { messages: [completion, {}] }, { messages: [completion, { role: 'system', content: [] }] }, { messages: [completion, { role: 'system', content: [{ type: 'image_url', image_url: { url: completion.content } }] }] }])
       expect(matchesRequest(parsedLastMessageMatcher(), lastMessageRequest(body))).toBe(false)
+  })
+  it('matches no last message of the AWS event stream, which states no generic rows', () => {
+    expect(matchesRequest(parsedLastMessageMatcher({ text: 'Background' }), { protocol: 'aws-event-stream', body: { messages: [completion] }, systemText: '', userText: '' })).toBe(false)
   })
   it('uses the protocol array without falling back to stale alternate history', () => {
     expect(matchesRequest(parsedLastMessageMatcher(), lastMessageRequest({ messages: [], input: [completion] }))).toBe(false)

@@ -4,9 +4,9 @@ import type { MockModelStep } from './mockModelScript'
 import type { ModelStream } from './modelStream'
 import { Buffer } from 'node:buffer'
 import { isObject } from '../../../src/lib/jsonPick'
-import { googleLastUserText, googlePartsText } from './googleModelContent'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
+import { lastUserText, systemText } from './mockModelScript'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
 
@@ -56,8 +56,8 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
     protocol: 'google-generative-language',
     path: url.pathname,
     body,
-    systemText: isObject(body.systemInstruction) ? googlePartsText(body.systemInstruction.parts) : '',
-    userText: googleLastUserText(body.contents),
+    systemText: systemText('google-generative-language', body),
+    userText: lastUserText('google-generative-language', body),
     mockCredential: credential,
   })
   if (answer.kind === 'missing') {
