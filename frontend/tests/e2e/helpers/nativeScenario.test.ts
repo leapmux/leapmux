@@ -10,6 +10,7 @@ import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema
 import {
   currentNativeAgent,
   expectNativeOptionValue,
+  expectSameNativeSession,
   managedNativeContext,
   nativeAgentById,
   nativeAgentsByIds,
@@ -62,6 +63,23 @@ describe('managedNativeContext', () => {
 
   it('adds no protocol field that the provider does not state', () => {
     expect(Object.keys(managedNativeContext(fixtures, kiro)).sort()).toEqual(['leapmuxServer', 'modelScript', 'page', 'provider', 'providerAgent', 'workspaceId'])
+  })
+})
+
+describe('expectSameNativeSession', () => {
+  const before = { id: 'agent-1', agentSessionId: 'native-session', workingDir: '/private/work' }
+
+  it('accepts the same agent in the same native session and working directory', () => {
+    expect(() => expectSameNativeSession(before, { ...before }, 'The catalog read')).not.toThrow()
+  })
+
+  it.each([
+    { field: 'agent', after: { ...before, id: 'agent-2' } },
+    { field: 'native session', after: { ...before, agentSessionId: 'another-session' } },
+    { field: 'empty native session', after: { ...before, agentSessionId: '' } },
+    { field: 'working directory', after: { ...before, workingDir: '/private/other' } },
+  ])('refuses another $field, and names the operation', ({ after }) => {
+    expect(() => expectSameNativeSession(before, after, 'The catalog read')).toThrow('The catalog read keeps the native agent, its session, and its working directory')
   })
 })
 

@@ -14,7 +14,7 @@ import { withCleanupSync } from '../helpers/cleanup'
 import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { resolveNativeProcessOwnership, workerDataDirectory } from '../helpers/nativeProcessOwnership'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectSameNativeSession } from '../helpers/nativeScenario'
 import { writeNodeLauncher } from '../helpers/nodeLauncher'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
@@ -355,9 +355,7 @@ export async function readKimiCompleteCatalog(context: ManagedNativeScenarioCont
   const owner = { workerExecutable: run.binaryPath, workerDataDir, capture }
   await assertKimiCatalogOwnership(receipt, listProcesses(), owner)
   const catalog = await queryKimiCompleteCatalog({ origin: receipt.origin, token: receipt.token, sessionId: agent.agentSessionId })
-  const after = await currentNativeAgent(context)
-  if (after.id !== agent.id || after.agentSessionId !== agent.agentSessionId || after.workingDir !== agent.workingDir)
-    throw new Error('The Kimi native session changed during its complete registry request.')
+  expectSameNativeSession(agent, await currentNativeAgent(context), 'The Kimi complete registry request')
   await assertKimiCatalogOwnership(receipt, listProcesses(), owner)
   return catalog
 }

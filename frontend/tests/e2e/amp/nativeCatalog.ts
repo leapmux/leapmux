@@ -20,7 +20,7 @@ import { stepRequest } from '../helpers/mockModelScript'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { commandStartsWithExecutable, resolveNativeProcessOwnership, sameExecutablePath, workerDataDirectory } from '../helpers/nativeProcessOwnership'
-import { currentNativeAgent, nativeAgentById, nativeOptionValue } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectSameNativeSession, nativeAgentById, nativeOptionValue } from '../helpers/nativeScenario'
 import { clickNativeToolApproval, processNativeToolApproval } from '../helpers/nativeToolExecution'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
@@ -396,6 +396,8 @@ export async function readAmpExecutorCatalog(
     const settings: unknown = JSON.parse(readFileSync(settingsPath, 'utf8'))
     if (!isObject(settings))
       throw new Error('The native Amp generated settings must contain an object.')
+    // An Amp thread can start with the first turn, so the agent before the held turn can hold no session yet. The
+    // check requires the same agent with a session now, and the session that it held before when it held one.
     const agent = await currentNativeAgent(context)
     expect(agent.id).toBe(before.id)
     expect(agent.workingDir).toBe(before.workingDir)
@@ -414,9 +416,7 @@ export async function readAmpExecutorCatalog(
       const doctor = await command(binary, ['mcp', 'doctor', options.workspaceMcpServer, ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
       ampWorkspaceMcpAwaitingApproval(doctor.stdout, options.workspaceMcpServer)
     }
-    const after = await currentNativeAgent(context)
-    expect(after.id).toBe(agent.id)
-    expect(after.agentSessionId).toBe(agent.agentSessionId)
+    expectSameNativeSession(agent, await currentNativeAgent(context), 'The native Amp catalog read')
     return { tools: ampExecutorToolNames(output.stdout), settings, ...(workspaceMcpConfiguration === undefined ? {} : { workspaceMcpConfiguration }) }
   }, async () => {
     let completed = false

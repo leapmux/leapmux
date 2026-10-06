@@ -2,13 +2,12 @@ import type { MockModelScenarioStatus } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { randomUUID } from 'node:crypto'
-import { expect } from '@playwright/test'
 import { ASSEMBLED_MESSAGE } from '../../../src/generated/contracts/worker-vocab'
 import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectSameNativeSession } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { waitForAgentIdle } from '../helpers/ui'
 
@@ -140,9 +139,7 @@ async function nativeToolsCommand(context: ManagedNativeScenarioContext, command
   })
   await waitForAgentIdle(context.page)
   assertFastAgentCatalogNoInference(modelBefore, await context.modelScript.status())
-  const after = await currentNativeAgent(context)
-  expect(after.id).toBe(agent.id)
-  expect(after.agentSessionId).toBe(agent.agentSessionId)
+  expectSameNativeSession(agent, await currentNativeAgent(context), `The native Fast Agent command ${command}`)
   return response
 }
 

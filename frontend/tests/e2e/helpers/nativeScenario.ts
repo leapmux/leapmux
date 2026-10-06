@@ -217,6 +217,19 @@ export async function currentNativeAgent(context: Pick<ManagedNativeScenarioCont
   })
 }
 
+/** The identity of one native session: the Worker agent, its native session, and its working directory. */
+export type NativeSessionIdentity = Pick<AgentInfo, 'id' | 'agentSessionId' | 'workingDir'>
+
+/**
+ * Require that `after` is the native session of `before`: the same Worker agent, the same native session, and the same
+ * working directory. An operation that reads a native catalog or metadata of the provider must not start another
+ * agent or another session. `operation` names the operation in the failure, such as `The native Cline catalog read`.
+ */
+export function expectSameNativeSession(before: NativeSessionIdentity, after: NativeSessionIdentity, operation: string): void {
+  const identity = (agent: NativeSessionIdentity) => ({ id: agent.id, agentSessionId: agent.agentSessionId, workingDir: agent.workingDir })
+  expect(identity(after), `${operation} keeps the native agent, its session, and its working directory`).toEqual(identity(before))
+}
+
 /**
  * Read submitted or server-held native context from a recorded model request: each string value of the body and of
  * the server-held context, in document order, one per line.

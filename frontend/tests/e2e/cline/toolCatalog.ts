@@ -6,7 +6,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectSameNativeSession } from '../helpers/nativeScenario'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { nativeCommandTimeout } from '../helpers/testDeadline'
 
@@ -131,8 +131,6 @@ export async function readClineCompleteCatalog(context: ManagedNativeScenarioCon
   const deadline = context.modelScript.testDeadline()
   const tools = await queryClineCompleteCatalog({ environment: privateEnv, workingDir: agent.workingDir, runDir: getGlobalState().tmpDir, ...(deadline === undefined ? {} : { deadline }), ...(onReceipt === undefined ? {} : { onReceipt }) })
   expect(await context.modelScript.status()).toEqual(before)
-  const after = await currentNativeAgent(context)
-  expect(after.id).toBe(agent.id)
-  expect(after.agentSessionId).toBe(agent.agentSessionId)
+  expectSameNativeSession(agent, await currentNativeAgent(context), 'The native Cline catalog read')
   return tools
 }
