@@ -1,13 +1,14 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
-import { exerciseProviderSteer } from '../helpers/providerSteer'
+import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
+import { nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
   grokTest('steers a queued message into the active turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await exerciseProviderSteer(page, modelScript, AgentProvider.GROK_BUILD)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await exerciseSteerBeforeTool(context)
   })
 })

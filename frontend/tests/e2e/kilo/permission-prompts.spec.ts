@@ -1,4 +1,3 @@
-import type { Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,19 +5,12 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { createNativePermissionFileWrite, exerciseNativePermissionWrite } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { exerciseProviderSteer } from '../helpers/providerSteer'
+import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { kiloTest } from '../kilo-fixtures'
 import { exerciseOpenCodeFamilyDenial } from '../opencode/permissionDenial'
 
-async function allowShellPermission(page: Page): Promise<void> {
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
-  await expect(banner).toContainText('printf provider-steer-ready')
-  await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
-}
-
-kiloTest('permission-prompts: places queued guidance in the next native model request', async ({ authenticatedKiloWorkspace, page, modelScript }) => {
-  void authenticatedKiloWorkspace
-  await exerciseProviderSteer(page, modelScript, AgentProvider.KILO, { approveTool: allowShellPermission, resultDividers: 2 })
+kiloTest('permission-prompts: places queued guidance in the next native model request', async ({ native }) => {
+  await exerciseSteerBeforeTool(native, { approveTool: true, resultDividers: 2 })
 })
 
 kiloTest('keeps actual file bytes unchanged until the native Allow decision', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {

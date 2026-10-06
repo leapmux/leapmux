@@ -1,31 +1,16 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DIRAC_AGENT, expect as diracExpect, diracTest } from '../dirac-fixtures'
-import { bashToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
-import { expectSteeredReply, steerQueuedInput } from '../helpers/steer'
-import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { DIRAC_AGENT, diracTest } from '../dirac-fixtures'
+import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
+import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
+import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac model and steering', () => {
+  // Dirac takes the steering message as a native whisper into the active turn. Its answer goes through its respond
+  // tool, which the context's text step builds.
   diracTest('puts a native whisper into the active turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const gate = 'dirac-whisper-gate'
-    const steering = 'Include STEEREDWORD in the answer.'
-    await modelScript.queue(
-      { gate, toolCalls: [bashToolCall(AgentProvider.DIRAC, 'dirac-steer-tool', 'printf dirac-steer-ready')] },
-      { toolCalls: [diracRespondToolCall('dirac-steer-answer', 'complete', 'The answer includes STEEREDWORD.')] },
-    )
-    await sendMessage(page, modelScript.prompt('Run the scripted command, then answer.'))
-    await modelScript.waitForGate(gate)
-    try {
-      await steerQueuedInput(page, { message: steering, match: 'Include STEEREDWORD' })
-    }
-    finally {
-      await modelScript.releaseGate(gate)
-    }
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    diracExpect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain(steering)
-    await expectSteeredReply(page, 'STEEREDWORD', 'last')
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await exerciseSteerBeforeTool(context)
   })
 })

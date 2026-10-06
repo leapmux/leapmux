@@ -1,5 +1,4 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseProviderSteer } from '../helpers/providerSteer'
+import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -7,7 +6,6 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  *
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  */
-ohMyPiTest('steers a queued message into the active turn', async ({ authenticatedOhMyPiWorkspace, page, modelScript }) => {
-  void authenticatedOhMyPiWorkspace
-  await exerciseProviderSteer(page, modelScript, AgentProvider.OH_MY_PI)
+ohMyPiTest('steers a queued message into the active turn', async ({ native }) => {
+  await exerciseSteerBeforeTool(native)
 })

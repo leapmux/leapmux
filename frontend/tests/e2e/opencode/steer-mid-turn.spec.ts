@@ -1,8 +1,6 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseProviderSteer } from '../helpers/providerSteer'
+import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { opencodeTest } from '../opencode-fixtures'
 
-opencodeTest('places queued guidance in the next native model request', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
-  void authenticatedOpencodeWorkspace
-  await exerciseProviderSteer(page, modelScript, AgentProvider.OPENCODE)
+opencodeTest('places queued guidance in the next native model request', async ({ native }) => {
+  await exerciseSteerBeforeTool(native)
 })

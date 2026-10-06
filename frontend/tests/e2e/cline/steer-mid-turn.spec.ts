@@ -1,9 +1,8 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 
 clineTest.describe('Cline steering', () => {
-  clineTest('steers a running turn after its tool', async ({ authenticatedClineWorkspace, page, modelScript, leapmuxServer }) => {
-    await exerciseSteerAfterTool({ page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE })
+  clineTest('steers a running turn after its tool', async ({ native }) => {
+    await exerciseSteerAfterTool(native)
   })
 })

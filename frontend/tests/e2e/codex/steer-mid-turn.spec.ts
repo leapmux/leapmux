@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
 import { submitGoal } from '../helpers/goalsAndTodos'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
@@ -16,9 +15,9 @@ codexTest.describe('Codex session goal', () => {
 
     // Start the process before the side-band goal command asks Codex to start
     // its own turn. That turn has no queue input to supply its classification.
-    await modelScript.queue({ text: 'ready' })
+    const start = await modelScript.queue({ text: 'ready' })
     await sendMessage(page, modelScript.prompt('Reply with the single word: ready'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     await waitForAgentIdle(page)
     // The objective carries the marker because CODEX starts the next turn
     // itself, with the objective as its prompt: an unmarked goal reaches the
@@ -29,7 +28,7 @@ codexTest.describe('Codex session goal', () => {
 
     // The Interrupt button proves that the provider-started goal turn runs.
     // Send while that condition still holds, so the message enters the queue.
-    await expect(page.getByTestId('interrupt-button')).toBeVisible()
+    await expect(page.locator('[data-testid="interrupt-button"]:visible')).toBeVisible()
     await steerQueuedInput(page, {
       message: modelScript.prompt('Stop now, mark the goal complete, and reply with STEERED.'),
       match: 'Stop now',
@@ -37,6 +36,6 @@ codexTest.describe('Codex session goal', () => {
   })
 })
 
-codexTest('delivers steering to the actual native tool turn before its single turn end', async ({ authenticatedCodexWorkspace, page, leapmuxServer, modelScript }) => {
-  await exerciseSteerAfterTool({ page, modelScript, leapmuxServer, provider: AgentProvider.CODEX, workspaceId: authenticatedCodexWorkspace.workspaceId }, { expectDisplayedOutput: false })
+codexTest('delivers steering to the actual native tool turn before its single turn end', async ({ native }) => {
+  await exerciseSteerAfterTool(native, { expectDisplayedOutput: false })
 })

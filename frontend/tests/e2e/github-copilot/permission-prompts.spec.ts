@@ -1,4 +1,3 @@
-import type { Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -7,18 +6,11 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { copilotTest } from '../copilot-fixtures'
 import { createNativePermissionFileWrite, exerciseNativePermissionRefusal, exerciseNativePermissionWrite, expectDeclinedToolRow } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { exerciseProviderSteer } from '../helpers/providerSteer'
+import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
 import { COPILOT_USER_REJECTION, copilotToolCompletion } from './permissionRefusal'
 
-async function allowShellPermission(page: Page): Promise<void> {
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
-  await expect(banner).toContainText('printf provider-steer-ready')
-  await page.getByTestId('control-actions').getByRole('button', { name: 'Allow', exact: true }).click()
-}
-
-copilotTest('permission-prompts: places queued guidance in the next native model request', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
-  void authenticatedCopilotWorkspace
-  await exerciseProviderSteer(page, modelScript, AgentProvider.GITHUB_COPILOT, { approveTool: allowShellPermission })
+copilotTest('permission-prompts: places queued guidance in the next native model request', async ({ native }) => {
+  await exerciseSteerBeforeTool(native, { approveTool: true })
 })
 
 copilotTest('keeps actual file bytes unchanged until the native Allow decision', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
