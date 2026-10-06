@@ -1,12 +1,7 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampTest } from '../amp-fixtures'
-import { ampToolResultReader } from '../helpers/ampToolResult'
-import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
+import { relatedNativeProof } from './scenarios'
 
-ampTest('proves the missing extended-thinking setting against the live catalog and a native tool', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {
-  const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
-  context.readToolResult = ampToolResultReader(context)
-  await expectMissingOptionGroup(context, { groupId: 'thinking', relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
+ampTest('proves the missing extended-thinking setting against the live catalog and a native tool', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'extended-thinking', relatedProof: () => relatedNativeProof(native) })
 })

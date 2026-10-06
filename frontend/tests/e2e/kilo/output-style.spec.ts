@@ -1,10 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { kiloTest } from '../kilo-fixtures'
+import { relatedNativeProof } from './scenarios'
 
-kiloTest('proves the native output-style limit after a real sidebar operation', async ({ authenticatedKiloWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKiloWorkspace.workspaceId, provider: AgentProvider.KILO }
-  const relatedProof = () => exerciseRelatedTodo(context)
-  await expectMissingOptionGroup(context, { groupId: 'outputStyle', relatedProof })
+kiloTest('proves the native output-style limit after a real sidebar operation', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'output-style', relatedProof: () => relatedNativeProof(native) })
 })

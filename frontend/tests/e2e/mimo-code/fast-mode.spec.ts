@@ -1,9 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { mimoTest } from '../mimo-fixtures'
-import { exerciseMiMoShellToolExecution } from './shellToolExecution'
+import { relatedNativeProof } from './scenarios'
 
-mimoTest('proves the missing fast-mode setting against the live catalog and a native tool', async ({ page, modelScript, leapmuxServer, authenticatedMiMoWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedMiMoWorkspace.workspaceId, provider: AgentProvider.MIMO_CODE }
-  await expectMissingOptionGroup(context, { groupId: 'fastMode', relatedProof: () => exerciseMiMoShellToolExecution(context, { includeFailure: false }) })
+mimoTest('proves the missing fast-mode setting against the live catalog and a native tool', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => relatedNativeProof(native) })
 })

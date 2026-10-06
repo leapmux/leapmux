@@ -4,6 +4,7 @@ import type { HeldNativeChild } from '../helpers/runningChildProof'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildRuleId, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
+import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { registerLettaChildNoticeRule } from './childNoticeRule'
 
 /**
@@ -33,4 +34,9 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
       await registerLettaChildNoticeRule(context, { name: nativeChildRuleId(child.gate, 'letta-native-child-notice'), spawnCallId: child.spawn.id, description: child.description, report: 'NATIVECHILDCOMPLETE', reply: 'The native child completed.' })
     },
   }))
+}
+
+/** The related proof of a missing-setting cell: the native model answers one marked prompt. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCapabilityProbe(context)
 }

@@ -13,6 +13,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
 /** Build the scenario context of Gemini CLI. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
@@ -59,4 +60,9 @@ export async function exerciseNativeCompactCommandLimit(context: ManagedNativeSc
   expect(JSON.stringify(request.body)).toContain(marker)
   await expect(compactionNoticeRow(context.page)).toHaveCount(0)
   await expect(assistantBubbles(context.page).filter({ hasText: 'The native compact command reached the model as text.' })).toBeVisible()
+}
+
+/** The related proof of a missing-setting cell: the native model answers one marked prompt. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCapabilityProbe(context)
 }

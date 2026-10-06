@@ -5,6 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
 /** Build the scenario context of Fast Agent. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
@@ -33,4 +34,9 @@ export function runningChildOptions(context: NativeChildScriptContext, options: 
     child: { matcher: { lastMessage: { role: 'user', text: child.task } }, finalStep: context.textStep(report) },
     allowExistingRows: options.allowExistingRows ?? false,
   })
+}
+
+/** The related proof of a missing-setting cell: the native model answers one marked prompt. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCapabilityProbe(context)
 }

@@ -1,9 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { ohMyPiTest } from '../ohmypi-fixtures'
+import { relatedNativeProof } from './scenarios'
 
-ohMyPiTest('proves the missing output-style setting against the live catalog and a native tool', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }
-  await expectMissingOptionGroup(context, { groupId: 'outputStyle', relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
+ohMyPiTest('proves the missing output-style setting against the live catalog and a native tool', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'output-style', relatedProof: () => relatedNativeProof(native) })
 })

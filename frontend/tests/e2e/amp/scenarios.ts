@@ -1,6 +1,7 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampToolResultReader } from '../helpers/ampToolResult'
+import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 
 /**
  * Build the scenario context of Amp, with every field that its native protocol needs.
@@ -11,4 +12,9 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
   const context: ManagedNativeScenarioContext = { ...fixtures, provider: AgentProvider.AMP }
   context.readToolResult = ampToolResultReader(context)
   return context
+}
+
+/** The related proof of a missing-setting cell: a real native shell command runs, and its output returns. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseShellToolExecution(context, { includeFailure: false })
 }

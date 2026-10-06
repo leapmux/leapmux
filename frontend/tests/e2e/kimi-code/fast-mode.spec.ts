@@ -1,9 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { kimiTest } from '../kimi-fixtures'
+import { relatedNativeProof } from './scenarios'
 
-kimiTest('proves the missing fast-mode setting against the live catalog and a native tool', async ({ page, modelScript, leapmuxServer, authenticatedKimiWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKimiWorkspace.workspaceId, provider: AgentProvider.KIMI_CODE }
-  await expectMissingOptionGroup(context, { groupId: 'fastMode', relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
+kimiTest('proves the missing fast-mode setting against the live catalog and a native tool', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => relatedNativeProof(native) })
 })

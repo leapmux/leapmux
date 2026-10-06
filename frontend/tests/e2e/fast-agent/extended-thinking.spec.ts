@@ -1,11 +1,7 @@
 import { fastAgentTest } from '../fastagent-fixtures'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
-import { nativeContext } from './scenarios'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
+import { relatedNativeProof } from './scenarios'
 
-fastAgentTest('exposes no separate native extended thinking setting', async ({ authenticatedFastAgentWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedFastAgentWorkspace.workspaceId })
-  await expectMissingOptionGroup(context, { groupId: 'thinking', relatedProof: async () => {
-    await sendNativeAnswer(context, 'Complete the native setting capability probe.', 'The native setting capability probe completed.')
-  } })
+fastAgentTest('exposes no separate native extended thinking setting', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'extended-thinking', relatedProof: () => relatedNativeProof(native) })
 })

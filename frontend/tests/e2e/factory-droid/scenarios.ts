@@ -4,6 +4,7 @@ import type { HeldNativeChild, NativeChildScriptContext, RunningChildOptions } f
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunningNativeChild } from '../helpers/runningChildProof'
+import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { DROID_CHILD_SYSTEM } from './childIdentity'
 import { droidChildNoticeRule } from './childNotice'
 import { readDroidToolResult } from './toolResult'
@@ -38,4 +39,9 @@ export function runningChildOptions(context: NativeChildScriptContext, options: 
     allowExistingRows: options.allowExistingRows ?? false,
     rules: [droidChildNoticeRule(child.description, { text: 'The native child completed.' })],
   })
+}
+
+/** The related proof of a missing-setting cell: the native model answers one marked prompt. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCapabilityProbe(context)
 }

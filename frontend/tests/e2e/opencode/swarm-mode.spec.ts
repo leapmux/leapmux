@@ -1,10 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { opencodeTest } from '../opencode-fixtures'
+import { relatedNativeProof } from './scenarios'
 
-opencodeTest('proves the native swarm-mode limit after a real sidebar operation', async ({ authenticatedOpencodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOpencodeWorkspace.workspaceId, provider: AgentProvider.OPENCODE }
-  const relatedProof = () => exerciseRelatedTodo(context)
-  await expectMissingOptionGroup(context, { groupId: 'swarmMode', relatedProof })
+opencodeTest('proves the native swarm-mode limit after a real sidebar operation', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'swarm-mode', relatedProof: () => relatedNativeProof(native) })
 })

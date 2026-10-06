@@ -8,6 +8,7 @@ import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { JUNIE_ANSWER_TOOL, junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 
 /**
  * Build the scenario context of Junie, with every field that its native protocol needs.
@@ -45,4 +46,9 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
     rowText: agentType,
     parentSteps: [{ toolCalls: [spawn] }, nativeTextStep(context, 'The native parent completed.')],
   })
+}
+
+/** The related proof of a missing-setting cell: the native model answers one marked prompt. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCapabilityProbe(context)
 }

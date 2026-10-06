@@ -1,33 +1,22 @@
-import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
+import { expect, fastAgentTest } from '../fastagent-fixtures'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
-import { closeComposerMenus, openPlusMenu, openWorkspace, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
-import { openProviderAgent } from '../helpers/workspace'
-import { nativeContext } from './scenarios'
+import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { closeComposerMenus, openPlusMenu, settingsGroupTrigger, waitForSettingsHydrated } from '../helpers/ui'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 
 fastAgentTest.describe('Fast Agent settings apply', () => {
-  fastAgentTest('omits a model setting while the launch model answers a turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  fastAgentTest('omits a model setting while the launch model answers a turn', async ({ native, page }) => {
     await waitForSettingsHydrated(page, 'permissionMode')
     await openPlusMenu(page)
     await expect(settingsGroupTrigger(page, 'model')).toHaveCount(0)
     await closeComposerMenus(page)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await expectMissingOptionGroup(context, {
-      groupId: 'model',
+    await expectMissingSetting(native, {
+      feature: 'model',
       relatedProof: async () => {
-        await modelScript.queue({ text: 'The launch model answered.' })
-        await sendMessage(page, modelScript.prompt('Reply once with the launch model.'))
-        const status = await modelScript.waitForSteps()
-        await waitForAgentIdle(page)
-        expect(status.requests.filter(request => request.stepIndex === 0)).toHaveLength(1)
-        expect(status.requests.find(request => request.stepIndex === 0)?.body).toMatchObject({ model: FAST_AGENT_MOCK_MODEL })
+        const request = await sendNativeAnswer(native, 'Reply once with the launch model.', 'The launch model answered.')
+        expect(request.body).toMatchObject({ model: FAST_AGENT_MOCK_MODEL })
+        expect((await native.modelScript.status()).requests.filter(record => record.stepIndex === request.stepIndex)).toHaveLength(1)
       },
     })
-
-    await openPlusMenu(page)
-    await expect(settingsGroupTrigger(page, 'model')).toHaveCount(0)
-    await closeComposerMenus(page)
   })
 })

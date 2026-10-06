@@ -1,9 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
-import { exerciseConversationContext } from '../helpers/nativeConversation'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
+import { relatedNativeProof } from './scenarios'
 
-codexTest('keeps the native catalog and restored UI free of the unsupported extended-thinking axis', async ({ authenticatedCodexWorkspace, page, leapmuxServer, modelScript }) => {
-  const context = { page, modelScript, leapmuxServer, provider: AgentProvider.CODEX, workspaceId: authenticatedCodexWorkspace.workspaceId }
-  await expectMissingOptionGroup(context, { groupId: 'thinkingEnabled', relatedProof: () => exerciseConversationContext(context) })
+codexTest('keeps the native catalog and restored UI free of the unsupported extended-thinking axis', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'extended-thinking', relatedProof: () => relatedNativeProof(native) })
 })

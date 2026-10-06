@@ -9,6 +9,7 @@ import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { diracChildResultRule } from './childResult'
 
 /**
@@ -41,4 +42,9 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
     parentSteps: [{ toolCalls: [spawn] }],
     rules: [diracChildResultRule(taskMarker, nativeTextStep(context, 'The native parent completed.'))],
   })
+}
+
+/** The related proof of a missing-setting cell: the native model answers one marked prompt. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCapabilityProbe(context)
 }

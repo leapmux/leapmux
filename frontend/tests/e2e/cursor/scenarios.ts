@@ -16,3 +16,8 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 export function exerciseCursorRelatedTodo(context: ManagedNativeScenarioContext): Promise<void> {
   return exerciseRelatedTodo(context, { singleRequest: true })
 }
+
+/** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseCursorRelatedTodo(context)
+}

@@ -1,11 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { copilotTest } from '../copilot-fixtures'
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
-import { applyPermissionPreset } from '../helpers/ui'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
+import { relatedNativeProof } from './scenarios'
 
-copilotTest('proves the native fast-mode limit after a real sidebar operation', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCopilotWorkspace.workspaceId, provider: AgentProvider.GITHUB_COPILOT }
-  const relatedProof = () => exerciseRelatedTodo(context, { prepare: () => applyPermissionPreset(page, 'bypass') })
-  await expectMissingOptionGroup(context, { groupId: 'fastMode', relatedProof })
+copilotTest('proves the native fast-mode limit after a real sidebar operation', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => relatedNativeProof(native) })
 })

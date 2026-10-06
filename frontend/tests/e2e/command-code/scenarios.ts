@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
@@ -37,4 +38,9 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
     parentSteps: [{ toolCalls: [spawn] }, { text: 'The native parent completed.' }],
     ...(options.allowExistingRows === undefined ? {} : { allowExistingRows: options.allowExistingRows }),
   })
+}
+
+/** The related proof of a missing-setting cell: a real native shell command runs, and its output returns. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseShellToolExecution(context, { includeFailure: false })
 }

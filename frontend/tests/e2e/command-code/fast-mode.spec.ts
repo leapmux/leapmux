@@ -1,9 +1,7 @@
 import { commandCodeTest } from '../command-code-fixtures'
-import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
-import { nativeContext } from './scenarios'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
+import { relatedNativeProof } from './scenarios'
 
-commandCodeTest('proves the missing fast-mode setting against the live catalog and a native tool', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
-  await expectMissingOptionGroup(context, { groupId: 'fastMode', relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
+commandCodeTest('proves the missing fast-mode setting against the live catalog and a native tool', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => relatedNativeProof(native) })
 })

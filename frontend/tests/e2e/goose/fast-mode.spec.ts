@@ -1,11 +1,7 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { gooseTest } from '../goose-fixtures'
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
-import { applyPermissionPreset } from '../helpers/ui'
-import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
+import { relatedNativeProof } from './scenarios'
 
-gooseTest('proves the native fast-mode limit after a real sidebar operation', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId, provider: AgentProvider.GOOSE }
-  const relatedProof = () => exerciseRelatedTodo(context, { prepare: () => applyPermissionPreset(page, 'bypass') })
-  await expectMissingOptionGroup(context, { groupId: 'fastMode', relatedProof })
+gooseTest('proves the native fast-mode limit after a real sidebar operation', async ({ native }) => {
+  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => relatedNativeProof(native) })
 })

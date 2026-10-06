@@ -5,6 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
@@ -66,4 +67,9 @@ export async function registerChildReports(context: ManagedNativeScenarioContext
       throw new Error('The DeepSeek Harness child report has no stored native Session identity.')
     await registerDeepseekHarnessChildReport(context.modelScript, child.agentSessionId)
   }
+}
+
+/** The related proof of a missing-setting cell: a real native shell command runs, and its output returns. */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseShellToolExecution(context, { includeFailure: false })
 }
