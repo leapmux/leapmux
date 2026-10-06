@@ -11,15 +11,21 @@ test.describe('Agent Settings', () => {
     await waitForSettingsHydrated(page)
     // Smart selects Auto Mode. The native startup result determines whether the session offers that mode.
     // Check either catalog outcome. The separate native case requires Auto support and its actual command result.
+    // A new Claude session asks for Auto Mode, and it offers Auto only when the CLI accepted that request. So a session
+    // that offers Auto starts in it, and the menu disables the shortcut of the preset that is already active.
     const autoOffered = await permissionModeOffered(page, CLAUDE_MODE.Auto)
-    await expectPermissionShortcuts(page, { smart: autoOffered ? 'offered' : 'absent', bypass: 'offered' })
+    if (autoOffered)
+      await expectSettingsChip(page, 'Auto Mode')
+    await expectPermissionShortcuts(page, { smart: autoOffered ? 'disabled' : 'absent', bypass: 'offered' })
 
     await applyPermissionPreset(page, 'bypass')
     await expectSettingsChip(page, 'Bypass Permissions')
+    await expectPermissionShortcuts(page, { smart: autoOffered ? 'offered' : 'absent', bypass: 'disabled' })
 
     if (autoOffered) {
       await applyPermissionPreset(page, 'smart')
       await expectSettingsChip(page, 'Auto Mode')
+      await expectPermissionShortcuts(page, { smart: 'disabled', bypass: 'offered' })
     }
   })
 })
