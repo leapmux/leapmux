@@ -3,9 +3,14 @@ import { isArrowFunction, isFunctionDeclaration, isFunctionExpression, isIdentif
 
 // Where a node of a parsed source sits: its line, and the function that holds it.
 //
-// The E2E guards that keep an accept list (`throwingPollReads.test.ts`, `fixedWaits.test.ts`) identify an accepted site
-// by its file and its enclosing function, so a line shift does not break the entry. One definition of the enclosing
-// function keeps the keys of both lists the same.
+// The E2E guards that keep a list of known sites identify a site by its file and its enclosing function, so a line
+// shift does not break the entry:
+//
+// - `throwingPollReads.test.ts`.
+// - `fixedWaits.test.ts`.
+// - `platformModifierKeys.test.ts`.
+//
+// One definition of the enclosing function keeps the keys of every list the same.
 //
 // NOT a `.test.ts`, so vitest does not collect this module as a suite of its own. Its cases live in
 // `syntaxSite.test.ts` beside it.

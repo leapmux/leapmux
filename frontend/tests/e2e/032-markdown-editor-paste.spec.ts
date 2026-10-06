@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { codeBlockText, pasteText } from './helpers/composer'
-import { focusComposer } from './helpers/ui'
+import { focusComposer, PLATFORM_MOD } from './helpers/ui'
 
 test.describe('Markdown Paste', () => {
   test('pasting markdown list text creates a bullet list', async ({ page, authenticatedWorkspace }) => {
@@ -34,7 +34,7 @@ test.describe('Clipboard Copy/Paste', () => {
     // inline formatting (our clipboardTextSerializer override).
     // Capture clipboard text by intercepting DataTransfer.setData
     // during a copy triggered via execCommand.
-    await page.keyboard.press('Meta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
     // Wait for the selection to be established before copying.
     await page.evaluate(() => new Promise(r => requestAnimationFrame(r)))
     const clipboardText = await page.evaluate(() => {
@@ -55,7 +55,7 @@ test.describe('Clipboard Copy/Paste', () => {
     // Step 2: Verify that pasting markdown with inline formatting
     // restores the marks (our enhanced paste plugin). Clear the editor
     // first, then paste the captured markdown via synthetic paste event.
-    await page.keyboard.press('Meta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
     await page.keyboard.press('Backspace')
     await expect(editor.locator('strong')).toHaveCount(0)
 

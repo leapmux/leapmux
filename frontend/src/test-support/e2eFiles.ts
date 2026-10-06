@@ -16,17 +16,18 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  * - `testFileNaming.test.ts`: a `.test.ts` here names the module beside it.
  * - `throwingPollReads.test.ts`: no `expect.poll` waits on a Worker or Hub read.
  * - `fixedWaits.test.ts`: no spec or helper sizes a window with `waitForTimeout`.
+ * - `platformModifierKeys.test.ts`: no key chord presses a fixed Meta in place
+ *   of `PLATFORM_MOD`.
  *
- * The first three guards carried a byte-identical copy of the walk, so a
- * change to what counts as an e2e file -- a `.mts` helper, a fixtures
- * directory to skip -- would have moved one guard and left the other two
- * scanning a different set.
+ * One walk serves every guard. A change to what counts as an e2e file -- a
+ * `.mts` helper, a fixtures directory to skip -- thus moves every guard, and
+ * no guard scans a different set.
  *
  * `.ts` rather than `.spec.ts`: a helper under `tests/e2e/helpers/` runs inside
  * the same page and breaks the same rules. That widened the set to the
  * `.test.ts` unit tests beside those helpers, which run under vitest and reach
- * no page at all. They stay in the set: the three page rules cost them nothing
- * to satisfy, and a scan that is too wide reports a file the author can fix,
+ * no page at all. They stay in the set: the page rules cost them nothing to
+ * satisfy, and a scan that is too wide reports a file the author can fix,
  * where one that is too narrow reports nothing.
  *
  * NOT a `.test.ts`, so vitest does not collect this module as a suite of its

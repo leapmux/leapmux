@@ -2,7 +2,7 @@ import { getUserId } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { expectToastRecorded } from './helpers/toast'
-import { appMenuTrigger, composerEditor, userBubbles, waitForEditorDraft, workspaceRowTitle } from './helpers/ui'
+import { appMenuTrigger, composerEditor, PLATFORM_MOD, userBubbles, waitForEditorDraft, workspaceRowTitle } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 // Each test stops the worker-scoped Worker. The cleanup brings it back after a
@@ -27,7 +27,7 @@ test.describe('Failed agent input enqueue', () => {
       // an unmarked prompt reaches the ambient scenario, which refuses it. The
       // assertion therefore reads `toContainText`, since the marker rides along.
       await editor.fill(modelScript.prompt('Keep this draft'))
-      await page.keyboard.press('Meta+Enter')
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
 
       // Wait for the refusal. The unchanged editor alone can precede the request's result.
       await expectToastRecorded(page, 'worker is offline')
@@ -38,7 +38,7 @@ test.describe('Failed agent input enqueue', () => {
       await ensureWorkerOnline(separateHubWorker)
       await expect(editor).toBeVisible()
       await modelScript.queue({ text: 'Draft received.' })
-      await page.keyboard.press('Meta+Enter')
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
       await expect(editor).toHaveText('')
       await expect(userBubbles(page)).toHaveCount(userCount + 1)
       await modelScript.waitForSteps()
@@ -54,7 +54,7 @@ test.describe('Failed agent input enqueue', () => {
       await stopWorker(separateHubWorker)
       await waitForWorkerOffline(separateHubWorker)
       await editor.fill('Draft survives reload')
-      await page.keyboard.press('Meta+Enter')
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
       await expectToastRecorded(page, 'worker is offline')
       await expect(editor).toHaveText('Draft survives reload')
       await waitForEditorDraft(page, await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken), 'Draft survives reload')

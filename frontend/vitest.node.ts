@@ -210,6 +210,7 @@ export const NODE_TEST_FILES = [
   'src/test-support/noMirroredUnitTests.test.ts',
   'src/test-support/noNetworkIdleWait.test.ts',
   'src/test-support/paletteColorsAreTokens.test.ts',
+  'src/test-support/platformModifierKeys.test.ts',
   'src/test-support/restrictedSyntaxKeepsBaseRules.test.ts',
   'src/test-support/setupGateIsSingleSource.test.ts',
   'src/test-support/singletonInstalls.test.ts',

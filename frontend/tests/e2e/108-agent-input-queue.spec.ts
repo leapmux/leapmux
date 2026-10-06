@@ -87,7 +87,7 @@ test.describe('agent input queue', () => {
       await expect(editor).toContainText('full text tail')
       await expect(attachmentPills(page)).toContainText('queued-input.txt')
       await editor.fill('edited first')
-      await page.keyboard.press('Meta+Enter')
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
       for (const clientPage of [page, secondPage])
         await expect(clientPage.getByTestId('agent-input-queue')).toContainText('edited first')
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued-input.txt')

@@ -2,13 +2,13 @@ import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { focusComposer, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
+import { focusComposer, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
 test.describe('Markdown Editor', () => {
   test('should grow editor beyond old 120px limit', async ({ page, authenticatedWorkspace }) => {
-    // Default mode is Cmd+Enter-to-send, so Enter creates newlines
+    // By default the platform modifier plus Enter sends, so Enter alone creates a new line.
     await focusComposer(page)
 
     // Type many lines to exceed the old 120px limit
@@ -29,7 +29,7 @@ test.describe('Markdown Editor', () => {
 
     // Select all text, then type the supported mark-toggle character. Typing a
     // complete Markdown string arrives as one input event and does not invoke it.
-    await page.keyboard.press('Meta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
     await page.keyboard.type('`')
 
     // Check that the code element's computed font-family includes the fallback
@@ -106,7 +106,7 @@ test.describe('Code block field', () => {
 
     const composed = await blockBackground(editor.locator('pre'))
 
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(editor).toHaveText('')
 
     // The transcript renders through a different stylesheet than the editor
@@ -365,11 +365,11 @@ test.describe('Markdown Editor links', () => {
     // selection. WHICH range a partial selection resolves to is pinned exactly
     // by linkPlugin.test.ts (`linkShortcutTarget`); this spec covers the wiring.
     await page.keyboard.type('design doc')
-    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
 
     // The popover opens EMPTY: a selection is a request to link that text, not
     // to edit an existing URL.
-    await page.keyboard.press('ControlOrMeta+k')
+    await page.keyboard.press(`${PLATFORM_MOD}+k`)
     const url = page.locator('[data-testid="link-url-input"]')
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('')
@@ -395,7 +395,7 @@ test.describe('Markdown Editor links', () => {
     await editor.locator('a').click()
     await page.locator('[data-testid="link-url-input"]').press('Escape')
     await editor.locator('a').click()
-    await page.keyboard.press('ControlOrMeta+k')
+    await page.keyboard.press(`${PLATFORM_MOD}+k`)
     const url = page.locator('[data-testid="link-url-input"]')
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('https://old.test')
@@ -404,8 +404,8 @@ test.describe('Markdown Editor links', () => {
     // A SELECTION spanning the link: the popover opens empty, and applying
     // OVERRIDES the link rather than leaving the text carrying two.
     await editor.click()
-    await page.keyboard.press('ControlOrMeta+a')
-    await page.keyboard.press('ControlOrMeta+k')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
+    await page.keyboard.press(`${PLATFORM_MOD}+k`)
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('')
 
