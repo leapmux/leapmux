@@ -14,6 +14,7 @@ import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRo
 import { assistantBubbles, bandRows, messageContents, sendMessage, subagentReportBubble, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { mimoTest } from '../mimo-fixtures'
+import { mimoChildTurn } from './childScenario'
 
 /** The run's name, from the script's `meta`. The registry titles the run and its group with it. */
 const WORKFLOW_NAME = 'leapmux-e2e-words'
@@ -67,11 +68,11 @@ mimoTest.describe('MiMo Code workflow', () => {
     const helpers = HELPERS.map(helper => ({ ...helper, prompt: modelScript.prompt(helperTask(helper.word)) }))
 
     // The two children run in parallel, so their requests have no fixed order. Match each child through a model rule.
-    // Anchor the rule at the start of its task. The parent notification also quotes each completed answer.
+    // `mimoChildTurn` anchors the rule at the start of its task. The parent notification also quotes each completed answer.
     // Return the report format that MiMo requests from its children.
     await modelScript.rule(...helpers.map(({ label, word }) => ({
       name: `the ${label} answers its one-word task`,
-      when: { user: `^${helperTask(word).replace('.', '\\.')}` },
+      when: mimoChildTurn(helperTask(word)),
       respond: { text: `**Status**: success\n**Summary**: replied\n\n${word}` },
     })))
     // The parent runs the workflow, which blocks until both subagents answer, and

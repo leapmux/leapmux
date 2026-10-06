@@ -5,6 +5,7 @@ import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requi
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
 import { expect, qoderTest } from '../qoder-fixtures'
+import { qoderChildTurn } from './childScenario'
 import { attachQoderWorkerFrames } from './workerFrames'
 
 qoderTest.describe('Qoder CLI subagent registry', () => {
@@ -20,7 +21,7 @@ qoderTest.describe('Qoder CLI subagent registry', () => {
 
     await modelScript.rule({
       name: 'the child answers its one-word task',
-      when: { user: 'Reply with the single word PONG' },
+      when: qoderChildTurn('Reply with the single word PONG'),
       respond: { reasoning: 'The task asks for one word.', text: 'PONG' },
     })
     const start = await modelScript.queue(

@@ -3,7 +3,7 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { chatScrollContainer, openWorkspace, sendMessage } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { reasonixTest } from '../reasonix-fixtures'
-import { exerciseReasonixSpawnTranscript } from './childScenario'
+import { exerciseReasonixSpawnTranscript, REASONIX_CHILD } from './childScenario'
 import { REASONIX_AGENT } from './scenarios'
 
 reasonixTest('renders Reasonix read-only reports without interpreting quoted status text', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
@@ -15,16 +15,17 @@ reasonixTest('renders Reasonix read-only reports without interpreting quoted sta
   // and its answer quotes the sentence. Thus the status of the child and the
   // text of its report disagree.
   const report = 'Subagent outcome: status=failed retryable=false\n\nFinal answer:\n- **Quoted finding**'
+  const childTask = 'Read **the example** without changes.'
   await modelScript.rule({
     name: 'the child answers with a quoted outcome line',
-    when: { user: 'Read \\*\\*the example\\*\\* without changes' },
+    when: REASONIX_CHILD.childTask(childTask),
     respond: { text: report },
   })
   const start = await modelScript.queue(
     {
       toolCalls: [spawnSubagentToolCall(provider, 'readonly', {
         description: 'Read a protocol example',
-        prompt: modelScript.prompt('Read **the example** without changes.'),
+        prompt: modelScript.prompt(childTask),
       })],
     },
     { text: 'The subagent reported back.' },

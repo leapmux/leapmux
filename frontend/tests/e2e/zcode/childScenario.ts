@@ -27,8 +27,9 @@ export async function exerciseZCodeChildToolTranscript(context: ManagedNativeSce
   const { page } = context
   const child = await exerciseLiveChildTranscript(context, {
     // The child turns match on the last user text, not on the body: the second root turn carries the spawn call,
-    // whose arguments quote the child prompt, so a body matcher would answer the root with the child line.
-    childWhen: { user: 'printf zcode-tool-ok' },
+    // whose arguments quote the child prompt, so a body matcher would answer the root with the child line. The
+    // matcher of `ZCODE_CHILD` states why a match at any place of that text selects only the child.
+    childWhen: ZCODE_CHILD.childTask('printf zcode-tool-ok'),
     childTask: 'Use Bash to run printf zcode-tool-ok, then reply with exactly ZCODE_CHILD_PONG.',
     parentTask: 'Spawn one subagent to run the shell probe, then report what it said.',
     toolProof: { shell: { command: 'printf zcode-tool-ok' } },

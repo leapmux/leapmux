@@ -7,12 +7,14 @@
  */
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { mimoTest } from '../mimo-fixtures'
+import { mimoChildTurn } from './childScenario'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
   mimoTest('shows the child prompt while the child still runs', async ({ native }) => {
+    const childTask = 'Reply with CHILD_LIVE_DONE.'
     await exerciseLiveChildTranscript(native, {
-      childWhen: { user: '^Reply with CHILD_LIVE_DONE' },
-      childTask: 'Reply with CHILD_LIVE_DONE.',
+      childWhen: mimoChildTurn(childTask),
+      childTask,
       parentTask: 'Delegate the live child task.',
     })
   })
@@ -23,9 +25,10 @@ mimoTest.describe('MiMo Code subagent registry', () => {
     const workingDir = authenticatedMiMoWorkspace.workingDir
     if (!workingDir)
       throw new Error('The live child file proof requires the working directory of the native agent.')
+    const childTask = 'Read the assigned file in the live child.'
     await exerciseLiveChildTranscript(native, {
-      childWhen: { user: '^Read the assigned file in the live child' },
-      childTask: 'Read the assigned file in the live child.',
+      childWhen: mimoChildTurn(childTask),
+      childTask,
       parentTask: 'Delegate the live child file read.',
       toolProof: { read: { workingDir } },
     })

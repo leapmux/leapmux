@@ -12,17 +12,19 @@ import { steerQueuedInput } from '../helpers/steer'
 import { openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
+import { mimoChildTurn } from './childScenario'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
   mimoTest('sends a queued message into a running subagent', async ({ native }) => {
     const { page, modelScript } = native
     await applyPermissionPreset(page, 'bypass')
     const gate = 'mimo-child-send'
+    const childTask = 'Reply with CHILD_STEERED after the shell command.'
     const start = await withCleanup(async () => {
       await modelScript.rule(
         {
           name: 'the child runs its first tool',
-          when: { user: '^Reply with CHILD_STEERED' },
+          when: mimoChildTurn(childTask),
           respond: { gate, toolCalls: [bashToolCall(native.provider, 'child-shell', 'printf mimo-child-ready')] },
           once: true,
         },
@@ -39,7 +41,7 @@ mimoTest.describe('MiMo Code subagent registry', () => {
         {
           toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-mimo-send', {
             description: 'Answer the queued message',
-            prompt: modelScript.prompt('Reply with CHILD_STEERED after the shell command.'),
+            prompt: modelScript.prompt(childTask),
           })],
         },
         { text: 'The child received the queued message.' },

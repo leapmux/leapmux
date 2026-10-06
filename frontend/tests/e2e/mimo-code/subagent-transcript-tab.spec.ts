@@ -10,26 +10,28 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
+import { mimoChildTurn } from './childScenario'
 
 mimoTest.describe('MiMo Code subagent registry', () => {
   mimoTest('an actor run opens a registry row and a child transcript', async ({ native }) => {
     const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
 
-    // The child's prompt carries the marker, so its turn reaches this script. The
-    // rule is ANCHORED: the parent's own requests carry the spawn call, which
-    // quotes this prompt, and an unanchored rule would answer the parent too.
-    // The child answers in the report form that MiMo asks its actors for.
+    // The child's prompt carries the marker, so its turn reaches this script.
+    // `mimoChildTurn` anchors the task, so the parent's requests, which quote
+    // the task in the spawn call, do not match. The child answers in the report
+    // form that MiMo asks its actors for.
+    const childTask = 'Reply with the single word PONG.'
     await modelScript.rule({
       name: 'the child answers its one-word task',
-      when: { user: '^Reply with the single word' },
+      when: mimoChildTurn(childTask),
       respond: { text: '**Status**: success\n**Summary**: replied\n\nPONG' },
     })
     const start = await modelScript.queue(
       {
         toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-mimo', {
           description: 'Ask the subagent for one word',
-          prompt: modelScript.prompt('Reply with the single word PONG.'),
+          prompt: modelScript.prompt(childTask),
         })],
       },
       { text: 'The subagent reported PONG.' },
