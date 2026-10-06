@@ -1,9 +1,8 @@
-import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
+import { exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration } from '../helpers/nativeWorkspaceTrustLimit'
 import { cursorRequestContextToolCall } from '../helpers/providerToolCalls'
 import { nativeContext } from './scenarios'
 
@@ -11,9 +10,8 @@ cursorTest('starts and reads a private project without a workspace trust request
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
-      prepare({ directory, marker }) {
-        writeFileSync(join(directory, 'AGENTS.md'), `# Native project configuration\nKeep ${marker} as a standing project instruction.\n`)
-      },
+      // The project is the instruction file of the shared proof. Cursor states that file through its own query.
+      prepare: instructionFileConfiguration('AGENTS.md').prepare,
       async prove(privateContext, { directory, marker }) {
         // The Run request holds only the rules that a user attached to the message.
         // The CLI states the rules that it loaded from the project in its answer to the
