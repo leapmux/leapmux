@@ -1,12 +1,10 @@
-import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { randomUUID } from 'node:crypto'
 import { withCleanup } from '../helpers/cleanup'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { expandNativeResultView } from '../helpers/nativeResultView'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
-import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput, nativeOutputFileCommand } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { getGlobalState } from '../helpers/server'
@@ -14,7 +12,7 @@ import { openWorkspace } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { expect, junieTest } from '../junie-fixtures'
 import { waitForJunieOutputFilePaths } from './outputFilePathReadiness'
-import { junieNativeNoticePath, readJunieNativeOutputPaths } from './outputFilePaths'
+import { junieNativeNoticePath, readJunieNativeOutputReceipt } from './outputFilePaths'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
 import { junieNativeOutputFileCallId } from './toolCallIdentity'
 
@@ -53,30 +51,12 @@ junieTest('keeps the exact native command preview and pointer-only file path aft
       }, async () => {
         await modelScript.releaseGateIfHeld(gate)
       }),
-      proof: async (capture) => {
-        // The fields of the record that a reload must not change.
-        const readRecord = (snapshot: NativeMessageSnapshot) => {
-          const current = readJunieNativeOutputPaths(snapshot, capture.nativeCallId)
-          return { frame: current.frame, supplement: current.supplement, paths: current.paths, previewText: current.previewText, content: current.message.content }
-        }
-        const receipt = readRecord(capture.snapshot)
-        expect(receipt.paths).toEqual([capturedPath])
-        expect(receipt.previewText).not.toContain(output.omittedMarker)
-        await proveNativeToolOutputFilePaths({
-          context,
-          callId: capture.nativeCallId,
-          previewText: receipt.previewText,
-          previewMarkers: [output.firstMarker, output.lastMarker],
-          absentMarkers: [output.omittedMarker],
-          paths: receipt.paths,
-          status: 'completed',
-          prepareView: expandNativeResultView,
-          workerProof: async (reloaded) => {
-            await expectUnchangedNativeRecord(context, capture.agent, readRecord, receipt)
-            await testInfo.attach(`junie-native-path-owner-${reloaded ? 'reload' : 'initial'}`, { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })
-          },
-        })
-      },
+      // The shared proof requires the one private path, a preview with both computed ends and without the omitted
+      // middle, and the unchanged Worker record, before and after a reload.
+      proof: capture => proveNativeOutputReceipt(capture, testInfo, readJunieNativeOutputReceipt, {
+        previewMarkers: [output.firstMarker, output.lastMarker],
+        extraProof: receipt => expect(receipt.paths).toEqual([capturedPath]),
+      }),
     })
   }, async () => {
     await modelScript.releaseGateIfHeld(gate)

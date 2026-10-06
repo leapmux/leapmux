@@ -12,7 +12,7 @@ import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { readAttachedWithArgument } from '../helpers/ui'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
@@ -131,13 +131,11 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
     paths: receipt.paths,
     status: 'completed',
     prepareView: expandNativeResultView,
-    workerProof: async () => {
-      const snapshot = await readNativeMessageSnapshot(context, agent.id)
+    // The Worker record holds the native frame, the stored content, and the display that the row draws from them.
+    workerProof: () => expectUnchangedNativeRecord(context, agent, (snapshot) => {
       const result = readDeepseekHarnessNativeOutput(snapshot, options.callId)
-      expect(result.frame).toEqual(receipt.frame)
-      expect(result.message.content).toEqual(receipt.message.content)
-      expect(nativeMcpDisplay(snapshot, options.callId)).toEqual(nativeDisplay)
-    },
+      return { frame: result.frame, content: result.message.content, display: nativeMcpDisplay(snapshot, options.callId) }
+    }, { frame: receipt.frame, content: receipt.message.content, display: nativeDisplay }),
     rowProof: bubble => proveMixedMcpRow(bubble, options.expected, nativeDisplay.display, options.testInfo),
   })
 }

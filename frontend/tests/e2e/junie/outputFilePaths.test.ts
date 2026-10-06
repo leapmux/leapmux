@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
-import { junieHostTerminalPreview, junieNativeNoticePath, readJunieNativeOutputPaths } from './outputFilePaths'
+import { EXACTLY_ONE_RECORD, nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
+import { junieHostTerminalPreview, junieNativeNoticePath, readJunieNativeOutputPaths, readJunieNativeOutputReceipt } from './outputFilePaths'
 
 /** The error of the notice reader for a notice with no log path that Junie writes. */
 const NO_NOTICE_PATH = 'The Junie output notice has no unique native log path.'
@@ -41,26 +41,61 @@ function stored(frame: unknown = nativeFrame, supplement: unknown = retained) {
   return nativeOutputSnapshot([{ frame, spanId: callId, spanType: 'execute', completion: MessageCompletion.COMPLETE, supplement }], { agentSessionId: 'session-current' })
 }
 
-describe('junieHostTerminalPreview', () => {
+/** A stored completed command whose provider supplement holds the pointer-only path receipt of Junie. */
+function pointerReceiptFixture() {
+  const sessionId = 'session-261003-225241-1cba'
+  const taskId = 'task-261003-225242-1bq0'
+  const path = `/owned/junie/sessions/${sessionId}/${taskId}/terminal-output/terminal-output-123.txt`
+  const frame = { sessionUpdate: 'tool_call_update', toolCallId: callId, kind: 'execute', status: 'completed', content: [], rawInput: { command: 'node exact-script.js', cwd: '/owned/project' }, rawOutput: { output }, _meta: { terminal_exit: { terminal_id: callId, exit_code: 0, signal: null } } }
+  const receipt = { sessionId, toolCallId: callId, taskId, command: 'node exact-script.js', cwd: '/owned/project', path, exitCode: 0 }
+  const supplement = { provider: { sessionUpdate: frame.sessionUpdate, toolCallId: callId, status: frame.status, outputFilePath: receipt } }
+  const snapshot = stored(frame, supplement)
+  snapshot.agentSessionId = sessionId
+  snapshot.messages[0]!.agentSessionId = sessionId
+  return { snapshot, frame, receipt, supplement, path }
+}
+
+describe('readJunieNativeOutputPaths', () => {
   it('reads the current pointer-only receipt and preserves its native preview', () => {
-    const sessionId = 'session-261003-225241-1cba'
-    const taskId = 'task-261003-225242-1bq0'
-    const path = `/owned/junie/sessions/${sessionId}/${taskId}/terminal-output/terminal-output-123.txt`
-    const frame = { sessionUpdate: 'tool_call_update', toolCallId: callId, kind: 'execute', status: 'completed', content: [], rawInput: { command: 'node exact-script.js', cwd: '/owned/project' }, rawOutput: { output }, _meta: { terminal_exit: { terminal_id: callId, exit_code: 0, signal: null } } }
-    const receipt = { sessionId, toolCallId: callId, taskId, command: 'node exact-script.js', cwd: '/owned/project', path, exitCode: 0 }
-    const supplement = { provider: { sessionUpdate: frame.sessionUpdate, toolCallId: callId, status: frame.status, outputFilePath: receipt } }
-    const value = stored(frame, supplement)
-    value.agentSessionId = sessionId
-    value.messages[0]!.agentSessionId = sessionId
-    const before = value.messages[0]!.content.slice()
-    const result = readJunieNativeOutputPaths(value, callId)
+    const { snapshot, receipt, path } = pointerReceiptFixture()
+    const before = snapshot.messages[0]!.content.slice()
+    const result = readJunieNativeOutputPaths(snapshot, callId)
     expect(result.paths).toEqual([path])
     expect(result.previewText).toBe(output)
-    expect(value.messages[0]!.content).toEqual(before)
+    expect(snapshot.messages[0]!.content).toEqual(before)
     expect(receipt).not.toHaveProperty('output')
     expect(receipt).not.toHaveProperty('nativeOutput')
   })
+})
 
+describe('readJunieNativeOutputReceipt', () => {
+  it('returns the path, the preview, the frame, the supplement, and the original row bytes', () => {
+    const { snapshot, frame, supplement, path } = pointerReceiptFixture()
+    expect(readJunieNativeOutputReceipt(snapshot, callId)).toEqual({
+      paths: [path],
+      previewText: output,
+      frame,
+      supplement,
+      content: snapshot.messages[0]!.content,
+    })
+  })
+
+  it('leaves out the Worker message, so a field of the message beside its bytes cannot change the receipt', () => {
+    const { snapshot } = pointerReceiptFixture()
+    const before = readJunieNativeOutputReceipt(snapshot, callId)
+    expect(before).not.toHaveProperty('message')
+    snapshot.messages[0]!.seq += 1n
+    expect(readJunieNativeOutputReceipt(snapshot, callId)).toEqual(before)
+  })
+
+  it('refuses a receipt of another native session through the path reader', () => {
+    const { snapshot } = pointerReceiptFixture()
+    snapshot.messages[0]!.agentSessionId = 'session-foreign'
+    expect(() => readJunieNativeOutputReceipt(snapshot, callId)).toThrow(EXACTLY_ONE_RECORD)
+  })
+})
+
+describe('junieHostTerminalPreview', () => {
   it('reads retained native host preview bytes with the actual terminal identity and zero exit status', () => {
     expect(junieHostTerminalPreview(stored(), callId)).toBe(output)
   })
@@ -78,6 +113,9 @@ describe('junieHostTerminalPreview', () => {
     [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 1, truncated: false } } } }, 'lacks exact successful native terminal fields'],
     [{ provider: { ...retained.provider, terminals: { [callId]: { output: false, exitCode: 0, truncated: false } } } }, 'lacks exact successful native terminal fields'],
     [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0, truncated: false, signal: 'SIGTERM' } } } }, 'lacks exact successful native terminal fields'],
+    // The shared ACP terminal reader reads these two as a complete success, so this reader keeps its own field check.
+    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0 } } } }, 'lacks exact successful native terminal fields'],
+    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0, truncated: false, signal: '' } } } }, 'lacks exact successful native terminal fields'],
     [{}, 'requires one exact retained native terminal'],
   ])('rejects foreign or unsuccessful native host fields %j', (supplement, error) => {
     expect(() => junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toThrow(error)

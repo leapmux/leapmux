@@ -32,7 +32,8 @@ deepseekHarnessTest('keeps native output paths and the exact inline preview afte
       const receipt = readDeepseekHarnessNativeOutput(capture.snapshot, capture.nativeCallId)
       await testInfo.attach('deepseek-native-output-path-receipt', { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })
       // DeepSeek can declare one path for each output stream and one for its spill file, so the proof requires at
-      // least one path, not exactly one.
+      // least one path, not exactly one. `proveNativeOutputReceipt` cannot run this proof, because its receipt check
+      // (`checkNativeOutputReceipt`) requires exactly one declared path.
       expect(receipt.paths.length).toBeGreaterThan(0)
       for (const path of receipt.paths)
         assertPrivateNativePath(path, getGlobalState().tmpDir)

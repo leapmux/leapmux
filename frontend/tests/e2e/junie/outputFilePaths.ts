@@ -1,4 +1,5 @@
 import type { NativeMessageSnapshot, NativeToolOutputRecord } from '../helpers/nativeMessages'
+import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { acpToolSupplement } from '../../../src/components/chat/providers/acp/toolSupplement'
 import { ACP_SUPPLEMENT, ACP_TERMINAL_RESULT } from '../../../src/generated/contracts/acp-protocol'
 import { JUNIE_OUTPUT_FILE_PATH, JUNIE_OUTPUT_REFERENCE, JUNIE_SUPPLEMENT, JUNIE_TERMINAL_META } from '../../../src/generated/contracts/junie-protocol'
@@ -44,6 +45,9 @@ export function junieHostTerminalPreview(snapshot: NativeMessageSnapshot, callId
       : undefined
     if (!isObject(frame) || !provider)
       continue
+    // `acpSupplementTerminals` cannot read this record. It reads an absent `truncated` as false, and it drops a
+    // `signal` field whose value is empty or is not a string. This check refuses both: an absent `truncated`, and any
+    // `signal` field.
     const terminals = pickObject(provider, ACP_SUPPLEMENT.Terminals)
     const ids = Array.isArray(frame.content) ? frame.content.filter(isObject).filter(block => block.type === 'terminal').map(block => block.terminalId) : []
     if (ids.length !== 1 || ids[0] !== callId)
@@ -94,4 +98,20 @@ export function readJunieNativeOutputPaths(snapshot: NativeMessageSnapshot, call
     throw new Error('The Junie path receipt belongs to another native task or filename.')
   }
   return { ...record, paths: [path], previewText: output.output, status: 'completed' }
+}
+
+/** The receipt of {@link readJunieNativeOutputPaths} in the shape that `proveNativeOutputReceipt` reads. */
+export interface JunieNativeOutputReceipt extends NativeOutputReceipt {
+  /** The provider supplement of the row, which holds the pointer-only path receipt. */
+  supplement: unknown
+}
+
+/**
+ * Read the pointer-only receipt for `proveNativeOutputReceipt`, which requires it unchanged after a reload.
+ * The receipt holds the original bytes of the row, not the whole Worker message, because only the bytes, the frame,
+ * and the supplement belong to the native result.
+ */
+export function readJunieNativeOutputReceipt(snapshot: NativeMessageSnapshot, callId: string): JunieNativeOutputReceipt {
+  const receipt = readJunieNativeOutputPaths(snapshot, callId)
+  return { paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame, supplement: receipt.supplement, content: receipt.message.content }
 }
