@@ -37,6 +37,7 @@ vi.mock('./WorkspaceTabTree', () => ({
 function noop() {}
 
 interface RenderOptions {
+  onSelect?: (workspaceId: string) => void
   renamingWorkspaceId?: string | null
   workspaceIds?: readonly string[]
   activeWorkspaceId?: () => string | null
@@ -56,7 +57,7 @@ function renderContent(options: RenderOptions = {}) {
       sectionName="In progress"
       activeWorkspaceId={activeWorkspaceId()}
       sections={[]}
-      onSelect={noop}
+      onSelect={options.onSelect ?? noop}
       onRename={noop}
       onMoveTo={noop}
       onArchive={noop}
@@ -90,6 +91,16 @@ describe('WorkspaceSectionContent', () => {
 
     expect(chevron.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     expect(title.compareDocumentPosition(grip) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+  })
+
+  it('selects the workspace through a click on its title, which carries the title test id', () => {
+    const onSelect = vi.fn()
+    renderContent({ onSelect })
+
+    const title = within(screen.getByTestId('workspace-item-ws-1')).getByTestId('workspace-title')
+    expect(title.textContent).toBe('Workspace One')
+    title.click()
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith('ws-1')
   })
 
   it('keeps the drag grip after the rename input', () => {

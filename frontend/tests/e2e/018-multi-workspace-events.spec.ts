@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForWorkspaceReady, workspaceChevron, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 test.describe('Multi-Workspace Events', () => {
@@ -45,7 +45,7 @@ test.describe('Multi-Workspace Events', () => {
     await expectAgentTabCount(page, 2)
 
     // Switch back to ws1 — should have 1 agent tab
-    await workspaceRow(page, ws1).click()
+    await workspaceRowTitle(page, ws1).click()
     await waitForWorkspaceReady(page)
     await expectAgentTabCount(page, 1)
   })

@@ -11,7 +11,7 @@ import {
   openWorkspace,
   terminalTabs,
   waitForWorkspaceReady,
-  workspaceRow,
+  workspaceRowTitle,
 } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
@@ -76,11 +76,11 @@ test.describe('WatchEvents stream continuity', () => {
     await expectDoorbellCount(page, 1)
 
     // Cross-workspace switches.
-    await workspaceRow(page, ws2).click()
+    await workspaceRowTitle(page, ws2).click()
     await waitForWorkspaceReady(page)
     await expect(agents.first()).toBeVisible()
 
-    await workspaceRow(page, ws1).click()
+    await workspaceRowTitle(page, ws1).click()
     await waitForWorkspaceReady(page)
     await agents.first().click()
     await termTab.click()

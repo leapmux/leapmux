@@ -35,6 +35,7 @@ import {
   enterControlFeedback,
   enterMessageText,
   expandSidebarSection,
+  expandWorkspaceRow,
   expectAgentTabCount,
   expectNoControlBanner,
   expectPermissionShortcuts,
@@ -45,6 +46,7 @@ import {
   offeredSettingsOptions,
   openAppAs,
   openTerminalViaUI,
+  openWorkspace,
   openWorkspaceRowMenu,
   platformModifier,
   questionPagination,
@@ -73,6 +75,7 @@ import {
   waitForNativeSettingsHydrated,
   workspaceChildren,
   workspaceMenuItem,
+  workspaceRowTitle,
 } from './ui'
 
 const native = vi.hoisted(() => ({ agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>() }))
@@ -1340,6 +1343,127 @@ describe('workspace row menu', () => {
       'click page >> role=dialog[name=Delete workspace] >> role=button[name=Confirm?]',
       `to.be.hidden ${row}`,
     ])
+  })
+})
+
+/**
+ * A page with the one visible sidebar row of `ws-1`.
+ * Its chevron toggles the expanded state, its title selects the workspace, and each action and check goes to `log`.
+ */
+function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWorks?: boolean }, log: string[]): Page {
+  const rowSelector = '[data-testid="workspace-item-ws-1"]:visible'
+  class Row {
+    readonly _apiName = 'Locator'
+    first() {
+      return this
+    }
+
+    async waitFor() {
+      log.push('wait for row')
+    }
+
+    async getAttribute(name: string) {
+      log.push(`read ${name}`)
+      if (name === 'data-expanded')
+        return state.expanded ? 'true' : 'false'
+      if (name === 'data-active')
+        return state.active ? 'true' : 'false'
+      throw new Error(`The fake row has no attribute ${name}.`)
+    }
+
+    locator(selector: string) {
+      expect(selector).toBe('[data-testid="workspace-chevron-ws-1"]')
+      return { click: async () => {
+        log.push('click chevron')
+        if (state.chevronWorks ?? true)
+          state.expanded = !state.expanded
+      } }
+    }
+
+    getByTestId(testId: string) {
+      expect(testId).toBe('workspace-title')
+      return { click: async () => {
+        log.push('click title')
+        state.active = true
+      } }
+    }
+
+    async click() {
+      throw new Error('A click on the whole row can land on its pinned three-dot trigger.')
+    }
+
+    async _expect(expression: string, options: { isNot: boolean, expressionArg?: string }) {
+      log.push(`${expression} ${options.expressionArg ?? ''}`.trim())
+      const matches = options.expressionArg === 'data-expanded' ? state.expanded : state.active
+      return { matches, received: String(matches), log: [], timedOut: false }
+    }
+  }
+  const row = new Row()
+  return opaqueHandle<Page>({
+    goto: (async (url: string) => {
+      log.push(`goto ${url}`)
+      return null
+    }) as Page['goto'],
+    locator: ((selector: string) => {
+      if (selector === rowSelector)
+        return row
+      // The tab strip that `waitForWorkspaceReady` reads.
+      expect(selector).toBe('[data-testid="tab"]')
+      return { first: () => ({ isVisible: async () => true }) }
+    }) as Page['locator'],
+    getByRole: ((role: string, options?: { name?: string }) => {
+      expect([role, options?.name]).toEqual(['button', 'Toggle workspaces'])
+      return { isVisible: async () => false }
+    }) as Page['getByRole'],
+  })
+}
+
+describe('workspaceRowTitle', () => {
+  it('locates the title inside the visible row', () => {
+    const { root } = fakeTree()
+    expect((workspaceRowTitle(root, 'ws-1') as unknown as { path: string }).path)
+      .toBe('page >> [data-testid="workspace-item-ws-1"]:visible.first >> testid=workspace-title')
+  })
+})
+
+describe('expandWorkspaceRow', () => {
+  it('expands a collapsed row through its chevron, and requires the expanded state', async () => {
+    const log: string[] = []
+    const state = { expanded: false, active: false }
+    await expandWorkspaceRow(workspaceRowPage(state, log), 'ws-1')
+    expect(log).toEqual(['read data-expanded', 'click chevron', 'to.have.attribute.value data-expanded'])
+    expect(state.expanded).toBe(true)
+  })
+
+  it('leaves an expanded row expanded, because a chevron click would collapse it', async () => {
+    const log: string[] = []
+    const state = { expanded: true, active: false }
+    await expandWorkspaceRow(workspaceRowPage(state, log), 'ws-1')
+    expect(log).toEqual(['read data-expanded', 'to.have.attribute.value data-expanded'])
+    expect(state.expanded).toBe(true)
+  })
+
+  it('fails with the workspace when the row stays collapsed', async () => {
+    const log: string[] = []
+    await expect(expandWorkspaceRow(workspaceRowPage({ expanded: false, active: false, chevronWorks: false }, log), 'ws-1'))
+      .rejects
+      .toThrow('the sidebar row of ws-1 is expanded')
+  })
+})
+
+describe('openWorkspace', () => {
+  it('selects an inactive workspace through the title of its row, then waits for the active row and the shell', async () => {
+    const log: string[] = []
+    const state = { expanded: false, active: false }
+    await openWorkspace(workspaceRowPage(state, log), 'ws-1')
+    expect(log).toEqual(['goto /', 'wait for row', 'read data-active', 'click title', 'to.have.attribute.value data-active'])
+    expect(state.active).toBe(true)
+  })
+
+  it('clicks nothing for a workspace that the load already made active', async () => {
+    const log: string[] = []
+    await openWorkspace(workspaceRowPage({ expanded: false, active: true }, log), 'ws-1')
+    expect(log).toEqual(['goto /', 'wait for row', 'read data-active', 'to.have.attribute.value data-active'])
   })
 })
 

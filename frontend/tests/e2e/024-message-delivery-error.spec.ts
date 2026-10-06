@@ -2,7 +2,7 @@ import { getUserId } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { expectToastRecorded } from './helpers/toast'
-import { appMenuTrigger, composerEditor, userBubbles, waitForEditorDraft, workspaceRow } from './helpers/ui'
+import { appMenuTrigger, composerEditor, userBubbles, waitForEditorDraft, workspaceRowTitle } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 // Each test stops the worker-scoped Worker. The cleanup brings it back after a
@@ -63,7 +63,7 @@ test.describe('Failed agent input enqueue', () => {
       await ensureWorkerOnline(separateHubWorker)
       await page.reload()
       await appMenuTrigger(page).waitFor({ state: 'visible' })
-      await workspaceRow(page, workspaceId).click()
+      await workspaceRowTitle(page, workspaceId).click()
       await expect(composerEditor(page)).toHaveText('Draft survives reload')
     }, () => ensureWorkerOnline(separateHubWorker))
   })

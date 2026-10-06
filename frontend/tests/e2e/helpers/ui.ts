@@ -1936,6 +1936,31 @@ export function workspaceChevron(page: Page, workspaceId: string): Locator {
 }
 
 /**
+ * Locate the title of the visible sidebar row of workspaceId. Click it, not the row, to select the workspace.
+ *
+ * A title longer than the sidebar makes the row wider than the sidebar, and the three-dot trigger stays pinned to
+ * the visible right edge. The center of such a row can lie under that trigger, so a click on the row opens the row
+ * menu instead of selecting the workspace. The trigger is inside the row, so the actionability check of Playwright
+ * accepts that click. The title is not an ancestor of the trigger, so a click on it is checked against the trigger.
+ */
+export function workspaceRowTitle(page: Page, workspaceId: string): Locator {
+  return workspaceRow(page, workspaceId).getByTestId('workspace-title')
+}
+
+/**
+ * Expand the sidebar row of workspaceId through its chevron, leave an expanded row unchanged, and require that the row
+ * is expanded at the end.
+ * The chevron toggles, and the app restores the expanded rows of the previous load, so a click without the read can
+ * collapse the row.
+ */
+export async function expandWorkspaceRow(page: Page, workspaceId: string): Promise<void> {
+  const row = workspaceRow(page, workspaceId)
+  if (await row.getAttribute('data-expanded') !== 'true')
+    await workspaceChevron(page, workspaceId).click()
+  await expect(row, `the sidebar row of ${workspaceId} is expanded`).toHaveAttribute('data-expanded', 'true')
+}
+
+/**
  * Locate the visible active workspace row.
  * The app keeps the active workspace in browser storage, not in the URL, so this row is the one place that shows it.
  */
@@ -2018,7 +2043,7 @@ export async function openWorkspace(page: Page, workspaceId: string) {
     const toggle = page.getByRole('button', { name: 'Toggle workspaces' })
     if (await toggle.isVisible().catch(() => false))
       await toggle.click()
-    await row.click()
+    await workspaceRowTitle(page, workspaceId).click()
   }
   await expect(row).toHaveAttribute('data-active', 'true')
   await waitForWorkspaceReady(page)

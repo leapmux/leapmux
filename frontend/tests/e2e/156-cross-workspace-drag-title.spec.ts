@@ -2,7 +2,7 @@ import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { boxCenter, dragSidebarLeafTo } from './helpers/drag'
 import { tabbarLabels } from './helpers/tabLabels'
-import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, sidebarLeafLabels, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { agentTabs, expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, sidebarLeafLabels, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /**
  * Regression: dragging a tab from a non-active workspace's expanded
@@ -64,9 +64,9 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     await expect.poll(() => tabbarLabels(page, 'agent')).toEqual([wsBTitle])
 
     // Expand wsA in the sidebar so its tab-tree-leaf mounts and is
-    // draggable. Clicking the chevron fires `onExpandWorkspace`, which
-    // lazy-loads wsA's tabs, which the projection already carries.
-    await workspaceChevron(page, wsA).click()
+    // draggable. Expanding fires `onExpandWorkspace`, which lazy-loads wsA's
+    // tabs, which the projection already carries.
+    await expandWorkspaceRow(page, wsA)
     // One leaf each under wsA (the source) and wsB (the destination --
     // already visible because wsB is active). Counted PER WORKSPACE, not
     // across the whole sidebar: a global `toHaveCount(2)` would also assert
@@ -128,9 +128,9 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     await expect.poll(() => sidebarLeafIds(page, wsB)).toContain(wsAAgentId)
     // wsAAgentId must not appear back under wsA's sidebar section
     // after refresh — the move op committed to the hub and the
-    // post-reload `listTabs(wsA)` should no longer return it.
-    await workspaceChevron(page, wsA).click()
-    await expect(workspaceRow(page, wsA)).toHaveAttribute('data-expanded', 'true')
+    // post-reload `listTabs(wsA)` should no longer return it. The reload
+    // restores wsA as expanded, so a bare chevron click would collapse it.
+    await expandWorkspaceRow(page, wsA)
     expect(await sidebarLeafIds(page, wsA)).toEqual([])
   })
 })

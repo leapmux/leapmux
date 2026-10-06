@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
-import { activeWorkspaceId, loginViaToken, openWorkspace, reopenWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { activeWorkspaceId, loginViaToken, openWorkspace, reopenWorkspace, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
@@ -71,7 +71,7 @@ test.describe('Workspace persistence across reloads', () => {
     await openWorkspace(page, ws1)
     await expect(page).toHaveURL(/\/$/)
 
-    await workspaceRow(page, ws2).click()
+    await workspaceRowTitle(page, ws2).click()
     await expect(workspaceRow(page, ws2))
       .toHaveAttribute('data-active', 'true')
     // The point of the change: a switch is not a navigation.

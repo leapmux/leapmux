@@ -339,7 +339,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     >
                       <Tooltip content={<LabelWithDiffStats label={title()} stats={stats()} />} showWhen="clipped">
                         <span class={styles.itemLabel}>
-                          <span class={styles.itemTitle}>{title()}</span>
+                          {/* The E2E suite clicks here to select the workspace. A long title makes the row wider than
+                              the sidebar, and the center of such a row lies under the three-dot trigger, which
+                              stays pinned to the visible edge. */}
+                          <span class={styles.itemTitle} data-testid="workspace-title">{title()}</span>
                           <DiffStatsBadge stats={stats()} />
                         </span>
                       </Tooltip>

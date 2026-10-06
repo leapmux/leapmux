@@ -4,7 +4,7 @@ import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { nativeAgentsByIds } from './helpers/nativeScenario'
 import { tabbarLabels } from './helpers/tabLabels'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
-import { expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceChevron, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -106,7 +106,7 @@ test.describe('Offline close and cross-workspace move', () => {
 
           // wsA is left empty and wsB gained the tab, without a Worker round-trip.
           await expectAgentTabCount(page, 0)
-          await workspaceRow(page, wsB).click()
+          await workspaceRowTitle(page, wsB).click()
           await waitForWorkspaceReady(page)
           await expectAgentTabCount(page, 1)
 

@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { boxCenter, dragSidebarLeafTo, mouseDragOnto } from './helpers/drag'
 import { selectedAgentTab } from './helpers/nativeScenario'
-import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
@@ -29,13 +29,13 @@ test.describe('Multi-Workspace', () => {
     await expectAgentTabCount(page, 1)
 
     // Switch to WS Beta
-    await workspaceRow(page, ws2).click()
+    await workspaceRowTitle(page, ws2).click()
     await waitForWorkspaceReady(page)
     await agentTabs(page).first().waitFor()
     await expectAgentTabCount(page, 1)
 
     // Switch back to WS Alpha — tabs should still be there
-    await workspaceRow(page, ws1).click()
+    await workspaceRowTitle(page, ws1).click()
     await waitForWorkspaceReady(page)
     await agentTabs(page).first().waitFor()
     await expectAgentTabCount(page, 1)
@@ -88,7 +88,7 @@ test.describe('Multi-Workspace', () => {
     await saved
 
     // Switch to ws2 and verify the moved tab is there
-    await workspaceRow(page, ws2).click()
+    await workspaceRowTitle(page, ws2).click()
     await waitForWorkspaceReady(page)
     await expectAgentTabCount(page, 2)
   })
@@ -308,7 +308,7 @@ test.describe('Multi-Workspace', () => {
     await saved1
 
     // Switch to ws2 — should have 2 agent tabs (its own + the moved one)
-    await workspaceRow(page, ws2).click()
+    await workspaceRowTitle(page, ws2).click()
     await waitForWorkspaceReady(page)
     await expectAgentTabCount(page, 2)
 
@@ -319,7 +319,7 @@ test.describe('Multi-Workspace', () => {
     await saved2
 
     // Switch to ws1 — should have 2 agent tabs in the tab bar (not empty)
-    await workspaceRow(page, ws1).click()
+    await workspaceRowTitle(page, ws1).click()
     await waitForWorkspaceReady(page)
     await expectAgentTabCount(page, 2)
   })
@@ -377,7 +377,7 @@ test.describe('Multi-Workspace', () => {
     await expectAgentTabCount(page, 1)
 
     // Navigate to ws2 and verify it has 2 tabs
-    await workspaceRow(page, ws2).click()
+    await workspaceRowTitle(page, ws2).click()
     await waitForWorkspaceReady(page)
     await expectAgentTabCount(page, 2)
   })
