@@ -16,7 +16,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import type { RunningNativeChild } from './unsupportedSubagent'
 import { expect } from '@playwright/test'
-import { cleanupOnFailure } from './cleanup'
+import { cleanupOnFailure, withCleanup } from './cleanup'
 import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
@@ -271,6 +271,36 @@ export async function openHeldChildTab(context: HeldChildContext, test: HeldChil
     }
     return { row, childId, parentId, heldTurns, release, finish }
   }, settle)
+}
+
+/** What {@link exerciseHeldChildRow} needs beyond the shared held child. */
+export interface HeldChildRowCase extends Pick<HeldChildCase, 'rowTitle' | 'heldAnswer'> {
+  /** The texts that the running row must hold. The default is the row title: `rowTitle`, or {@link HELD_CHILD_TITLE}. */
+  rowTexts?: readonly string[]
+}
+
+/**
+ * Keep a held child in the Background tasks section of its root through its run: open the child, return to the root,
+ * require a running row that holds `rowTexts`, let the child finish, and require a final row that the section keeps.
+ * The child finishes even when a check of the running row fails, so that no held request stays open after the test.
+ */
+export async function exerciseHeldChildRow(context: HeldChildContext, options: HeldChildRowCase = {}): Promise<void> {
+  const { page } = context
+  const child = await openHeldChildTab(context, {
+    ...(options.rowTitle === undefined ? {} : { rowTitle: options.rowTitle }),
+    ...(options.heldAnswer === undefined ? {} : { heldAnswer: options.heldAnswer }),
+    childTurn: { user: HELD_CHILD_TASK },
+    rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }],
+  })
+  await withCleanup(async () => {
+    await tabById(page, child.parentId).click()
+    await expect(backgroundTasksSection(page)).toBeVisible()
+    await expect(child.row).toHaveAttribute('data-status', 'running')
+    for (const text of options.rowTexts ?? [options.rowTitle ?? HELD_CHILD_TITLE])
+      await expect(child.row).toContainText(text)
+  }, child.finish)
+  await expectRowBecomesFinal(page, child.row)
+  await expectSectionPersists(page)
 }
 
 /** The root's answer after the spawn's result states the stop. */

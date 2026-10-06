@@ -1,7 +1,9 @@
+import type { Locator } from '@playwright/test'
 import type { MockModelMatcher, MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { NativeChildProfile, NativeChildScript, NativeChildScriptContext, NativeChildTask, ProfiledNativeChild, RunningChildOptions } from './runningChildProof'
+import type { RunningNativeChild } from './unsupportedSubagent'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
@@ -12,6 +14,8 @@ import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import {
   childTaskAnywhere,
   childTaskAtStart,
+  expectRunningChildCompletes,
+  HELD_NATIVE_CHILD_DESCRIPTION,
   heldChildFinalRequest,
   heldChildIdentity,
   heldChildOptions,
@@ -429,5 +433,67 @@ describe('heldChildOptions', () => {
     expect(options.spawn).toBe(child.spawn)
     expect(options.gate).toBe(child.gate)
     expect(options.rowText).toBe(child.description)
+  })
+
+  it('starts each description with the shared held child description', () => {
+    expect(heldChildIdentity(SCRIPT).description.startsWith(`${HELD_NATIVE_CHILD_DESCRIPTION} `)).toBe(true)
+  })
+})
+
+/**
+ * A row that Playwright's `expect` reads through `_expect`, as it reads a real locator. Every check passes, and the row
+ * logs each check, each reload of its page, and the finish of its child.
+ */
+class LoggingRow {
+  readonly _apiName = 'Locator'
+  constructor(private readonly log: string[]) {}
+
+  async _expect(expression: string, options: { expressionArg?: string, expectedText?: Array<{ string?: string }> }) {
+    this.log.push(`${expression}${options.expressionArg ? ` ${options.expressionArg}` : ''}=${options.expectedText?.[0]?.string ?? ''}`)
+    return { matches: true, received: '', log: [], timedOut: false }
+  }
+
+  page() {
+    return { reload: async () => this.log.push('reload') }
+  }
+}
+
+describe('expectRunningChildCompletes', () => {
+  function child(log: string[], ids: { childId: string, parentId: string } = { childId: 'child', parentId: 'parent' }): RunningNativeChild {
+    return { row: new LoggingRow(log) as unknown as Locator, ...ids, finish: async () => {
+      log.push('finish')
+    } }
+  }
+
+  it('requires the running row, finishes the child, then requires the completed row', async () => {
+    const log: string[] = []
+    await expectRunningChildCompletes(child(log), { rowText: 'Native held child' })
+    expect(log).toEqual([
+      'to.have.text=Native held child',
+      'to.have.attribute.value data-kind=subagent',
+      'to.have.attribute.value data-status=running',
+      'finish',
+      'to.have.attribute.value data-status=completed',
+    ])
+  })
+
+  it('checks no text without a row text, and requires the completed row again after a reload', async () => {
+    const log: string[] = []
+    await expectRunningChildCompletes(child(log), { reload: true })
+    expect(log).toEqual([
+      'to.have.attribute.value data-kind=subagent',
+      'to.have.attribute.value data-status=running',
+      'finish',
+      'to.have.attribute.value data-status=completed',
+      'reload',
+      'to.have.attribute.value data-status=completed',
+    ])
+  })
+
+  it('finishes a child that is its own parent, and fails', async () => {
+    const log: string[] = []
+    await expect(expectRunningChildCompletes(child(log, { childId: 'same', parentId: 'same' }))).rejects.toThrow('the child runs as an agent of its own')
+    expect(log).toContain('finish')
+    expect(log).not.toContain('to.have.attribute.value data-status=completed')
   })
 })

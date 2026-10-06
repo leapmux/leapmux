@@ -6,7 +6,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { JUNIE_ANSWER_TOOL, junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { junieModelTurns } from './modelTurns'
@@ -35,7 +35,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 /** Open this provider's actual child task and hold its native final answer. */
 export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}): Promise<HeldNativeChild> {
   const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
-  const description = `Native held child ${randomUUID()}`
+  const description = `${HELD_NATIVE_CHILD_DESCRIPTION} ${randomUUID()}`
   const agentType = 'leapmux-e2e-child'
   const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.modelScript.prompt(task), agentType })
   return openRunningNativeChild(context, {

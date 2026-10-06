@@ -1,9 +1,9 @@
 import { expect } from '@playwright/test'
 import { ZCODE_MODE } from '../../../src/generated/contracts/zcode-protocol'
 import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
-import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, settingsBar, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, expectSettingsChip, settingsBar, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
-import { exerciseZCodeMode } from './modeScenario'
+import { exerciseZCodeMode, exerciseZCodePlanAndYolo } from './modeScenario'
 
 zcodeTest('the mode chip starts on Build and can switch to Plan and Yolo', async ({ native, page }) => {
   await expect(settingsBar(page)).toBeVisible()
@@ -23,15 +23,8 @@ zcodeTest('the mode chip starts on Build and can switch to Plan and Yolo', async
   await exerciseZCodeMode(native, 'build')
 })
 
-zcodeTest('plan mode refuses a native write that Yolo mode runs', async ({ native, page }) => {
-  for (const mode of ['plan', 'yolo'] as const) {
-    await chooseSettingsOption(page, `permissionMode-${mode}`)
-    await waitForSettingsIdle(page)
-    await exerciseZCodeMode(native, mode)
-    await page.reload()
-    await expectSettingsOptionChosen(page, `permissionMode-${mode}`)
-    await exerciseZCodeMode(native, mode)
-  }
+zcodeTest('plan mode refuses a native write that Yolo mode runs', async ({ native }) => {
+  await exerciseZCodePlanAndYolo(native)
 })
 
 // The exact menu leaves no room for `auto`.

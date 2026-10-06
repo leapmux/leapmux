@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { withCleanup } from '../helpers/cleanup'
 import { backgroundBashToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
+import { expectRunningChildCompletes } from '../helpers/runningChildProof'
 import { answerControl, assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
@@ -59,12 +59,5 @@ finish()
 })
 
 junieTest('follows a native child from running to completed in the Background tasks sidebar', async ({ native }) => {
-  const child = await runningChild(native)
-  await withCleanup(async () => {
-    await expect(child.row).toContainText('leapmux-e2e-child')
-    await expect(child.row).toHaveAttribute('data-kind', 'subagent')
-    await expect(child.row).toHaveAttribute('data-status', 'running')
-    expect(child.childId).not.toBe(child.parentId)
-  }, child.finish)
-  await expect(child.row).toHaveAttribute('data-status', 'completed')
+  await expectRunningChildCompletes(await runningChild(native), { rowText: 'leapmux-e2e-child' })
 })

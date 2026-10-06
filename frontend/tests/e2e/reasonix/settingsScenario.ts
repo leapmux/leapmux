@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
-import { answerControl, applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectSettingsChip, openPlusMenu, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { answerControl, applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectPermissionShortcuts, expectSettingsChip, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * Reject the request that ends each Reasonix answer in Plan mode, and keep Plan mode.
@@ -38,10 +38,7 @@ export async function exerciseReasonixSessionSettings(context: ManagedNativeScen
   const request = await sendNativeAnswer(context, 'Reply once after the effort switch.', 'Reasonix answered at low effort.')
   expect(request.body).toMatchObject({ reasoning_effort: 'low' })
   await rejectPlanExit(page)
-  const menu = await openPlusMenu(page)
-  await expect(menu.getByTestId('composer-smart-permissions')).toHaveCount(0)
-  await expect(menu.getByTestId('composer-bypass-permissions')).toBeVisible()
-  await page.keyboard.press('Escape')
+  await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
   await applyPermissionPreset(page, 'bypass')
   await waitForSettingsIdle(page)
   await exerciseRestoredNativeOption(context, {

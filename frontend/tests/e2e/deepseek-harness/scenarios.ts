@@ -7,7 +7,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { finishDeepseekHarnessChild, waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { registerDeepseekHarnessChildReport } from './childReportRegistration'
@@ -33,7 +33,7 @@ export async function runningChild(context: ManagedNativeScenarioContext) {
   const task = `DEEPSEEKCHILD${marker} read the supplied file.`
   const path = join(parent.workingDir, `native-child-${marker}.txt`)
   writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)
-  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: 'Native held child', prompt: context.modelScript.prompt(task), background: true })
+  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: HELD_NATIVE_CHILD_DESCRIPTION, prompt: context.modelScript.prompt(task), background: true })
   const readCallId = `child-read-${marker}`
   const child = await openRunningNativeChild(context, {
     gate: `native-child-${marker}`,

@@ -6,6 +6,7 @@ import type { RunningNativeChild } from './unsupportedSubagent'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
+import { withCleanup } from './cleanup'
 import { cssAttributeValue } from './cssAttribute'
 import { validateGateName } from './mockModelScript'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
@@ -104,6 +105,9 @@ export interface HeldChildIdentity {
   gate: string
 }
 
+/** The start of the description of a held native child. A sidebar row of the child shows it. */
+export const HELD_NATIVE_CHILD_DESCRIPTION = 'Native held child'
+
 /**
  * Generate the identity of one held child.
  * `task` replaces the default task, and `spawn` adds the provider fields of the spawn call, such as `background`.
@@ -116,7 +120,7 @@ export function heldChildIdentity(
   const task = options.task ?? `NATIVECHILDTASK${suffix} report one word.`
   if (task.trim() === '')
     throw new Error('A held child needs a task that is not empty.')
-  const description = `Native held child ${suffix.slice(0, 8)}`
+  const description = `${HELD_NATIVE_CHILD_DESCRIPTION} ${suffix.slice(0, 8)}`
   const prompt = context.prompt(task)
   return {
     task,
@@ -367,5 +371,29 @@ export async function openRunningNativeChild(
       throw new AggregateError([error, cleanupError], 'The native child setup and its gate cleanup failed.')
     }
     throw error
+  }
+}
+
+/**
+ * Require that a held native child shows as one running subagent row of an agent of its own, then let the child finish
+ * and require the completed row.
+ *
+ * - `rowText`: a text that the running row must hold, such as the description of the child.
+ * - `reload`: also require the completed row after a reload of the page.
+ *
+ * The child finishes even when a check of the running row fails, so that no held request stays open after the test.
+ */
+export async function expectRunningChildCompletes(child: RunningNativeChild, options: { rowText?: string, reload?: boolean } = {}): Promise<void> {
+  await withCleanup(async () => {
+    if (options.rowText !== undefined)
+      await expect(child.row).toContainText(options.rowText)
+    await expect(child.row).toHaveAttribute('data-kind', 'subagent')
+    await expect(child.row).toHaveAttribute('data-status', 'running')
+    expect(child.childId, 'the child runs as an agent of its own').not.toBe(child.parentId)
+  }, child.finish)
+  await expect(child.row).toHaveAttribute('data-status', 'completed')
+  if (options.reload) {
+    await child.row.page().reload()
+    await expect(child.row).toHaveAttribute('data-status', 'completed')
   }
 }

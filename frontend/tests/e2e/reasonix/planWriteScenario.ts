@@ -2,8 +2,9 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { answerControl, chooseSettingsOption, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
@@ -13,7 +14,7 @@ import { answerControl, chooseSettingsOption, expectNoControlBanner, expectSetti
  *
  * Reasonix 1.38 ends each Plan-mode answer with an `exit_plan_mode` permission request, so the scenario refuses that
  * request and keeps Plan mode. In Normal mode with the Ask approval, the write raises a permission request, and the
- * scenario refuses it, so no file exists after either write.
+ * scenario refuses it through `exerciseNativePermissionDecision`, so no file exists after either write.
  */
 export async function exerciseReasonixPlanAndNormalWrites(context: ManagedNativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
@@ -38,7 +39,7 @@ export async function exerciseReasonixPlanAndNormalWrites(context: ManagedNative
     await modelScript.waitForSteps(planned + 2)
     await waitForAgentIdle(page)
     expect(existsSync(planFile)).toBe(false)
-    expect(nativeToolResult(await modelScript.requestAt(planned + 1), planCall)).toContain('plan mode forbids workspace mutations')
+    expect(await nativeToolResultAt(modelScript, planned + 1, planCall)).toContain('plan mode forbids workspace mutations')
     const exitBanner = await waitForControlBanner(page)
     await expect(exitBanner).toContainText('exit_plan_mode')
     await answerControl(page, 'deny')
@@ -52,18 +53,11 @@ export async function exerciseReasonixPlanAndNormalWrites(context: ManagedNative
       await expectSettingsOptionChosen(page, 'permissionMode-normal')
       await expectSettingsOptionChosen(page, 'tool_approval-ask')
     }
-    const normalCall = `reasonix-normal-write-${phase}`
-    const normal = await modelScript.queue(
-      { toolCalls: [writeToolCall(context.provider, normalCall, { path: normalFile, content: 'normal mutation\n' })] },
-      nativeTextStep(context, 'The Normal check ended.'),
-    )
-    await sendMessage(page, modelScript.prompt('Try the scripted write in Normal mode.'))
-    await modelScript.waitForSteps(normal + 1)
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText(`reasonix-normal-write-${phase}.txt`)
-    await answerControl(page, 'deny')
-    await modelScript.waitForSteps(normal + 2)
-    await waitForAgentIdle(page)
-    expect(existsSync(normalFile)).toBe(false)
+    await exerciseNativePermissionDecision(context, {
+      toolCall: writeToolCall(context.provider, `reasonix-normal-write-${phase}`, { path: normalFile, content: 'normal mutation\n' }),
+      decision: 'deny',
+      beforeDecision: banner => expect(banner).toContainText(`reasonix-normal-write-${phase}.txt`),
+      nativeProof: () => expect(existsSync(normalFile)).toBe(false),
+    })
   }
 }

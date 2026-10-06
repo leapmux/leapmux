@@ -1,17 +1,7 @@
-import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
-import { withCleanup } from '../helpers/cleanup'
+import { expectRunningChildCompletes } from '../helpers/runningChildProof'
 import { runningChild } from './scenarios'
 
 deepseekHarnessTest('keeps the actual native child in the sidebar from running through completion', async ({ native }) => {
-  const { page } = native
-  const child = await runningChild(native)
-  await withCleanup(async () => {
-    await expect(child.row).toHaveAttribute('data-kind', 'subagent')
-    await expect(child.row).toHaveAttribute('data-status', 'running')
-    expect(child.childId).not.toBe(child.parentId)
-  }, child.finish)
-  await expect(child.row).toHaveAttribute('data-status', 'completed')
-  await page.reload()
-  await expect(child.row).toHaveAttribute('data-status', 'completed')
+  await expectRunningChildCompletes(await runningChild(native), { reload: true })
 })

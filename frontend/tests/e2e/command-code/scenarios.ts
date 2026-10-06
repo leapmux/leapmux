@@ -7,7 +7,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { openRunningNativeChild } from '../helpers/runningChildProof'
+import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 
 /** Build the scenario context of Command Code. Its native protocol needs no field beyond the provider. */
@@ -26,7 +26,7 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
   const task = `COMMANDCODECHILD${marker} read the supplied file and report one word.`
   const path = join(parent.workingDir, `native-child-${marker}.txt`)
   writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)
-  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: 'Native held child', prompt: context.modelScript.prompt(task) })
+  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: HELD_NATIVE_CHILD_DESCRIPTION, prompt: context.modelScript.prompt(task) })
   return openRunningNativeChild(context, {
     gate: `native-child-${marker}`,
     child: {

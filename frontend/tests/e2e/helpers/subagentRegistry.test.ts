@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+import { exerciseHeldChildRow, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
 import { startWaitLimitForTests } from './testDeadline'
 
 /** The end of the wait limit that a failure case starts, so that a wait which never passes ends inside the case. */
@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 /** The Worker registry that the fake snapshot read returns, and the order of the reads and model script calls. */
-const registry = vi.hoisted(() => ({ tasks: [] as unknown[], log: [] as string[] }))
+const registry = vi.hoisted(() => ({ tasks: [] as unknown[], log: [] as string[], rules: [] as unknown[], steps: [] as unknown[] }))
 
 vi.mock('./nativeSidebarSnapshot', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeSidebarSnapshot')>(),
@@ -277,53 +277,56 @@ describe('requireRegistryRow', () => {
   })
 })
 
+/** A locator probe that the fake `expect` reads, with a count and attributes. */
+function probe(count: number, attributes: Record<string, string> = {}): Locator {
+  const locator: Locator = Object.assign({} as Locator, {
+    readCount: () => count,
+    readAttribute: (name: string) => attributes[name] ?? null,
+    first: () => locator,
+    getAttribute: async (name: string) => attributes[name] ?? null,
+  })
+  return locator
+}
+
+/**
+ * A context with one root agent tab and an empty registry in the DOM.
+ * The model script logs each call and keeps each rule. Its queue fails, which ends the setup after the spawn is
+ * scripted.
+ */
+function context(): HeldChildContext {
+  const page = Object.assign({} as Page, {
+    locator: (selector: string) => {
+      if (selector.includes('[data-tab-type="agent"]'))
+        return probe(1, { 'data-tab-id': 'root-agent' })
+      if (selector.startsWith('[data-testid="bg-task-'))
+        return probe(0)
+      throw new Error(`The fake page has no locator for ${selector}.`)
+    },
+  })
+  const modelScript = Object.assign({} as ModelScript, {
+    prompt: (text: string) => text,
+    rule: async (...rules: unknown[]) => {
+      registry.log.push('rule')
+      registry.rules.push(...rules)
+    },
+    queue: async (...steps: unknown[]) => {
+      registry.log.push('queue')
+      registry.steps.push(...steps)
+      throw new Error('The fake model script stops after the queue.')
+    },
+    releaseGateIfHeld: async () => {
+      registry.log.push('release')
+      return false
+    },
+  })
+  return { page, modelScript, provider: AgentProvider.KIRO, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+}
+
 describe('openHeldChildTab', () => {
   beforeEach(() => {
     registry.tasks = []
     registry.log = []
   })
-
-  /** A locator probe that the fake `expect` reads, with a count and attributes. */
-  function probe(count: number, attributes: Record<string, string> = {}): Locator {
-    const locator: Locator = Object.assign({} as Locator, {
-      readCount: () => count,
-      readAttribute: (name: string) => attributes[name] ?? null,
-      first: () => locator,
-      getAttribute: async (name: string) => attributes[name] ?? null,
-    })
-    return locator
-  }
-
-  /**
-   * A context with one root agent tab and an empty registry in the DOM.
-   * The model script logs each call. Its queue fails, which ends the setup after the spawn is scripted.
-   */
-  function context(): HeldChildContext {
-    const page = Object.assign({} as Page, {
-      locator: (selector: string) => {
-        if (selector.includes('[data-tab-type="agent"]'))
-          return probe(1, { 'data-tab-id': 'root-agent' })
-        if (selector.startsWith('[data-testid="bg-task-'))
-          return probe(0)
-        throw new Error(`The fake page has no locator for ${selector}.`)
-      },
-    })
-    const modelScript = Object.assign({} as ModelScript, {
-      prompt: (text: string) => text,
-      rule: async () => {
-        registry.log.push('rule')
-      },
-      queue: async () => {
-        registry.log.push('queue')
-        throw new Error('The fake model script stops after the queue.')
-      },
-      releaseGateIfHeld: async () => {
-        registry.log.push('release')
-        return false
-      },
-    })
-    return { page, modelScript, provider: AgentProvider.KIRO, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
-  }
 
   const heldCase: HeldChildCase = { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The root completed.' }] }
 
@@ -336,6 +339,28 @@ describe('openHeldChildTab', () => {
     registry.tasks = [{ id: 'earlier-task', childAgentId: 'earlier-child' }]
     await expect(openHeldChildTab(context(), heldCase)).rejects.toThrow('the Worker registry must hold no task rows before a spawn')
     expect(registry.log).toEqual(['registry'])
+  })
+})
+
+describe('exerciseHeldChildRow', () => {
+  beforeEach(() => {
+    registry.tasks = []
+    registry.log = []
+    registry.rules = []
+    registry.steps = []
+  })
+
+  it('holds the child turn of the shared task, answers the root once after the spawn, and releases the hold on a failure', async () => {
+    await expect(exerciseHeldChildRow(context())).rejects.toThrow('stops after the queue')
+    expect(registry.log).toEqual(['registry', 'rule', 'queue', 'release'])
+    expect(registry.rules).toEqual([expect.objectContaining({ when: { user: HELD_CHILD_TASK }, respond: heldChildAnswer({}) })])
+    expect(registry.steps.slice(1)).toEqual([{ text: 'The actual native child completed.' }])
+  })
+
+  it('holds the answer that the provider gives in place of text', async () => {
+    const heldAnswer = { toolCalls: [ohMyPiYieldToolCall('held-child-yield', 'Counted.')] }
+    await expect(exerciseHeldChildRow(context(), { rowTitle: HELD_CHILD_NAME, heldAnswer })).rejects.toThrow('stops after the queue')
+    expect(registry.rules).toEqual([expect.objectContaining({ respond: heldChildAnswer({ heldAnswer }) })])
   })
 })
 
