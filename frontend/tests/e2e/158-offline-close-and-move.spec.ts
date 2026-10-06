@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
+import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
 import { boxOf, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -66,38 +67,6 @@ async function liveAgentIdsViaAPI(hubUrl: string, token: string, workerId: strin
   }
 }
 
-/**
- * Start accumulating every toast body the page renders into
- * `window.__toastTexts`, so a later assertion is not racing the 3s auto-dismiss.
- *
- * Deliberately not `helpers/toast`'s recorder: that one patches `window.ot.toast`
- * through a `window.ot` setter, and oat installs `toast` onto an already-assigned
- * `window.ot` object, so the patch never lands for `renderToast`'s
- * `window.ot.toast.el(...)` path. Reading the rendered DOM has no such coupling.
- */
-async function recordToastTexts(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const w = window as unknown as { __toastTexts?: string[], __toastObserver?: MutationObserver }
-    w.__toastTexts = []
-    const collect = () => {
-      for (const node of document.querySelectorAll('.toast-message')) {
-        const text = (node.textContent ?? '').trim()
-        if (text && !w.__toastTexts!.includes(text))
-          w.__toastTexts!.push(text)
-      }
-    }
-    w.__toastObserver?.disconnect()
-    w.__toastObserver = new MutationObserver(collect)
-    w.__toastObserver.observe(document.body, { childList: true, subtree: true })
-    collect()
-  })
-}
-
-/** Toast bodies seen since the last `recordToastTexts` call. */
-async function recordedToastTexts(page: Page): Promise<string[]> {
-  return page.evaluate(() => (window as unknown as { __toastTexts?: string[] }).__toastTexts ?? [])
-}
-
 test.describe('Offline close and cross-workspace move', () => {
   test('close and move commit with the worker offline; the worker reaps on reconnect', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
@@ -139,14 +108,15 @@ test.describe('Offline close and cross-workspace move', () => {
       // no dialog, an info toast, and the CRDT tombstone still commits.
       const closingTab = page.locator(`[data-testid="tab"][data-tab-type="agent"][data-tab-id="${closedAgentId}"]`)
       await expect(closingTab).toBeVisible()
-      await recordToastTexts(page)
+      // The recorder of the processTest page fixture keeps each toast after its
+      // 3s display. Clear it, so only a toast of this close can match below.
+      await clearRecordedToasts(page)
       await closingTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
       await expectAgentTabCount(page, 1)
       // The toast is what distinguishes "took the unreachable branch" from
       // "the close somehow reached the worker" -- both end with one tab left.
-      await expect.poll(async () => (await recordedToastTexts(page)).join('\n'))
-        .toContain('Worker is unreachable')
+      await expectToastRecorded(page, 'Worker is unreachable')
 
       // ─── 2. Move the surviving tab to another workspace, still offline ──
       const movingTab = page.locator(`[data-testid="tab"][data-tab-type="agent"][data-tab-id="${movedAgentId}"]`)

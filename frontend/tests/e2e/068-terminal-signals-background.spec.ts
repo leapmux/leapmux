@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
+import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
 import { openTerminalViaUI, waitForWorkspaceReady } from './helpers/ui'
 
 /** Terminal tab label text with chrome nodes stripped. */
@@ -43,6 +44,9 @@ test.describe('Terminal signals while backgrounded', () => {
     // 'newtitle' before the hover happens. Sleeping keeps the shell from
     // printing a new prompt — and re-setting the title — until the assertions
     // are done.
+    // Clear the toast record, so the OSC 9 check below reads only the toasts
+    // that this command raised.
+    await clearRecordedToasts(page)
     await typeInTerminal(page, 'sleep 0.4; printf \'\\a\'; sleep 0.2; printf \'\\033]0;newtitle\\a\'; sleep 0.2; printf \'\\033]9;hi\\a\'; echo SIGNALS_DONE; sleep 15')
     await agentTab.click()
     await expect(agentTab).toHaveAttribute('aria-selected', 'true')
@@ -63,7 +67,7 @@ test.describe('Terminal signals while backgrounded', () => {
     expect(await terminalTabLabel(page, 0)).toMatch(/^Terminal /)
 
     // OSC 9 badges (already) and toasts when OS notifications are not opted in.
-    await expect(page.locator('output .toast-message').filter({ hasText: 'hi' })).toBeVisible()
+    await expectToastRecorded(page, 'hi')
 
     // Switch back: retained buffer + catch-up keep the screen current.
     await termTab.click()

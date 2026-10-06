@@ -1,7 +1,7 @@
 import type { Page, TestInfo } from '@playwright/test'
 import type { RecordedToast } from './toast'
 import { describe, expect, it, vi } from 'vitest'
-import { attachToastLog, formatToastLog } from './toast'
+import { attachToastLog, dangerToasts, expectToastRecorded, formatToastLog } from './toast'
 
 const STARTED = Date.UTC(2026, 9, 6, 12, 0, 0)
 
@@ -57,5 +57,41 @@ describe('attachToastLog', () => {
     const { testInfo, attach } = reportingTestInfo()
     await expect(attachToastLog(recordingPage(new Error('Target page, context or browser has been closed')), testInfo)).resolves.toBeUndefined()
     expect(attach).not.toHaveBeenCalled()
+  })
+})
+
+describe('expectToastRecorded', () => {
+  /** A page whose recorder holds no toast on the first read and `later` from the second read on. */
+  function laterRecordingPage(later: RecordedToast[]) {
+    const evaluate = vi.fn<() => Promise<RecordedToast[]>>().mockResolvedValueOnce([]).mockResolvedValue(later)
+    return { page: { evaluate } as unknown as Page, evaluate }
+  }
+
+  it('waits for a recorded toast whose message contains the text', async () => {
+    const { page, evaluate } = laterRecordingPage([toast('Saved', 'success'), toast('The worker is offline. Try again.', 'danger')])
+    await expectToastRecorded(page, 'worker is offline')
+    expect(evaluate.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('matches a regular expression against the message', async () => {
+    const { page } = laterRecordingPage([toast('Could not copy: permission denied', 'danger')])
+    await expectToastRecorded(page, /^Could not copy/)
+  })
+
+  it('refuses an empty text before it reads the page', async () => {
+    const { page, evaluate } = laterRecordingPage([])
+    await expect(expectToastRecorded(page, '')).rejects.toThrow('needs text')
+    expect(evaluate).not.toHaveBeenCalled()
+  })
+})
+
+describe('dangerToasts', () => {
+  it('returns only the toasts of the danger variant, in record order', async () => {
+    const recorded = [toast('Saved', 'success'), toast('Offline', 'danger'), toast('Copied', ''), toast('Failed', 'danger', 10)]
+    expect(await dangerToasts(recordingPage(recorded))).toEqual([recorded[1], recorded[3]])
+  })
+
+  it('returns an empty list for a page with no error toast', async () => {
+    expect(await dangerToasts(recordingPage([toast('Saved', 'success')]))).toEqual([])
   })
 })

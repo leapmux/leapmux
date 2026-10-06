@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { getRecordedToasts } from './helpers/toast'
+import { dangerToasts } from './helpers/toast'
 import { loginViaToken, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 import { openNewWorkspaceDialog } from './helpers/worktree'
@@ -33,7 +33,7 @@ test.describe('workspace navigation', () => {
       await expect(page.getByRole('heading', { name: title })).toBeVisible()
       await page.keyboard.press('Escape')
       await expect(page.getByRole('heading', { name: title })).toBeHidden()
-      expect((await getRecordedToasts(page)).filter(toast => toast.variant === 'danger')).toEqual([])
+      expect(await dangerToasts(page)).toEqual([])
     })
   }
 

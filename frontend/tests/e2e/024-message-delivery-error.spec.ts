@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getUserId, openAgentViaAPI } from './helpers/api'
-import { getRecordedToasts } from './helpers/toast'
+import { expectToastRecorded } from './helpers/toast'
 import { appMenuTrigger, ARITHMETIC_ANSWER_TEXT, expectAssistantAnswer, loginViaToken, openWorkspace, userBubbles, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -36,7 +36,7 @@ test.describe('Failed agent input enqueue', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the refusal. The unchanged editor alone can precede the request's result.
-      await expect.poll(async () => (await getRecordedToasts(page)).some(toast => toast.message.includes('worker is offline'))).toBe(true)
+      await expectToastRecorded(page, 'worker is offline')
       await expect(editor).toContainText('Keep this draft')
       await expect(userBubbles(page)).toHaveCount(userCount)
 
@@ -69,7 +69,7 @@ test.describe('Failed agent input enqueue', () => {
       await waitForWorkerOffline(separateHubWorker)
       await editor.fill('Draft survives reload')
       await page.keyboard.press('Meta+Enter')
-      await expect.poll(async () => (await getRecordedToasts(page)).some(toast => toast.message.includes('worker is offline'))).toBe(true)
+      await expectToastRecorded(page, 'worker is offline')
       await expect(editor).toHaveText('Draft survives reload')
       await waitForEditorDraft(page, await getUserId(hubUrl, adminToken), 'Draft survives reload')
 

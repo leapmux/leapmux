@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { expectToastRecorded } from './helpers/toast'
 import { ASSISTANT_BUBBLE_SELECTOR, clickTreeContextItem, firstAssistantMessageRow, loginViaToken, openWorkspace, sendMessage, treeRow, waitForAgentIdle } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
@@ -171,7 +172,7 @@ test.describe('Quote and Mention', () => {
     await expect(copyButton).toBeVisible()
     await copyButton.click()
 
-    await expect(page.locator('output .toast-message').filter({ hasText: 'Could not copy' })).toBeVisible()
+    await expectToastRecorded(page, 'Could not copy')
     // The popover stays up, so the button is still there to try again...
     await expect(copyButton).toBeVisible()
     // ...and so is the text it acts on.

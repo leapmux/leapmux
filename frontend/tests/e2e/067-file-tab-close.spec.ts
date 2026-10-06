@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { clearRecordedToasts, getRecordedToasts, installToastRecorder } from './helpers/toast'
+import { clearRecordedToasts, getRecordedToasts } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
 
@@ -40,7 +40,6 @@ test.describe('file tab close', () => {
     // Uncommitted work on the branch, so a last-tab close would prompt.
     writeFileSync(join(repoDir, 'notes.md'), '# notes\nedited\n')
 
-    await installToastRecorder(page)
     await loginViaToken(page, adminToken)
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close')
     // The agent tab is the sibling that keeps the branch alive, and the tab
@@ -100,7 +99,6 @@ test.describe('file tab close', () => {
       'ftc-branch',
     )
 
-    await installToastRecorder(page)
     await loginViaToken(page, adminToken)
     const workspaceId = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
@@ -160,7 +158,6 @@ test.describe('file tab close', () => {
     execSync('git commit -m "add notes"', { cwd: repoDir })
     writeFileSync(join(repoDir, 'notes.md'), '# notes\nedited\n')
 
-    await installToastRecorder(page)
     await loginViaToken(page, adminToken)
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close Last')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, repoDir)
