@@ -1,9 +1,10 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { CLAUDE_MODE } from '../../../src/generated/contracts/claude-protocol'
 import { claudeTest } from '../claude-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { nativeOptionValue } from '../helpers/nativeScenario'
 import { enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
-import { expectSettingsChip, settingsBar, waitForSettingsIdle } from '../helpers/ui'
+import { answerPlanReview, expectNoControlBanner, expectSettingsChip, settingsBar, waitForSettingsIdle } from '../helpers/ui'
 
 claudeTest.describe('plan mode - bypass permissions', () => {
   claudeTest('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -39,12 +40,11 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     await bypassRadio.click()
     await expect(bypassRadio).toBeChecked()
 
-    const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
-    await expect(approveBtn).toBeEnabled()
-    await approveBtn.click()
+    await expect(page.getByTestId('plan-approve-btn').filter({ visible: true })).toBeEnabled()
+    await answerPlanReview(page, 'approve')
 
     // Verify control banner disappears (plan was approved)
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    await expectNoControlBanner(page)
 
     // Verify permission mode changed to Bypass Permissions
     await waitForSettingsIdle(page)
@@ -52,10 +52,10 @@ claudeTest.describe('plan mode - bypass permissions', () => {
   })
 })
 
-claudeTest('executes a protected native Bypass command and keeps the applied mode after reload', async ({ authenticatedClaudeWorkspace, page, leapmuxServer, modelScript }) => {
-  await exerciseBypassPermissions({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE, workspaceId: authenticatedClaudeWorkspace.workspaceId }, {
+claudeTest('executes a protected native Bypass command and keeps the applied mode after reload', async ({ native }) => {
+  await exerciseBypassPermissions(native, {
     settingsProof: (agent) => {
-      expect(agent.optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe('bypassPermissions')
+      expect(nativeOptionValue(agent, 'permissionMode')).toBe(CLAUDE_MODE.BypassPermissions)
     },
   })
 })

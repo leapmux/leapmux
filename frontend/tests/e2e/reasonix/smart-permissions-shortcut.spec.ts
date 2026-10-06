@@ -4,7 +4,7 @@ import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfigura
 import { reasonixTest } from '../reasonix-fixtures'
 import { exerciseReasonixSessionSettings } from './settingsScenario'
 
-// Reasonix 1.38 asks to leave Plan mode after each Plan-mode answer, and after Bypass also. The settings scenario
+// Reasonix 1.38 asks to leave Plan mode after each Plan-mode answer, also under the Bypass preset. The settings scenario
 // answers each of those requests, so no request stays open across the Bypass change and the reload.
 reasonixTest('smart-permissions-shortcut: applies Reasonix session settings and preserves them after reload', async ({ native }) => {
   await exerciseReasonixSessionSettings(native)

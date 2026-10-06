@@ -2,7 +2,6 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { exerciseNativePermissionRefusal } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -16,9 +15,9 @@ const CLASSIFIER_RULE = 'qwen-auto-classifier-states-no-verdict'
 // That request carries its own system prompt, so a rule answers it and the scripted turns keep their order.
 // A classifier that states no verdict makes Qwen ask the reader ("Auto Mode couldn't classify this action").
 // A reject then ends the turn: Qwen sends the model no tool result and sends no further request.
-qwenTest('requires real native review for protected writes under Smart before and after reload', async ({ authenticatedQwenWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedQwenWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-  const agent = await currentNativeAgent(context)
+qwenTest('requires real native review for protected writes under Smart before and after reload', async ({ native }) => {
+  const { page, modelScript } = native
+  const agent = await currentNativeAgent(native)
   const file = join(agent.workingDir, 'package.json')
   await applyPermissionPreset(page, 'smart')
   await modelScript.rule({
@@ -32,9 +31,9 @@ qwenTest('requires real native review for protected writes under Smart before an
       await waitForSettingsHydrated(page)
     }
     const id = `native-smart-write-${reload}`
-    const toolCall = writeToolCall(AgentProvider.QWEN_CODE, id, { path: file, content: '{"private":true}\n' })
+    const toolCall = writeToolCall(native.provider, id, { path: file, content: '{"private":true}\n' })
     const classifiedBefore = (await modelScript.status()).ruleMatches[CLASSIFIER_RULE] ?? 0
-    await exerciseNativePermissionRefusal(context, {
+    await exerciseNativePermissionRefusal(native, {
       toolCall,
       prompt: 'Run the scripted permission probe.',
       bannerText: 'package.json',

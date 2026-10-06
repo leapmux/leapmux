@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { droidTest, expect } from '../droid-fixtures'
 import { editToolCall, readToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid settings', () => {
@@ -17,18 +17,19 @@ droidTest.describe('Factory Droid settings', () => {
     await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'auto', autonomyLevel: 'high' })
     await expectSettingsOptionChosen(page, 'permissionMode-auto-high')
 
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [readToolCall(AgentProvider.DROID, 'bypass-read', path)] },
       { toolCalls: [editToolCall(AgentProvider.DROID, 'bypass-edit', { path, before: 'before', after: 'after' })] },
       { text: 'The edit completed.' },
     )
     await sendMessage(page, modelScript.prompt('Replace before with after in the note.'))
-    const status = await modelScript.waitForSteps()
-    expect(status.requests.find(request => request.stepIndex === 1)?.body).toMatchObject({
+    await modelScript.waitForSteps(start + 3)
+    await waitForAgentIdle(page)
+    // The request after the read holds the read result, which states the bytes before the edit.
+    expect((await modelScript.requestAt(start + 1)).body).toMatchObject({
       messages: expect.arrayContaining([expect.objectContaining({ role: 'tool', content: expect.stringContaining('before') })]),
     })
-    await waitForAgentIdle(page)
-    await expect(page.locator('[data-testid="control-banner"]:visible')).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(readFileSync(path, 'utf8')).toBe('after')
   })
 })
