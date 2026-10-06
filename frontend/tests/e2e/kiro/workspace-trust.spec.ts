@@ -6,7 +6,6 @@ import { kiroExtractControl } from '../../../src/components/chat/providers/kiro/
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { kiroToolResult } from '../helpers/kiroToolResult'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt, waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -14,6 +13,7 @@ import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit }
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
+import { kiroToolResult } from './toolResult'
 
 kiroTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'policyPreset-ask', classify: kiroExtractControl })

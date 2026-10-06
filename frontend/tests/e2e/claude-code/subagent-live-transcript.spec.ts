@@ -4,13 +4,13 @@ import { expect } from '@playwright/test'
 import { AgentProvider, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { claudeTest } from '../claude-fixtures'
-import { registerClaudeChildReportRules } from '../helpers/claudeChildReportRule'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { tabById } from '../helpers/ui'
+import { registerClaudeChildReportRules } from './childReportRule'
 
 /** Check the actual forwarded child answer and every stored byte after reload. */
 async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<void> {

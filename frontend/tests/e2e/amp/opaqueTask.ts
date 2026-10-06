@@ -3,7 +3,6 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { ampToolResultReader } from '../helpers/ampToolResult'
 import { cleanupOnFailure, withCleanup } from '../helpers/cleanup'
 import { ruleRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -12,6 +11,7 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { requireRegistryRow } from '../helpers/subagentRegistry'
 import { messageContents, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { ampToolResultReader } from './toolResult'
 
 export interface OpaqueAmpTask {
   row: Locator

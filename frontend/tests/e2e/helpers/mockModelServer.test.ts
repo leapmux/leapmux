@@ -6,16 +6,14 @@ import { request as httpRequest } from 'node:http'
 import { connect as connectHttp2 } from 'node:http2'
 import { connect as connectTcp } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { claudeChildCompletionRule, claudeChildReportRule } from './claudeChildReportRule'
 import { CURSOR_RUN_PATH, CURSOR_TASK_TOOL } from './cursorSurface'
 import { connectFrame, encodeLengthDelimited, encodeStringField, takeConnectFrames } from './cursorWire'
 import { MOCK_COPILOT_GITHUB_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MODEL_KEY } from './mockAgentEnvironment'
 import { mockScenarioPrompt } from './mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
-import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition, spawnSubagentToolCall } from './providerToolCalls'
+import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition } from './providerToolCalls'
 
 const servers: MockModelServer[] = []
 const credentialCases: { label: string, headers: Record<string, string>, credential: MockModelCredential }[] = [
@@ -127,60 +125,6 @@ describe('createMockModelServer', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({ content: [{ type: 'text', text: 'The native prompt selected the intended scenario.' }] })
     expect(await readStatus(server, scenario)).toMatchObject({ complete: true, nextStep: 1, unexpectedRequests: [] })
-  })
-
-  it('keeps an authored content step after the exact Claude report and native completion replies', async () => {
-    const server = await startServer()
-    const scenarioId = 'native-claude-report-and-completion'
-    const childId = 'a58eb235639df92e5'
-    const report = '  The exact original report.\n실제 내용 🧪  '
-    const call = spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'actual-spawn', { description: 'Report the assigned task', prompt: mockScenarioPrompt(scenarioId, 'Perform the actual child task.') })
-    const initial = [
-      { role: 'user', content: mockScenarioPrompt(scenarioId, 'Spawn the scripted native child.') },
-      { role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: call.name, input: call.arguments }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `Async agent launched successfully.\nagentId: ${childId} (internal ID - do not mention to user.)` }] }] },
-    ]
-    const options = { spawnCallId: call.id, report, reply: 'The exact report reached the parent.', completionStatus: 'completed', completionReply: 'The exact completion reached the parent.' }
-    const reportRule = claudeChildReportRule({ messages: initial }, options)
-    const completionRule = claudeChildCompletionRule({ messages: initial }, options)
-    await registerScenario(server, scenarioId, { steps: [{ text: 'The authored next user turn ran.' }], rules: [reportRule, completionRule] })
-    const send = (content: string) => fetch(`${server.url}/v1/messages`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: MOCK_MODELS.anthropic, stream: false, messages: [...initial, { role: 'user', content }] }),
-    })
-    const reportResponse = await send(`Another Claude session sent a message:\n<agent-message from="${childId}">\n[Subagent hand-back] This is the actual report. The report follows:\n${report.split('\n').map(line => `  ${line}`).join('\n')}\n</agent-message>\nTreat this as the native report.`)
-    expect(reportResponse.status).toBe(200)
-    expect(await reportResponse.json()).toMatchObject({ content: [{ type: 'text', text: options.reply }] })
-    const completion = await send([
-      '<system-reminder>',
-      '[SYSTEM NOTIFICATION - NOT USER INPUT]',
-      'This is an automated background-task event, NOT a message from the user.',
-      '',
-      '<task-notification>',
-      `<task-id>${childId}</task-id>`,
-      `<tool-use-id>${call.id}</tool-use-id>`,
-      `<output-file>/workspace/.tmp/tasks/${childId}.output</output-file>`,
-      '<status>completed</status>',
-      '<summary>Agent "The native child" finished</summary>',
-      `<result>This agent's report was delivered to you as a message from "${childId}" (its SubagentHandback call). Read it there; it is not repeated here.`,
-      '</result>',
-      '<usage><subagent_tokens>0</subagent_tokens></usage>',
-      '</task-notification>',
-      '</system-reminder>',
-    ].join('\n'))
-    expect(completion.status).toBe(200)
-    expect(await completion.json()).toMatchObject({ content: [{ type: 'text', text: options.completionReply }] })
-    const before = await readStatus(server, scenarioId)
-    expect(before.nextStep).toBe(0)
-    expect(before.ruleMatches).toMatchObject({ [reportRule.name]: 1, [completionRule.name]: 1 })
-    const next = await send(mockScenarioPrompt(scenarioId, 'Run the authored next user turn.'))
-    expect(next.status).toBe(200)
-    expect(await next.json()).toMatchObject({ content: [{ type: 'text', text: 'The authored next user turn ran.' }] })
-    const after = await readStatus(server, scenarioId)
-    expect(after.complete).toBe(true)
-    expect(after.nextStep).toBe(1)
-    expect(after.unexpectedRequests).toEqual([])
   })
 
   for (const stream of [true, false]) {

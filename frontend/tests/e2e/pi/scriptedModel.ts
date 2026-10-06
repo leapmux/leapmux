@@ -3,10 +3,10 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { withCleanup } from './cleanup'
-import { MODEL_KEY } from './mockAgentEnvironment'
-import { assertPrivateNativePath } from './nativeCredentialIsolation'
-import { getGlobalState, hubSpawnEnv } from './server'
+import { withCleanup } from '../helpers/cleanup'
+import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
+import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 
 type PiMockServer = Pick<ServerInfo, 'mockModelUrl' | 'agentEnv'>
 

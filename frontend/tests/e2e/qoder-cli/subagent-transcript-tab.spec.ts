@@ -1,11 +1,11 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { attachQoderWorkerFrames } from '../helpers/qoderWorkerFrames'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/worktree'
 import { expect, qoderTest } from '../qoder-fixtures'
+import { attachQoderWorkerFrames } from './workerFrames'
 
 qoderTest.describe('Qoder CLI subagent registry', () => {
   const PROVIDER = AgentProvider.QODER

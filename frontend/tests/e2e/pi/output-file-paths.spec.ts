@@ -11,7 +11,6 @@ import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piCodemodeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
@@ -20,6 +19,7 @@ import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('keeps the native codemode output path and exact preview after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = createTestDirectory('pi-output-path-feature-codemode-')

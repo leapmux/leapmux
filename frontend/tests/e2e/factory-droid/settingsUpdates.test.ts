@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { DroidNativeSettingsUpdate } from '../helpers/droidSettingsFrame'
+import type { DroidNativeSettingsUpdate } from './settingsFrame'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { startWaitLimitForTests } from '../helpers/testDeadline'

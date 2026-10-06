@@ -3,7 +3,6 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { ampTest, expect } from '../amp-fixtures'
 import { ampToolUseID } from '../helpers/ampSurface'
-import { ampToolResult } from '../helpers/ampToolResult'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -15,6 +14,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { ampNativeOutputLimit } from './nativeToolOutput'
+import { ampToolResult } from './toolResult'
 
 ampTest('records the native large shell output limit and retains its exact tail after reload', async ({ native }, testInfo) => {
   const before = await currentNativeAgent(native)

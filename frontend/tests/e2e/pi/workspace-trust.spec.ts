@@ -8,12 +8,12 @@ import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText, nativeModelToolNames } from '../helpers/nativeScenario'
 import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

@@ -9,7 +9,6 @@ import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, piMcpResourceToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { expectDecodedImageInBubble, expectMcpToolImage, expectPngInRequest, expectToolRowImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
 import { chatScrollContainer, openWorkspace, toolCallRow } from '../helpers/ui'
@@ -17,6 +16,7 @@ import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('shows the picture returned by Read', async ({ native, authenticatedPiWorkspace }) => {
   const { fileName, resultRequest } = await runToolImageTurn(native, {

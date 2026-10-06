@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseDroidNativeSettingsUpdates } from './droidSettingsFrame'
+import { parseDroidNativeSettingsUpdates } from './settingsFrame'
 
 describe('parseDroidNativeSettingsUpdates', () => {
   it('reads the native request ID and effective modern settings', () => {

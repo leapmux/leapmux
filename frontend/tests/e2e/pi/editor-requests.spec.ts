@@ -5,10 +5,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { openAgentViaAPI } from '../helpers/api'
 import { piEditorProbeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { readEntry, storageKeys } from '../helpers/storage'
 import { composerEditor, controlBanner, controlButton, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
+import { withMockPiModel } from './scriptedModel'
 
 for (const scenario of [
   { label: 'whitespace', text: '  first line\n\tsecond line\n  ', cancel: false },

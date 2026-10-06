@@ -1,5 +1,4 @@
 import { join } from 'node:path'
-import { writeJunieMcpConfig } from '../helpers/junieMcp'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -9,6 +8,7 @@ import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { openProviderAgent } from '../helpers/workspace'
 import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
+import { writeJunieMcpConfig } from './mcpConfig'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie MCP input form', () => {

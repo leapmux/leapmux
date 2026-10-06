@@ -3,13 +3,13 @@ import { openAgentViaAPI } from '../helpers/api'
 import { invokeNativeMcpTool } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
 import { expectUnsupportedMcpInput } from '../helpers/unsupportedMcpInput'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('returns the native MCP elicitation refusal without a browser form', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = createTestDirectory('pi-native-mcp-form-')

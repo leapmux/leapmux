@@ -1,10 +1,10 @@
-import type { MockModelRule } from './mockModelScript'
-import type { ModelScript } from './modelScriptFixture'
+import type { MockModelRule } from '../helpers/mockModelScript'
+import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { CLAUDE_TOOL_NAMES } from '../../../src/components/chat/providers/claude/toolNames'
 import { isObject } from '../../../src/lib/jsonPick'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { claudeToolResultText } from './claudeChildResponse'
+import { claudeToolResultText } from '../helpers/claudeChildResponse'
 
 export interface ClaudeChildReportOptions {
   spawnCallId: string

@@ -1,10 +1,10 @@
-import type { DroidNativeSettingsUpdate } from '../helpers/droidSettingsFrame'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { DroidNativeSettingsUpdate } from './settingsFrame'
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { parseDroidNativeSettingsUpdates } from '../helpers/droidSettingsFrame'
 import { readAllAgentMessages } from '../helpers/nativeMessages'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
+import { parseDroidNativeSettingsUpdates } from './settingsFrame'
 
 /** The prefix of the request ID of a settings change that LeapMux sends. Droid copies the ID into its settings event. */
 const LEAPMUX_REQUEST_PREFIX = 'leapmux-'

@@ -1,7 +1,13 @@
-import type { MockModelRule, MockModelScenarioStatus } from './mockModelScript'
-import type { ModelScript } from './modelScriptFixture'
-import { describe, expect, it } from 'vitest'
-import { CLAUDE_CHILD_COMPLETED_STATUS, CLAUDE_CHILD_COMPLETION_REPLY, claudeChildCompletionRule, claudeChildReportRule, claudeSpawnedChildId, registerClaudeChildReportRules } from './claudeChildReportRule'
+import type { MockModelRule, MockModelScenarioStatus } from '../helpers/mockModelScript'
+import type { MockModelServer } from '../helpers/mockModelServer'
+import type { ModelScript } from '../helpers/modelScriptFixture'
+import { afterEach, describe, expect, it } from 'vitest'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { MOCK_MODEL_IDS, MOCK_MODELS } from '../helpers/mockAgentEnvironment'
+import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from '../helpers/mockModelScenario'
+import { createMockModelServer } from '../helpers/mockModelServer'
+import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { CLAUDE_CHILD_COMPLETED_STATUS, CLAUDE_CHILD_COMPLETION_REPLY, claudeChildCompletionRule, claudeChildReportRule, claudeSpawnedChildId, registerClaudeChildReportRules } from './childReportRule'
 
 function nativeSpawnBody(childId = 'a7886d73ffa77cc1e') {
   return { messages: [
@@ -186,5 +192,69 @@ describe('claudeChildCompletionRule', () => {
       async rule() { throw new Error('Invalid completion options must not register a rule.') },
     }
     await expect(registerClaudeChildReportRules(client, options)).rejects.toThrow(`nonempty text for ${key}`)
+  })
+})
+
+// The rules run in a real mock server, so a later authored step still answers after both replies.
+describe('claude child report rules in the mock model server', () => {
+  const servers: MockModelServer[] = []
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map(server => server.close()))
+  })
+
+  it('keeps an authored content step after the exact Claude report and native completion replies', async () => {
+    const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
+    servers.push(server)
+    const scenarioId = 'native-claude-report-and-completion'
+    const childId = 'a58eb235639df92e5'
+    const report = '  The exact original report.\n실제 내용 🧪  '
+    const call = spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'actual-spawn', { description: 'Report the assigned task', prompt: mockScenarioPrompt(scenarioId, 'Perform the actual child task.') })
+    const initial = [
+      { role: 'user', content: mockScenarioPrompt(scenarioId, 'Spawn the scripted native child.') },
+      { role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: call.name, input: call.arguments }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `Async agent launched successfully.\nagentId: ${childId} (internal ID - do not mention to user.)` }] }] },
+    ]
+    const options = { spawnCallId: call.id, report, reply: 'The exact report reached the parent.', completionStatus: 'completed', completionReply: 'The exact completion reached the parent.' }
+    const reportRule = claudeChildReportRule({ messages: initial }, options)
+    const completionRule = claudeChildCompletionRule({ messages: initial }, options)
+    await registerMockModelScenario(server.url, scenarioId, { steps: [{ text: 'The authored next user turn ran.' }], rules: [reportRule, completionRule] })
+    const send = (content: string) => fetch(`${server.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MOCK_MODELS.anthropic, stream: false, messages: [...initial, { role: 'user', content }] }),
+    })
+    const reportResponse = await send(`Another Claude session sent a message:\n<agent-message from="${childId}">\n[Subagent hand-back] This is the actual report. The report follows:\n${report.split('\n').map(line => `  ${line}`).join('\n')}\n</agent-message>\nTreat this as the native report.`)
+    expect(reportResponse.status).toBe(200)
+    expect(await reportResponse.json()).toMatchObject({ content: [{ type: 'text', text: options.reply }] })
+    const completion = await send([
+      '<system-reminder>',
+      '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+      'This is an automated background-task event, NOT a message from the user.',
+      '',
+      '<task-notification>',
+      `<task-id>${childId}</task-id>`,
+      `<tool-use-id>${call.id}</tool-use-id>`,
+      `<output-file>/workspace/.tmp/tasks/${childId}.output</output-file>`,
+      '<status>completed</status>',
+      '<summary>Agent "The native child" finished</summary>',
+      `<result>This agent's report was delivered to you as a message from "${childId}" (its SubagentHandback call). Read it there; it is not repeated here.`,
+      '</result>',
+      '<usage><subagent_tokens>0</subagent_tokens></usage>',
+      '</task-notification>',
+      '</system-reminder>',
+    ].join('\n'))
+    expect(completion.status).toBe(200)
+    expect(await completion.json()).toMatchObject({ content: [{ type: 'text', text: options.completionReply }] })
+    const before = await readScenarioStatus(server.url, scenarioId)
+    expect(before.nextStep).toBe(0)
+    expect(before.ruleMatches).toMatchObject({ [reportRule.name]: 1, [completionRule.name]: 1 })
+    const next = await send(mockScenarioPrompt(scenarioId, 'Run the authored next user turn.'))
+    expect(next.status).toBe(200)
+    expect(await next.json()).toMatchObject({ content: [{ type: 'text', text: 'The authored next user turn ran.' }] })
+    const after = await readScenarioStatus(server.url, scenarioId)
+    expect(after.complete).toBe(true)
+    expect(after.nextStep).toBe(1)
+    expect(after.unexpectedRequests).toEqual([])
   })
 })

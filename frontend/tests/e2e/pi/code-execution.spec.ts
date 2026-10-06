@@ -7,7 +7,6 @@ import { openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { piCodemodeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
@@ -15,6 +14,7 @@ import { activateNativeCodemode } from './codemodeConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('keeps the native codemode output path and preview without an MCP call after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])

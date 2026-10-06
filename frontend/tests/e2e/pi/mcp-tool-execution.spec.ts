@@ -8,7 +8,6 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall, piCodemodeToolCall, piMcpResourceToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
@@ -17,6 +16,7 @@ import { writePiMcpConfiguration } from './mcpConfiguration'
 import { readPiMcpResult } from './mcpResult'
 import { verifyPiOutputFilePaths } from './outputFilePaths'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('keeps the native real MCP output path and preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])

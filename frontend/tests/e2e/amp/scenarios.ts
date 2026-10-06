@@ -1,9 +1,9 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { ampToolResultReader } from '../helpers/ampToolResult'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
+import { ampToolResultReader } from './toolResult'
 
 /**
  * Build the scenario context of Amp, with every field that its native protocol needs.

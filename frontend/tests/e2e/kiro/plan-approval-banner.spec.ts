@@ -1,11 +1,11 @@
 import { expect } from '@playwright/test'
-import { kiroToolResult } from '../helpers/kiroToolResult'
 import { kiroSwitchToExecutionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { expectNoPlanReview } from '../helpers/unsupportedPlanMode'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { nativeContext } from './scenarios'
+import { kiroToolResult } from './toolResult'
 
 kiroTest('hands the actual native plan to execution without a plan review banner', async ({ page, modelScript, leapmuxServer, authenticatedEmptyWorkspace }) => {
   await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { permissionMode: 'plan' } })

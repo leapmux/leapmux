@@ -2,13 +2,13 @@ import { expect } from '@playwright/test'
 import { WS_CHANNEL_ROUTE } from '../../../src/generated/contracts/wire'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { registerClaudeChildReportRules } from '../helpers/claudeChildReportRule'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { backgroundBashToolCall } from '../helpers/providerToolCalls'
 import { backgroundTasksSection, expectNoRegistryRows, HELD_CHILD_TASK, openHeldChildTab, requireRegistryRow } from '../helpers/subagentRegistry'
 import { expectClipsLongText, expectClipsToOneLine, sendMessage, tabById } from '../helpers/ui'
 import { closeAgentViaAPI } from '../helpers/worktree'
+import { registerClaudeChildReportRules } from './childReportRule'
 
 /** Test native task rows, title clipping, and registry hydration. */
 claudeTest.describe('Claude subagent background tasks', () => {

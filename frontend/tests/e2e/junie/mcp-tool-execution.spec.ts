@@ -1,4 +1,3 @@
-import { writeJunieMcpConfig } from '../helpers/junieMcp'
 import { invokeNativeMcpTool, nativeMcpAnswer } from '../helpers/mcpExecution'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
@@ -8,6 +7,7 @@ import { messageBubbles, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
+import { writeJunieMcpConfig } from './mcpConfig'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('native mcp tool execution', () => {

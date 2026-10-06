@@ -1,9 +1,9 @@
-import type { MockModelRequestRecord } from './mockModelScript'
-import type { ManagedNativeScenarioContext, NativeToolOutcome, NativeToolResultReader } from './nativeScenario'
+import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import type { ManagedNativeScenarioContext, NativeToolOutcome, NativeToolResultReader } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
-import { ampToolUseID } from './ampSurface'
-import { currentNativeAgent } from './nativeScenario'
-import { nativeToolResultContent } from './nativeToolResult'
+import { ampToolUseID } from '../helpers/ampSurface'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { nativeToolResultContent } from '../helpers/nativeToolResult'
 
 /** Read one actual executor run from the recorded Amp model request. */
 export function ampToolResult(request: MockModelRequestRecord, nativeCallId: string): NativeToolOutcome {

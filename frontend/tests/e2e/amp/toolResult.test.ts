@@ -1,7 +1,7 @@
-import type { MockModelRequestRecord } from './mockModelScript'
+import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { describe, expect, it } from 'vitest'
-import { ampInferenceOf } from './ampSurface'
-import { ampToolResult } from './ampToolResult'
+import { ampInferenceOf } from '../helpers/ampSurface'
+import { ampToolResult } from './toolResult'
 
 function request(run: unknown): MockModelRequestRecord {
   return {

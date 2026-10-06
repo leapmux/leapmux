@@ -1,6 +1,6 @@
-import type { MockModelRequestRecord } from './mockModelScript'
+import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { describe, expect, it } from 'vitest'
-import { kiroToolResult } from './kiroToolResult'
+import { kiroToolResult } from './toolResult'
 
 function request(toolResults: unknown[]): MockModelRequestRecord {
   return {

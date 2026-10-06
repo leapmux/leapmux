@@ -1,10 +1,10 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { kiroToolResult } from '../helpers/kiroToolResult'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { kiroModelTurns } from './modelTurns'
+import { kiroToolResult } from './toolResult'
 
 /**
  * Build the scenario context of Kiro, with every field that its native protocol needs.

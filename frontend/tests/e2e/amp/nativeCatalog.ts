@@ -12,7 +12,6 @@ import { AMP_PERMISSION_MODE, AMP_PERMISSION_REQUEST_FIELD, AMP_PERMISSION_REQUE
 import { CloseAgentRequestSchema, CloseAgentResponseSchema, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
-import { ampToolResultReader } from '../helpers/ampToolResult'
 import { getTestChannel } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
@@ -27,6 +26,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { ampToolResultReader } from './toolResult'
 
 const execFileAsync = promisify(execFile)
 const NATIVE_CATALOG_COMMAND_LIMIT_MS = 60_000

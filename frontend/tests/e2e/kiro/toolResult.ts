@@ -1,7 +1,7 @@
-import type { MockModelRequestRecord } from './mockModelScript'
-import type { NativeToolOutcome } from './nativeScenario'
+import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import type { NativeToolOutcome } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
-import { nativeToolResultEntry } from './nativeToolResult'
+import { nativeToolResultEntry } from '../helpers/nativeToolResult'
 
 /** Read only one Kiro service tool result and its observed status. */
 export function kiroToolResult(request: MockModelRequestRecord, callId: string): NativeToolOutcome {

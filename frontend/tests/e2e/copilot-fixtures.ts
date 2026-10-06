@@ -7,9 +7,9 @@ import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGro
 import { COPILOT_PERMISSION_MODE } from '../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
+import { attachCopilotNativeLogs } from './github-copilot/nativeLogs'
 import { nativeContext } from './github-copilot/scenarios'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { attachCopilotNativeLogs } from './helpers/copilotNativeLogs'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
 

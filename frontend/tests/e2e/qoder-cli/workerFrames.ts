@@ -2,7 +2,7 @@ import type { TestInfo } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
 import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { getTestChannel } from './api'
+import { getTestChannel } from '../helpers/api'
 
 interface QoderFrameServer {
   hubUrl: string

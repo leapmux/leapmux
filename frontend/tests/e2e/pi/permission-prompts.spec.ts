@@ -10,12 +10,12 @@ import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { getGlobalState } from '../helpers/server'
 import { expectNoControlBanner, messageBubbles, openWorkspace } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
+import { withMockPiModel } from './scriptedModel'
 
 piTest('preserves complete native MCP arguments without an adapter permission dialog', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = createTestDirectory('pi-native-mcp-permission-')

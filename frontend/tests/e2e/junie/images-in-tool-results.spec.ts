@@ -1,5 +1,4 @@
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { writeJunieMcpConfig } from '../helpers/junieMcp'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { readAllAgentMessages } from '../helpers/nativeMessages'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
@@ -10,6 +9,7 @@ import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
 import { junieCapabilityAnswer } from './housekeeping'
+import { writeJunieMcpConfig } from './mcpConfig'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie images in tool results', () => {

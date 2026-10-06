@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer'
 import { cpSync } from 'node:fs'
 import { join } from 'node:path'
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
-import { kiroToolResult } from '../helpers/kiroToolResult'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt, waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -18,6 +17,7 @@ import { kiroCatalogEnvironment } from './catalogEnvironment'
 import { writeKiroProjectMcpServers } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
 import { assertKiroActiveCatalog, kiroActiveToolCatalog, kiroScriptExecutors } from './toolCatalog'
+import { kiroToolResult } from './toolResult'
 
 kiroTest('proves the complete active native catalog and actual shell output', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const suiteHome = leapmuxServer.agentEnv.KIRO_HOME

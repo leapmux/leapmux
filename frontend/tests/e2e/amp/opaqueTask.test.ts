@@ -71,8 +71,8 @@ vi.mock('../helpers/subagentRegistry', async importOriginal => ({
   requireRegistryRow: async () => fake.row,
 }))
 
-vi.mock('../helpers/ampToolResult', async importOriginal => ({
-  ...await importOriginal<typeof import('../helpers/ampToolResult')>(),
+vi.mock('./toolResult', async importOriginal => ({
+  ...await importOriginal<typeof import('./toolResult')>(),
   ampToolResultReader: () => async (request: MockModelRequestRecord) => ({ text: String(request.body) }),
 }))
 

@@ -2,7 +2,6 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { basename, dirname } from 'node:path'
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
-import { kiroToolResult } from '../helpers/kiroToolResult'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody } from '../helpers/nativeMessages'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
@@ -14,6 +13,7 @@ import { expect, KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { readKiroNativeOutput } from './outputFilePaths'
 import { nativeContext } from './scenarios'
 import { readKiroToolSupplement } from './toolRecord'
+import { kiroToolResult } from './toolResult'
 
 function nativeKiroResult(snapshot: NativeMessageSnapshot, callId: string) {
   const records = snapshot.messages.filter(message => message.agentSessionId === snapshot.agentSessionId && message.spanId === callId)

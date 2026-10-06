@@ -1,9 +1,9 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { registerClaudeChildReportRules } from '../helpers/claudeChildReportRule'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { NATIVE_CHILD_FINAL_REPLY, openRunningNativeChild } from '../helpers/runningChildProof'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
+import { registerClaudeChildReportRules } from './childReportRule'
 
 // `expectUnsupportedSubagent` also requires that no model request carries the refused message after the child ends.
 claudeTest('refuses a message to a real running child without delivering it to the model', async ({ native }) => {

@@ -2,16 +2,16 @@ import type { ExecFileOptions } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MODEL_KEY } from './mockAgentEnvironment'
-import { withMockPiModel } from './scriptedPiModel'
+import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
+import { withMockPiModel } from './scriptedModel'
 
 const state = vi.hoisted(() => ({ execFile: vi.fn(), runDir: '' }))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return { ...actual, execFile: state.execFile }
 })
-vi.mock('./server', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./server')>()
+vi.mock('../helpers/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../helpers/server')>()
   return { ...actual, getGlobalState: () => ({ tmpDir: state.runDir }) }
 })
 
