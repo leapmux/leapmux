@@ -6,11 +6,12 @@ import { expect } from '@playwright/test'
 import { GOOSE_MODE } from '../../../src/generated/contracts/goose-protocol'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
-import { currentNativeAgent, expectNativeOptionValue, nativeTextStep } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectNativeOptionValue } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, goosePermissionJudgmentToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { applyPermissionPreset, expectNoControlBanner, expectPermissionShortcuts, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForNativeSettingsHydrated } from '../helpers/ui'
+import { applyPermissionPreset, expectPermissionShortcuts, expectSettingsOptionChosen, waitForNativeSettingsHydrated } from '../helpers/ui'
 
 /**
  * Switch a new Goose session between its two permission shortcuts. A new session starts in Smart Approve, so its
@@ -52,15 +53,14 @@ export async function exerciseGoosePermissionRemoval(context: ManagedNativeScena
   await applyPermissionPreset(page, 'bypass')
   await expectNativeOptionValue(context, 'permissionMode', GOOSE_MODE.Auto)
   await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
-    const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, 'goose-auto-remove', 'rm -f goose-mode-marker.txt && printf goose-mode-42')] },
-      nativeTextStep(context, 'The Auto check ended.'),
-    )
-    await sendMessage(page, modelScript.prompt('Run the scripted removal under Auto.'))
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
-    await expectNoControlBanner(page)
+    // Auto runs the removal with no request, so the turn answers none, and a request fails it.
+    const { resultRequest } = await runNativeToolTurn(context, {
+      toolCalls: [bashToolCall(context.provider, 'goose-auto-remove', 'rm -f goose-mode-marker.txt && printf goose-mode-42')],
+      prompt: 'Run the scripted removal under Auto.',
+      answer: 'The Auto check ended.',
+      permissions: 'none',
+    })
     expect(existsSync(marker)).toBe(false)
-    expect(nativeToolResult(await modelScript.requestAt(start + 1), 'goose-auto-remove')).toContain('goose-mode-42')
+    expect(nativeToolResult(resultRequest, 'goose-auto-remove')).toContain('goose-mode-42')
   } })
 }

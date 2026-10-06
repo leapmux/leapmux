@@ -4,10 +4,11 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, expectNativeOptionValue, nativeModelToolNames, nativeOptionGroup } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { chooseSettingsOption, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '../helpers/ui'
 
 /** Exercise Goose's actual Chat mode and its native refusal to run a tool. */
 export async function exerciseGoosePlanLimit(context: ManagedNativeScenarioContext): Promise<void> {
@@ -27,14 +28,13 @@ export async function exerciseGoosePlanLimit(context: ManagedNativeScenarioConte
   const file = join(before.workingDir, 'native-chat-plan-must-not-run.txt')
   const callId = 'goose-native-chat-tool'
   // The turn approves nothing, so an approval request blocks the turn and fails the proof.
-  const start = await context.modelScript.queue(
-    { toolCalls: [bashToolCall(context.provider, callId, `printf native-chat-tool > ${quotePosixShellArgument(file)}`)] },
-    { text: 'The native Chat mode skips tools and has no plan approval.' },
-  )
-  await sendMessage(context.page, context.modelScript.prompt('Try the supplied tool while the native mode is Chat.'))
-  await context.modelScript.waitForSteps(start + 2)
-  await waitForAgentIdle(context.page)
-  expect(nativeToolResult(await context.modelScript.requestAt(start + 1), callId)).toContain('goose chat mode')
+  const { resultRequest } = await runNativeToolTurn(context, {
+    toolCalls: [bashToolCall(context.provider, callId, `printf native-chat-tool > ${quotePosixShellArgument(file)}`)],
+    prompt: 'Try the supplied tool while the native mode is Chat.',
+    answer: 'The native Chat mode skips tools and has no plan approval.',
+    permissions: 'none',
+  })
+  expect(nativeToolResult(resultRequest, callId)).toContain('goose chat mode')
   expect(existsSync(file)).toBe(false)
   await expectNativeOptionValue(context, 'permissionMode', 'chat')
 }

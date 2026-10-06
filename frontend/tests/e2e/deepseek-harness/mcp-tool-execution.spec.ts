@@ -7,12 +7,12 @@ import { writeMcpResultServer } from '../helpers/mcpResultServer'
 import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
 import { nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { deepseekHarnessRunCodeToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
+import { toolCallRow } from '../helpers/ui'
 import { newProviderWorkingDir } from '../helpers/workspace'
 import { withDeepseekHarnessMcp } from './mcpScenarios'
 import { deepseekHarnessCanonicalMcpProjection, deepseekHarnessMcpResultMessage } from './mcpToolResult'
@@ -37,8 +37,7 @@ deepseekHarnessTest('uses real native MCP results and preserves failure state af
   })
 })
 
-deepseekHarnessTest('preserves the computed canonical native MCP result while removing private MCP metadata', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+deepseekHarnessTest('preserves the computed canonical native MCP result while removing private MCP metadata', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const directory = newProviderWorkingDir(DEEPSEEK_HARNESS_AGENT, 'deepseek-mcp-canonical-')
   const receiptLog = join(directory, 'receipts.json')
   const server = writeMcpResultServer(directory, { receiptLog, includeNullable: true })
@@ -54,11 +53,12 @@ const args = {count: 0, enabled: false, text: completeOutput};
 const value = await tools.mcp__${server.name}__inspect(args);
 const echoed = JSON.parse(value.content[0].text.slice('NATIVE_MCP_INSPECT:'.length));
 return JSON.stringify({contentMatches: value.content.length === 1 && value.content[0].type === 'text' && value.content[0].text === 'NATIVE_MCP_INSPECT:' + JSON.stringify(args), echoedCount: echoed.count, nextCount: value.structuredContent.nextCount, enabled: value.structuredContent.enabled, textMatches: value.structuredContent.text === args.text, textCharacters: value.structuredContent.text.length, nullable: value.structuredContent.nullable, hasNullable: Object.prototype.hasOwnProperty.call(value.structuredContent, 'nullable'), hasPrivateMeta: Object.prototype.hasOwnProperty.call(value, '_meta')});`
-    const start = await modelScript.queue({ toolCalls: [deepseekHarnessRunCodeToolCall(callId, source)] }, nativeTextStep(privateContext, 'The native MCP projection ended.'))
-    await sendMessage(page, modelScript.prompt('Read the actual MCP value once through the native code binding.'))
-    await waitForNativeToolSteps(privateContext, start + 2)
-    await waitForAgentIdle(page)
-    nativeCodeExecutionSchema(await modelScript.requestAt(start), 'run_code', { code: 'string', description: 'string' })
+    const { toolRequest } = await runNativeToolTurn(privateContext, {
+      toolCalls: [deepseekHarnessRunCodeToolCall(callId, source)],
+      prompt: 'Read the actual MCP value once through the native code binding.',
+      answer: 'The native MCP projection ended.',
+    })
+    nativeCodeExecutionSchema(toolRequest, 'run_code', { code: 'string', description: 'string' })
     const agent = await currentNativeAgent(privateContext)
     for (const reloaded of [false, true]) {
       if (reloaded)

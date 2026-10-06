@@ -4,18 +4,18 @@ import { basename, join } from 'node:path'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, expect } from '../claude-fixtures'
 import { withCleanup } from '../helpers/cleanup'
+import { cssAttributeValue } from '../helpers/cssAttribute'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection } from '../helpers/subagentRegistry'
-import { sendMessage } from '../helpers/ui'
 import { claudeWorkflowLaunch, claudeWorkflowModelOutcome, claudeWorkflowOutput, claudeWorkflowOutputFile, claudeWorkflowSnapshot } from './codeExecution'
 import { nativeContext } from './scenarios'
 
@@ -38,11 +38,13 @@ claudeTest('executes native Workflow code and preserves the computed result and 
     ].join('\n')
     const expected = `${marker}${failed ? 77 : 42}`
     expect(source).not.toContain(expected)
-    const start = await modelScript.queue({ toolCalls: [claudeWorkflowToolCall(callId, source)] }, { text: 'The native Workflow launch turn ended.' })
     const evidence: Record<string, unknown> = { callId, source, agentId: agent.id, agentSessionId: agent.agentSessionId }
     await withCleanup(async () => {
-      await sendMessage(page, modelScript.prompt(`Run the native Workflow ${failed ? 'error' : 'output'} script.`))
-      await waitForNativeToolSteps(context, start + 2)
+      await runNativeToolTurn(context, {
+        toolCalls: [claudeWorkflowToolCall(callId, source)],
+        prompt: `Run the native Workflow ${failed ? 'error' : 'output'} script.`,
+        answer: 'The native Workflow launch turn ended.',
+      })
       const initial = await readNativeMessageSnapshot(context, agent.id)
       evidence.messages = initial.messages.map(nativeMessageBody)
       evidence.tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
@@ -149,7 +151,7 @@ claudeTest('executes native Workflow code and preserves the computed result and 
     const launch = reloaded.messages.map(nativeMessageBody).map(value => claudeWorkflowLaunch(value, run.launch.callId)).find(value => value !== undefined)
     expect(launch).toEqual(run.launch)
     expect(tasks.find(task => task.id === run.launch.taskId)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
-    const row = page.locator(`[data-testid="bg-task-row"][data-task-id="${run.launch.taskId}"]:visible[data-kind="workflow"]`).first()
+    const row = page.locator(`[data-testid="bg-task-row"][data-task-id="${cssAttributeValue(run.launch.taskId)}"]:visible[data-kind="workflow"]`).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-task-id', run.launch.taskId)
     await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'completed')
