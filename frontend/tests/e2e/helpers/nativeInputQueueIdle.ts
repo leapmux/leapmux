@@ -1,14 +1,13 @@
 import type { AgentInputQueueSnapshot } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ChannelManager } from '../../../src/lib/channel'
-import type { ServerInfo } from '../fixtures'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentWatchServer } from './agentEventWatch'
+import { agentWatchRequest, readAgentWatchFrame } from './agentEventWatch'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
 import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
-const WATCH_UPDATE_ID = 1n
+/** The name of this watch in the shared refusal and frame messages. */
+const WATCH_LABEL = 'input queue subscription'
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 /** Read authoritative input queue state for one acknowledged Worker subscription. */
@@ -26,19 +25,14 @@ export class NativeInputQueueIdleCollector {
   }
 
   accept(payload: Uint8Array): void {
-    const response = fromBinary(WatchEventsResponseSchema, payload)
-    if (response.event.case === 'updateAck') {
-      const acknowledgement = response.event.value
-      if (acknowledgement.updateId !== WATCH_UPDATE_ID)
-        return
-      if (acknowledgement.rejectedAgents.length > 0)
-        throw new Error('The Worker refused the input queue subscription.')
+    const frame = readAgentWatchFrame(payload, this.agentId, WATCH_LABEL)
+    if (frame.kind === 'acknowledged') {
       this.subscribed = true
       return
     }
-    if (response.event.case !== 'agentEvent' || response.event.value.agentId !== this.agentId)
+    if (frame.kind !== 'event')
       return
-    const event = response.event.value.event
+    const event = frame.event.event
     if (event.case !== 'inputQueueChanged')
       return
     const snapshot = event.value.snapshot
@@ -57,7 +51,7 @@ export class NativeInputQueueIdleCollector {
 
 /** Wait for acknowledged Worker state, with the existing whole-test deadline as a failure limit. */
 export async function waitForNativeInputQueueIdle(
-  server: Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId'>,
+  server: AgentWatchServer,
   agentId: string,
   testDeadline: () => number | undefined,
 ): Promise<AgentInputQueueSnapshot> {
@@ -97,11 +91,7 @@ export async function waitForNativeInputQueueIdle(
       const channelId = await channel.getOrOpenChannel(server.workerId)
       if (completed)
         return
-      const request = create(WatchEventsRequestSchema, {
-        agents: [{ agentId, mode: WatchMode.FULL, replay: WatchReplayMode.LATEST, cursorSeq: 0n }],
-        updateId: WATCH_UPDATE_ID,
-      })
-      watch = channel.stream(channelId, 'WatchEvents', toBinary(WatchEventsRequestSchema, request))
+      watch = channel.stream(channelId, 'WatchEvents', agentWatchRequest(agentId))
       watch.onMessage((frame) => {
         if (completed)
           return

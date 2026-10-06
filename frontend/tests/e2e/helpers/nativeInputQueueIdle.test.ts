@@ -1,8 +1,7 @@
-import type { ChannelManager } from '../../../src/lib/channel'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fakeChannelStream } from '~/test-support/channelStreamFake'
 import { AgentInputKind, AgentInputState, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { InnerStreamMessageSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { NativeInputQueueIdleCollector, waitForNativeInputQueueIdle } from './nativeInputQueueIdle'
 import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
@@ -175,65 +174,12 @@ describe('NativeInputQueueIdleCollector', () => {
   })
 })
 
-type QueueWatch = ReturnType<ChannelManager['stream']>
-
-function nativeStream() {
-  let onMessage: Parameters<QueueWatch['onMessage']>[0] | undefined
-  let onError: Parameters<QueueWatch['onError']>[0] | undefined
-  let onEnd: Parameters<QueueWatch['onEnd']>[0] | undefined
-  let signalReady: (() => void) | undefined
-  const ready = new Promise<void>((resolve) => {
-    signalReady = resolve
-  })
-  const cancel = vi.fn()
-  const watch = {
-    requestId: 1,
-    onMessage: (listener: Parameters<QueueWatch['onMessage']>[0]) => {
-      onMessage = listener
-    },
-    onError: (listener: Parameters<QueueWatch['onError']>[0]) => {
-      onError = listener
-    },
-    onEnd: (listener: Parameters<QueueWatch['onEnd']>[0]) => {
-      onEnd = listener
-      signalReady?.()
-    },
-    cancel,
-    send: vi.fn(),
-  } satisfies QueueWatch
-  const channel = {
-    getOrOpenChannel: vi.fn(async () => 'native-channel'),
-    stream: vi.fn<ChannelManager['stream']>(() => watch),
-  }
-  return {
-    channel,
-    watch,
-    ready,
-    cancel,
-    message: (payload: Uint8Array) => {
-      if (!onMessage)
-        throw new Error('The test stream has no message handler.')
-      onMessage(create(InnerStreamMessageSchema, { payload }))
-    },
-    error: (error: Error) => {
-      if (!onError)
-        throw new Error('The test stream has no error handler.')
-      onError(error)
-    },
-    end: () => {
-      if (!onEnd)
-        throw new Error('The test stream has no end handler.')
-      onEnd()
-    },
-  }
-}
-
 const server = { hubUrl: 'http://mock.invalid', adminToken: 'mock-admin', workerId: 'worker-1' }
 const testDeadline = () => Date.now() + WAIT_REPORT_MARGIN_MS + 60_000
 
 describe('waitForNativeInputQueueIdle', () => {
   it('sends the exact native subscription and cancels after acknowledged completion', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -258,7 +204,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('waits for real native active-to-idle output without a completion timer', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -275,7 +221,7 @@ describe('waitForNativeInputQueueIdle', () => {
     { frame: queueFrame('agent-1', { innerId: 'other-agent' }), message: 'different agent' },
     { frame: acknowledgement(1n, 'agent-1'), message: 'refused' },
   ])('cancels when the native stream fails validation: $message', async ({ frame, message }) => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -285,7 +231,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('preserves a native transport failure and cancels its stream', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -296,7 +242,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('rejects a stream that ends before acknowledged completion', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -306,7 +252,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('keeps both the native failure and its cancellation failure', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -320,7 +266,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('reports a cancellation failure after actual completion', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     await stream.ready
@@ -340,7 +286,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('preserves a Worker channel failure before a stream exists', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     const failure = new Error('The Worker channel failed.')
     stream.channel.getOrOpenChannel.mockRejectedValue(failure)
     getTestChannel.mockResolvedValue(stream.channel)
@@ -349,7 +295,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('preserves a failure to create the native stream', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     const failure = new Error('The native stream could not start.')
     stream.channel.stream.mockImplementation(() => {
       throw failure
@@ -360,7 +306,7 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('cancels a stream after its handler registration fails', async () => {
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     const failure = new Error('The native handler could not start.')
     stream.channel.stream.mockReturnValue({
       ...stream.watch,
@@ -400,7 +346,7 @@ describe('waitForNativeInputQueueIdle', () => {
 
   it('cancels a pending stream at the existing whole-test failure deadline', async () => {
     vi.useFakeTimers()
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 100
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', () => deadline)
@@ -414,7 +360,7 @@ describe('waitForNativeInputQueueIdle', () => {
 
   it('does not create a late stream after the deadline ends during channel setup', async () => {
     vi.useFakeTimers()
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     let release: ((value: string) => void) | undefined
     let signalEntry: (() => void) | undefined
     const entered = new Promise<void>((resolve) => {
@@ -442,7 +388,7 @@ describe('waitForNativeInputQueueIdle', () => {
 
   it('handles a very large whole-test deadline without timer overflow', async () => {
     vi.useFakeTimers()
-    const stream = nativeStream()
+    const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)
     const waiting = waitForNativeInputQueueIdle(server, 'agent-1', () => Number.MAX_SAFE_INTEGER)
     await stream.ready
@@ -455,8 +401,8 @@ describe('waitForNativeInputQueueIdle', () => {
   })
 
   it('keeps concurrent Worker agent subscriptions separate', async () => {
-    const first = nativeStream()
-    const second = nativeStream()
+    const first = fakeChannelStream()
+    const second = fakeChannelStream()
     getTestChannel.mockResolvedValueOnce(first.channel).mockResolvedValueOnce(second.channel)
     const firstWait = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     const secondWait = waitForNativeInputQueueIdle(server, 'agent-2', testDeadline)

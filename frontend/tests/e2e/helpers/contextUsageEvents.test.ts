@@ -1,60 +1,55 @@
-import { create, toBinary } from '@bufbuild/protobuf'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { SESSION_INFO_KEY } from '../../../src/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'
 import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema, WatchEventsResponseSchema, WatchUpdateAckSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { ContextUsageFrameCollector } from './contextUsageEvents'
+import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { contextUsageReading } from './contextUsageEvents'
 
-function infoFrame(agentId: string, info: Record<string, unknown>, replay = false): Uint8Array {
+function messageEvent(content: Uint8Array, options: { replay?: boolean, seq?: bigint, compression?: ContentCompression } = {}) {
   const message = create(AgentChatMessageSchema, {
-    seq: -1n,
-    content: new TextEncoder().encode(JSON.stringify({ type: NOTIFICATION_TYPE.AgentSessionInfo, info })),
-    contentCompression: ContentCompression.NONE,
+    seq: options.seq ?? -1n,
+    content,
+    contentCompression: options.compression ?? ContentCompression.NONE,
   })
-  const event = create(AgentEventSchema, { agentId, replay, event: { case: 'agentMessage', value: message } })
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: event } }))
+  return create(AgentEventSchema, { agentId: 'agent-1', replay: options.replay ?? false, event: { case: 'agentMessage', value: message } })
 }
 
-describe('ContextUsageFrameCollector', () => {
-  it('ignores missing, replayed and foreign usage updates', () => {
-    const collector = new ContextUsageFrameCollector('agent-1')
-    collector.accept(infoFrame('agent-1', {}))
-    collector.accept(infoFrame('agent-1', { [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }, true))
-    collector.accept(infoFrame('agent-2', { [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }))
-    expect(collector.readings).toEqual([])
+function infoEvent(info: Record<string, unknown>, options: { replay?: boolean, seq?: bigint } = {}) {
+  return messageEvent(new TextEncoder().encode(JSON.stringify({ type: NOTIFICATION_TYPE.AgentSessionInfo, info })), options)
+}
+
+describe('contextUsageReading', () => {
+  it('reads the usage map of a live session-info update, including an empty one', () => {
+    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }))).toEqual({ usage_percent: 25 })
+    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: {} }))).toEqual({})
   })
 
-  it('keeps each native update in arrival order, including equal values', () => {
-    const collector = new ContextUsageFrameCollector('agent-1')
-    collector.accept(infoFrame('agent-1', { [SESSION_INFO_KEY.ContextUsage]: {} }))
-    const first = infoFrame('agent-1', { [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } })
-    const second = infoFrame('agent-1', { [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 50 } })
-    collector.accept(first)
-    collector.accept(first)
-    collector.accept(second)
-    expect(collector.readings).toEqual([{}, { usage_percent: 25 }, { usage_percent: 25 }, { usage_percent: 50 }])
+  it('skips an update without usage, a replayed update, and a stored message', () => {
+    expect(contextUsageReading(infoEvent({}))).toBeUndefined()
+    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }, { replay: true }))).toBeUndefined()
+    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }, { seq: 7n }))).toBeUndefined()
   })
 
-  it('requires an accepted subscription and reports malformed frames', () => {
-    const collector = new ContextUsageFrameCollector('agent-1')
-    const ack = create(WatchUpdateAckSchema, { updateId: 1n })
-    collector.accept(toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: ack } })))
-    expect(collector.subscribed).toBe(true)
-    collector.accept(new Uint8Array([0xFF]))
-    expect(() => collector.assertHealthy()).toThrow('invalid usage watch frame')
+  it('skips empty content, content that is not JSON, and a notification of another type', () => {
+    expect(contextUsageReading(messageEvent(new Uint8Array()))).toBeUndefined()
+    expect(contextUsageReading(messageEvent(new TextEncoder().encode('{not json')))).toBeUndefined()
+    expect(contextUsageReading(messageEvent(new TextEncoder().encode(JSON.stringify({ type: 'other', info: { [SESSION_INFO_KEY.ContextUsage]: {} } }))))).toBeUndefined()
   })
 
-  it('reports invalid compressed content without throwing from the stream callback', () => {
-    const collector = new ContextUsageFrameCollector('agent-1')
-    const message = create(AgentChatMessageSchema, {
-      seq: -1n,
-      content: new Uint8Array([0xFF]),
-      contentCompression: ContentCompression.ZSTD,
-    })
-    const event = create(AgentEventSchema, { agentId: 'agent-1', event: { case: 'agentMessage', value: message } })
-    const frame = toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: event } }))
-    expect(() => collector.accept(frame)).not.toThrow()
-    expect(() => collector.assertHealthy()).toThrow('invalid compressed usage content')
+  it('skips an event that is not a chat message', () => {
+    expect(contextUsageReading(create(AgentEventSchema, { agentId: 'agent-1', event: { case: 'inputQueueChanged', value: {} } }))).toBeUndefined()
+  })
+
+  it('fails on invalid compressed content, and keeps the decoder error as the cause', () => {
+    let failure: unknown
+    try {
+      contextUsageReading(messageEvent(new Uint8Array([0xFF]), { compression: ContentCompression.ZSTD }))
+    }
+    catch (error) {
+      failure = error
+    }
+    expect(failure).toMatchObject({ message: 'The Worker sent invalid compressed usage content.' })
+    expect((failure as Error).cause).toBeDefined()
   })
 })
