@@ -1,29 +1,14 @@
-import type { Page } from '@playwright/test'
-import type { ModelScript } from '../helpers/modelScriptFixture'
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import type { SeparateServerInfo } from '../process-control-fixtures'
 import { expect } from '@playwright/test'
 import { claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, openSettingsMenu, settingsBar, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
 import { claudeUltracodeEnabled } from './ultracodeRequest'
 
-/** The scenario context of the Claude Code agent that the separate Hub and Worker run. */
-async function separateHubContext(fixtures: { page: Page, modelScript: ModelScript, separateHubWorker: SeparateServerInfo, authenticatedWorkspace: { workspaceId: string } }): Promise<ManagedNativeScenarioContext> {
-  return nativeContext({
-    page: fixtures.page,
-    modelScript: fixtures.modelScript,
-    leapmuxServer: fixtures.separateHubWorker,
-    workspaceId: fixtures.authenticatedWorkspace.workspaceId,
-  })
-}
-
 test.describe('Agent Settings', () => {
-  test('sends the selected effort in the next native request', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+  test('sends the selected effort in the next native request', async ({ native, page }) => {
     await expect(settingsBar(page)).toBeVisible()
-    await exerciseNativeOption(await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+    await exerciseNativeOption(native, {
       groupId: 'effort',
       value: 'high',
       nativeProof: request => expect(request.body).toMatchObject({ output_config: { effort: 'high' } }),
@@ -87,10 +72,10 @@ test.describe('Agent Settings', () => {
     expect(await effortOptions(), 'and Sonnet still does on the way back').toEqual(onSonnet)
   })
 
-  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+  test('ultracode effort is selectable and keeps the agent working', async ({ native, page }) => {
     await expect(settingsBar(page)).toBeVisible()
     // The isolated native CLI supports Ultracode and applies xhigh with its harness instruction.
-    await exerciseNativeOption(await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+    await exerciseNativeOption(native, {
       groupId: 'effort',
       value: 'ultracode',
       prepare: async () => {
@@ -107,9 +92,9 @@ test.describe('Agent Settings', () => {
 
   // The user changes the model alone, so the switch carries no effort. The stored tier stays when
   // the new model offers it. Opus and Sonnet both offer xhigh in the installed CLI.
-  test('a model switch keeps an effort that the new model supports', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+  test('a model switch keeps an effort that the new model supports', async ({ native, page }) => {
     await expect(settingsBar(page)).toBeVisible()
-    await exerciseModelSwitchKeepsOption(await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace }), {
+    await exerciseModelSwitchKeepsOption(native, {
       prepare: async () => {
         await chooseSettingsOption(page, 'model-opus[1m]')
         await expectSettingsChip(page, 'Opus')
@@ -126,7 +111,7 @@ test.describe('Agent Settings', () => {
 
   // Haiku offers no effort axis, so the switch to Haiku drops the tier. The switch back to Sonnet
   // carries no effort either, and the row holds none, so Sonnet reports the level that it selects.
-  test('a model switch to a model without effort resets the effort', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+  test('a model switch to a model without effort resets the effort', async ({ native, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -147,15 +132,14 @@ test.describe('Agent Settings', () => {
     // The effort menu chooses one level, so Medium also proves that Xhigh is gone.
     await expectSettingsOptionChosen(page, 'effort-medium')
 
-    const context = await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace })
-    const request = await sendNativeAnswer(context, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
+    const request = await sendNativeAnswer(native, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
     expect(request.body).toMatchObject({ output_config: { effort: 'medium' } })
   })
 
   // A new session pins no effort: the CLI chooses the level of its model. The menu shows that level, and a
   // model switch must keep it. The CLI would otherwise choose the default of the new model, and the user
   // would see the effort change although only the model changed.
-  test('a model switch keeps the level that the CLI chose for an automatic session', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
+  test('a model switch keeps the level that the CLI chose for an automatic session', async ({ native, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -174,8 +158,7 @@ test.describe('Agent Settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, 'effort-medium')
 
-    const context = await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace })
-    const request = await sendNativeAnswer(context, 'Reply once after the switch to Fable.', 'Claude answered on Fable.')
+    const request = await sendNativeAnswer(native, 'Reply once after the switch to Fable.', 'Claude answered on Fable.')
     expect(request.body).toMatchObject({
       model: expect.stringMatching(/^claude-fable-/),
       output_config: { effort: 'medium' },

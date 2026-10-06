@@ -4,7 +4,6 @@ import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, visibleOnly, waitForSettingsIdle } from '../helpers/ui'
-import { nativeContext } from './scenarios'
 
 /** The native model ID and beta header together prove the 1M selection. */
 function expectNativeOpus1M(request: MockModelRequestRecord): void {
@@ -21,11 +20,11 @@ function expectNativeOpus1M(request: MockModelRequestRecord): void {
 const OPUS_1M_LABEL = 'Opus'
 
 test.describe('Agent Settings', () => {
-  test('switch model', async ({ authenticatedWorkspace, page, modelScript, separateHubWorker }) => {
+  test('switch model', async ({ native, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    await exerciseNativeOption(await nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId }), {
+    await exerciseNativeOption(native, {
       groupId: 'model',
       value: 'haiku',
       nativeProof: request => expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-haiku-/) }),
@@ -53,7 +52,7 @@ test.describe('Agent Settings', () => {
     })
   })
 
-  test('model persistence across refresh', async ({ authenticatedWorkspace, page, modelScript, separateHubWorker }) => {
+  test('model persistence across refresh', async ({ native, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -71,8 +70,7 @@ test.describe('Agent Settings', () => {
     const triggerAfter = settingsBar(page)
     await expect(triggerAfter).toBeVisible()
     await expectSettingsChip(page, 'Haiku')
-    const context = await nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId })
-    const restored = await sendNativeAnswer(context, 'Reply once with the restored Haiku model.', 'The restored Haiku model answered.')
+    const restored = await sendNativeAnswer(native, 'Reply once with the restored Haiku model.', 'The restored Haiku model answered.')
     expect(restored.protocol).toBe('anthropic-messages')
     expect(restored.body).toMatchObject({ model: expect.stringMatching(/^claude-haiku-/) })
   })

@@ -22,7 +22,12 @@ export const claudeTest = base.extend<CliSkipFixture & NativeFixture & {
 /**
  * The test base of a Claude Code spec that restarts its own Hub or Worker.
  * It skips a test when the claude CLI is missing, as {@link claudeTest} does.
+ * Its `native` fixture is the scenario context of the agent of `authenticatedWorkspace`, the Claude Code agent that
+ * the separate Hub and Worker run.
  */
-export const claudeProcessTest = processTest.extend<CliSkipFixture>({
+export const claudeProcessTest = processTest.extend<CliSkipFixture & NativeFixture>({
   cliSkip: cliSkipFixture(CLAUDE_E2E_SKIP_REASON),
+  native: async ({ page, modelScript, separateHubWorker, authenticatedWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId }))
+  },
 })
