@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { expectSameBytes } from '~/test-support/sameBytes'
 import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, nativeMessageSupplement } from '../helpers/nativeMessages'
@@ -58,8 +59,9 @@ describe('readKiroToolSupplement', () => {
     expect(retained?.output).toContain(output.lastMarker)
     expect(nativeMessageBody(row)).toEqual(original)
     expect(nativeMessageSupplement(row)).toEqual(envelope)
-    expect(row.content).toEqual(before.content)
-    expect(row.supplementalContent).toEqual(before.supplementalContent)
+    // The supplement holds the complete output, so `toEqual` would compare its bytes one at a time for most of a second.
+    expectSameBytes(row.content, before.content, 'the original bytes')
+    expectSameBytes(row.supplementalContent, before.supplementalContent, 'the supplemental bytes')
   })
 
   it('ignores outer metadata and keeps an exact failed receipt', () => {
