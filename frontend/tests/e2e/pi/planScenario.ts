@@ -24,10 +24,13 @@ export async function exercisePiFreshPlanSession(context: ManagedNativeScenarioC
   await page.reload()
   await openWorkspace(page, context.workspaceId)
   await sendMessage(page, '/plan start')
-  // The script supplies the plan tool call, because the mock answers only what a script holds.
-  // The plan holds the marker of this test's script. An approval with the clear-context choice starts a fresh
-  // session, and the plan is the first prompt of that session. That prompt holds no other marker. Without the
-  // marker in the plan, the implementation turn reaches another scenario of the mock, not the script of this test.
+  // The mock model server makes no tool call that a script does not hold, so the script gives the plan tool call.
+  // The mock answers a request from the script whose marker the request holds, so the plan holds the marker of this
+  // test's script:
+  // - An approval with the clear-context choice starts a fresh native session.
+  // - The plan is the first prompt of that session, and that prompt holds no other marker.
+  // - Without the marker in the plan, the mock answers the turn that runs the plan from its ambient scenario, not from
+  //   the script of this test.
   const start = await modelScript.queue(
     { toolCalls: [exitPlanModeToolCall(context.provider, 'fresh-plan', modelScript.prompt('# Fresh implementation probe\n\n- Reply with FRESH_PLAN_DONE. Do not call tools or change files.'))] },
     { text: 'FRESH_PLAN_DONE' },
