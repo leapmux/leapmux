@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, controlButton, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { assistantBubbles, controlButton, expectNoControlBanner, questionPagination, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 const DRINK_Q: QuestionRequest = {
   question: 'Do you prefer tea or coffee?',
@@ -77,7 +77,7 @@ codewhaleTest.describe('Codewhale questions', () => {
     const answerStep = await askQuestions(native, [DRINK_Q, SIZE_Q], 'A large coffee.')
 
     const banner = await waitForControlBanner(page)
-    await expect(banner.getByTestId('control-pagination').locator('button')).toHaveCount(2)
+    await expect(questionPagination(page).locator('button')).toHaveCount(2)
     await expect(banner.getByText('Do you prefer tea or coffee?')).toBeVisible()
     await clickOption(banner, 'Coffee')
     await expect(banner.getByText('Which cup size?')).toBeVisible()

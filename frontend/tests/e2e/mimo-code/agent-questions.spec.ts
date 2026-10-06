@@ -2,7 +2,7 @@ import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { composerEditor, controlButton, expectNoControlBanner, messageContents, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { composerEditor, controlButton, expectNoControlBanner, messageContents, questionPagination, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('MiMo Code questions', () => {
@@ -67,7 +67,7 @@ mimoTest.describe('MiMo Code questions', () => {
         await banner.getByTestId('question-option-Cheese').click()
         await banner.getByTestId('question-option-Basil').click()
         // A multi-select question stays on its page, so the reader moves on by hand.
-        await banner.getByTestId('control-pagination').locator('button').nth(1).click()
+        await questionPagination(page).locator('button').nth(1).click()
         await expect(banner).toContainText('Name the pizza')
         await composerEditor(page).fill('Garden Special')
         await controlButton(page, 'submit').click()

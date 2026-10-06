@@ -352,6 +352,15 @@ export function controlButton(page: Page, action: ControlAction): Locator {
 }
 
 /**
+ * Locate the visible page buttons of a question request with more than one question.
+ * The page buttons sit in the action row of the request, beside Submit, and the action row is outside the banner.
+ * So a locator inside the banner finds no page button, and this locator starts at the page, as `controlButton` does.
+ */
+export function questionPagination(page: Page): Locator {
+  return page.getByTestId('control-pagination').filter({ visible: true })
+}
+
+/**
  * Click the visible Allow or Deny button of the control request.
  * The click is strict, so a second visible button, as from a duplicate banner, fails it.
  */

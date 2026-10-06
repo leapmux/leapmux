@@ -10,7 +10,7 @@ import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceChevron, workspaceRow } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceChevron, workspaceRow } from '../helpers/ui'
 
 /** Click the displayed question option of the visible banner. Its control and label forward selection to the native input. */
 async function clickOption(page: Page, label: string) {
@@ -135,7 +135,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expect(banner.getByText('Pick a size')).not.toBeVisible()
 
     // Verify pagination shows 2 page items
-    const pagination = banner.getByTestId('control-pagination')
+    const pagination = questionPagination(page)
     await expect(pagination).toBeVisible()
     const pageButtons = pagination.locator('button')
     await expect(pageButtons).toHaveCount(2)

@@ -33,6 +33,7 @@ import {
   focusComposer,
   isMaybeVisible,
   offeredSettingsOptions,
+  questionPagination,
   queuePauseButton,
   resumePausedQueue,
   resumeQueueAfterFailure,
@@ -924,6 +925,17 @@ describe('controlButton', () => {
       return button
     })
     expect(controlButton(page, action)).toBe(button)
+  })
+})
+
+describe('questionPagination', () => {
+  it('selects the visible page buttons of a question from the page, not from the banner', () => {
+    const pagination = opaqueHandle<PlaywrightLocator>({})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe('control-pagination')
+      return pagination
+    })
+    expect(questionPagination(page)).toBe(pagination)
   })
 })
 

@@ -2,7 +2,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { droidTest, expect } from '../droid-fixtures'
 import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { controlButton, savedControlAnswer } from '../helpers/ui'
+import { controlButton, questionPagination, savedControlAnswer } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 import { nativeDroidCallId } from './toolResult'
 
@@ -65,7 +65,7 @@ droidTest.describe('Factory Droid control requests', () => {
         await banner.getByTestId('question-option-Red').click()
         await banner.getByTestId('question-option-Blue').click()
         // A multiple-choice question stays on its page, so the reader moves on by hand.
-        await banner.getByTestId('control-pagination').locator('button').nth(1).click()
+        await questionPagination(page).locator('button').nth(1).click()
         await expect(banner).toContainText('Which size do you want?')
         await banner.getByTestId('question-option-Large').click()
         await controlButton(page, 'submit').click()
