@@ -1329,7 +1329,7 @@ describe('submitResponse payload fault', () => {
       result: setup({ controlRequests: [request], onControlResponse }).result,
     }))
     try {
-      await expect(result.respondTo(request)(new TextEncoder().encode('{}'))).rejects.toThrow()
+      await expect(result.respondTo(request)(new TextEncoder().encode('{}'))).rejects.toThrow('Check the saved response state before sending an answer.')
       expect(onControlResponse).not.toHaveBeenCalled()
       await result.recordResponse(request)
       expect(onControlResponse).toHaveBeenCalledOnce()

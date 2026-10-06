@@ -1,5 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
+import { pngBase64 } from '~/test-support/pngFixture'
 import { NATIVE_PROVIDER_MARKS, readNativeProviderMark } from './nativeProviderMarks'
 
 describe('NATIVE_PROVIDER_MARKS', () => {
@@ -41,6 +42,17 @@ describe('NATIVE_PROVIDER_MARKS', () => {
   })
 })
 
+// The reasons that `readNativeProviderMark` gives for a refusal, each a substring of its error.
+const NO_ROOT = 'requires an SVG root with a viewBox and content'
+const NO_SQUARE_VIEW_BOX = 'requires a positive square viewBox at the origin'
+const NO_PATH_GEOMETRY = 'path requires its complete geometry'
+const BAD_ATTRIBUTE = 'contains an unsupported or repeated attribute'
+const BAD_CONTENT = 'contains unsupported SVG content'
+const BAD_IMAGE = 'image requires canonical base64, a PNG header, and positive dimensions'
+
+/** A canonical PNG data URI with a header that the dimension sniffer reads, so only the width can fail a case. */
+const PNG_HREF = `data:image/png;base64,${pngBase64(24, 24)}`
+
 describe('readNativeProviderMark', () => {
   it('preserves root paint and an explicit child paint override', () => {
     const mark = readNativeProviderMark('<svg viewBox="0 0 24 24" fill="#f00"><path d="M0 0h12v24H0z"/><path d="M12 0h12v24H12z" fill="#00f"/></svg>')
@@ -55,7 +67,7 @@ describe('readNativeProviderMark', () => {
 
   it('rejects canonical base64 that contains another format instead of PNG bytes', () => {
     const source = `<svg viewBox="0 0 24 24"><image href="data:image/png;base64,${btoa('this is not a PNG')}" width="24" height="24"/></svg>`
-    expect(() => readNativeProviderMark(source)).toThrow()
+    expect(() => readNativeProviderMark(source)).toThrow(BAD_IMAGE)
   })
 
   it.each(['missing padding', 'extra padding', 'noncanonical unused bits'] as const)('rejects %s in embedded native PNG base64', (kind) => {
@@ -70,29 +82,34 @@ describe('readNativeProviderMark', () => {
         ? `${payload}=`
         : `${payload.slice(0, -3)}h==`
     const source = `<svg viewBox="0 0 24 24"><image href="${prefix}${invalid}" width="24" height="24"/></svg>`
-    expect(() => readNativeProviderMark(source)).toThrow()
+    expect(() => readNativeProviderMark(source)).toThrow(BAD_IMAGE)
   })
 
   it.each([
-    '',
-    '<svg viewBox="0 0 24 24"></svg>',
-    '<svg viewBox="0 0 0 0"><path d="M0 0"/></svg>',
-    '<svg viewBox="0 0 -1 -1"><path d="M0 0"/></svg>',
-    '<svg viewBox="0 0 24 25"><path d="M0 0"/></svg>',
-    '<svg viewBox="0 0 24 NaN"><path d="M0 0"/></svg>',
-    '<svg viewBox="0 0 0x18 0x18"><path d="M0 0"/></svg>',
-    '<svg viewBox="0 0 24 24"><path d=""/></svg>',
-    '<svg viewBox="0 0 24 24"><path d="M0 0" onload="run()"/></svg>',
-    '<svg viewBox="0 0 24 24"><path d="M0 0" d="M1 1"/></svg>',
-    '<svg viewBox="0 0 24 24"><script>run()</script></svg>',
-    '<svg viewBox="0 0 24 24"><image href="https://example.com/icon.png" width="24" height="24"/></svg>',
-    '<svg viewBox="0 0 24 24"><image href="data:image/svg+xml;base64,AAAA" width="24" height="24"/></svg>',
-    '<svg viewBox="0 0 24 24"><image href="data:image/png;base64,AAAA" width="0" height="24"/></svg>',
-    '<svg viewBox="0 0 24 24"><image href="data:image/png;base64,AAAA" width="0x18" height="24"/></svg>',
-    '<svg viewBox="0 0 24 24"><path d="M0 0"/>trailing text</svg>',
-    '<svg viewBox="0 0 24 24"><path d="M0 0"/>',
-  ])('rejects an incomplete or unsupported asset: %j', (source) => {
-    expect(() => readNativeProviderMark(source)).toThrow()
+    ['', NO_ROOT],
+    ['<svg viewBox="0 0 24 24"></svg>', NO_ROOT],
+    ['<svg viewBox="0 0 0 0"><path d="M0 0"/></svg>', NO_SQUARE_VIEW_BOX],
+    ['<svg viewBox="0 0 -1 -1"><path d="M0 0"/></svg>', NO_SQUARE_VIEW_BOX],
+    ['<svg viewBox="0 0 24 25"><path d="M0 0"/></svg>', NO_SQUARE_VIEW_BOX],
+    ['<svg viewBox="0 0 24 NaN"><path d="M0 0"/></svg>', NO_SQUARE_VIEW_BOX],
+    ['<svg viewBox="0 0 0x18 0x18"><path d="M0 0"/></svg>', NO_SQUARE_VIEW_BOX],
+    ['<svg viewBox="0 0 24 24"><path d=""/></svg>', NO_PATH_GEOMETRY],
+    ['<svg viewBox="0 0 24 24"><path d="M0 0" onload="run()"/></svg>', BAD_ATTRIBUTE],
+    ['<svg viewBox="0 0 24 24"><path d="M0 0" d="M1 1"/></svg>', BAD_ATTRIBUTE],
+    ['<svg viewBox="0 0 24 24"><script>run()</script></svg>', BAD_CONTENT],
+    ['<svg viewBox="0 0 24 24"><image href="https://example.com/icon.png" width="24" height="24"/></svg>', BAD_IMAGE],
+    ['<svg viewBox="0 0 24 24"><image href="data:image/svg+xml;base64,AAAA" width="24" height="24"/></svg>', BAD_IMAGE],
+    [`<svg viewBox="0 0 24 24"><image href="${PNG_HREF}" width="0" height="24"/></svg>`, BAD_IMAGE],
+    [`<svg viewBox="0 0 24 24"><image href="${PNG_HREF}" width="0x18" height="24"/></svg>`, BAD_IMAGE],
+    ['<svg viewBox="0 0 24 24"><path d="M0 0"/>trailing text</svg>', BAD_CONTENT],
+    ['<svg viewBox="0 0 24 24"><path d="M0 0"/>', NO_ROOT],
+  ])('rejects an incomplete or unsupported asset: %j', (source, reason) => {
+    expect(() => readNativeProviderMark(source)).toThrow(reason)
+  })
+
+  it('accepts an embedded PNG with positive dimensions', () => {
+    expect(readNativeProviderMark(`<svg viewBox="0 0 24 24"><image href="${PNG_HREF}" width="24" height="24"/></svg>`))
+      .toEqual({ viewBox: '0 0 24 24', elements: [{ type: 'image', attributes: { href: PNG_HREF, width: '24', height: '24' } }] })
   })
 
   it('preserves zero coordinates and complete path attributes', () => {

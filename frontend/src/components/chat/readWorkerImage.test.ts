@@ -75,8 +75,11 @@ describe('worker image reads', () => {
     expect(read).toHaveBeenCalledTimes(2)
   })
 
-  it.each(['https://example.com/image.png', 'relative.png'])('rejects a path without a usable local target (%s)', async (path) => {
-    await expect(readWorkerImage('worker', path, undefined, signal)).rejects.toThrow()
+  it.each([
+    ['https://example.com/image.png', 'The image does not have a local file path'],
+    ['relative.png', 'The image working directory is unavailable'],
+  ])('rejects a path without a usable local target (%s)', async (path, reason) => {
+    await expect(readWorkerImage('worker', path, undefined, signal)).rejects.toThrow(reason)
     expect(read).not.toHaveBeenCalled()
   })
 

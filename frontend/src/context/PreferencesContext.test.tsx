@@ -839,7 +839,8 @@ describe('PreferencesContext — superseded account write replies', () => {
     expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
 
     first.reject(new Error('network down'))
-    await expect(stale).rejects.toThrow()
+    // The failure travels on, marked as superseded: `newest` is what skips the rollback.
+    await expect(stale).rejects.toMatchObject({ message: 'network down', newest: false })
     // The value the rollback would restore is the built-in default, captured
     // before the FIRST write and already replaced by a write the user made
     // since.

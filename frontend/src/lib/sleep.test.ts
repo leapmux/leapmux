@@ -53,6 +53,7 @@ describe('sleep', () => {
     const controller = new AbortController()
     const p = sleep(60_000, controller.signal)
     controller.abort()
-    await expect(p).rejects.toBeDefined()
+    // With no reason given, the signal supplies its own: a DOMException named AbortError.
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

@@ -8,6 +8,7 @@ import {
   INNER_ENVELOPE_HEADROOM,
   MAX_CHUNK_SIZE,
   MAX_CONFIGURABLE_MESSAGE_SIZE,
+  PING_METHOD,
 } from '~/generated/contracts/wire'
 import {
   EncryptionMode,
@@ -144,7 +145,7 @@ describe('ChannelManager openChannel', () => {
       brokenWs.simulateOpen()
       await h.flushMicrotasks()
       // The worker never answers the ping.
-      await expect(openPromise).rejects.toThrow()
+      await expect(openPromise).rejects.toThrow(`RPC call '${PING_METHOD}' timed out`)
       expect(closed).toHaveLength(1)
     }
     finally {
@@ -466,7 +467,7 @@ describe('ChannelManager openChannel', () => {
       await h.flushMicrotasks()
       // The worker never answers the ping: the session is dead in at least one
       // direction. The open must fail rather than cache a broken channel.
-      await expect(openPromise).rejects.toThrow()
+      await expect(openPromise).rejects.toThrow(`RPC call '${PING_METHOD}' timed out`)
       expect(brokenMgr.isOpen('ch-1')).toBe(false)
     }
     finally {

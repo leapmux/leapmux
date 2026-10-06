@@ -90,11 +90,32 @@ describe('callWorker retries an Unavailable reply', () => {
     const abort = new AbortController()
 
     const p = listAvailableProviders('w-1', { signal: abort.signal })
-    const settled = expect(p).rejects.toBeDefined()
+    // The abort ends the backoff, so the call rejects with the abort and not with the Unavailable reply.
+    const settled = expect(p).rejects.toMatchObject({ name: 'AbortError' })
+    // Let the first attempt fail, so that its backoff timer is the one pending timer.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(1)
     // Abort mid-backoff: the pending delay must not outlive the caller.
     abort.abort()
+    expect(vi.getTimerCount()).toBe(0)
     await vi.advanceTimersByTimeAsync(2000)
     await settled
+    expect(callWorkerMock).toHaveBeenCalledTimes(1)
+  })
+
+  // The other abort path: the caller aborts while the attempt is in flight. The check before the backoff then
+  // rethrows the reply of the attempt, and no backoff starts.
+  it('rethrows the reply without a backoff when the caller aborts during the attempt', async () => {
+    vi.useFakeTimers()
+    const { listAvailableProviders } = await import('./workerRpc')
+    const err = unavailable()
+    callWorkerMock.mockRejectedValue(err)
+    const abort = new AbortController()
+
+    const p = listAvailableProviders('w-1', { signal: abort.signal })
+    abort.abort()
+    await expect(p).rejects.toBe(err)
+    expect(vi.getTimerCount()).toBe(0)
     expect(callWorkerMock).toHaveBeenCalledTimes(1)
   })
 

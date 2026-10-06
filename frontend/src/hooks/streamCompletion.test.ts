@@ -105,8 +105,9 @@ describe('waitForStreamCompletion', () => {
   it('removes the abort listener once error fires before abort', async () => {
     const removeSpy = vi.spyOn(ctrl.signal, 'removeEventListener')
     const promise = waitForStreamCompletion(fake.handle, ctrl.signal)
-    fake.fireError(new Error('boom'))
-    await expect(promise).rejects.toBeInstanceOf(Error)
+    const err = new Error('boom')
+    fake.fireError(err)
+    await expect(promise).rejects.toBe(err)
     expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function))
   })
 })
