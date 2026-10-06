@@ -1,19 +1,39 @@
 import type { TestInfo } from '@playwright/test'
+import type { MockModelRequestRecord, MockModelToolCall } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { ruleRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent, selectedAgentTabId } from '../helpers/nativeScenario'
-import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { DROID_CHILD_SYSTEM } from './childIdentity'
 import { droidChildNoticeRule } from './childNotice'
+import { readDroidToolResult } from './toolResult'
 
 const CHILD_TASK = 'Read the child note and report its marker.'
+const CHILD_DESCRIPTION = 'Inspect the child note'
+
+/**
+ * Build the background Task through which the root starts the child. The Droid tool builder adds `call_` to the
+ * scripted ID `droid-spawn`, so the mock model sends the call as `call_droid-spawn`, and Droid keeps that ID.
+ */
+export function childSpawnCall(childPrompt: string): MockModelToolCall {
+  return spawnSubagentToolCall(AgentProvider.DROID, 'droid-spawn', { description: CHILD_DESCRIPTION, prompt: childPrompt, background: true })
+}
+
+/**
+ * Read the result that Droid gave the root for `spawn`, the Task of {@link childSpawnCall}. Exactly one Task call and
+ * exactly one result must carry the ID of the built call. A lookup by the scripted ID finds no result, because that
+ * ID has no `call_` prefix.
+ */
+export function childSpawnResult(request: MockModelRequestRecord, spawn: MockModelToolCall): string {
+  return readDroidToolResult(request, spawn.id, spawn.name).text
+}
 
 /**
  * Keep the native child Read, archive, and follow-up assertions in one provider-owned scenario.
@@ -42,7 +62,7 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
       respond: { gate: childGate, text: modelScript.prompt('DROID_CHILD_FINAL') },
       once: true,
     },
-    droidChildNoticeRule('Inspect the child note', { text: 'DROID_ROOT_CHILD_REPORTED' }, 'the Droid root reports its completed child'),
+    droidChildNoticeRule(CHILD_DESCRIPTION, { text: 'DROID_ROOT_CHILD_REPORTED' }, 'the Droid root reports its completed child'),
     {
       name: 'the Droid child answers its tab follow-up',
       when: { system: DROID_CHILD_SYSTEM, body: 'Report the file marker once more.' },
@@ -50,13 +70,14 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
       once: true,
     },
   )
+  const spawn = childSpawnCall(childPrompt)
   const start = await modelScript.queue(
-    { toolCalls: [spawnSubagentToolCall(context.provider, 'droid-spawn', { description: 'Inspect the child note', prompt: childPrompt, background: true })] },
+    { toolCalls: [spawn] },
     { text: 'DROID_ROOT_DONE' },
   )
   await sendMessage(page, modelScript.prompt('Delegate the note inspection to a background child.'))
   await modelScript.waitForSteps(start + 2)
-  const taskResult = nativeToolResult(await modelScript.requestAt(start + 1), 'droid-spawn')
+  const taskResult = childSpawnResult(await modelScript.requestAt(start + 1), spawn)
   await testInfo.attach('droid-native-task-result', { body: taskResult, contentType: 'text/plain' })
   const factoryHome = leapmuxServer.agentEnv?.FACTORY_HOME_OVERRIDE
   if (!factoryHome)
@@ -71,7 +92,7 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
 
   const childTabID = await withCleanup(async () => {
     const row = await requireRegistryRow(page)
-    await expect(row).toContainText('Inspect the child note')
+    await expect(row).toContainText(CHILD_DESCRIPTION)
     await expect(row).toHaveAttribute('data-status', 'running')
     const openedTabID = await openChildTabFromRow(page, row)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
