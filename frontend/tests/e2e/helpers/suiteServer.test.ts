@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import { withCleanup } from './cleanup'
-import { refusedHostsReport, startSuiteServer } from './suiteServer'
+import { ancestorInstructionsReport, refusedHostsReport, startSuiteServer } from './suiteServer'
 
 /**
  * Every E2E run tests successful suite startup.
@@ -188,5 +188,18 @@ describe('refusedHostsReport', () => {
 
   it('states nothing for a run that refused nothing', () => {
     expect(refusedHostsReport(new Map())).toEqual([])
+  })
+})
+
+describe('ancestorInstructionsReport', () => {
+  it('states nothing for a run whose requests held no ancestor instruction text', () => {
+    expect(ancestorInstructionsReport(0)).toBe('')
+  })
+
+  it.each([
+    [1, 'The mock refused 1 model request that held'],
+    [3, 'The mock refused 3 model requests that held'],
+  ])('states the count of %i refused requests', (count, start) => {
+    expect(ancestorInstructionsReport(count)).toMatch(new RegExp(`^${start} the text of an instruction file above the working directory of an agent\\.`))
   })
 })

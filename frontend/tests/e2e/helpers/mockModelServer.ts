@@ -21,6 +21,7 @@ import { createServer as createHttp2Server } from 'node:http2'
 import { isObject } from '../../../src/lib/jsonPick'
 import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
 import { ampScriptOptions, createAmpSurface } from './ampSurface'
+import { ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions } from './ancestorInstructions'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
 import { createCursorSurface } from './cursorSurface'
@@ -103,6 +104,12 @@ export interface MockModelServer {
    * The suite reports these counts at shutdown, so rejected host attempts stay visible.
    */
   refusedHosts: () => ReadonlyMap<string, number>
+  /**
+   * The number of model requests that held the text of a sentinel instruction file (./ancestorInstructions.ts). The
+   * mock refuses each one, and the suite fails at shutdown when any arrived, because a request with no scenario marker
+   * fails no test of its own.
+   */
+  ancestorInstructionRequests: () => number
 }
 
 /** Whether a request target is in absolute form (`http://host/path`), as a proxy receives it. */
@@ -174,6 +181,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   const http: MockModelHTTPRequestRecord[] = []
   const unmatched: MockModelUnmatchedRequest[] = []
   const refusedHosts = new Map<string, number>()
+  let ancestorInstructionRequests = 0
   let responseSequence = 0
   // Set the listening port before the server handles a request.
   let ownPort = 0
@@ -190,6 +198,17 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   const answerFor = (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }): ScenarioAnswer => {
     const scenarioID = context.scenarioID ?? selectScenarioID(context.protocol, context.body)
     const scenario = scenarios.get(scenarioID)
+    // An agent that read an instruction file above its working directory sent that text to the model. The test does
+    // not control that text, so the request fails its scenario rather than reach a scripted answer.
+    if (holdsAncestorInstructions(context.body)) {
+      ancestorInstructionRequests++
+      const reason = `The request holds ${ANCESTOR_INSTRUCTION_SENTINEL}: the agent read an instruction file above its working directory. Give the provider a working directory that is the root of a git repository of its own, or exclude the files above it (./ancestorInstructions.ts).`
+      if (scenario)
+        scenario.unexpectedRequests.push({ protocol: context.protocol, path: context.path, body: context.body, reason })
+      else
+        recordUnmatched(unmatched, { ...context, scenarioID, reason })
+      return { kind: 'missing', message: reason }
+    }
     if (!scenario) {
       recordUnmatched(unmatched, { ...context, scenarioID, reason: 'The scenario is not registered.' })
       return { kind: 'missing', message: `The model scenario ${scenarioID} is not registered.` }
@@ -365,6 +384,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
   return {
     url: `http://127.0.0.1:${port}`,
     refusedHosts: () => new Map(refusedHosts),
+    ancestorInstructionRequests: () => ancestorInstructionRequests,
     close: () => {
       for (const scenario of scenarios.values())
         cancelGates(scenario)

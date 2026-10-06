@@ -209,7 +209,7 @@ function requireFixtureCleanupAndArtifacts(run: FixtureRun, setupCount: number):
     const runDir = fixtureStringField(state, 'runDir')
     expect(state.runDirIsSymlink).toBe(false)
     const runRoot = setupCount === 1 ? runDir : dirname(runDir)
-    expect(basename(runRoot)).toMatch(/^e-[A-Za-z0-9]{6}$/)
+    expect(basename(runRoot)).toMatch(/^leapmux-e2e-[A-Za-z0-9]{6}$/)
     if (setupCount > 1)
       expect(basename(runDir)).toMatch(/^[1-9]\d*$/)
     const inside = relative(join(run.root, '.tmp'), runDir)

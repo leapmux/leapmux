@@ -397,6 +397,8 @@ finally {
     delete env[key]
   env.PLAYWRIGHT_JSON_OUTPUT_FILE = options.reportPath ?? join(root, 'retained-artifacts', 'combined.json')
   env.E2E_STATE_PATH = join(root, 'foreign-state.json')
+  // The run roots of a fixture run stay in its own project, so a check can read and list them.
+  env.LEAPMUX_E2E_RUN_PARENT = join(root, '.tmp')
   env.PWDEBUG = '0'
   delete env.PWPAUSE
   let child: ChildProcess

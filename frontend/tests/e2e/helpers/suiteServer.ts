@@ -81,6 +81,16 @@ export function refusedHostsReport(refused: ReadonlyMap<string, number>): string
     .map(([host, count]) => `The mock proxy refused ${count} ${count === 1 ? 'request' : 'requests'} to ${host}.`)
 }
 
+/**
+ * The failure that states how many model requests held the text of a sentinel instruction file, or '' when none did.
+ * See ./ancestorInstructions.ts.
+ */
+export function ancestorInstructionsReport(count: number): string {
+  if (count === 0)
+    return ''
+  return `The mock refused ${count} model ${count === 1 ? 'request' : 'requests'} that held the text of an instruction file above the working directory of an agent. The failed tests state each request; a request with no scenario marker is in the model server log.`
+}
+
 /** Start the LeapMux process and the model server that one test run shares. */
 export async function startSuiteServer(options: SuiteServerOptions): Promise<StartedSuiteServer> {
   const mockModel = await createMockModelServer({ models: MOCK_MODEL_IDS })
@@ -100,6 +110,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     stopped = true
     for (const line of refusedHostsReport(mockModel.refusedHosts()))
       process.stderr.write(`${line}\n`)
+    const ancestorRequests = mockModel.ancestorInstructionRequests()
     await finishCleanup([
       proc ? stopProcess(proc) : Promise.resolve(),
       mockModel.close(),
@@ -107,6 +118,10 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     rmSync(dataDir, { recursive: true, force: true })
     if (socketDir)
       rmSync(socketDir, { recursive: true, force: true })
+    // A request with a scenario marker already failed its test. A request with none fails no test, so the run fails here.
+    const report = ancestorInstructionsReport(ancestorRequests)
+    if (report)
+      throw new Error(report)
   }
 
   try {

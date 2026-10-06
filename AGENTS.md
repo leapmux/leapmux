@@ -397,6 +397,13 @@ Run E2E tests locally before claiming that an E2E change works.
   `helpers/server.test.ts` fails a `hub`, `solo`, `dev` or `worker` spawn that
   skips that helper, since a raw `process.env` carries real provider
   credentials.
+- **An agent reads no instruction file above its working directory.** The
+  launcher puts the run root under `/tmp` (by its real path), outside the
+  checkout and the home, and writes a sentinel `AGENTS.md`, `CLAUDE.md` and
+  the rest into it (`helpers/ancestorInstructions.ts`). The mock refuses a
+  request that holds the sentinel. A provider that reads above its working
+  directory gets `gitRepositoryWorkingDir`, or a setting that excludes the
+  files, as Claude Code's `claudeMdExcludes` does.
 - **Undo page state in the reset, not the spec.** `resetSharedPage`
   (`fixtures.ts`) restores listeners, routes, cookies, permissions, storage,
   viewport, device metrics and every media-emulation key. A spec's own cleanup

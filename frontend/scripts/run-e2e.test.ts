@@ -1,13 +1,15 @@
 import type { SpawnOptions } from 'node:child_process'
 import { ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
+import { ANCESTOR_INSTRUCTION_FILES, ANCESTOR_INSTRUCTION_SENTINEL } from '../tests/e2e/helpers/ancestorInstructions'
 import { copyRunBinary, LEAPMUX_BINARY_NAME, runBinaryPath } from '../tests/e2e/helpers/runBinary'
-import { runE2E } from './run-e2e'
+import { runE2E, runRootParent } from './run-e2e'
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
@@ -46,7 +48,7 @@ it('keeps actual short runtime roots separate from readable test-result shard pa
   expect(shards).toHaveLength(2)
   for (const [index, shard] of shards.entries()) {
     expect(basename(shard.runtime)).toBe(String(index + 1))
-    expect(basename(dirname(shard.runtime))).toMatch(/^e-[A-Za-z0-9]{6}$/)
+    expect(basename(dirname(shard.runtime))).toMatch(/^leapmux-e2e-[A-Za-z0-9]{6}$/)
     expect(shard.runtime.startsWith(join(projectRoot, '.tmp') + sep)).toBe(true)
     expect(basename(shard.artifact)).toBe(`shard-${index + 1}`)
     expect(basename(dirname(shard.artifact))).toMatch(/^e2e-[A-Za-z0-9]{6}$/)
@@ -56,6 +58,36 @@ it('keeps actual short runtime roots separate from readable test-result shard pa
   expect(new Set(shards.map(shard => shard.runtime)).size).toBe(2)
 })
 
+it('writes each sentinel instruction file into the run root before a shard starts', async () => {
+  const sentinels: string[][] = []
+  processes([0, 0], (env) => {
+    if (!env.LEAPMUX_E2E_NONCE_PATH || !env.LEAPMUX_E2E_OUTPUT_FILE_DIR?.includes('shard-'))
+      return
+    const runRoot = dirname(dirname(env.LEAPMUX_E2E_NONCE_PATH))
+    sentinels.push(ANCESTOR_INSTRUCTION_FILES.filter(file => readFileSync(join(runRoot, file), 'utf8').includes(ANCESTOR_INSTRUCTION_SENTINEL)))
+  })
+  expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
+  expect(sentinels).toEqual([[...ANCESTOR_INSTRUCTION_FILES], [...ANCESTOR_INSTRUCTION_FILES]])
+})
+
+describe('runRootParent', () => {
+  it.each(['darwin', 'linux'] as const)('takes the real path of /tmp on %s, which is short and under no home', (platform) => {
+    expect(runRootParent({}, platform)).toBe(realpathSync('/tmp'))
+  })
+
+  it('takes the real path of the temporary directory on Windows', () => {
+    expect(runRootParent({}, 'win32')).toBe(realpathSync(tmpdir()))
+  })
+
+  it('takes the parent that LEAPMUX_E2E_RUN_PARENT states, as an absolute path', () => {
+    expect(runRootParent({ LEAPMUX_E2E_RUN_PARENT: 'relative/runs' }, 'darwin')).toBe(resolve('relative/runs'))
+  })
+
+  it('ignores an empty LEAPMUX_E2E_RUN_PARENT', () => {
+    expect(runRootParent({ LEAPMUX_E2E_RUN_PARENT: '' }, 'linux')).toBe(realpathSync('/tmp'))
+  })
+})
+
 it('keeps serial runtime roots short and preserves their full tool output run labels', async () => {
   processes()
   expect(await runE2E(['--workers=1'], projectRoot)).toBe(0)
@@ -63,7 +95,7 @@ it('keeps serial runtime roots short and preserves their full tool output run la
   if (!child?.env.LEAPMUX_E2E_NONCE_PATH || !child.env.LEAPMUX_E2E_OUTPUT_FILE_DIR)
     throw new Error('The serial Playwright fixture has no owned runtime or full tool output directory.')
   const runtime = dirname(child.env.LEAPMUX_E2E_NONCE_PATH)
-  expect(basename(runtime)).toMatch(/^e-[A-Za-z0-9]{6}$/)
+  expect(basename(runtime)).toMatch(/^leapmux-e2e-[A-Za-z0-9]{6}$/)
   expect(basename(child.env.LEAPMUX_E2E_OUTPUT_FILE_DIR)).toMatch(/^e2e-[A-Za-z0-9]{6}$/)
   expect(runtime.startsWith(join(projectRoot, '.tmp') + sep)).toBe(true)
   expect(existsSync(runtime)).toBe(false)
@@ -83,6 +115,8 @@ beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../..', '.tmp')
   mkdirSync(scratch, { recursive: true })
   projectRoot = mkdtempSync(join(scratch, 'run-e2e-test-'))
+  // The run roots of a test stay in its own project root, not in the shared /tmp of the machine.
+  vi.stubEnv('LEAPMUX_E2E_RUN_PARENT', join(projectRoot, '.tmp'))
   buildOutput = join(projectRoot, LEAPMUX_BINARY_NAME)
   writeFileSync(buildOutput, 'first build')
 })

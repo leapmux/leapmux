@@ -7,6 +7,7 @@ import { connect as connectHttp2 } from 'node:http2'
 import { connect as connectTcp } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { isObject } from '../../../src/lib/jsonPick'
+import { ANCESTOR_INSTRUCTION_SENTINEL } from './ancestorInstructions'
 import { encodeLengthDelimited, encodeStringField } from './cursorProtobuf'
 import { CURSOR_RUN_PATH, CURSOR_TASK_TOOL } from './cursorSurface'
 import { connectFrame, takeConnectFrames } from './cursorWire'
@@ -1356,6 +1357,24 @@ describe('createMockModelServer', () => {
       { scenarioID: 'ambient', reason: 'The scenario is not registered.', body: { messages: [{ content: 'No marker at all' }] } },
       { scenarioID: 'missing', reason: 'The scenario is not registered.' },
     ])
+    expect(server.ancestorInstructionRequests()).toBe(0)
+  })
+
+  it('refuses a request that holds the text of an instruction file above the working directory, and counts it', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'leaky', { steps: [{ text: 'The script never sends this answer.' }] })
+    expect((await chat(server, mockScenarioPrompt('leaky', `Context: ${ANCESTOR_INSTRUCTION_SENTINEL}`))).status).toBe(409)
+    expect((await chat(server, `No marker. Context: ${ANCESTOR_INSTRUCTION_SENTINEL}`)).status).toBe(409)
+
+    // The marked request fails its scenario, and the script keeps its step.
+    const status = await readScenarioStatus(server.url, 'leaky')
+    expect(status.nextStep).toBe(0)
+    expect(status.complete).toBe(false)
+    expect(status.unexpectedRequests).toMatchObject([{ reason: expect.stringContaining(ANCESTOR_INSTRUCTION_SENTINEL) }])
+    // The unmarked request fails no test, so the log keeps it and the count makes the suite fail at shutdown.
+    const log = await fetch(`${server.url}/__e2e/requests`).then(response => response.json())
+    expect(log.unmatched).toMatchObject([{ scenarioID: AMBIENT_SCENARIO_ID, reason: expect.stringContaining(ANCESTOR_INSTRUCTION_SENTINEL) }])
+    expect(server.ancestorInstructionRequests()).toBe(2)
   })
 
   it('holds a delayed step open for its full interval', async () => {

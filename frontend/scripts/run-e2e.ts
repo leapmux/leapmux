@@ -1,11 +1,13 @@
 import type { CommandProcess } from './e2eCommandProcess'
 import type { ChildSelection } from './e2eOptions'
-import { constants, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { constants, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { inspect } from 'node:util'
+import { writeAncestorInstructionSentinels } from '../tests/e2e/helpers/ancestorInstructions'
 import { finishCleanup } from '../tests/e2e/helpers/cleanup'
 import { stopTrackedProcesses } from '../tests/e2e/helpers/processRegistry'
 import { copyRunBinary, LEAPMUX_BINARY_NAME } from '../tests/e2e/helpers/runBinary'
@@ -22,6 +24,28 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const playwrightCli = require.resolve('@playwright/test/cli')
 const lastRunReporter = fileURLToPath(new URL('./e2eLastRunReporter.ts', import.meta.url))
 
+/** The start of the name of each run root. The artifact directory of the run takes the rest of the name. */
+export const RUN_ROOT_PREFIX = 'leapmux-e2e-'
+
+/**
+ * The directory that holds the run root of each E2E run.
+ *
+ * Agent CLIs read instruction files from the directories above their working directory, so no checkout and no home
+ * may be above the run root. The run root must also stay short: native providers create Unix socket paths under it,
+ * and macOS limits such a path to 104 bytes. `os.tmpdir()` is a long per-user path on macOS, so the parent is `/tmp`
+ * there, as on Linux, by its real path, because a Worker reports the real path of each directory. Windows sets no such
+ * limit, and its temporary directory is its one shared directory, although that directory is under the home. The guard
+ * of `tests/e2e/helpers/ancestorInstructions.ts` refuses a provider that reads that far up.
+ *
+ * `LEAPMUX_E2E_RUN_PARENT` replaces the parent, for a test of the launcher or a machine whose `/tmp` cannot hold a run.
+ */
+export function runRootParent(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const override = env.LEAPMUX_E2E_RUN_PARENT
+  if (override)
+    return resolve(override)
+  return realpathSync(platform === 'win32' ? tmpdir() : '/tmp')
+}
+
 /** Build the environment of a Playwright test run that owns the private run directory. */
 function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.ProcessEnv {
   const noncePath = join(runDir, 'nonce')
@@ -34,7 +58,7 @@ function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.P
     LEAPMUX_E2E_OUTPUT_FILE_DIR: undefined,
     LEAPMUX_E2E_NONCE_PATH: noncePath,
     LEAPMUX_E2E_NONCE: nonce,
-    // A private directory under .tmp must not inherit the project's Git repository.
+    // No private directory of the run may inherit a Git repository from above the run root.
     GIT_CEILING_DIRECTORIES: [runDir, env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(delimiter),
   }
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'])
@@ -183,13 +207,15 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     const buildCode = await command(resolveTaskBin(), ['build-backend'], { cwd: projectRoot, env }, { ownership: { ownTree: true } })
     if (interrupted || buildCode !== 0)
       return interrupted || buildCode
-    const scratch = join(projectRoot, '.tmp')
-    mkdirSync(scratch, { recursive: true })
+    const runParent = runRootParent()
+    mkdirSync(runParent, { recursive: true })
     // Native providers create UUID socket paths under this actual runtime root.
-    runDir = mkdtempSync(join(scratch, 'e-'))
+    runDir = mkdtempSync(join(runParent, RUN_ROOT_PREFIX))
+    // Above every working directory of the run, so an agent that reads instruction files above its own fails its test.
+    writeAncestorInstructionSentinels(runDir)
     // Copy the binary before another Task pipeline can replace the root build.
     const binary = copyRunBinary(join(projectRoot, LEAPMUX_BINARY_NAME), runDir)
-    const outputFileDir = join(outputRoot, 'runs', `e2e-${basename(runDir).slice('e-'.length)}`)
+    const outputFileDir = join(outputRoot, 'runs', `e2e-${basename(runDir).slice(RUN_ROOT_PREFIX.length)}`)
     mkdirSync(outputFileDir, { recursive: true })
     let failedFilesList: string | undefined
     if (failedFiles) {
