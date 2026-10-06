@@ -6,11 +6,10 @@ import { pickString } from '../../../src/lib/jsonPick'
 import { droidTest, expect } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
+import { expectTurnEndedAfter, readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, controlBanner, expectNoControlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { answerPlanReview, assistantBubbles, chooseSettingsOption, controlBanner, enterControlFeedback, expectNoControlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid Spec mode', () => {
@@ -20,18 +19,18 @@ droidTest.describe('Factory Droid Spec mode', () => {
     await chooseSettingsOption(page, 'permissionMode-spec')
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, 'permissionMode-spec')
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-1', '# Native plan\n\n- Apply the change.')] },
       { text: 'The plan was approved.' },
     )
     await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Apply the change.')
-    await page.getByTestId('plan-approve-btn').click()
-    await modelScript.waitForSteps()
+    await answerPlanReview(page, 'approve')
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The plan was approved.' }).first()).toBeVisible()
@@ -55,32 +54,25 @@ droidTest.describe('Factory Droid Spec mode', () => {
     const agent = await waitForNativeOptionApplied({ page, leapmuxServer }, 'permissionMode', 'spec')
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
-      await modelScript.queue({
+      const start = await modelScript.queue({
         toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-rejected', '# Native plan\n\n- Keep this plan unapproved.')],
       })
       await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
-      await modelScript.waitForSteps(1)
+      await modelScript.waitForSteps(start + 1)
       const banner = controlBanner(page)
       await expect(banner).toContainText('Proposed Plan')
-      await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
-      const observed = onlyObservedNativeControl(watch.controls())
-      await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
+      const observed = await waitForOneNativeControl(watch)
+      await answerPlanReview(page, 'reject')
 
       await expect(banner).toHaveCount(0)
       // The browser draws the saved answer from the Worker row alone, so the row exists now.
       await expect(savedControlAnswer(page)).toHaveCount(1)
       await waitForAgentIdle(page)
       await expectSettingsOptionChosen(page, 'permissionMode-spec')
-      const status = await modelScript.status()
-      expect(status.unexpectedRequests).toEqual([])
-      expect(status.requests.filter(request => request.stepIndex !== undefined)).toHaveLength(1)
-      expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
+      await expectTurnEndedAfter(modelScript, start + 1)
       await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'spec' }, 'latest')
 
-      const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
-      expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-      const decision = readNativeStoredControlDecision(snapshot, observed.requestId)
-      expect(decision.request).toEqual(observed.payload)
+      const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
       expect(decision.request).toMatchObject({ confirmationType: DROID_CONFIRMATION_TYPE.ExitSpecMode, toolUse: { name: DROID_TOOL.ExitSpecMode } })
       expect(decision.request.options).toContain(DROID_PERMISSION_OPTION.Cancel)
       const rpcId = pickString(decision.request, 'rpcId')
@@ -114,18 +106,16 @@ droidTest.describe('Factory Droid Spec mode', () => {
       when: { user: 'Keep the spec read-only.' },
       respond: { text: 'Understood, keeping the spec read-only.' },
     })
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-reason', '# Native plan\n\n- Write the thing.')] },
     )
     await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.type('Keep the spec read-only.', { delay: 20 })
-    await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
+    await enterControlFeedback(page, 'Keep the spec read-only.')
+    await answerPlanReview(page, 'reject')
 
     await expectNoControlBanner(page)
     await expect(savedControlAnswer(page)).toHaveText('Reject')

@@ -6,45 +6,15 @@ import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { copilotTest } from '../copilot-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
+import { expectTurnEndedAfter, readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, controlBanner, expectNoControlBanner, expectSettingsChip, expectSettingsOptionChosen, messageBubbles, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { answerPlanReview, chooseSettingsOption, controlBanner, expectSettingsChip, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { exerciseCopilotPlanApproval } from './planScenario'
 
-copilotTest('plan-approval-banner: uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
-  void authenticatedCopilotWorkspace
-  await chooseSettingsOption(page, `${COPILOT_OPTION.SessionMode}-${COPILOT_MODE.Plan}`)
-  await waitForSettingsIdle(page)
-  await expectSettingsChip(page, 'Plan')
-
-  await modelScript.queue({ text: 'Plan mode is active.' })
-  await sendMessage(page, modelScript.prompt('Confirm the selected mode.'))
-  const first = await modelScript.waitForSteps(1)
-  await waitForAgentIdle(page)
-  expect(JSON.stringify(first.requests.find(request => request.stepIndex === 0)?.body)).toContain('"name":"exit_plan_mode"')
-
-  await modelScript.queue(
-    { toolCalls: [exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-plan', 'Review the Copilot change.')] },
-    { text: 'The Copilot plan was approved.' },
-  )
-  await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
-  await modelScript.waitForSteps(2)
-
-  const banner = await waitForControlBanner(page)
-  await expect(banner).toContainText('Proposed Plan')
-  await expect(banner).toContainText('Review the Copilot change.')
-  await expect(page.getByTestId('plan-approve-btn').filter({ visible: true })).toBeVisible()
-  await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
-
-  await modelScript.waitForSteps(3)
-  await waitForAgentIdle(page)
-  await expectNoControlBanner(page)
-  await expect(assistantBubbles(page).filter({ hasText: 'The Copilot plan was approved.' }).first()).toBeVisible()
-  await page.reload()
-  await expect(messageBubbles(page).filter({ hasText: 'Approved' }).first()).toBeVisible()
-  // The bubble filter above also matches the assistant text "…was approved." The saved row proves the stored decision.
-  await expect(savedControlAnswer(page)).toHaveText('Approve')
+copilotTest('plan-approval-banner: uses the native exit tool and resumes after plan approval', async ({ native }) => {
+  await exerciseCopilotPlanApproval(native)
 })
 
 /** One session event of the root agent, as the Worker stored the native frame. */
@@ -75,39 +45,32 @@ function copilotRootEvents(snapshot: NativeMessageSnapshot): CopilotRootEvent[] 
 // session stays in plan mode. A Copilot session log of runtime 1.0.83 records this
 // sequence, and runtime 1.0.87 holds the same result text. Feedback is different:
 // it gives the model a successful result, and the turn goes on.
-copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, and stays in plan mode', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }) => {
-  void authenticatedCopilotWorkspace
+copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, and stays in plan mode', async ({ native }) => {
+  const { page, modelScript, leapmuxServer } = native
   await chooseSettingsOption(page, `${COPILOT_OPTION.SessionMode}-${COPILOT_MODE.Plan}`)
   await waitForSettingsIdle(page)
   await expectSettingsChip(page, 'Plan')
-  const agent = await waitForNativeOptionApplied({ page, leapmuxServer }, COPILOT_OPTION.SessionMode, COPILOT_MODE.Plan)
+  const agent = await waitForNativeOptionApplied(native, COPILOT_OPTION.SessionMode, COPILOT_MODE.Plan)
   const watch = await watchNativeControls(leapmuxServer, agent.id)
   await withCleanup(async () => {
-    await modelScript.queue({
+    const start = await modelScript.queue({
       toolCalls: [exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-rejected-plan', 'Keep the Copilot plan unapproved.')],
     })
     await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Keep the Copilot plan unapproved.')
-    await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
-    const observed = onlyObservedNativeControl(watch.controls())
-    await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
+    const observed = await waitForOneNativeControl(watch)
+    await answerPlanReview(page, 'reject')
 
     await expect(banner).toHaveCount(0)
     await expect(savedControlAnswer(page)).toHaveText('Reject')
     await waitForAgentIdle(page)
     await expectSettingsOptionChosen(page, `${COPILOT_OPTION.SessionMode}-${COPILOT_MODE.Plan}`)
-    const status = await modelScript.status()
-    expect(status.unexpectedRequests).toEqual([])
-    expect(status.requests.filter(request => request.stepIndex !== undefined)).toHaveLength(1)
-    expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
+    await expectTurnEndedAfter(modelScript, start + 1)
 
-    const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
-    expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-    const decision = readNativeStoredControlDecision(snapshot, observed.requestId)
-    expect(decision.request).toEqual(observed.payload)
+    const { decision, snapshot } = await readObservedNativeDecision(native, agent, watch, observed)
     const request = pickObject(pickObject(decision.request, 'params'), 'event')
     expect(pickString(request, 'type')).toBe(COPILOT_EVENT.ExitPlanModeRequested)
     expect(pickString(pickObject(request, 'data'), 'summary')).toBe('Keep the Copilot plan unapproved.')

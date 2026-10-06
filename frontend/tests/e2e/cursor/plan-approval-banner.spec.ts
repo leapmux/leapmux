@@ -3,28 +3,29 @@ import { CURSOR_METHOD } from '../../../src/generated/contracts/cursor-protocol'
 import { cursorTest } from '../cursor-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
+import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { cursorCreatePlanToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, chooseSettingsOption, controlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { answerControl, assistantBubbles, chooseSettingsOption, controlBanner, expectSettingsOptionChosen, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
-cursorTest('approves a native create-plan request', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
-  void authenticatedCursorWorkspace
+cursorTest('approves a native create-plan request', async ({ native }) => {
+  const { page, modelScript } = native
   await chooseSettingsOption(page, 'permissionMode-plan')
   await waitForSettingsIdle(page)
-  await modelScript.queue({ toolCalls: [cursorCreatePlanToolCall(
+  // Cursor answers its own Run with the create-plan result, so the turn is one model step.
+  const start = await modelScript.queue({ toolCalls: [cursorCreatePlanToolCall(
     'cursor-plan',
     'Review changes',
     'Review without edits.',
     '# Plan\n\n1. Inspect the files.',
   )] })
   await sendMessage(page, modelScript.prompt('Write a plan and ask for approval.'))
-  await modelScript.waitForSteps()
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
+  await modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(page)
   await expect(banner).toContainText('Review changes')
   await expect(banner).toContainText('Inspect the files')
-  await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+  // Cursor's plan control draws its Approve action on the shared Allow button.
+  await answerControl(page, 'allow')
 
   await waitForAgentIdle(page)
   await expect(assistantBubbles(page).filter({ hasText: 'Cursor plan accepted' }).first()).toBeVisible()
@@ -37,27 +38,27 @@ cursorTest('approves a native create-plan request', async ({ authenticatedCursor
 // answer. cursor-agent fills a rejection that carries no reason with the words
 // "User rejected plan" (create-plan-handler.ts in the installed bundle), and it does
 // not change its mode for a plan answer, in either direction.
-cursorTest('rejects a native create-plan request and keeps the saved decision after reload', async ({ authenticatedCursorWorkspace, leapmuxServer, page, modelScript }) => {
-  void authenticatedCursorWorkspace
+cursorTest('rejects a native create-plan request and keeps the saved decision after reload', async ({ native }) => {
+  const { page, modelScript, leapmuxServer } = native
   await chooseSettingsOption(page, 'permissionMode-plan')
   await waitForSettingsIdle(page)
-  const agent = await waitForNativeOptionApplied({ page, leapmuxServer }, 'permissionMode', 'plan')
+  const agent = await waitForNativeOptionApplied(native, 'permissionMode', 'plan')
   const watch = await watchNativeControls(leapmuxServer, agent.id)
   await withCleanup(async () => {
-    await modelScript.queue({ toolCalls: [cursorCreatePlanToolCall(
+    const start = await modelScript.queue({ toolCalls: [cursorCreatePlanToolCall(
       'cursor-rejected-plan',
       'Keep planning',
       'Keep this plan unapproved.',
       '# Plan\n\n1. Review the change.',
     )] })
     await sendMessage(page, modelScript.prompt('Write a plan and ask for approval.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
     await expect(banner).toContainText('Keep planning')
     await expect(banner).toContainText('Review the change')
-    await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
-    const observed = onlyObservedNativeControl(watch.controls())
-    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
+    const observed = await waitForOneNativeControl(watch)
+    // Cursor's plan control draws its Reject action on the shared Deny button.
+    await answerControl(page, 'deny')
 
     await waitForAgentIdle(page)
     await expect(banner).toHaveCount(0)
@@ -65,11 +66,7 @@ cursorTest('rejects a native create-plan request and keeps the saved decision af
     await expect(result.first()).toBeVisible()
     await expect(savedControlAnswer(page)).toHaveText('Reject')
     await expectSettingsOptionChosen(page, 'permissionMode-plan')
-    expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
-    const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
-    expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-    const decision = readNativeStoredControlDecision(snapshot, observed.requestId)
-    expect(decision.request).toEqual(observed.payload)
+    const { decision } = await readObservedNativeDecision(native, agent, watch, observed)
     expect(decision.request.method).toBe(CURSOR_METHOD.CreatePlan)
     // A bare rejection carries no reason field, which is what lets cursor-agent supply its own.
     expect(decision.response).toEqual({ jsonrpc: '2.0', id: observed.payload.id, result: { outcome: { outcome: 'rejected' } } })

@@ -7,11 +7,11 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '../../../src/lib/jsonPick'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { readNativeMessageSnapshot, readNativeToolOutputRecord } from '../helpers/nativeMessages'
+import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
+import { expectTurnEndedAfter, readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 import { openProviderAgent } from '../helpers/workspace'
 import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
@@ -24,19 +24,19 @@ qwenTest.describe('Qwen Code control requests', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(PROVIDER, 'qwen-plan', '# Qwen probe plan\n\n1. Change no files.')] },
       { text: 'Plan approved; starting.' },
     )
     await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
     // The request carries the plan itself, so the banner draws it.
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Change no files.')
-    await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
+    await answerPlanReview(page, 'approve')
     await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Plan approved; starting.' })).toBeVisible()
     // Qwen reports the mode it left plan mode for, and the chip follows it.
@@ -64,17 +64,17 @@ qwenTest.describe('Qwen Code control requests', () => {
       when: { body: 'Execute the following plan' },
       respond: { text: 'Running the approved plan in a fresh context.' },
     })
-    await modelScript.queue({
+    const start = await modelScript.queue({
       toolCalls: [exitPlanModeToolCall(PROVIDER, 'qwen-fresh-plan', modelScript.prompt('# Qwen fresh plan\n\n1. Change no files.'))],
     })
     await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
-    const clearContext = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
+    const clearContext = page.locator('[data-testid="plan-clear-context-checkbox"]:visible input[type="checkbox"]')
     await clearContext.check()
     await expect(clearContext).toBeChecked()
-    await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
+    await answerPlanReview(page, 'approve')
     await expect(banner).toHaveCount(0)
 
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
@@ -96,31 +96,24 @@ qwenTest.describe('Qwen Code control requests', () => {
     const agent = await currentNativeAgent({ page, leapmuxServer })
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
-      await modelScript.queue({
+      const start = await modelScript.queue({
         toolCalls: [exitPlanModeToolCall(PROVIDER, 'qwen-rejected-plan', '# Qwen rejected plan\n\n1. Keep this plan unapproved.')],
       })
       await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
-      await modelScript.waitForSteps(1)
+      await modelScript.waitForSteps(start + 1)
       const banner = controlBanner(page)
       await expect(banner).toContainText('Proposed Plan')
       await expect(banner).toContainText('Keep this plan unapproved.')
-      await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
-      const observed = onlyObservedNativeControl(watch.controls())
-      await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
+      const observed = await waitForOneNativeControl(watch)
+      await answerPlanReview(page, 'reject')
 
       await expect(banner).toHaveCount(0)
       await expect(savedControlAnswer(page)).toHaveText('Reject')
       await waitForAgentIdle(page)
       await expectSettingsOptionChosen(page, `${OPTION_ID_PERMISSION_MODE}-${QWEN_MODE.Plan}`)
-      const status = await modelScript.status()
-      expect(status.unexpectedRequests).toEqual([])
-      expect(status.requests.filter(request => request.stepIndex !== undefined)).toHaveLength(1)
-      expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
+      await expectTurnEndedAfter(modelScript, start + 1)
 
-      const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
-      expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-      const decision = readNativeStoredControlDecision(snapshot, observed.requestId)
-      expect(decision.request).toEqual(observed.payload)
+      const { decision, snapshot } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
       expect(decision.response).toEqual({
         jsonrpc: '2.0',
         id: observed.payload.id,

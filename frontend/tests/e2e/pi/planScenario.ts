@@ -1,0 +1,44 @@
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import { expect } from '@playwright/test'
+import { agentOpenOptions } from '../agentSettings'
+import { openAgentViaAPI } from '../helpers/api'
+import { nativeAgentById } from '../helpers/nativeScenario'
+import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
+import { createTestDirectory } from '../helpers/runDirectory'
+import { answerPlanReview, chatScrollContainer, openWorkspace, sendMessage, waitForControlBanner } from '../helpers/ui'
+
+/**
+ * Approve a Pi plan with the clear-context choice, and prove that Pi starts a fresh native session that runs the plan.
+ * The scenario opens its own agent in the workspace of the context.
+ */
+export async function exercisePiFreshPlanSession(context: ManagedNativeScenarioContext): Promise<void> {
+  const { page, modelScript, leapmuxServer } = context
+  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-fresh-plan-'), agentOpenOptions(context.provider))
+  const readSession = async () => (await nativeAgentById(context, agentId))?.agentSessionId ?? ''
+  await expect.poll(readSession).not.toBe('')
+  const originalSession = await readSession()
+  expect(originalSession).not.toBe('')
+  await page.reload()
+  await openWorkspace(page, context.workspaceId)
+  await sendMessage(page, '/plan start')
+  // The script supplies the plan tool call, because the mock answers only what a script holds.
+  // The plan holds the marker of this test's script. An approval with the clear-context choice starts a fresh
+  // session, and the plan is the first prompt of that session. That prompt holds no other marker. Without the
+  // marker in the plan, the implementation turn reaches another scenario of the mock, not the script of this test.
+  const start = await modelScript.queue(
+    { toolCalls: [exitPlanModeToolCall(context.provider, 'fresh-plan', modelScript.prompt('# Fresh implementation probe\n\n- Reply with FRESH_PLAN_DONE. Do not call tools or change files.'))] },
+    { text: 'FRESH_PLAN_DONE' },
+  )
+  await sendMessage(page, modelScript.prompt('Finish the plan.'))
+  await modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(page)
+  await expect(banner).toContainText('Plan Ready for Review')
+  await page.getByTestId('plan-clear-context-checkbox').filter({ visible: true }).click()
+  await answerPlanReview(page, 'approve')
+  await expect.poll(async () => {
+    const current = await readSession()
+    return current !== '' && current !== originalSession
+  }).toBe(true)
+  await modelScript.waitForSteps(start + 2)
+  await expect(chatScrollContainer(page).getByText('FRESH_PLAN_DONE', { exact: true })).toBeVisible()
+}

@@ -8,12 +8,11 @@ import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCO
 import { AgentProvider, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
+import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { assistantBubbles, controlBanner, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, assistantBubbles, controlActions, controlBanner, enterControlFeedback, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { ZCODE_AGENT, zcodeTest } from '../zcode-fixtures'
 
@@ -28,21 +27,21 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   // SUBJECT is that approval-shaped feedback text ("approve") reaches the agent
   // as FEEDBACK and not as an approval, so both turns are scripted and the
   // control round trip is the only variable left.
-  await modelScript.queue({
-    toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'feedback-probe', '# Feedback probe\n\n- Change no files.')],
-  })
-  await modelScript.queue({ text: 'FEEDBACK_RECEIVED' })
+  const start = await modelScript.queue(
+    { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'feedback-probe', '# Feedback probe\n\n- Change no files.')] },
+    { text: 'FEEDBACK_RECEIVED' },
+  )
   await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Feedback probe".'))
-  await modelScript.waitForSteps(1)
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
+  await modelScript.waitForSteps(start + 1)
+  const banner = controlBanner(page)
   await expect(banner).toContainText('Plan Ready for Review')
-  const editor = page.getByTestId('composer-editor').locator('.ProseMirror')
-  await editor.fill('approve')
-  const reject = page.getByTestId('plan-reject-btn')
+  await enterControlFeedback(page, 'approve')
+  const reject = page.getByTestId('plan-reject-btn').filter({ visible: true })
   await expect(reject).toHaveText('Send feedback')
   await expect(reject).toBeInViewport({ ratio: 1 })
+  // No queue toggle, visible or hidden, while the composer holds the feedback of a control.
   await expect(page.getByTestId('queue-pause-button')).toHaveCount(0)
-  await reject.click()
+  await answerPlanReview(page, 'reject')
   await expect(banner).toHaveCount(0)
   await expect(assistantBubbles(page).filter({ hasText: 'FEEDBACK_RECEIVED' }).last()).toBeVisible()
   await waitForAgentIdle(page)
@@ -55,7 +54,7 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   // message window.
   const rejection = userBubbles(page).getByText('approve', { exact: true })
   if (await rejection.count() === 0)
-    await page.getByRole('button', { name: 'Your response', exact: true }).first().click()
+    await visibleOnly(page.getByRole('button', { name: 'Your response', exact: true })).first().click()
   await rejection.first().scrollIntoViewIfNeeded()
   await expect(rejection.first()).toBeInViewport({ ratio: 1 })
   // PLAN, not Build. ZCode asks for the plan approval as the permission check of
@@ -107,33 +106,27 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
   const watch = await watchNativeControls(leapmuxServer, agent.id)
   await withCleanup(async () => {
     const plan = '# Approval probe\n\n- Change no files.'
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'approval-probe', plan)] },
       { text: 'APPROVAL_RECEIVED' },
     )
     await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Approval probe".'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
-    await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
-    const observed = onlyObservedNativeControl(watch.controls())
-    await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
+    const observed = await waitForOneNativeControl(watch)
+    await answerPlanReview(page, 'approve')
 
     await expect(banner).toHaveCount(0)
-    const status = await modelScript.waitForSteps(2)
-    const continuation = status.requests.find(request => request.stepIndex === 1)
-    expect(JSON.stringify(continuation?.body)).toContain('User has approved your plan. You can now start coding.')
+    const continuation = await modelScript.requestAt(start + 1)
+    expect(JSON.stringify(continuation.body)).toContain('User has approved your plan. You can now start coding.')
     await expect(assistantBubbles(page).filter({ hasText: 'APPROVAL_RECEIVED' }).last()).toBeVisible()
     await waitForAgentIdle(page)
     await expect(savedControlAnswer(page)).toHaveText('Approve')
     await expectSettingsChip(page, 'Build')
-    expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
     expect(readFileSync(join(directory, '.zcode', 'plans', `plan-${zcodePlanFileStem(agent.agentSessionId)}.md`), 'utf8')).toBe(plan)
 
-    const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
-    expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-    const decision = readNativeStoredControlDecision(snapshot, observed.requestId)
-    expect(decision.request).toEqual(observed.payload)
+    const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
     expect(decision.request).toMatchObject({ method: ZCODE_METHOD.RequestUserInput, request: { tool_name: ZCODE_TOOL.ExitPlanMode } })
     // The app-server matches a reply by its id alone, so the reply carries no `jsonrpc`.
     expect(decision.response).toEqual({
@@ -165,22 +158,21 @@ zcodeTest('approves a native ZCode plan into a chosen mode applied after the nat
   const agent = await currentNativeAgent({ page, leapmuxServer })
   expect(agent.id).toBe(agentId)
   const plan = '# Bypass probe\n\n- Change no files.'
-  await modelScript.queue(
+  const start = await modelScript.queue(
     { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'bypass-probe', plan)] },
     { text: 'BYPASS_APPROVAL_RECEIVED' },
   )
   await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Bypass probe".'))
-  await modelScript.waitForSteps(1)
+  await modelScript.waitForSteps(start + 1)
   const banner = controlBanner(page)
   await expect(banner).toContainText('Plan Ready for Review')
-  // The banner's permission pill states the mode the approval continues in.
-  await page.getByRole('radiogroup', { name: 'Permissions' }).getByRole('radio', { name: 'Bypass' }).check()
-  await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
+  // The permission pill of the control actions states the mode that the approval continues in.
+  await controlActions(page).getByRole('radiogroup', { name: 'Permissions' }).getByRole('radio', { name: 'Bypass' }).check()
+  await answerPlanReview(page, 'approve')
 
   await expect(banner).toHaveCount(0)
-  const status = await modelScript.waitForSteps(2)
-  const continuation = status.requests.find(request => request.stepIndex === 1)
-  expect(JSON.stringify(continuation?.body)).toContain('User has approved your plan. You can now start coding.')
+  const continuation = await modelScript.requestAt(start + 1)
+  expect(JSON.stringify(continuation.body)).toContain('User has approved your plan. You can now start coding.')
   await expect(assistantBubbles(page).filter({ hasText: 'BYPASS_APPROVAL_RECEIVED' }).last()).toBeVisible()
   await waitForAgentIdle(page)
   await expect(savedControlAnswer(page)).toHaveText('Approve')

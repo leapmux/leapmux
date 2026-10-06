@@ -1,6 +1,6 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
+import { answerControl, answerPlanReview, enterControlFeedback, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
 import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI plan approval', () => {
@@ -29,18 +29,18 @@ qoderTest.describe('Qoder CLI plan approval', () => {
     // Each plan decision can start another turn.
     await modelScript.fallback({ text: 'Working through the plan.' })
 
-    await modelScript.queue({ toolCalls: [enterPlanModeToolCall(PROVIDER, 'enter-plan')] })
+    const enter = await modelScript.queue({ toolCalls: [enterPlanModeToolCall(PROVIDER, 'enter-plan')] })
     await sendMessage(page, modelScript.prompt('Enter plan mode and present the plan.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(enter + 1)
     const enterBanner = await waitForControlBanner(page)
     await expect(enterBanner).toContainText('EnterPlanMode')
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+    await answerControl(page, 'allow')
     await waitForAgentIdle(page)
     await expectQoderModeChip(page, 'Plan')
 
-    await modelScript.queue(...planSteps('first'))
+    const first = await modelScript.queue(...planSteps('first'))
     await sendMessage(page, modelScript.prompt('Write the plan file, then present it for review.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(first + 2)
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
@@ -48,30 +48,28 @@ qoderTest.describe('Qoder CLI plan approval', () => {
 
     // A typed reply rejects the plan with feedback, and the session stays in
     // plan mode.
-    await page.locator('[data-testid="composer-editor"] .ProseMirror').click()
-    await page.keyboard.type('not ready yet', { delay: 50 })
-    await page.getByTestId('plan-reject-btn').click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    await enterControlFeedback(page, 'not ready yet')
+    await answerPlanReview(page, 'reject')
+    await expectNoControlBanner(page)
     await waitForAgentIdle(page)
     await expectQoderModeChip(page, 'Plan')
 
-    await modelScript.queue(...planSteps('second'))
+    const second = await modelScript.queue(...planSteps('second'))
     await sendMessage(page, modelScript.prompt('Revise the plan file and present it again.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(second + 2)
     const banner2 = await waitForControlBanner(page)
     await expect(banner2).toContainText('Plan Ready for Review')
-    await page.getByTestId('plan-approve-btn').click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    await answerPlanReview(page, 'approve')
+    await expectNoControlBanner(page)
     await waitForAgentIdle(page)
     // The review control selects Auto. The next turn keeps the approved plan.
     await expectQoderModeChip(page, 'Auto')
-    await modelScript.queue({ text: 'The approved mode stayed active.' })
+    const next = await modelScript.queue({ text: 'The approved mode stayed active.' })
     await sendMessage(page, modelScript.prompt('Reply after the approved plan.'))
-    const status = await modelScript.waitForSteps()
+    await modelScript.waitForSteps(next + 1)
     await waitForAgentIdle(page)
-    const nextRequest = status.requests.find(request => request.stepIndex === status.stepCount - 1)
-    expect(nextRequest).toBeDefined()
-    const nextBody = JSON.stringify(nextRequest?.body)
+    // The read fails when the agent never requested the step.
+    const nextBody = JSON.stringify((await modelScript.requestAt(next)).body)
     expect(nextBody.includes('# Dummy plan second')).toBe(true)
     expect(nextBody.includes('Exited Plan Mode')).toBe(true)
   })

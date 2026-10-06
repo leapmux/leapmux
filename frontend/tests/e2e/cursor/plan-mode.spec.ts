@@ -1,13 +1,10 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cursorTest } from '../cursor-fixtures'
 import { exerciseCursorNativePlanRPC, exerciseCursorSelectedPlanSettings } from './settingsScenario'
 
-cursorTest('plan-mode: keeps a selected model and Plan mode after a turn and reload', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
-  await exerciseCursorSelectedPlanSettings(context, 'permissionMode')
+cursorTest('plan-mode: keeps a selected model and Plan mode after a turn and reload', async ({ native }) => {
+  await exerciseCursorSelectedPlanSettings(native, 'permissionMode')
 })
 
-cursorTest('plan-mode: confirms Plan mode through the native set-mode RPC', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
-  await exerciseCursorNativePlanRPC(context)
+cursorTest('plan-mode: confirms Plan mode through the native set-mode RPC', async ({ native }) => {
+  await exerciseCursorNativePlanRPC(native)
 })

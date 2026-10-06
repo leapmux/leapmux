@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
-import { expectSettingsChip, measureBubbleEdges, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
+import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/worktree'
 
 claudeTest.describe('Control Request Draft Persistence', () => {
@@ -11,9 +11,7 @@ claudeTest.describe('Control Request Draft Persistence', () => {
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Type a rejection reason in the editor.
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.type('draft rejection reason', { delay: 100 })
+    await enterControlFeedback(page, 'draft rejection reason')
 
     // Wait for the debounced save to actually land, not for a fixed margin.
     await waitForEditorDraft(page, leapmuxServer.adminUserId, 'draft rejection reason')
@@ -22,12 +20,10 @@ claudeTest.describe('Control Request Draft Persistence', () => {
     await page.reload()
 
     // Wait for the control banner to reappear (control requests are persisted server-side).
-    const bannerAfterReload = page.locator('[data-testid="control-banner"]')
-    await expect(bannerAfterReload).toBeVisible()
+    await waitForControlBanner(page)
 
     // Verify the editor still contains the rejection reason.
-    const restoredEditor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(restoredEditor).toContainText('draft rejection reason')
+    await expect(composerEditor(page)).toContainText('draft rejection reason')
   })
 })
 
@@ -50,18 +46,15 @@ claudeTest.describe('Plan Mode', () => {
     await expect(exitBanner1.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 3: Reject the plan with a comment ──
-    const editorForReject = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editorForReject.click()
-    await page.keyboard.type('not ready yet', { delay: 100 })
-    const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
-    await expect(rejectBtn).toBeEnabled()
-    await rejectBtn.click()
+    await enterControlFeedback(page, 'not ready yet')
+    // The click waits until the button is enabled.
+    await answerPlanReview(page, 'reject')
 
     // Verify we are still in Plan Mode after rejection
     await expectSettingsChip(page, 'Plan Mode')
 
     // Wait for the control banner to disappear (rejection was processed)
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    await expectNoControlBanner(page)
 
     // The rejection returns to the model, which the fallback answers.
     await waitForAgentIdle(page)
@@ -71,15 +64,13 @@ claudeTest.describe('Plan Mode', () => {
     await expect(exitBanner2.getByText('Plan Ready for Review')).toBeVisible()
 
     // ── Step 5: Verify clear context checkbox is visible and unchecked ──
-    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
+    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"]:visible input[type="checkbox"]')
     await expect(clearContextCheckbox).toBeVisible()
     await expect(clearContextCheckbox).not.toBeChecked()
 
     // ── Step 6: Approve the plan (without clearing context) ──
-    const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
-    await expect(approveBtn).toBeEnabled()
     await expect(page.getByRole('radiogroup', { name: 'Permissions' }).getByRole('radio', { name: 'Smart' })).toBeChecked()
-    await approveBtn.click()
+    await answerPlanReview(page, 'approve')
 
     // Claude's Smart preset selects Auto Mode.
     await expectSettingsChip(page, 'Auto Mode')
@@ -94,7 +85,7 @@ claudeTest.describe('Plan Mode', () => {
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
     // Verify checkbox is visible and unchecked by default.
-    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
+    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"]:visible input[type="checkbox"]')
     await expect(clearContextCheckbox).toBeVisible()
     await expect(clearContextCheckbox).not.toBeChecked()
 
@@ -102,13 +93,11 @@ claudeTest.describe('Plan Mode', () => {
     await clearContextCheckbox.check()
     await expect(clearContextCheckbox).toBeChecked()
 
-    // Approve the plan.
-    const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
-    await expect(approveBtn).toBeEnabled()
-    await approveBtn.click()
+    // Approve the plan. The click waits until the button is enabled.
+    await answerPlanReview(page, 'approve')
 
     // Verify control banner disappears.
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    await expectNoControlBanner(page)
 
     // Verify context_cleared notification appears in the chat.
     //
@@ -144,11 +133,7 @@ claudeTest.describe('Plan Mode', () => {
     expect(Math.abs(edges.topGapInRow)).toBeLessThanOrEqual(1)
 
     // Verify Plan File is shown in the popover (plan_execution fires on clear context).
-    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    await expect(infoTrigger).toBeVisible()
-    await infoTrigger.click()
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
+    const popover = await openAgentInfoCard(page)
     await expect(popover.locator('[data-testid="info-row-plan-file"]')).toBeVisible()
   })
 })
@@ -159,30 +144,31 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     const banner = await enterAndExitPlanMode(page, modelScript)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
+    // The visible copy of each control. A count of zero visible copies proves that no copy of the control is visible.
+    const control = (testId: string) => page.getByTestId(testId).filter({ visible: true })
+
     // The empty editor shows Reject, Approve, the Clear Context switch, and the permission pills.
-    await expect(page.locator('[data-testid="plan-reject-btn"]')).toBeVisible()
-    await expect(page.locator('[data-testid="plan-approve-btn"]')).toBeVisible()
-    await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).toBeVisible()
-    await expect(page.locator('[data-testid="control-permissions-pill-group"]')).toBeVisible()
+    await expect(control('plan-reject-btn')).toBeVisible()
+    await expect(control('plan-approve-btn')).toBeVisible()
+    await expect(control('plan-clear-context-checkbox')).toBeVisible()
+    await expect(control('control-permissions-pill-group')).toBeVisible()
 
     // Type rejection text in the editor
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.type('needs changes', { delay: 100 })
+    await enterControlFeedback(page, 'needs changes')
 
     // With editor content: Send feedback is visible and Approve is hidden.
-    await expect(page.locator('[data-testid="plan-reject-btn"]')).toHaveText('Send feedback')
-    await expect(page.locator('[data-testid="plan-approve-btn"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="control-permissions-pill-group"]')).not.toBeVisible()
+    await expect(control('plan-reject-btn')).toHaveText('Send feedback')
+    await expect(control('plan-approve-btn')).toHaveCount(0)
+    await expect(control('plan-clear-context-checkbox')).toHaveCount(0)
+    await expect(control('control-permissions-pill-group')).toHaveCount(0)
 
     // Clear the editor
     await page.keyboard.press('Meta+a')
     await page.keyboard.press('Backspace')
 
     // Reject and Approve visible again
-    await expect(page.locator('[data-testid="plan-reject-btn"]')).toBeVisible()
-    await expect(page.locator('[data-testid="plan-approve-btn"]')).toBeVisible()
+    await expect(control('plan-reject-btn')).toBeVisible()
+    await expect(control('plan-approve-btn')).toBeVisible()
   })
 
   claudeTest('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -246,7 +232,7 @@ claudeTest.describe('plan mode - bypass permissions', () => {
 
 claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
   claudeTest('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
 
     // ── Step 1: Verify initial tab name contains "Agent" ──
     await expect(agentTab).toBeVisible()
@@ -263,9 +249,7 @@ claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
 
     // ── Step 3: Approve the plan ──
     await expect(exitBanner.getByText('Plan Ready for Review')).toBeVisible()
-    const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
-    await expect(approveBtn).toBeEnabled()
-    await approveBtn.click()
+    await answerPlanReview(page, 'approve')
 
     // Wait for plan execution to finish. The agent sees
     // "Never execute this plan." in the plan content and finishes quickly.

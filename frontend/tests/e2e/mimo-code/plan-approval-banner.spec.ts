@@ -5,7 +5,7 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { expectSettingsChip, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, controlBanner, enterControlFeedback, expectSettingsChip, messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { MIMO_AGENT, mimoTest } from '../mimo-fixtures'
 
@@ -27,51 +27,50 @@ mimoTest.describe('MiMo Code plan approval', () => {
   // message that tells the model to execute the plan, and the loop goes on.
   mimoTest('an approved plan switches the agent to Build and the turn goes on', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openPlanAgent(page, leapmuxServer, authenticatedEmptyWorkspace)
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] },
       { text: 'PLAN_EXECUTION_STARTED' },
     )
     await sendMessage(page, modelScript.prompt('Finish the plan and ask for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
 
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
     // The script writes no plan file, so the worker has no plan text to show. The
     // banner states where MiMo keeps the plan instead.
     await expect(banner).toContainText(/Plan file: \S+\.md/)
-    await page.getByTestId('plan-approve-btn').click()
+    await answerPlanReview(page, 'approve')
     await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     await expect(messageContents(page).filter({ hasText: 'PLAN_EXECUTION_STARTED' }).first()).toBeVisible()
     await expectSettingsChip(page, 'Build')
-    await expect(page.locator('[data-testid="control-response-text"]:visible')).toHaveText('Approve')
+    await expect(savedControlAnswer(page)).toHaveText('Approve')
   })
 
   // An empty rejection sends MiMo's native "No" answer.
   // The Plan agent remains selected. The plan call returns the rejection, and the same model loop continues.
   mimoTest('a plain rejection keeps the plan agent', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openPlanAgent(page, leapmuxServer, authenticatedEmptyWorkspace)
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] },
       { text: 'PLAN_KEPT' },
     )
     await sendMessage(page, modelScript.prompt('Finish the plan and ask for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
 
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
-    const reject = page.getByTestId('plan-reject-btn')
-    await expect(reject).toHaveText('Reject')
-    await reject.click()
+    await expect(page.getByTestId('plan-reject-btn').filter({ visible: true })).toHaveText('Reject')
+    await answerPlanReview(page, 'reject')
     await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
 
     await expect(messageContents(page).filter({ hasText: 'PLAN_KEPT' }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: 'Plan sent back' }).first()).toBeVisible()
-    await expect(page.locator('[data-testid="control-response-text"]:visible')).toHaveText('Reject')
+    await expect(savedControlAnswer(page)).toHaveText('Reject')
     await expectSettingsChip(page, 'Plan')
   })
 
@@ -80,7 +79,7 @@ mimoTest.describe('MiMo Code plan approval', () => {
   // words to the model.
   mimoTest('feedback keeps the plan agent and reaches the model', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openPlanAgent(page, leapmuxServer, authenticatedEmptyWorkspace)
-    await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] })
+    const start = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] })
     await modelScript.rule({
       name: 'the model reads the plan feedback',
       when: { body: 'Split the migration into two steps' },
@@ -88,14 +87,13 @@ mimoTest.describe('MiMo Code plan approval', () => {
       once: true,
     })
     await sendMessage(page, modelScript.prompt('Finish the plan and ask for approval.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 1)
 
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
+    const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
-    await page.getByTestId('composer-editor').locator('.ProseMirror').fill('Split the migration into two steps')
-    const reject = page.getByTestId('plan-reject-btn')
-    await expect(reject).toHaveText('Send feedback')
-    await reject.click()
+    await enterControlFeedback(page, 'Split the migration into two steps')
+    await expect(page.getByTestId('plan-reject-btn').filter({ visible: true })).toHaveText('Send feedback')
+    await answerPlanReview(page, 'reject')
     await expect(banner).toHaveCount(0)
     await expect(messageContents(page).filter({ hasText: 'PLAN_FEEDBACK_RECEIVED' }).first()).toBeVisible()
     await waitForAgentIdle(page)

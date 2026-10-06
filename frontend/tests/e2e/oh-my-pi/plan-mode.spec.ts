@@ -1,9 +1,6 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseMissingNativePlanMode } from '../helpers/unsupportedPlanMode'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
-ohMyPiTest('keeps the native plan command as text and offers no Plan mode', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
-  const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }
-  await exerciseMissingNativePlanMode(context)
+ohMyPiTest('keeps the native plan command as text and offers no Plan mode', async ({ native }) => {
+  await exerciseMissingNativePlanMode(native)
 })

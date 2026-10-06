@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest, offeredTools } from '../cline-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { expectSettingsChip, toggleModeWithShortcut, waitForSettingsHydrated } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 
 /**
  * The composer changes the actual native Plan setting. The next native operation must follow the selected policy.
@@ -13,15 +13,11 @@ import { expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from
  */
 clineTest.describe('Cline settings', () => {
   clineTest('Shift+Tab toggles Plan mode from the composer', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId, provider: AgentProvider.CLINE }
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Act')
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.press('Shift+Tab')
-    await waitForSettingsIdle(page)
-    await expectSettingsChip(page, 'Plan')
+    await toggleModeWithShortcut(page, 'Plan')
     for (const reload of [false, true]) {
       if (reload) {
         await page.reload()
@@ -33,10 +29,7 @@ clineTest.describe('Cline settings', () => {
       expect(offeredTools(plan.body)).not.toContain('editor')
     }
 
-    await editor.click()
-    await page.keyboard.press('Shift+Tab')
-    await waitForSettingsIdle(page)
-    await expectSettingsChip(page, 'Act')
+    await toggleModeWithShortcut(page, 'Act')
     const act = await sendNativeAnswer(context, 'Reply under the restored native execution mode.', 'The restored Act mode answered.')
     expect(offeredTools(act.body)).toContain('editor')
     expect(offeredTools(act.body)).not.toContain('switch_to_act_mode')

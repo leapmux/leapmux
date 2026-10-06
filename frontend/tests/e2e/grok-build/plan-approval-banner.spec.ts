@@ -6,11 +6,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
+import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 
 const PROVIDER = AgentProvider.GROK_BUILD
@@ -23,17 +22,17 @@ grokTest.describe('Grok Build control requests', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [exitPlanModeToolCall(PROVIDER, 'grok-plan', '')] },
       { text: 'Plan approved; starting.' },
     )
     await sendMessage(page, modelScript.prompt('Finish planning and ask for approval.'))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
-    await page.getByTestId('plan-approve-btn').filter({ visible: true }).click()
+    await answerPlanReview(page, 'approve')
     await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Plan approved; starting.' })).toBeVisible()
     await expectSettingsChip(page, 'Default')
@@ -51,32 +50,26 @@ grokTest.describe('Grok Build control requests', () => {
     const agent = await currentNativeAgent({ page, leapmuxServer })
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
-      await modelScript.queue(
+      const start = await modelScript.queue(
         { toolCalls: [exitPlanModeToolCall(PROVIDER, 'grok-rejected-plan', '')] },
         { text: 'Still planning after the rejection.' },
       )
       await sendMessage(page, modelScript.prompt('Finish planning and ask for approval.'))
-      await modelScript.waitForSteps(1)
+      await modelScript.waitForSteps(start + 1)
       const banner = controlBanner(page)
       await expect(banner).toContainText('Plan Ready for Review')
-      await expect.poll(() => watch.controls().length).toBeGreaterThan(0)
-      const observed = onlyObservedNativeControl(watch.controls())
-      await page.getByTestId('plan-reject-btn').filter({ visible: true }).click()
+      const observed = await waitForOneNativeControl(watch)
+      await answerPlanReview(page, 'reject')
 
       await expect(banner).toHaveCount(0)
-      const status = await modelScript.waitForSteps(2)
-      const continuation = status.requests.find(request => request.stepIndex === 1)
-      expect(JSON.stringify(continuation?.body)).toContain('The user does not want to exit plan mode. Continue planning and ask the user what they would like to do.')
+      const continuation = await modelScript.requestAt(start + 1)
+      expect(JSON.stringify(continuation.body)).toContain('The user does not want to exit plan mode. Continue planning and ask the user what they would like to do.')
       await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: 'Still planning after the rejection.' })).toBeVisible()
       await expect(savedControlAnswer(page)).toHaveText('Reject')
       await expectSettingsOptionChosen(page, `${OPTION_ID_PERMISSION_MODE}-${GROK_MODE.Plan}`)
-      expect(onlyObservedNativeControl(watch.controls())).toBe(observed)
 
-      const snapshot = await readNativeMessageSnapshot({ leapmuxServer }, agent.id)
-      expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-      const decision = readNativeStoredControlDecision(snapshot, observed.requestId)
-      expect(decision.request).toEqual(observed.payload)
+      const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
       expect(decision.request.method).toBe(GROK_METHOD.ExitPlanMode)
       // A bare rejection carries no feedback field, which is what selects Grok's own refusal text.
       expect(decision.response).toEqual({ jsonrpc: '2.0', id: observed.payload.id, result: { [GROK_REPLY_FIELD.Outcome]: GROK_PLAN_OUTCOME.Cancelled } })
