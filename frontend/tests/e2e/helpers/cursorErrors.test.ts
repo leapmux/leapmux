@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
 import { cursorErrorResponse } from './cursorErrors'
-import { descend, readLengthDelimitedFields } from './cursorWire'
+import { descend, readCursorProtobufFields } from './cursorProtobuf'
 
 interface ConnectErrorReply {
   error: { code: string, message: string, details: Array<{ type: string, value: string }> }
@@ -24,7 +24,7 @@ describe('cursorErrorResponse', () => {
     expect(reply.error).toMatchObject({ code: 'resource_exhausted', message: 'CURSOR_NATIVE_QUOTA' })
     expect([...details.subarray(0, 2)]).toEqual([0x08, 10])
     const custom = descend(details, [2])!
-    const fields = readLengthDelimitedFields(custom)
+    const fields = readCursorProtobufFields(custom).strings
     expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe('Usage limit reached')
     expect(new TextDecoder().decode(fields.get(2)?.[0])).toBe('CURSOR_NATIVE_QUOTA')
     expect([...custom.subarray(-2)]).toEqual([0x20, 0])

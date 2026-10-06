@@ -1,9 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
-import { cursorProtobufNumber, cursorProtobufString, readCursorProtobufFields } from './cursorProtobuf'
-import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorSubagentFixtures'
+import { cursorProtobufNumber, cursorProtobufString, descend, encodeLengthDelimited, encodeStringField, readCursorProtobufFields } from './cursorProtobuf'
 import { cursorSubagentExecutionRequest, cursorSubagentExecutionResponseOf, cursorTaskCompletedFromNativeReply } from './cursorSubagentWire'
-import { descend, encodeLengthDelimited, encodeStringField } from './cursorWire'
+import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorTestFrames'
 
 const call = { callID: 'native-task', description: 'Actual native task', prompt: 'Execute the actual child.', modelID: 'auto', parentConversationID: 'actual-parent' }
 

@@ -3,6 +3,8 @@ import { gzipSync } from 'node:zlib'
 import { fromBinary, toJson } from '@bufbuild/protobuf'
 import { ValueSchema } from '@bufbuild/protobuf/wkt'
 import { describe, expect, it } from 'vitest'
+import { descend, encodeLengthDelimited, encodeStringField, encodeVarint, encodeVarintField, readCursorProtobufFields } from './cursorProtobuf'
+import { clientMessageWithPrompt, executionReplyFrame } from './cursorTestFrames'
 import {
   connectEndOfStream,
   connectFrame,
@@ -31,108 +33,8 @@ import {
   cursorTodoStarted,
   cursorTurnEnded,
   cursorUsableModels,
-  descend,
-  encodeLengthDelimited,
-  encodeStringField,
-  encodeVarint,
-  readLengthDelimitedFields,
   takeConnectFrames,
 } from './cursorWire'
-
-/** Build the nesting a real `AgentClientMessage` uses to carry a prompt. */
-function clientMessageWithPrompt(text: string): Uint8Array {
-  return encodeLengthDelimited(1, // AgentClientMessage.run_request
-    encodeLengthDelimited(2, // AgentRunRequest.action
-      encodeLengthDelimited(1, // ConversationAction.user_message_action
-        encodeLengthDelimited(1, // UserMessageAction.user_message
-          encodeStringField(1, text), // UserMessage.text
-        ))))
-}
-
-describe('encodeVarint', () => {
-  it('rejects a number that cannot preserve its integer value', () => {
-    expect(() => encodeVarint(Number.MAX_SAFE_INTEGER + 1)).toThrow('safe integer')
-  })
-  it('writes one byte below 128 and two above it', () => {
-    expect([...encodeVarint(0)]).toEqual([0])
-    expect([...encodeVarint(127)]).toEqual([0x7F])
-    expect([...encodeVarint(128)]).toEqual([0x80, 0x01])
-    expect([...encodeVarint(300)]).toEqual([0xAC, 0x02])
-  })
-
-  it('refuses a negative or fractional value rather than writing a wrong length', () => {
-    expect(() => encodeVarint(-1)).toThrow('non-negative integer')
-    expect(() => encodeVarint(1.5)).toThrow('non-negative integer')
-  })
-})
-
-describe('encodeLengthDelimited', () => {
-  it('encodes the largest valid field number without a signed bitwise overflow', () => {
-    const field = 0x1FFF_FFFF
-    const fields = readLengthDelimitedFields(encodeLengthDelimited(field, Uint8Array.from([42])))
-    expect(fields.get(field)).toEqual([Uint8Array.from([42])])
-  })
-
-  it.each([0, -1, 1.5, 0x2000_0000, Number.POSITIVE_INFINITY])('rejects the invalid field number %s before encoding it', (field) => {
-    expect(() => encodeLengthDelimited(field, new Uint8Array())).toThrow('field number')
-  })
-  it('writes the tag, the length, and the payload', () => {
-    // Write tag 0x0A for field 1 with wire type 2.
-    // Then write the length and payload bytes.
-    expect([...encodeStringField(1, 'hi')]).toEqual([0x0A, 0x02, 0x68, 0x69])
-  })
-
-  it('writes a multi-byte length for a payload past 127 bytes', () => {
-    const encoded = encodeLengthDelimited(1, new Uint8Array(200))
-    expect([...encoded.subarray(0, 3)]).toEqual([0x0A, 0xC8, 0x01])
-    expect(encoded.byteLength).toBe(203)
-  })
-})
-
-describe('readLengthDelimitedFields', () => {
-  it('reads a field back after writing it', () => {
-    const fields = readLengthDelimitedFields(encodeStringField(7, 'value'))
-    expect(new TextDecoder().decode(fields.get(7)![0]!)).toBe('value')
-  })
-
-  it('keeps every occurrence of a repeated field, in order', () => {
-    const bytes = Buffer.concat([encodeStringField(3, 'a'), encodeStringField(3, 'b')])
-    const fields = readLengthDelimitedFields(new Uint8Array(bytes))
-    expect(fields.get(3)!.map(v => new TextDecoder().decode(v))).toEqual(['a', 'b'])
-  })
-
-  // The reader must skip fields that it does not decode.
-  // A neighboring varint or fixed-width field must not shift later fields.
-  it('skips a varint, a 64-bit and a 32-bit field without losing its place', () => {
-    const varintField = Uint8Array.from([(2 << 3) | 0, 0xAC, 0x02])
-    const fixed64Field = Uint8Array.from([(4 << 3) | 1, 1, 2, 3, 4, 5, 6, 7, 8])
-    const fixed32Field = Uint8Array.from([(5 << 3) | 5, 1, 2, 3, 4])
-    const bytes = Buffer.concat([varintField, fixed64Field, encodeStringField(9, 'kept'), fixed32Field])
-    const fields = readLengthDelimitedFields(new Uint8Array(bytes))
-    expect(new TextDecoder().decode(fields.get(9)![0]!)).toBe('kept')
-  })
-
-  it('returns no field for an empty message', () => {
-    expect(readLengthDelimitedFields(new Uint8Array(0)).size).toBe(0)
-  })
-
-  it('does not treat a truncated payload as a complete length-delimited field', () => {
-    const truncated = Uint8Array.from([0x0A, 0x04, 0x61])
-    expect(readLengthDelimitedFields(truncated).has(1)).toBe(false)
-  })
-})
-
-describe('descend', () => {
-  it('follows a chain of nested fields', () => {
-    const nested = encodeLengthDelimited(1, encodeLengthDelimited(2, encodeStringField(3, 'deep')))
-    expect(new TextDecoder().decode(descend(nested, [1, 2, 3])!)).toBe('deep')
-  })
-
-  it('answers undefined for a path that leaves the message', () => {
-    expect(descend(encodeStringField(1, 'x'), [1, 2])).toBeUndefined()
-    expect(descend(encodeStringField(1, 'x'), [4])).toBeUndefined()
-  })
-})
 
 describe('cursorPromptOf', () => {
   it('reads the prompt out of the five-field path', () => {
@@ -156,7 +58,7 @@ describe('cursorPromptOf', () => {
 
 describe('cursorConversationIdOf', () => {
   it('reads the Run request conversation ID beside the action', () => {
-    const prompt = readLengthDelimitedFields(clientMessageWithPrompt('Continue.')).get(1)![0]!
+    const prompt = readCursorProtobufFields(clientMessageWithPrompt('Continue.')).strings.get(1)![0]!
     const run = Buffer.concat([prompt, encodeStringField(5, 'cursor-conversation-1')])
     expect(cursorConversationIdOf(encodeLengthDelimited(1, run))).toBe('cursor-conversation-1')
   })
@@ -330,10 +232,10 @@ describe('cursorAvailableModels', () => {
       { name: 'default', displayName: 'Auto', variants: [{ id: 'default[]', displayName: 'Auto' }] },
       { name: 'mock-grok', displayName: 'Mock Grok', variants: [{ id: 'mock-grok[]', displayName: 'Mock Grok' }] },
     ])
-    const models = readLengthDelimitedFields(encoded).get(FIELD_MODELS)
+    const models = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)
     expect(models).toHaveLength(2)
-    expect(text(readLengthDelimitedFields(models![0]!).get(FIELD_MODEL_NAME)?.[0])).toBe('default')
-    expect(text(readLengthDelimitedFields(models![1]!).get(FIELD_MODEL_NAME)?.[0])).toBe('mock-grok')
+    expect(text(readCursorProtobufFields(models![0]!).strings.get(FIELD_MODEL_NAME)?.[0])).toBe('default')
+    expect(text(readCursorProtobufFields(models![1]!).strings.get(FIELD_MODEL_NAME)?.[0])).toBe('mock-grok')
   })
 
   // The picker requires both the variant's display name and variant string.
@@ -347,11 +249,11 @@ describe('cursorAvailableModels', () => {
         { id: 'mock-grok[context=256k,reasoning_effort=xhigh]', displayName: 'Mock Grok Extra High' },
       ],
     }])
-    const model = readLengthDelimitedFields(encoded).get(FIELD_MODELS)![0]!
-    const variants = readLengthDelimitedFields(model).get(FIELD_MODEL_VARIANTS)
+    const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!
+    const variants = readCursorProtobufFields(model).strings.get(FIELD_MODEL_VARIANTS)
     expect(variants).toHaveLength(2)
     const read = variants!.map((variant) => {
-      const fields = readLengthDelimitedFields(variant)
+      const fields = readCursorProtobufFields(variant).strings
       return {
         id: text(fields.get(FIELD_VARIANT_STRING)?.[0]),
         displayName: text(fields.get(FIELD_VARIANT_DISPLAY_NAME)?.[0]),
@@ -367,13 +269,13 @@ describe('cursorAvailableModels', () => {
     const withAlias = cursorAvailableModels([
       { name: 'default', displayName: 'Auto', aliases: ['auto'], variants: [{ id: 'default[]', displayName: 'Auto' }] },
     ])
-    const aliased = readLengthDelimitedFields(readLengthDelimitedFields(withAlias).get(FIELD_MODELS)![0]!)
+    const aliased = readCursorProtobufFields(readCursorProtobufFields(withAlias).strings.get(FIELD_MODELS)![0]!).strings
     expect(aliased.get(FIELD_MODEL_ID_ALIASES)?.map(a => text(a))).toEqual(['auto'])
 
     const without = cursorAvailableModels([
       { name: 'mock-grok', displayName: 'Mock Grok', variants: [{ id: 'mock-grok[]', displayName: 'Mock Grok' }] },
     ])
-    const bare = readLengthDelimitedFields(readLengthDelimitedFields(without).get(FIELD_MODELS)![0]!)
+    const bare = readCursorProtobufFields(readCursorProtobufFields(without).strings.get(FIELD_MODELS)![0]!).strings
     expect(bare.get(FIELD_MODEL_ID_ALIASES)).toBeUndefined()
   })
 
@@ -387,11 +289,11 @@ describe('cursorAvailableModels', () => {
         parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'low' }],
       }],
     }])
-    const model = readLengthDelimitedFields(encoded).get(FIELD_MODELS)![0]!
-    const variant = readLengthDelimitedFields(model).get(FIELD_MODEL_VARIANTS)![0]!
-    const parameters = readLengthDelimitedFields(variant).get(1) ?? []
+    const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!
+    const variant = readCursorProtobufFields(model).strings.get(FIELD_MODEL_VARIANTS)![0]!
+    const parameters = readCursorProtobufFields(variant).strings.get(1) ?? []
     expect(parameters.map((parameter) => {
-      const fields = readLengthDelimitedFields(parameter)
+      const fields = readCursorProtobufFields(parameter).strings
       return { id: text(fields.get(1)?.[0]), value: text(fields.get(2)?.[0]) }
     })).toEqual([{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'low' }])
   })
@@ -404,8 +306,8 @@ describe('cursorAvailableModels', () => {
     }])
     const parameter = descend(encoded, [FIELD_MODELS, FIELD_MODEL_VARIANTS, 1])
     expect(parameter).toBeDefined()
-    expect(text(readLengthDelimitedFields(parameter!).get(1)?.[0])).toBe('native-option')
-    expect(text(readLengthDelimitedFields(parameter!).get(2)?.[0])).toBe('')
+    expect(text(readCursorProtobufFields(parameter!).strings.get(1)?.[0])).toBe('native-option')
+    expect(text(readCursorProtobufFields(parameter!).strings.get(2)?.[0])).toBe('')
   })
 
   // An all-defaults answer produces an empty catalog.
@@ -418,9 +320,9 @@ describe('cursorAvailableModels', () => {
   // It contributes no picker entry, so the encoder must not invent one.
   it('writes a model that has no variants', () => {
     const encoded = cursorAvailableModels([{ name: 'bare', displayName: 'Bare', variants: [] }])
-    const model = readLengthDelimitedFields(encoded).get(FIELD_MODELS)![0]!
-    expect(readLengthDelimitedFields(model).get(FIELD_MODEL_VARIANTS)).toBeUndefined()
-    expect(text(readLengthDelimitedFields(model).get(FIELD_MODEL_NAME)?.[0])).toBe('bare')
+    const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!
+    expect(readCursorProtobufFields(model).strings.get(FIELD_MODEL_VARIANTS)).toBeUndefined()
+    expect(text(readCursorProtobufFields(model).strings.get(FIELD_MODEL_NAME)?.[0])).toBe('bare')
   })
 })
 
@@ -440,7 +342,7 @@ describe('cursorDefaultModel', () => {
   }
 
   const details = (encoded: Uint8Array): Map<number, Uint8Array[]> =>
-    readLengthDelimitedFields(readLengthDelimitedFields(encoded).get(FIELD_MODEL_DETAILS)![0]!)
+    readCursorProtobufFields(readCursorProtobufFields(encoded).strings.get(FIELD_MODEL_DETAILS)![0]!).strings
 
   const text = (bytes: Uint8Array | undefined): string | undefined =>
     bytes === undefined ? undefined : new TextDecoder().decode(bytes)
@@ -475,10 +377,10 @@ describe('cursorUsableModels', () => {
       { name: 'default', displayName: 'Auto', aliases: ['auto'], variants: [] },
       { name: 'mock-grok', displayName: 'Mock Grok', variants: [] },
     ])
-    const entries = readLengthDelimitedFields(encoded).get(FIELD_MODEL_DETAILS)
+    const entries = readCursorProtobufFields(encoded).strings.get(FIELD_MODEL_DETAILS)
     expect(entries).toHaveLength(2)
     const names = entries!.map(entry =>
-      new TextDecoder().decode(readLengthDelimitedFields(entry).get(FIELD_DETAILS_MODEL_ID)![0]!))
+      new TextDecoder().decode(readCursorProtobufFields(entry).strings.get(FIELD_DETAILS_MODEL_ID)![0]!))
     expect(names).toEqual(['default', 'mock-grok'])
   })
 
@@ -494,8 +396,8 @@ describe('cursorSetBlob', () => {
   const FIELD_SET_BLOB_DATA = 2
 
   const setBlobArgs = (encoded: Uint8Array): Map<number, Uint8Array[]> => {
-    const kv = readLengthDelimitedFields(encoded).get(FIELD_KV_SERVER_MESSAGE)![0]!
-    return readLengthDelimitedFields(readLengthDelimitedFields(kv).get(FIELD_KV_SET_BLOB_ARGS)![0]!)
+    const kv = readCursorProtobufFields(encoded).strings.get(FIELD_KV_SERVER_MESSAGE)![0]!
+    return readCursorProtobufFields(readCursorProtobufFields(kv).strings.get(FIELD_KV_SET_BLOB_ARGS)![0]!).strings
   }
 
   it('carries the blob id and its data as bytes', () => {
@@ -533,11 +435,13 @@ describe('cursorTodoStarted and cursorTodoCompleted', () => {
 
   it('writes native Todo ids, content, and enum statuses on the started update', () => {
     // InteractionUpdate.tool_call_started -> ToolCall.update_todos_tool_call
-    // -> UpdateTodosToolCall.args -> UpdateTodosArgs.todos.
-    const first = descend(cursorTodoStarted(call), [1, 2, 2, 9, 1, 1])!
-    const second = readLengthDelimitedFields(descend(cursorTodoStarted(call), [1, 2, 2, 9, 1])!).get(1)![1]!
-    expect(new TextDecoder().decode(readLengthDelimitedFields(first).get(1)![0]!)).toBe('1')
-    expect(new TextDecoder().decode(readLengthDelimitedFields(first).get(2)![0]!)).toBe('Inspect')
+    // -> UpdateTodosToolCall.args -> UpdateTodosArgs.todos. The todos field
+    // repeats, and `descend` reads a singular field, so read the list itself.
+    const [first, second] = readCursorProtobufFields(descend(cursorTodoStarted(call), [1, 2, 2, 9, 1])!).strings.get(1)!
+    if (!first || !second)
+      throw new Error('The started Todo update holds fewer than two items.')
+    expect(new TextDecoder().decode(readCursorProtobufFields(first).strings.get(1)![0]!)).toBe('1')
+    expect(new TextDecoder().decode(readCursorProtobufFields(first).strings.get(2)![0]!)).toBe('Inspect')
     expect([...first.slice(-2)]).toEqual([0x18, 3])
     expect([...second.slice(-2)]).toEqual([0x18, 2])
   })
@@ -546,9 +450,9 @@ describe('cursorTodoStarted and cursorTodoCompleted', () => {
     // InteractionUpdate.tool_call_completed -> ToolCall.update_todos_tool_call
     // -> UpdateTodosToolCall.result -> UpdateTodosResult.success.
     const success = descend(cursorTodoCompleted(call), [1, 3, 2, 9, 2, 1])!
-    const items = readLengthDelimitedFields(success).get(1)
+    const items = readCursorProtobufFields(success).strings.get(1)
     expect(items).toHaveLength(2)
-    expect(new TextDecoder().decode(readLengthDelimitedFields(items![1]!).get(2)![0]!)).toBe('Report')
+    expect(new TextDecoder().decode(readCursorProtobufFields(items![1]!).strings.get(2)![0]!)).toBe('Report')
     expect([...success.slice(-4)]).toEqual([0x10, 2, 0x18, 0])
   })
 
@@ -565,18 +469,18 @@ describe('cursorGenerateImageStarted and cursorGenerateImageCompleted', () => {
   it('encodes the native tool id and image request', () => {
     const started = cursorGenerateImageStarted(call)
     const tool = descend(started, [1, 2, 2])!
-    const fields = readLengthDelimitedFields(tool)
+    const fields = readCursorProtobufFields(tool).strings
     expect(new TextDecoder().decode(fields.get(57)?.[0])).toBe(call.callID)
     const args = descend(tool, [28, 1])!
-    expect(new TextDecoder().decode(readLengthDelimitedFields(args).get(1)?.[0])).toBe(call.description)
-    expect(new TextDecoder().decode(readLengthDelimitedFields(args).get(2)?.[0])).toBe(call.filePath)
+    expect(new TextDecoder().decode(readCursorProtobufFields(args).strings.get(1)?.[0])).toBe(call.description)
+    expect(new TextDecoder().decode(readCursorProtobufFields(args).strings.get(2)?.[0])).toBe(call.filePath)
     expect(descend(tool, [28, 2])).toBeUndefined()
   })
 
   it('encodes the native success with a file path and image data', () => {
     const completed = cursorGenerateImageCompleted(call)
     const success = descend(completed, [1, 3, 2, 28, 2, 1])!
-    const fields = readLengthDelimitedFields(success)
+    const fields = readCursorProtobufFields(success).strings
     expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe(call.filePath)
     expect(new TextDecoder().decode(fields.get(2)?.[0])).toBe(call.imageData)
   })
@@ -598,13 +502,13 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
       questions: [{ id: 'question-1', prompt: 'Which color?', allowMultiple: false, options: [{ id: 'option-1-1', label: 'Blue' }] }],
     })
     const request = descend(query, [7, 3])!
-    expect(new TextDecoder().decode(readLengthDelimitedFields(request).get(2)?.[0])).toBe('cursor-q')
+    expect(new TextDecoder().decode(readCursorProtobufFields(request).strings.get(2)?.[0])).toBe('cursor-q')
     const args = descend(request, [1])!
-    expect(new TextDecoder().decode(readLengthDelimitedFields(args).get(1)?.[0])).toBe('Color')
+    expect(new TextDecoder().decode(readCursorProtobufFields(args).strings.get(1)?.[0])).toBe('Color')
     const question = descend(args, [2])!
-    expect(new TextDecoder().decode(readLengthDelimitedFields(question).get(2)?.[0])).toBe('Which color?')
+    expect(new TextDecoder().decode(readCursorProtobufFields(question).strings.get(2)?.[0])).toBe('Which color?')
     const option = descend(question, [3])!
-    expect(new TextDecoder().decode(readLengthDelimitedFields(option).get(1)?.[0])).toBe('option-1-1')
+    expect(new TextDecoder().decode(readCursorProtobufFields(option).strings.get(1)?.[0])).toBe('option-1-1')
     expect([...query]).toContain(0xAC)
   })
 
@@ -658,7 +562,7 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
     })
     const exec = descend(encoded, [2])!
     const args = descend(exec, [11])!
-    const fields = readLengthDelimitedFields(args)
+    const fields = readCursorProtobufFields(args).strings
     expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe('form_probe-echo')
     expect(new TextDecoder().decode(fields.get(3)?.[0])).toBe('mcp-1')
     expect(new TextDecoder().decode(fields.get(5)?.[0])).toBe('form_probe-echo')
@@ -674,7 +578,7 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
 
   it('keeps an empty input and refuses non-JSON values', () => {
     const call = { callID: 'mcp-1', server: 'form_probe', tool: 'ask', input: {} }
-    expect(readLengthDelimitedFields(descend(cursorMcpExec(301, call), [2, 11])!).get(2)).toBeUndefined()
+    expect(readCursorProtobufFields(descend(cursorMcpExec(301, call), [2, 11])!).strings.get(2)).toBeUndefined()
     expect(() => cursorMcpExec(301, { ...call, input: { count: Number.NaN } })).toThrow('non-finite number')
     expect(() => cursorMcpExec(301, { ...call, input: { missing: undefined } })).toThrow('non-JSON value')
     const cycle: Record<string, unknown> = {}
@@ -722,7 +626,7 @@ describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
 
   it('encodes the native request context query with its id and call identity', () => {
     const exec = descend(cursorRequestContextExec(301, 'context-1'), [2])!
-    const fields = readLengthDelimitedFields(exec)
+    const fields = readCursorProtobufFields(exec).strings
     expect(new TextDecoder().decode(fields.get(15)?.[0])).toBe('context-1')
     expect(fields.get(10)?.[0]?.byteLength).toBe(0)
     expect([...exec.subarray(0, 3)]).toEqual([0x08, ...encodeVarint(301)])
@@ -763,18 +667,10 @@ describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
   })
 })
 
-function integer(field: number, value: number): Uint8Array {
-  return Buffer.concat([encodeVarint(field * 8), encodeVarint(value)])
-}
-
-function clientReply(id: number, field: number, outcome: number, bytes: Uint8Array): Uint8Array {
-  return encodeLengthDelimited(2, Buffer.concat([integer(1, id), encodeStringField(15, 'tool'), encodeLengthDelimited(field, encodeLengthDelimited(outcome, bytes))]))
-}
-
 describe('cursorExecutionRequest', () => {
   it('uses the native shell envelope and argument field numbers', () => {
     const frame = cursorExecutionRequest(3, { kind: 'shell', callID: 'tool', command: 'printf native', workingDirectory: '/project' })
-    const args = readLengthDelimitedFields(descend(frame, [2, 2])!)
+    const args = readCursorProtobufFields(descend(frame, [2, 2])!).strings
     expect(new TextDecoder().decode(args.get(1)?.[0])).toBe('printf native')
     expect(new TextDecoder().decode(args.get(2)?.[0])).toBe('/project')
     expect(new TextDecoder().decode(args.get(4)?.[0])).toBe('tool')
@@ -788,10 +684,10 @@ describe('cursorExecutionRequest', () => {
   })
 
   it('keeps empty write text and the actual read path', () => {
-    const write = readLengthDelimitedFields(descend(cursorExecutionRequest(4, { kind: 'write', callID: 'tool', path: '/project/empty', content: '' }), [2, 3])!)
+    const write = readCursorProtobufFields(descend(cursorExecutionRequest(4, { kind: 'write', callID: 'tool', path: '/project/empty', content: '' }), [2, 3])!).strings
     expect(write.has(2)).toBe(true)
     expect(write.get(2)?.[0]?.length).toBe(0)
-    const read = readLengthDelimitedFields(descend(cursorExecutionRequest(5, { kind: 'read', callID: 'tool', path: '/project/empty' }), [2, 7])!)
+    const read = readCursorProtobufFields(descend(cursorExecutionRequest(5, { kind: 'read', callID: 'tool', path: '/project/empty' }), [2, 7])!).strings
     expect(new TextDecoder().decode(read.get(1)?.[0])).toBe('/project/empty')
   })
 
@@ -802,7 +698,7 @@ describe('cursorExecutionRequest', () => {
 
 describe('cursorExecutionResponseOf', () => {
   it('preserves actual stdout and stderr from a failed native shell', () => {
-    const frame = clientReply(3, 2, 2, Buffer.concat([integer(3, 7), encodeStringField(5, 'actual out'), encodeStringField(6, 'actual err')]))
+    const frame = executionReplyFrame(3, 2, 2, Buffer.concat([encodeVarintField(3, 7), encodeStringField(5, 'actual out'), encodeStringField(6, 'actual err')]), 'tool')
     const reply = cursorExecutionResponseOf(frame)
     expect(reply).toMatchObject({ id: 3, execID: 'tool', kind: 'shell', success: false, exitCode: 7 })
     expect(reply?.text).toContain('actual out')
@@ -811,19 +707,19 @@ describe('cursorExecutionResponseOf', () => {
 
   it('reads a native signed int32 exit code', () => {
     const negativeOne = Uint8Array.from([0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
-    expect(cursorExecutionResponseOf(clientReply(3, 2, 2, negativeOne))).toMatchObject({ exitCode: -1, success: false })
+    expect(cursorExecutionResponseOf(executionReplyFrame(3, 2, 2, negativeOne, 'tool'))).toMatchObject({ exitCode: -1, success: false })
   })
 
   it('keeps empty text and binary read output distinct from absent output', () => {
-    expect(cursorExecutionResponseOf(clientReply(3, 7, 1, encodeStringField(2, '')))).toMatchObject({ content: '', text: '' })
-    const binary = cursorExecutionResponseOf(clientReply(3, 7, 1, encodeLengthDelimited(5, Uint8Array.from([0, 255]))))
+    expect(cursorExecutionResponseOf(executionReplyFrame(3, 7, 1, encodeStringField(2, ''), 'tool'))).toMatchObject({ content: '', text: '' })
+    const binary = cursorExecutionResponseOf(executionReplyFrame(3, 7, 1, encodeLengthDelimited(5, Uint8Array.from([0, 255])), 'tool'))
     expect(binary?.data).toEqual(Uint8Array.from([0, 255]))
     expect(binary?.content).toBeUndefined()
   })
 
   it('distinguishes a missing file and a denied write from successful empty results', () => {
-    expect(cursorExecutionResponseOf(clientReply(3, 7, 4, encodeStringField(1, '/project/missing')))).toMatchObject({ success: false, failureKind: 'file-not-found' })
-    expect(cursorExecutionResponseOf(clientReply(3, 3, 3, encodeStringField(2, 'denied')))).toMatchObject({ success: false, failureKind: 'permission-denied' })
+    expect(cursorExecutionResponseOf(executionReplyFrame(3, 7, 4, encodeStringField(1, '/project/missing'), 'tool'))).toMatchObject({ success: false, failureKind: 'file-not-found' })
+    expect(cursorExecutionResponseOf(executionReplyFrame(3, 3, 3, encodeStringField(2, 'denied'), 'tool'))).toMatchObject({ success: false, failureKind: 'permission-denied' })
   })
 
   it('ignores a nonexecution client message', () => {
@@ -841,11 +737,11 @@ describe('cursorExecutionToolCompleted', () => {
   it('uses the source-backed start and completion update fields', () => {
     const call = { kind: 'read' as const, callID: 'tool', path: '/project/a' }
     expect(descend(cursorExecutionToolStarted(call), [1, 2, 2, 8, 1])).toBeDefined()
-    const reply = cursorExecutionResponseOf(clientReply(3, 7, 1, Buffer.concat([encodeStringField(1, '/project/a'), encodeStringField(2, 'actual data')])))
+    const reply = cursorExecutionResponseOf(executionReplyFrame(3, 7, 1, Buffer.concat([encodeStringField(1, '/project/a'), encodeStringField(2, 'actual data')]), 'tool'))
     if (!reply)
       throw new Error('The native read has no reply.')
     const frame = cursorExecutionToolCompleted(call, reply, { before: '', after: '' })
-    const success = readLengthDelimitedFields(descend(frame, [1, 3, 2, 8, 2, 1])!)
+    const success = readCursorProtobufFields(descend(frame, [1, 3, 2, 8, 2, 1])!).strings
     expect(new TextDecoder().decode(success.get(1)?.[0])).toBe('actual data')
     expect(new TextDecoder().decode(success.get(7)?.[0])).toBe('/project/a')
   })

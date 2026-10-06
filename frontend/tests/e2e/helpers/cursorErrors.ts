@@ -1,6 +1,7 @@
 import type { MockModelDeliveredError, MockModelError } from './mockModelScript'
 import { Buffer } from 'node:buffer'
-import { connectEndOfStream, encodeLengthDelimited, encodeStringField, encodeVarint } from './cursorWire'
+import { concatBytes, encodeLengthDelimited, encodeStringField, encodeVarintField } from './cursorProtobuf'
+import { connectEndOfStream } from './cursorWire'
 
 /** Connect error codes used by the installed Cursor transport. */
 function connectErrorCode(status: number): string {
@@ -19,10 +20,6 @@ function connectErrorCode(status: number): string {
   }
 }
 
-function integer(field: number, value: number): Uint8Array {
-  return Buffer.concat([encodeVarint(field * 8), encodeVarint(value)])
-}
-
 /** End an actual Run with the installed native error details and an explicit no-retry flag. */
 export function cursorErrorResponse(error: MockModelError): { frame: Uint8Array, error: MockModelDeliveredError } {
   if (!Number.isInteger(error.status) || error.status < 400 || error.status > 599)
@@ -31,18 +28,18 @@ export function cursorErrorResponse(error: MockModelError): { frame: Uint8Array,
     throw new Error('The Cursor error requires a string message.')
   const quota = error.status === 429
   // ErrorDetails uses PRO_USER_USAGE_LIMIT=10 and CUSTOM_MESSAGE=29.
-  const details = Buffer.concat([
-    integer(1, quota ? 10 : 29),
-    encodeLengthDelimited(2, Buffer.concat([
+  const details = concatBytes([
+    encodeVarintField(1, quota ? 10 : 29),
+    encodeLengthDelimited(2, concatBytes([
       encodeStringField(1, quota ? 'Usage limit reached' : 'Model request failed'),
       encodeStringField(2, error.message),
-      integer(4, 0),
+      encodeVarintField(4, 0),
     ])),
-    integer(3, 1),
+    encodeVarintField(3, 1),
   ])
   const deliveredError = { code: connectErrorCode(error.status), message: error.message }
   return {
-    frame: connectEndOfStream({ error: { ...deliveredError, details: [{ type: 'aiserver.v1.ErrorDetails', value: details.toString('base64') }] } }),
+    frame: connectEndOfStream({ error: { ...deliveredError, details: [{ type: 'aiserver.v1.ErrorDetails', value: Buffer.from(details).toString('base64') }] } }),
     error: deliveredError,
   }
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { encodeLengthDelimited, encodeStringField } from './cursorProtobuf'
 import { CursorSubagentExecution } from './cursorSubagentExecution'
-import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorSubagentFixtures'
-import { encodeLengthDelimited, encodeStringField } from './cursorWire'
+import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorTestFrames'
 
 const call = { callID: 'native-task', description: 'Actual native task', prompt: 'Execute the actual child.', modelID: 'auto', parentConversationID: 'actual-parent' }
 const success = () => cursorSubagentSuccessFixture({ agentID: 'actual-child', finalMessage: 'ACTUAL_CHILD_REPORT' })

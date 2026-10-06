@@ -1,6 +1,6 @@
 import type { CursorProtobufFields } from './cursorProtobuf'
 import type { CursorContextRule } from './cursorWire'
-import { cursorProtobufNumber, cursorProtobufString, readCursorProtobufFields } from './cursorProtobuf'
+import { cursorProtobufBytes, cursorProtobufNumber, cursorProtobufRepeated, cursorProtobufString, readCursorProtobufFields } from './cursorProtobuf'
 
 export interface CursorRequestedModelWitness {
   modelId: string
@@ -23,7 +23,7 @@ export interface CursorRunRequestWitness {
 }
 
 function message(fields: CursorProtobufFields, field: number): CursorProtobufFields | undefined {
-  const bytes = fields.strings.get(field)?.at(-1)
+  const bytes = cursorProtobufBytes(fields, field)
   return bytes !== undefined ? readCursorProtobufFields(bytes) : undefined
 }
 
@@ -47,7 +47,7 @@ export function cursorRunRequestWitness(frame: Uint8Array): CursorRunRequestWitn
     witness.requestedModel = {
       modelId: cursorProtobufString(requested, 1) ?? '',
       maxMode: booleanField(requested, 2) ?? false,
-      parameters: (requested.strings.get(3) ?? []).map((bytes) => {
+      parameters: cursorProtobufRepeated(requested, 3).map((bytes) => {
         const parameter = readCursorProtobufFields(bytes)
         return { id: cursorProtobufString(parameter, 1) ?? '', value: cursorProtobufString(parameter, 2) ?? '' }
       }),
@@ -70,7 +70,7 @@ export function cursorRunRequestWitness(frame: Uint8Array): CursorRunRequestWitn
     witness.mode = mode ?? 0
     const selected = message(user, 3)
     if (selected) {
-      witness.cursorRules = (selected.strings.get(10) ?? []).map((bytes) => {
+      witness.cursorRules = cursorProtobufRepeated(selected, 10).map((bytes) => {
         const wrapper = readCursorProtobufFields(bytes)
         const rule = message(wrapper, 1)
         if (!rule)

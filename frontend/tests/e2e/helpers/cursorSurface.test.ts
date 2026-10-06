@@ -6,7 +6,7 @@ import { createServer } from 'node:http'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorSubagentFixtures'
+import { descend, encodeLengthDelimited, encodeStringField, encodeVarint, readCursorProtobufFields } from './cursorProtobuf'
 import {
   answerCursorStartup,
   createCursorSurface,
@@ -22,15 +22,8 @@ import {
   isCursorPath,
   serveCursorRun,
 } from './cursorSurface'
-import {
-  connectFrame,
-  descend,
-  encodeLengthDelimited,
-  encodeStringField,
-  encodeVarint,
-  readLengthDelimitedFields,
-  takeConnectFrames,
-} from './cursorWire'
+import { clientMessageWithPrompt, cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorTestFrames'
+import { connectFrame, takeConnectFrames } from './cursorWire'
 import { waitUnlessDisconnected } from './mockHttp'
 import { mockScenarioPrompt } from './mockModelScenario'
 import { createModelStream } from './modelStream'
@@ -46,23 +39,6 @@ const FIELD_TURN_ENDED = 14
 /** `AgentServerMessage.kv_server_message`, which carries the transcript blobs. */
 const FIELD_KV_SERVER_MESSAGE = 4
 
-/** The client message that OPENS a turn; mirrors the encoder in `./cursorWire.test.ts`. */
-function clientMessageWithPrompt(text: string): Uint8Array {
-  return encodeLengthDelimited(
-    1, // AgentClientMessage.run_request
-    encodeLengthDelimited(
-      2, // AgentRunRequest.action
-      encodeLengthDelimited(
-        1, // ConversationAction.user_message_action
-        encodeLengthDelimited(
-          1, // UserMessageAction.user_message
-          encodeStringField(1, text), // UserMessage.text
-        ),
-      ),
-    ),
-  )
-}
-
 /**
  * Identify each server update in the native stream order.
  * Assertions preserve the order of row events, transcript records, and turn completion.
@@ -75,7 +51,7 @@ function updateKinds(body: Buffer): string[] {
       kinds.push('endOfStream')
       continue
     }
-    const fields = readLengthDelimitedFields(frame)
+    const fields = readCursorProtobufFields(frame).strings
     if (fields.has(FIELD_KV_SERVER_MESSAGE)) {
       kinds.push('setBlob')
       continue
@@ -85,7 +61,7 @@ function updateKinds(body: Buffer): string[] {
       kinds.push(fields.has(2) ? 'execRequest' : 'unknown')
       continue
     }
-    const inner = readLengthDelimitedFields(update)
+    const inner = readCursorProtobufFields(update).strings
     if (inner.has(FIELD_TOOL_CALL_STARTED))
       kinds.push('toolStarted')
     else if (inner.has(FIELD_TOOL_CALL_COMPLETED))
@@ -403,7 +379,7 @@ describe('answerCursorStartup', () => {
 describe('serveCursorRun', () => {
   it('completes actual native child execution from its client-supplied identity and report', async () => {
     const receipts: { prompt: string, text: string }[] = []
-    const run = readLengthDelimitedFields(clientMessageWithPrompt('Say the mock word.')).get(1)![0]!
+    const run = readCursorProtobufFields(clientMessageWithPrompt('Say the mock word.')).strings.get(1)![0]!
     const parent = encodeLengthDelimited(1, Buffer.concat([run, encodeStringField(5, 'actual-native-parent')]))
     const reply = cursorSubagentReplyFixture(301, cursorSubagentSuccessFixture({ agentID: 'actual-native-child', finalMessage: 'ACTUAL_NATIVE_CHILD_REPORT', toolCallCount: 1 }), 'native-child-call')
     const body = await runStreamBody(async () => ({ text: 'The native parent finished.', toolCalls: [{ kind: 'task', call: { callID: 'native-child-call', description: 'Read the actual file.', prompt: 'Execute the native child.' }, report: 'THIS_SCRIPTED_REPORT_MUST_NOT_APPEAR', nativeExecution: { modelId: 'default' } }] }), receipts, reply, { payload: parent, flags: 0 })
@@ -416,7 +392,7 @@ describe('serveCursorRun', () => {
 
   it('does not complete a native child when no actual client reply arrives', async () => {
     const receipts: { prompt: string, text: string }[] = []
-    const run = readLengthDelimitedFields(clientMessageWithPrompt('Say the mock word.')).get(1)![0]!
+    const run = readCursorProtobufFields(clientMessageWithPrompt('Say the mock word.')).strings.get(1)![0]!
     const parent = encodeLengthDelimited(1, Buffer.concat([run, encodeStringField(5, 'actual-native-parent')]))
     const body = await runStreamBody(async () => ({ toolCalls: [{ kind: 'task', call: { callID: 'native-child-call', description: 'Read.', prompt: 'Execute the child.' }, report: 'No fake report.', nativeExecution: { modelId: 'default' } }] }), receipts, undefined, { payload: parent, flags: 0 })
     expect(updateKinds(body)).not.toContain('toolCompleted')
