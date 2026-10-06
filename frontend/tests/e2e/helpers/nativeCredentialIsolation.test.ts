@@ -1,9 +1,11 @@
 import type { Page } from '@playwright/test'
+import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
+import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { assertIsolatedConfiguration, assertPrivateNativePath, exerciseCredentialIsolation } from './nativeCredentialIsolation'
 
@@ -11,11 +13,34 @@ const scratchRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../.
 let scratch: string
 let runDir: string
 
+/** The run directory that the suite state gives, and the prompt of each native turn. */
+const suite = vi.hoisted(() => ({ runDir: '', turn: [] as string[] }))
+
+vi.mock('./server', async importOriginal => ({
+  ...await importOriginal<typeof import('./server')>(),
+  getGlobalState: () => ({ tmpDir: suite.runDir }),
+}))
+
+vi.mock('./nativeConversation', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeConversation')>(),
+  sendNativeAnswer: async (_context: unknown, prompt: string): Promise<MockModelRequestRecord> => {
+    suite.turn.push(prompt)
+    return { protocol: 'anthropic-messages', path: '/v1/messages', stepIndex: 0, body: {}, mockCredential: { accepted: true } } as MockModelRequestRecord
+  },
+}))
+
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  return { ...actual, expect }
+})
+
 beforeEach(() => {
   mkdirSync(scratchRoot, { recursive: true })
   scratch = mkdtempSync(join(scratchRoot, 'native-private-path-unit-'))
   runDir = join(scratch, 'private-run')
   mkdirSync(runDir)
+  suite.runDir = runDir
+  suite.turn = []
 })
 
 afterEach(() => rmSync(scratch, { recursive: true, force: true }))
@@ -44,6 +69,22 @@ describe('assertPrivateNativePath', () => {
 
   it.each([{ path: '', run: 'run' }, { path: 'path', run: '' }])('refuses an empty private path or run directory: %j', ({ path, run }) => {
     expect(() => assertPrivateNativePath(path, run)).toThrow('must be nonempty')
+  })
+
+  it('states a private path that does not exist, in place of a raw lstat error', () => {
+    const absent = join(runDir, 'agent-home', '.claude')
+    expect(() => assertPrivateNativePath(absent, runDir)).toThrow(`The private native path ${absent} does not exist.`)
+  })
+
+  it('states a run directory that does not exist', () => {
+    const absentRun = join(scratch, 'absent-run')
+    expect(() => assertPrivateNativePath(runDir, absentRun)).toThrow(`The E2E run directory ${absentRun} does not exist.`)
+  })
+
+  it('states a link whose target does not exist', () => {
+    const link = join(runDir, 'dangling')
+    symlinkSync(join(runDir, 'absent-target'), link, 'junction')
+    expect(() => assertPrivateNativePath(link, runDir)).toThrow(`The private native path ${link} does not exist.`)
   })
 })
 
@@ -103,5 +144,69 @@ describe('exerciseCredentialIsolation', () => {
       },
     }
     await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [context, { inlineConfiguration, privateDirectories: [runDir], expectedCredential: 'mock-key-123' }])).rejects.toThrow('Each inline native configuration must be a nonempty string.')
+  })
+})
+
+describe('exerciseCredentialIsolation with private directories', () => {
+  const origin = 'http://127.0.0.1:4100'
+  const key = 'mock-key-123'
+
+  /** A context whose isolated HOME is inside the run. The mocked turn never touches the page or the model script. */
+  function scenario(): { context: ManagedNativeScenarioContext, home: string } {
+    const home = join(runDir, 'agent-home')
+    mkdirSync(home)
+    const context: ManagedNativeScenarioContext = {
+      provider: AgentProvider.CLAUDE_CODE,
+      workspaceId: 'credential-workspace',
+      page: {} as Page,
+      modelScript: {} as ModelScript,
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused', agentEnv: { HOME: home }, mockModelUrl: `${origin}/mock` },
+    }
+    return { context, home }
+  }
+
+  it('runs the native turn after every private directory proves private', async () => {
+    const { context, home } = scenario()
+    const config = join(home, '.claude')
+    mkdirSync(config)
+    await exerciseCredentialIsolation(context, { privateDirectories: [home, config], inlineConfiguration: [origin, key], expectedCredential: key })
+    expect(suite.turn).toHaveLength(1)
+  })
+
+  // The first spec of a shard runs before any CLI writes its own directory. Such a spec failed with a raw lstat error.
+  it('states a private directory that does not exist before the turn, and runs no turn', async () => {
+    const { context, home } = scenario()
+    const absent = join(home, '.claude')
+    await expect(exerciseCredentialIsolation(context, { privateDirectories: [home, absent], inlineConfiguration: [origin, key], expectedCredential: key }))
+      .rejects
+      .toThrow(`The private directory ${absent} does not exist before the native turn.`)
+    expect(suite.turn).toEqual([])
+  })
+
+  it('refuses a private directory outside the run, and runs no turn', async () => {
+    const { context, home } = scenario()
+    const outside = join(scratch, 'outside-run')
+    mkdirSync(outside)
+    await expect(exerciseCredentialIsolation(context, { privateDirectories: [home, outside], inlineConfiguration: [origin, key], expectedCredential: key }))
+      .rejects
+      .toThrow('outside the E2E run')
+    expect(suite.turn).toEqual([])
+  })
+
+  it.each([[['']], [[undefined]]])('refuses the private directories %j before any other step', async (privateDirectories) => {
+    const { context } = scenario()
+    await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [context, { privateDirectories, inlineConfiguration: [origin, key], expectedCredential: key }]))
+      .rejects
+      .toThrow('Each private directory must be a nonempty path.')
+    expect(suite.turn).toEqual([])
+  })
+
+  it('states an isolated HOME that does not exist', async () => {
+    const { context } = scenario()
+    const absentHome = join(runDir, 'absent-home')
+    const server = { ...context.leapmuxServer, agentEnv: { HOME: absentHome } }
+    await expect(exerciseCredentialIsolation({ ...context, leapmuxServer: server }, { privateDirectories: [runDir], inlineConfiguration: [origin, key], expectedCredential: key }))
+      .rejects
+      .toThrow(`The isolated native HOME ${absentHome} does not exist.`)
   })
 })

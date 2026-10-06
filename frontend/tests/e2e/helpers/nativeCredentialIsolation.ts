@@ -1,15 +1,22 @@
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, relative, sep } from 'node:path'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from './nativeConversation'
 import { getGlobalState } from './server'
 
-/** Validate a native path against the directory that owns its test run. */
+/**
+ * Validate a native path against the directory that owns its test run.
+ * Both paths must exist, because only an existing path resolves through its links to the place that it names.
+ */
 export function assertPrivateNativePath(path: string, runDir: string): void {
   if (!path || !runDir)
     throw new Error('A private native path and run directory must be nonempty.')
+  if (!existsSync(runDir))
+    throw new Error(`The E2E run directory ${runDir} does not exist.`)
+  if (!existsSync(path))
+    throw new Error(`The private native path ${path} does not exist.`)
   const relativePath = relative(realpathSync(runDir), realpathSync(path))
   if (isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${sep}`))
     throw new Error('The private native path resolves outside the E2E run.')
@@ -74,16 +81,24 @@ export async function exerciseCredentialIsolation(
   // empty string that no check reports.
   if (options.inlineConfiguration?.some(value => typeof value !== 'string' || value === ''))
     throw new Error('Each inline native configuration must be a nonempty string.')
+  if (options.privateDirectories.some(value => typeof value !== 'string' || value === ''))
+    throw new Error('Each private directory must be a nonempty path.')
   const environment = context.leapmuxServer.agentEnv
   const mockUrl = context.leapmuxServer.mockModelUrl
   if (!environment || !mockUrl)
     throw new Error('The native credential proof requires the isolated environment and mock URL.')
   if (typeof environment.HOME !== 'string' || environment.HOME === '')
     throw new Error('The isolated native HOME must be a nonempty string.')
+  if (!existsSync(environment.HOME))
+    throw new Error(`The isolated native HOME ${environment.HOME} does not exist.`)
   expect(realpathSync(environment.HOME)).not.toBe(realpathSync(homedir()))
   expect(options.privateDirectories.length).toBeGreaterThan(0)
   const runDir = getGlobalState().tmpDir
   for (const directory of options.privateDirectories) {
+    // A CLI creates its own directory only at its first write. The suite environment creates each directory that one of
+    // its variables gives, so this check does not depend on an earlier test of the run.
+    if (!existsSync(directory))
+      throw new Error(`The private directory ${directory} does not exist before the native turn. The suite environment (helpers/mockAgentEnvironment.ts) must create each directory that one of its variables gives.`)
     assertPrivateNativePath(directory, runDir)
   }
   for (const file of options.configurationFiles ?? [])

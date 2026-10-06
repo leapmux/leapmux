@@ -324,15 +324,17 @@ describe('createMockAgentEnvironment', () => {
     expect(env.AGENT_CLI_CREDENTIAL_STORE).toBe('memory')
   })
 
-  it('creates each private directory that a provider storage or data variable points at', async () => {
+  it('creates each directory that a variable of the run gives', async () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     // A spec that asserts a private path needs the directory before the agent writes to it.
-    // A spec that runs first on a shard sees no earlier agent write.
-    for (const name of ['ZCODE_STORAGE_DIR', 'KIRO_DATA_DIR', 'GROK_FILE_LOCK_SLOT_DIR'] as const) {
-      const path = env[name]
-      expect(path, name).toBeDefined()
-      expect(path!.startsWith(`${directory}${sep}`), `${name} lies inside the run directory`).toBe(true)
-      expect(existsSync(path!) && statSync(path!).isDirectory(), `${name} exists as a directory`).toBe(true)
+    // A spec that runs first on a shard sees no earlier agent write. The Claude Code credential spec failed that way.
+    const directoryVariables = Object.entries(env).filter(([name]) => /^HOME$|_DIR$|_HOME$|_ROOT$|_OVERRIDE$/.test(name))
+    for (const name of ['CLAUDE_CONFIG_DIR', 'ZCODE_STORAGE_DIR', 'KIRO_DATA_DIR', 'GROK_FILE_LOCK_SLOT_DIR', 'XDG_DATA_HOME'])
+      expect(directoryVariables.map(([variable]) => variable), `${name} is a directory variable of the run`).toContain(name)
+    for (const [name, path] of directoryVariables) {
+      if (!path?.startsWith(`${directory}${sep}`))
+        continue
+      expect(existsSync(path) && statSync(path).isDirectory(), `${name} exists as a directory`).toBe(true)
     }
   })
 

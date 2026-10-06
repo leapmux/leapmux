@@ -316,6 +316,13 @@ function ampEnv(origin: string, homeDir: string): Record<string, string> {
     // the developer's own environment would otherwise point it at theirs. Each one
     // is the directory the isolated HOME implies anyway, so no provider that
     // derives the same path from HOME sees a change.
+    ...xdgBaseDirectories(homeDir),
+  }
+}
+
+/** The XDG base directories that the isolated HOME implies. */
+function xdgBaseDirectories(homeDir: string): Record<'XDG_CONFIG_HOME' | 'XDG_DATA_HOME' | 'XDG_CACHE_HOME' | 'XDG_STATE_HOME', string> {
+  return {
     XDG_CONFIG_HOME: join(homeDir, '.config'),
     XDG_DATA_HOME: join(homeDir, '.local', 'share'),
     XDG_CACHE_HOME: join(homeDir, '.cache'),
@@ -423,6 +430,7 @@ export async function createMockAgentEnvironment(
   const temporaryEnv = { TMPDIR: temporaryDirectory, TEMP: temporaryDirectory, TMP: temporaryDirectory }
   const openAIBaseURL = `${origin}/v1`
   const homeDir = join(runDir, 'agent-home')
+  const claudeConfigDir = join(homeDir, '.claude')
   const codexHome = join(homeDir, '.codex')
   const piAgentDir = join(homeDir, '.pi', 'agent')
   const reasonixHome = join(homeDir, '.reasonix')
@@ -464,7 +472,7 @@ export async function createMockAgentEnvironment(
   // A spec that asserts a private path needs the directory before an agent writes to it,
   // so the environment creates each directory that one of its variables points at.
   const providerStorageDirs = [join(runDir, 'zcode-storage'), join(runDir, 'kiro-data'), join(runDir, 'grok-lock-slots')]
-  for (const directory of [...providerStorageDirs, codexHome, piAgentDir, reasonixHome, join(gooseRoot, 'config'), zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, junieAgentsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
+  for (const directory of [...providerStorageDirs, ...Object.values(xdgBaseDirectories(homeDir)), claudeConfigDir, codexHome, piAgentDir, reasonixHome, join(gooseRoot, 'config'), zcodeDir, copilotHome, cursorConfigDir, codewhaleHome, grokHome, qwenHome, kiroSettingsDir, kimiHome, ohMyPiAgentDir, mimoHome, clineSettingsDir, clineCacheDir, codebuddyHome, qoderHome, factoryHome, lettaHome, lettaBackendDir, lettaProvidersDir, junieModelsDir, junieAgentsDir, join(diracDir, 'data', 'state'), fastAgentHome, cliShimsDir])
     mkdirSync(directory, { recursive: true })
 
   // macOS zsh's system login profile rebuilds PATH. Reapply the private shims
@@ -578,7 +586,7 @@ export async function createMockAgentEnvironment(
 
       ANTHROPIC_API_KEY: MODEL_KEY,
       ANTHROPIC_BASE_URL: origin,
-      CLAUDE_CONFIG_DIR: join(homeDir, '.claude'),
+      CLAUDE_CONFIG_DIR: claudeConfigDir,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       DISABLE_TELEMETRY: '1',
 
