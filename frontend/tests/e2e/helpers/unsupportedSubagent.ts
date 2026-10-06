@@ -1,4 +1,6 @@
-import type { Locator } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
+import type { MockModelRequestRecord } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
@@ -6,6 +8,7 @@ import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputRespon
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
 import { nativeAgentsByIds } from './nativeScenario'
+import { uniqueMarker } from './shellArguments'
 import { openChildTabFromRow } from './subagentRegistry'
 import { composerEditor } from './ui'
 
@@ -16,12 +19,47 @@ export interface RunningNativeChild {
   finish: () => Promise<void>
 }
 
+/** The reason that the composer of a read-only subagent tab states. */
+export const READ_ONLY_SUBAGENT_REASON = 'This subagent doesn\'t accept messages.'
+
+/**
+ * Require the composer of the selected tab to state why the subagent accepts no message, exactly once.
+ *
+ * The placeholder of the editor states the reason. An earlier note above the box stated the same sentence again, so
+ * a read-only subagent tab showed it twice.
+ *
+ * The count reads visible text only. `Tooltip` keeps an offscreen `srOnly` description in `aria-describedby` while the
+ * control is disabled, which is the one route that a screen-reader user has to the reason.
+ */
+export async function expectReadOnlySubagentReason(page: Page): Promise<void> {
+  await expect(page.locator(`[data-placeholder="${READ_ONLY_SUBAGENT_REASON}"]:visible`)).toBeVisible()
+  await expect(page.getByText(READ_ONLY_SUBAGENT_REASON, { exact: true }).filter({ visible: true })).toHaveCount(0)
+}
+
+/**
+ * Require that no model request of the scenario carries `text`, also a request that no rule or step answered.
+ * The failure lists the rule or step of each request that carries it.
+ */
+export async function expectNoModelRequestCarries(modelScript: Pick<ModelScript, 'status'>, text: string): Promise<void> {
+  if (text.trim() === '')
+    throw new Error('A request text check needs a text that is not empty, because every request holds an empty text.')
+  const status = await modelScript.status()
+  const answerOf = (request: MockModelRequestRecord) => request.rule ?? (request.stepIndex === undefined ? 'the fallback' : `step ${request.stepIndex}`)
+  const carriers = [
+    ...status.requests.filter(request => JSON.stringify(request.body).includes(text)).map(answerOf),
+    ...status.unexpectedRequests.filter(request => JSON.stringify(request.body).includes(text)).map(request => `an unexpected request: ${request.reason}`),
+  ]
+  expect(carriers, `no model request carries ${JSON.stringify(text)}`).toEqual([])
+}
+
 /** Check a native child route while its original task still runs. */
 export async function expectUnsupportedSubagent(
   context: ManagedNativeScenarioContext,
   options: { operation: 'send' | 'interrupt', openChild: () => Promise<RunningNativeChild> },
 ): Promise<void> {
   const child = await options.openChild()
+  // Each call refuses its own text, so a check can never pass on the text of another call.
+  const refusedMessage = uniqueMarker('REFUSEDCHILDMESSAGE')
   await withCleanup(async () => {
     expect(child.childId).not.toBe('')
     expect(child.parentId).not.toBe('')
@@ -50,20 +88,23 @@ export async function expectUnsupportedSubagent(
       expect(info.acceptsMessages).toBe(false)
       expect(parent.acceptsMessages).toBe(true)
       await expect(composerEditor(context.page)).toHaveAttribute('contenteditable', 'false')
+      await expectReadOnlySubagentReason(context.page)
       const inputId = crypto.randomUUID()
       const before = await channel.callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: child.childId })
       expect(before.snapshot).toBeDefined()
       await expect(channel.callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, {
         agentId: child.childId,
         inputId,
-        text: 'CHILD_MESSAGE_MUST_NOT_REACH_NATIVE_MODEL',
+        text: refusedMessage,
         kind: AgentInputKind.USER_MESSAGE,
       })).rejects.toMatchObject({ source: 'rpc', code: Code.InvalidArgument, message: 'invalid queued agent input: this agent does not accept that input' })
       const after = await channel.callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: child.childId })
       expect(after.snapshot).toEqual(before.snapshot)
-      const state = await context.modelScript.status()
-      expect(state.requests.some(request => JSON.stringify(request.body).includes('CHILD_MESSAGE_MUST_NOT_REACH_NATIVE_MODEL'))).toBe(false)
+      await expectNoModelRequestCarries(context.modelScript, refusedMessage)
     }
     await expect(child.row).toHaveAttribute('data-status', 'running')
   }, () => child.finish())
+  // The completed child and its parent send more model requests. None of them may carry the refused message either.
+  if (options.operation === 'send')
+    await expectNoModelRequestCarries(context.modelScript, refusedMessage)
 }

@@ -1,4 +1,3 @@
-import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { registerClaudeChildReportRules } from '../helpers/claudeChildReportRule'
@@ -6,11 +5,12 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { NATIVE_CHILD_FINAL_REPLY, openRunningNativeChild } from '../helpers/runningChildProof'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
 
-claudeTest('refuses a message to a real running child without delivering it to the model', async ({ authenticatedClaudeWorkspace, page, leapmuxServer, modelScript }) => {
-  const context = { page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE, workspaceId: authenticatedClaudeWorkspace.workspaceId }
-  await expectUnsupportedSubagent(context, {
+// `expectUnsupportedSubagent` also requires that no model request carries the refused message after the child ends.
+claudeTest('refuses a message to a real running child without delivering it to the model', async ({ native }) => {
+  const { modelScript } = native
+  await expectUnsupportedSubagent(native, {
     operation: 'send',
-    openChild: () => openRunningNativeChild(context, {
+    openChild: () => openRunningNativeChild(native, {
       gate: 'root-child-send-proof',
       child: { matcher: { user: 'ROOT_SEND_CHILD_MARKER' } },
       spawn: spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-readonly-child', { description: 'root send child', prompt: modelScript.prompt('Wait for ROOT_SEND_CHILD_MARKER.') }),
@@ -19,6 +19,4 @@ claudeTest('refuses a message to a real running child without delivering it to t
       },
     }),
   })
-  const status = await modelScript.status()
-  expect(status.requests.some(request => JSON.stringify(request.body).includes('CHILD_MESSAGE_MUST_NOT_REACH_NATIVE_MODEL'))).toBe(false)
 })
