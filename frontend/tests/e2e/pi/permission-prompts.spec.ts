@@ -25,7 +25,7 @@ piTest('preserves complete native MCP arguments without an adapter permission di
     await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.PI }
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
+    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
       await modelScript.queue(
         { toolCalls: [mcpToolCall(AgentProvider.PI, 'native-mcp-arguments', { server: 'form_probe', tool: 'echo', input })] },
         { text: 'The native MCP arguments reached the server.' },

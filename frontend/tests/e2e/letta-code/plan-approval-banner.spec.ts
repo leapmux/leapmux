@@ -8,7 +8,7 @@ import { nativeContext } from './scenarios'
 
 lettaTest('offers native tools without a dedicated plan approval route', async ({ authenticatedLettaWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId })
-  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedProof: async () => {
     const request = await sendNativeAnswer(context, 'Record the actual native approval tool catalog.', 'The native approval catalog probe completed.')
     expect(nativeModelToolNames(request)).not.toContain('ExitPlanMode')
     expect(nativeModelToolNames(request)).not.toContain('EnterPlanMode')

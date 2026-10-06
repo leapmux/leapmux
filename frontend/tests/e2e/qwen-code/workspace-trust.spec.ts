@@ -22,7 +22,7 @@ qwenTest('classifies real native controls and proves the missing workspace-trust
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: qwenExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

@@ -22,7 +22,7 @@ codexTest('classifies an actual native permission and confirms the absent editor
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'editor',
     classify: codexExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: codexEscalatedCommandToolCall(callId, command),
       decision: 'allow',
       beforeDecision: async (banner) => {

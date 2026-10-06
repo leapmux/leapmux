@@ -35,7 +35,7 @@ exec ${JSON.stringify(process.execPath)} ${JSON.stringify(program)}
       })
       await tabById(page, agentId).click()
     },
-    relatedControl: async () => {
+    relatedProof: async () => {
       await sendNativeAnswer(context, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')
       expect(existsSync(marker)).toBe(false)
     },

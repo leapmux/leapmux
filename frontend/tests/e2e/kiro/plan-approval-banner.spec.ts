@@ -13,7 +13,7 @@ kiroTest('hands the actual native plan to execution without a plan review banner
   await expectSettingsChip(page, 'Plan')
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIRO }
   const plan = '1. Read the parser.\n2. Test the parser.'
-  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedControl: () => expectNoNativeControl(context, { testId: 'plan-reject-btn', relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedProof: () => expectNoNativeControl(context, { testId: 'plan-reject-btn', relatedProof: async () => {
     await modelScript.queue(
       { toolCalls: [kiroSwitchToExecutionToolCall('no-review-switch', plan)] },
       { text: 'NATIVE_PLAN_HANDED_OFF' },

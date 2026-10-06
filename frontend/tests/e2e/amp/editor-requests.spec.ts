@@ -19,7 +19,7 @@ ampTest('classifies real native controls and proves the missing editor-requests 
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'editor',
     classify: ampExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

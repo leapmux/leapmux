@@ -45,7 +45,7 @@ mcpDiracTest('starts no MCP form client from its actual configured native ACP se
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
     additionalTestIds: ['control-banner'],
-    relatedControl: async () => {
+    relatedProof: async () => {
       const request = await sendNativeAnswer(context, 'Complete a real native turn with the configured form server.', 'The configured form discovery turn completed.')
       const tools = nativeModelToolNames(request)
       expect(tools).toContain('respond')

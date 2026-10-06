@@ -10,7 +10,7 @@ import { exerciseMissingNativePlanMode } from '../helpers/unsupportedPlanMode'
 ampTest('runs the actual no-plan native route without a plan review request', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {
   const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
   context.readToolResult = ampToolResultReader(context)
-  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedControl: () => expectNoNativeControl(context, { testId: 'plan-reject-btn', relatedControl: () => exerciseMissingNativePlanMode(context, { reload: false }) }) })
+  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedProof: () => expectNoNativeControl(context, { testId: 'plan-reject-btn', relatedProof: () => exerciseMissingNativePlanMode(context, { reload: false }) }) })
   await page.reload()
   await waitForSettingsHydrated(page, 'permissionMode')
   await expect(page.locator('[data-testid="plan-approve-btn"]:visible')).toHaveCount(0)

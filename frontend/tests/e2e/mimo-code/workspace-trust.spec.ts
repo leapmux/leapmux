@@ -24,7 +24,7 @@ mimoTest('classifies real native controls and proves the missing workspace-trust
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: mimoExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       outputGate: operation.outputGate,
       decision: 'allow',

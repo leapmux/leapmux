@@ -5,5 +5,5 @@ import { nativeContext } from './scenarios'
 
 commandCodeTest('completes an actual native tool without a multiline editor request', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
-  await expectNoNativeEditorRequest(context, { relatedControl: () => exerciseShellToolExecution(context, { includeFailure: false }) })
+  await expectNoNativeEditorRequest(context, { relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
 })

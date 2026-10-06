@@ -29,7 +29,7 @@ codewhaleTest('classifies real native controls and proves the missing workspace-
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: codewhaleExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

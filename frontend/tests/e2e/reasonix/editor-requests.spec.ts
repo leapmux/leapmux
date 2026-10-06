@@ -17,7 +17,7 @@ reasonixTest('resolves an actual native control without exposing a multiline edi
   await chooseSettingsOption(page, 'tool_approval-ask')
   await waitForSettingsIdle(page)
   await expectNoNativeEditorRequest(context, {
-    relatedControl: async () => {
+    relatedProof: async () => {
       const start = (await modelScript.status()).stepCount
       await modelScript.queue({ toolCalls: [writeToolCall(AgentProvider.REASONIX, 'native-editor-limit-write', { path, content: 'NATIVE_EDITOR_CONTROL_BYTES\n' })] }, { text: 'The native approval proof ended.' })
       await sendMessage(page, modelScript.prompt('Run the scripted native file write.'))

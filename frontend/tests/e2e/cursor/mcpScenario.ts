@@ -73,7 +73,7 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
     additionalTestIds: ['control-question-group'],
-    relatedControl: async () => {
+    relatedProof: async () => {
       await modelScript.queue({ toolCalls: [mcpToolCall(AgentProvider.CURSOR, 'cursor-form', { server: 'form_probe', tool: 'ask', input: {} })] })
       await sendMessage(page, modelScript.prompt('Call the form_probe ask tool exactly once.'))
       await modelScript.waitForSteps()

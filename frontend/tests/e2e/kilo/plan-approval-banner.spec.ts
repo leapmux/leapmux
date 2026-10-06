@@ -20,7 +20,7 @@ kiloTest('completes a native read-only plan without a dedicated approval banner'
   await expect.poll(primaryAgent).toBe(KILO_DEFAULT_PRIMARY_AGENT)
   await expectNoNativeControl(context, {
     testId: 'plan-approve-btn',
-    relatedControl: () => exerciseNativeReadOnlyPlan(context, {
+    relatedProof: () => exerciseNativeReadOnlyPlan(context, {
       preparePlan: async () => {
         await chooseSettingsOption(page, 'primaryAgent-plan')
         await waitForSettingsIdle(page)

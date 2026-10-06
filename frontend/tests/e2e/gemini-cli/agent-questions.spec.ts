@@ -17,7 +17,7 @@ geminiTest('excludes the unsupported native question control while a real permis
     purpose: 'question',
     classify: geminiExtractControl,
     isQuestionRequest: payload => payload.method === 'ask_user',
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

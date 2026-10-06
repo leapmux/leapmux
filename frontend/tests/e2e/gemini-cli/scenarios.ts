@@ -29,7 +29,7 @@ export async function exerciseGeminiAutoEditWrite(context: ManagedNativeScenario
   expect(existsSync(path)).toBe(false)
   const start = (await context.modelScript.status()).stepCount
   const answer = 'The native automatic file write completed.'
-  await expectNoNativeControl(context, { relatedControl: async () => {
+  await expectNoNativeControl(context, { relatedProof: async () => {
     await context.modelScript.queue({ toolCalls: [writeToolCall(context.provider, callId, { path, content })] }, { text: answer })
     await sendMessage(context.page, context.modelScript.prompt('Create the file through the native automatic file tool.'))
     await context.modelScript.waitForSteps(start + 2)

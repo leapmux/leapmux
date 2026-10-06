@@ -38,7 +38,7 @@ export async function exerciseGoosePermissionRemoval(context: ManagedNativeScena
 
   await applyPermissionPreset(page, 'bypass')
   expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'permissionMode')?.currentValue).toBe('auto')
-  await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
     await modelScript.queue(
       { toolCalls: [bashToolCall(AgentProvider.GOOSE, 'goose-auto-remove', 'rm -f goose-mode-marker.txt && printf goose-mode-42')] },
       { text: 'The Auto check ended.' },

@@ -21,7 +21,7 @@ ohMyPiTest('classifies real native controls and proves the missing workspace-tru
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: ohMyPiExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

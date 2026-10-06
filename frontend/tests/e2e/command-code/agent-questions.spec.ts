@@ -13,7 +13,7 @@ commandCodeTest('confirms the native question tool is withheld and no question f
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
   const request = await sendNativeAnswer(context, 'Return the actual native tool catalog.', 'The native catalog turn completed.')
   expect(commandCodeToolCatalog(request)).not.toContain('ask_user_question')
-  await expectNoNativeControl(context, { testId: 'control-banner', additionalTestIds: ['elicitation-form'], relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'control-banner', additionalTestIds: ['elicitation-form'], relatedProof: async () => {
     const start = (await modelScript.status()).stepCount
     await modelScript.queue({ toolCalls: [commandCodeLoadToolsToolCall('find-native-question', 'select:ask_user_question')] }, { text: 'The native question lookup completed.' })
     await sendMessage(page, modelScript.prompt('Look up the exact native question capability.'))

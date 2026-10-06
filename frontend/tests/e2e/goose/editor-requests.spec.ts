@@ -13,7 +13,7 @@ gooseTest('resolves an actual native control without exposing a multiline editor
   if (typeof checklist !== 'string')
     throw new Error('The Goose to-do call carries no checklist.')
   await expectNoNativeEditorRequest(context, {
-    relatedControl: async () => {
+    relatedProof: async () => {
       const start = (await modelScript.status()).stepCount
       await modelScript.queue({ toolCalls: [todo] }, { text: 'The native approval proof ended.' })
       await sendMessage(page, modelScript.prompt('Write the scripted native to-do item.'))

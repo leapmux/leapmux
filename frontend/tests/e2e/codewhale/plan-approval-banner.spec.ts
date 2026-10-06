@@ -12,7 +12,7 @@ codewhaleTest('enforces the actual Plan policy and changes to Agent without a pl
   await chooseSettingsOption(page, 'codewhale_mode-plan')
   await waitForSettingsIdle(page)
   await expectSettingsChip(page, 'Plan')
-  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedControl: () => expectNoNativeControl(context, { testId: 'plan-reject-btn', relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedProof: () => expectNoNativeControl(context, { testId: 'plan-reject-btn', relatedProof: async () => {
     await modelScript.queue(
       { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'no-review-plan', 'printf "PLANREFUSAL%s\\n" "$((40 + 2))"')] },
       { text: 'The native Plan policy refused shell execution.' },

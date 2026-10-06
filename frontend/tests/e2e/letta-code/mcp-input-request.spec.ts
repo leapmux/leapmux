@@ -55,7 +55,7 @@ mcpLettaTest('returns the actual registered native MCP form refusal without an i
     await expectNoNativeControl(context, {
       testId: 'elicitation-form',
       additionalTestIds: ['control-banner'],
-      relatedControl: async () => {
+      relatedProof: async () => {
         const start = (await modelScript.status()).stepCount
         const callId = 'letta-registered-native-form'
         const answer = 'The native form refusal reached its agent.'

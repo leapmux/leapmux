@@ -26,7 +26,7 @@ codexTest('classifies an actual native permission and confirms the absent worksp
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: codexExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: codexEscalatedCommandToolCall(callId, command),
       decision: 'allow',
       beforeDecision: async (banner) => {

@@ -14,13 +14,13 @@ export async function exerciseUnsupportedNativeControl(
     purpose: 'editor' | 'workspace-trust' | 'question'
     isQuestionRequest?: (payload: Record<string, unknown>) => boolean
     classify: (input: ControlExtractionInput) => ExtractedControlRequest | null
-    nativeOperation: (beforeDecision: (banner: Locator) => Promise<void>) => Promise<void>
+    relatedProof: (beforeDecision: (banner: Locator) => Promise<void>) => Promise<void>
   },
 ): Promise<void> {
   const agent = await currentNativeAgent(context)
   const watch = await watchNativeControls(context.leapmuxServer, agent.id)
   const nativeProof = async () => {
-    await options.nativeOperation(async (banner) => {
+    await options.relatedProof(async (banner) => {
       await expect.poll(() => watch.controls().some(frame => options.classify({ payload: frame.payload })?.kind === 'permission')).toBe(true)
       const permissions = watch.controls().map(frame => options.classify({ payload: frame.payload })).filter(value => value?.kind === 'permission')
       expect(permissions.length).toBeGreaterThan(0)
@@ -44,8 +44,8 @@ export async function exerciseUnsupportedNativeControl(
   const surfaces = options.purpose === 'question' ? ['control-question-group', 'elicitation-form'] : ['dialog-editor']
   let observe = nativeProof
   for (const testId of surfaces) {
-    const relatedControl = observe
-    observe = () => expectNoNativeControl(context, { testId, relatedControl })
+    const inner = observe
+    observe = () => expectNoNativeControl(context, { testId, relatedProof: inner })
   }
   await withCleanup(observe, async () => watch.cancel())
 }

@@ -101,7 +101,7 @@ export async function exerciseNativeWorkspaceTrustLimit(
         expect(agent?.id).toBe(agentId)
         expect(agent?.workingDir).toBe(project.directory)
       },
-      relatedControl: () => options.projectConfiguration.prove(privateContext, { ...project, agentId }),
+      relatedProof: () => options.projectConfiguration.prove(privateContext, { ...project, agentId }),
       ...(options.startup === 'failed' ? { nativeCompletion: completeStartup } : {}),
     })
   }

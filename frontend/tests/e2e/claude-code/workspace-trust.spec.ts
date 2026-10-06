@@ -26,7 +26,7 @@ claudeTest('classifies an actual native permission and confirms the absent works
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: claudeExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(AgentProvider.CLAUDE_CODE, callId, command),
       decision: 'allow',
       beforeDecision: async (banner) => {

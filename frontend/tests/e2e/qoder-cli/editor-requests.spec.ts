@@ -5,5 +5,5 @@ import { nativeContext } from './scenarios'
 
 qoderTest('resolves an actual native permission without a multiline editor request', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
-  await expectNoNativeEditorRequest(context, { relatedControl: () => exerciseNativePermissionWrite(context) })
+  await expectNoNativeEditorRequest(context, { relatedProof: () => exerciseNativePermissionWrite(context) })
 })

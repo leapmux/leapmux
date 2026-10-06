@@ -16,7 +16,7 @@ geminiTest('excludes the unsupported native editor control while a real permissi
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'editor',
     classify: geminiExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

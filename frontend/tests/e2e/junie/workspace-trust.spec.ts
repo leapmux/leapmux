@@ -32,7 +32,7 @@ junieTest('starts with a real project configuration and no native workspace trus
       })
       await tabById(page, agentId).click()
     },
-    relatedControl: async () => {
+    relatedProof: async () => {
       await sendNativeAnswer(context, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')
       await expect.poll(() => existsSync(receiptLog)).toBe(true)
       const receipt = readMcpServerReceipt(receiptLog)

@@ -8,5 +8,5 @@ junieTest('resolves an actual native permission without a multiline editor reque
   await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { brave_mode: 'off' })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await expectNoNativeEditorRequest(context, { relatedControl: () => exerciseNativePermissionWrite(context) })
+  await expectNoNativeEditorRequest(context, { relatedProof: () => exerciseNativePermissionWrite(context) })
 })

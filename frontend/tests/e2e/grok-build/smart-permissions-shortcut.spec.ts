@@ -30,7 +30,7 @@ grokTest('runs routine work and blocks a risky native command under Smart before
       await page.reload()
       await waitForSettingsHydrated(page)
     }
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
+    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
       const start = (await modelScript.status()).stepCount
       const reviewedBefore = (await modelScript.status()).ruleMatches['native-grok-smart-block'] ?? 0
       const id = `native-smart-block-${start}`

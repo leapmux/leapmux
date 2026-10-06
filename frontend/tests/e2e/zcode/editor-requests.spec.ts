@@ -9,7 +9,7 @@ import { zcodeTest } from '../zcode-fixtures'
 zcodeTest('resolves an actual native control without exposing a multiline editor request', async ({ authenticatedZCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId, provider: AgentProvider.ZCODE }
   await expectNoNativeEditorRequest(context, {
-    relatedControl: async () => {
+    relatedProof: async () => {
       const question = askUserQuestionToolCall(AgentProvider.ZCODE, 'native-editor-limit-question', [{ question: 'Choose the native control proof.', header: 'Proof', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] }])
       const start = (await modelScript.status()).stepCount
       await modelScript.queue({ toolCalls: [question] }, { text: 'The native control proof ended.' })

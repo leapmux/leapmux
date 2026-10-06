@@ -42,7 +42,7 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
       await waitForNativeSettingsHydrated(context.page)
     }
     await options.settingsProof?.(await currentNativeAgent(context))
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
+    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
       // One agent session runs both passes, so each pass gives its tool call its own ID.
       const id = `native-${preset}-${Number(reload)}`
       const start = await context.modelScript.queue(

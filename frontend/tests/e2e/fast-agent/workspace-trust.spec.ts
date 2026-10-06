@@ -31,7 +31,7 @@ fastAgentTest('starts with a real project configuration and no native workspace 
       })
       await tabById(page, agentId).click()
     },
-    relatedControl: async () => {
+    relatedProof: async () => {
       const request = await sendNativeAnswer(context, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')
       expect(nativeModelToolNames(request).some(name => name.includes('trust_probe'))).toBe(false)
       expect(existsSync(receiptLog)).toBe(false)

@@ -16,7 +16,7 @@ codewhaleTest('classifies real native controls and proves the missing editor-req
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'editor',
     classify: codewhaleExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

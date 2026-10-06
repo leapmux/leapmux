@@ -9,7 +9,7 @@ import { nativeContext } from './scenarios'
 
 fastAgentTest('returns the native human-input callback refusal without a question form', async ({ authenticatedFastAgentWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedFastAgentWorkspace.workspaceId })
-  await expectNoNativeControl(context, { testId: 'elicitation-form', relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'elicitation-form', relatedProof: async () => {
     const start = (await modelScript.status()).stepCount
     const callId = 'fast-native-human-input'
     await modelScript.queue(

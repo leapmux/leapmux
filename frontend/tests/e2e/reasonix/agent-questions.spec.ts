@@ -24,7 +24,7 @@ reasonixTest('offers an actual native permission without an agent question seque
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'question',
     classify: acpExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(AgentProvider.REASONIX, 'native-question-permission', command),
       decision: 'allow',
       beforeDecision,

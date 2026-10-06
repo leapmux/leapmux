@@ -8,7 +8,7 @@ import { expectNoNativeEditorRequest } from '../helpers/unsupportedEditor'
 cursorTest('resolves an actual native control without exposing a multiline editor request', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCursorWorkspace.workspaceId, provider: AgentProvider.CURSOR }
   await expectNoNativeEditorRequest(context, {
-    relatedControl: async () => {
+    relatedProof: async () => {
       const question = askUserQuestionToolCall(AgentProvider.CURSOR, 'native-editor-limit-question', [{ question: 'Choose the native control proof.', header: 'Proof', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] }])
       const start = (await modelScript.status()).stepCount
       await modelScript.queue({ toolCalls: [question] })

@@ -197,7 +197,7 @@ export async function exerciseNativeToolWrite(
     await expect(assistantBubbles(context.page).filter({ hasText: 'The native preset write ended.' }).first()).toBeVisible()
   }
   if (options.permission === 'absent')
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: run })
+    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: run })
   else
     await run()
 }

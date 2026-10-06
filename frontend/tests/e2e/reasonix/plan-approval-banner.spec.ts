@@ -10,7 +10,7 @@ reasonixTest('uses the native exit permission without a dedicated plan approval 
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedReasonixWorkspace.workspaceId, provider: AgentProvider.REASONIX }
   await expectNoNativeControl(context, {
     testId: 'plan-approve-btn',
-    relatedControl: () => exerciseNativeReadOnlyPlan(context, {
+    relatedProof: () => exerciseNativeReadOnlyPlan(context, {
       preparePlan: async () => {
         await chooseSettingsOption(page, 'permissionMode-plan')
         await waitForSettingsIdle(page)

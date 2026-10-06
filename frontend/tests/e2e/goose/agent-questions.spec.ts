@@ -24,7 +24,7 @@ gooseTest('offers an actual native permission without an agent question sequence
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'question',
     classify: acpExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(AgentProvider.GOOSE, 'native-question-permission', command),
       decision: 'allow',
       beforeDecision,

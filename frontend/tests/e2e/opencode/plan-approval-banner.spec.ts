@@ -10,7 +10,7 @@ opencodeTest('completes a native read-only plan without a dedicated approval ban
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOpencodeWorkspace.workspaceId, provider: AgentProvider.OPENCODE }
   await expectNoNativeControl(context, {
     testId: 'plan-approve-btn',
-    relatedControl: () => exerciseNativeReadOnlyPlan(context, {
+    relatedProof: () => exerciseNativeReadOnlyPlan(context, {
       preparePlan: async () => {
         await chooseSettingsOption(page, 'primaryAgent-plan')
         await waitForSettingsIdle(page)

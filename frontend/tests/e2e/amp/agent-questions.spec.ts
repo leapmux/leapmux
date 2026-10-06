@@ -30,7 +30,7 @@ ampTest('disables the actual native question tool while real permission controls
     expect(catalog.tools).not.toContain('ask_user_choice')
     const agent = await currentNativeAgent(context)
     const watch = await watchNativeControls(leapmuxServer, agent.id)
-    await withCleanup(() => expectNoNativeControl(context, { testId: 'control-question-group', relatedControl: () => expectNoNativeControl(context, { testId: 'elicitation-form', relatedControl: () => exerciseNativePermissionDecision(context, {
+    await withCleanup(() => expectNoNativeControl(context, { testId: 'control-question-group', relatedProof: () => expectNoNativeControl(context, { testId: 'elicitation-form', relatedProof: () => exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(AgentProvider.AMP, `amp-question-limit-${reload}`, 'printf "AMPQUESTIONLIMIT%s\\n" "$((40 + 2))"'),
       decision: 'allow',
       beforeDecision: async (banner) => {

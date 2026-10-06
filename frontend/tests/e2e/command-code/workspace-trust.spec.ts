@@ -20,7 +20,7 @@ commandCodeTest('keeps the actual untrusted project mod unloaded without a nativ
       const agent = await openCommandCodeAgent(leapmuxServer, context.workspaceId, {}, workingDir)
       await tabById(page, agent.agentId).click()
     },
-    relatedControl: async () => {
+    relatedProof: async () => {
       await sendNativeAnswer(context, 'Return a native answer from the untrusted scratch project.', 'The native project probe completed.')
       expect(existsSync(marker)).toBe(false)
     },

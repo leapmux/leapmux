@@ -24,7 +24,7 @@ export async function exerciseCommandCodePermissionLimit(context: ManagedNativeS
   }
   await expectNoNativeControl(context, {
     testId: 'control-banner',
-    relatedControl: async () => {
+    relatedProof: async () => {
       const denial = await write('native-default-denial')
       expect(denial).toContain('requires permissions')
       expect(denial).toContain('--yolo')

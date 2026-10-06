@@ -15,7 +15,7 @@ droidTest('resolves an actual native permission without a multiline editor reque
   const agent = await currentNativeAgent(context)
   const file = join(agent.workingDir, 'editor-proof.txt')
   writeFileSync(file, 'EDITOR_BEFORE')
-  await expectNoNativeEditorRequest(context, { relatedControl: () => exerciseNativePermissionDecision(context, {
+  await expectNoNativeEditorRequest(context, { relatedProof: () => exerciseNativePermissionDecision(context, {
     decision: 'allow',
     toolCall: editToolCall(context.provider, 'editor-permission', { path: file, before: 'EDITOR_BEFORE', after: 'EDITOR_AFTER' }),
     beforeDecision: async (banner) => {

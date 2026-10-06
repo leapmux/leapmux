@@ -27,7 +27,7 @@ codewhaleTest('uses the native Smart reviewer and restores its setting after rel
       await page.reload()
       await waitForSettingsHydrated(page)
     }
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedControl: async () => {
+    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
       const before = await modelScript.status()
       const start = before.stepCount
       const reviews = before.ruleMatches[SMART_REVIEW_RULE] ?? 0

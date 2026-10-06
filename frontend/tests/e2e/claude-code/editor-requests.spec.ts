@@ -22,7 +22,7 @@ claudeTest('classifies an actual native permission and confirms the absent edito
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'editor',
     classify: claudeExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(AgentProvider.CLAUDE_CODE, callId, command),
       decision: 'allow',
       beforeDecision: async (banner) => {

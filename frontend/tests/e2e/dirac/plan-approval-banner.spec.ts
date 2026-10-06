@@ -9,7 +9,7 @@ import { nativeContext } from './scenarios'
 
 diracTest('publishes a native deferred plan without a dedicated approval banner', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
-  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedControl: async () => {
+  await expectNoNativeControl(context, { testId: 'plan-approve-btn', relatedProof: async () => {
     await chooseSettingsOption(page, 'permissionMode-plan')
     const start = (await modelScript.status()).stepCount
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-deferred-plan', 'plan', '- DIRACDEFERREDPLAN inspect the file.')] })

@@ -16,7 +16,7 @@ clineTest('classifies real native controls and proves the missing editor-request
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'editor',
     classify: clineExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {

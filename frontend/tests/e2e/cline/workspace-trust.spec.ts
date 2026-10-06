@@ -22,7 +22,7 @@ clineTest('classifies real native controls and proves the missing workspace-trus
   await exerciseUnsupportedNativeControl(context, {
     purpose: 'workspace-trust',
     classify: clineExtractControl,
-    nativeOperation: beforeDecision => exerciseNativePermissionDecision(context, {
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
       toolCall: operation.toolCall,
       decision: 'allow',
       beforeDecision: async (banner) => {
