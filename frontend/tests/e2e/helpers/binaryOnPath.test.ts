@@ -252,6 +252,11 @@ describe('missingBinaryReason', () => {
     expect(missingBinaryReason('agent', 'needs agent', {})).toBe('needs agent')
   })
 
+  it('states no reason when the path holds any one of the names', () => {
+    file('agent-host-triple', 0o755)
+    expect(missingBinaryReason(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toBeNull()
+  })
+
   // The run's isolated HOME stops a mise shim, so a shim that the spawn takes must
   // skip the specs rather than fail each agent start.
   it.skipIf(process.platform === 'win32')('states the reason and the fix when the CLI that the spawn takes is a mise shim', () => {
@@ -301,6 +306,38 @@ describe('lookupBinary', () => {
     expect(lookup.skipReason).toBe(`needs agent. ${unusableBinaryReason('agent', shim)}`)
   })
 
+  // The worker probes its names in order and starts the first one that it finds.
+  it('returns a later name when the path holds no earlier one', () => {
+    const triple = file('agent-host-triple', 0o755)
+    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toEqual({ path: triple, skipReason: null })
+  })
+
+  // The worker probes each name across the whole path before the next name, so the
+  // order of the names decides, not the order of the directories.
+  it('returns the first name although a later name sits in an earlier directory', () => {
+    file('agent-host-triple', 0o755, join(directory, 'first'))
+    const agent = file('agent', 0o755, join(directory, 'second'))
+    const env = { PATH: [join(directory, 'first'), join(directory, 'second')].join(delimiter) }
+    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', env)).toEqual({ path: agent, skipReason: null })
+  })
+
+  it('returns the reason when the path holds none of the names', () => {
+    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toEqual({ path: null, skipReason: 'needs agent' })
+  })
+
+  // The worker starts the shim of the first name, so a later name cannot rescue it.
+  it.skipIf(process.platform === 'win32')('returns the mise-shim cause of a first name although a later name is on the path', () => {
+    const shim = miseShim('agent', join(directory, 'shims'))
+    file('agent-host-triple', 0o755, join(directory, 'install'))
+    const env = { PATH: [join(directory, 'shims'), join(directory, 'install')].join(delimiter) }
+    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', env))
+      .toEqual({ path: null, skipReason: `needs agent. ${unusableBinaryReason('agent', shim)}` })
+  })
+
+  it('refuses an empty list of names', () => {
+    expect(() => lookupBinary([], 'needs agent', { PATH: directory })).toThrow('A binary lookup needs at least one executable name.')
+  })
+
   // A reason that ends with its own period must not gain a second one.
   it.skipIf(process.platform === 'win32')('adds no second period after a reason that ends a sentence', () => {
     const shim = miseShim('agent', join(directory, 'shims'))
@@ -319,6 +356,11 @@ describe('requireBinary', () => {
 
   it('throws the reason when the path holds no such file', () => {
     expect(() => requireBinary('agent', 'needs agent', { PATH: directory })).toThrow(new Error('needs agent'))
+  })
+
+  it('returns the file of a later name when the path holds no earlier one', () => {
+    const triple = file('agent-host-triple', 0o755)
+    expect(requireBinary(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toBe(triple)
   })
 
   // The four native catalog readers once threw their own reason and lost this cause.

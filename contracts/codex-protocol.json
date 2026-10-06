@@ -1,5 +1,5 @@
 {
-  "_readme": "Codex typed items and raw model items use separate vocabulary tables. Both the Go provider and TypeScript plugin read these tables. Native exec has raw request and output items without a typed command mirror. Exact thread, turn, and call identity pairs those rows.\n\nCodex streams command output through outputDelta events and fills aggregatedOutput on the completed typed item. LeapMux stores retained deltas beside an incomplete item. The supplement keys belong to LeapMux. Native item keys belong to OpenAI.\n\nThe options and optionDefaults tables keep shared option IDs and launch values consistent. The worker builds its option groups from them. The browser uses the same values for agent configuration.",
+  "_readme": "Codex typed items and raw model items use separate vocabulary tables. Both the Go provider and TypeScript plugin read these tables. Native exec has raw request and output items without a typed command mirror. Exact thread, turn, and call identity pairs those rows.\n\nCodex streams command output through outputDelta events and fills aggregatedOutput on the completed typed item. LeapMux stores retained deltas beside an incomplete item. The supplement keys belong to LeapMux. Native item keys belong to OpenAI.\n\nThe options and optionDefaults tables keep shared option IDs and launch values consistent. The worker builds its option groups from them. The browser uses the same values for agent configuration.\n\nThe executables table lists the names that the worker probes on the search path, in preference order. The worker starts the first name that the shell finds. The second name is the full Rust host triple that `cargo install` produces on Windows when the shorter codex shim is absent. The E2E suite reads the same list, so it skips the Codex specs only when the worker cannot find any of the names.",
   "supplement": {
     "ItemID": "itemId",
     "ItemType": "itemType",
@@ -158,5 +158,9 @@
   },
   "rawNamespaces": {
     "Functions": "functions"
+  },
+  "executables": {
+    "Preferred": "codex",
+    "WindowsHostTriple": "codex-x86_64-pc-windows-msvc"
   }
 }

@@ -1,5 +1,6 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { CODEX_EXECUTABLE } from '../../../src/generated/contracts/codex-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseConversationContext } from '../helpers/nativeConversation'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
@@ -10,9 +11,16 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
   return { ...fixtures, provider: AgentProvider.CODEX }
 }
 
-/** Select the actual isolated executable and hold only its native runtime invocation. */
+/**
+ * Select the actual isolated executable and hold only its native runtime invocation. The Worker probes each name of
+ * the contract, so the executable can carry a later name while the wrapper takes the preferred one.
+ */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'codex', holdWhen: ['app-server'] })
+  return resolveNativeStartupLaunch(
+    context.leapmuxServer.agentEnv,
+    { binaryName: CODEX_EXECUTABLE.Preferred, holdWhen: ['app-server'] },
+    Object.values(CODEX_EXECUTABLE),
+  )
 }
 
 /** The related proof of a missing-setting cell: a later native request carries the earlier prompt and answer. */

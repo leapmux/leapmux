@@ -168,6 +168,28 @@ describe('resolveNativeStartupLaunch', () => {
     expect(() => resolveNativeStartupLaunch({}, { binaryName: 'absent-native' })).toThrow(reason)
   })
 
+  // The Worker probes its names in order. The wrapper takes the first name, and the wrapper runs a later one.
+  it('finds a later executable name when the PATH holds no earlier one, and keeps the first name for the wrapper', () => {
+    const executable = nativeExecutable(directory, 'native-host-triple')
+    const launch = resolveNativeStartupLaunch({ PATH: directory }, { binaryName: 'native' }, ['native', 'native-host-triple'])
+    expect(launch).toEqual({ binaryName: 'native', executable })
+  })
+
+  it('states each executable name when the PATH holds none', () => {
+    vi.stubEnv('PATH', directory)
+    expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName: 'native' }, ['native', 'native-host-triple']))
+      .toThrow('The isolated native or native-host-triple executable is absent from the PATH that the Worker receives')
+  })
+
+  // A wrapper under a later name loses to an earlier name, so the Worker would start the real CLI unheld.
+  it('rejects a wrapper name that is not the first name that the Worker probes', () => {
+    nativeExecutable(directory, 'native')
+    expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName: 'native-host-triple' }, ['native', 'native-host-triple']))
+      .toThrow('The startup wrapper takes "native-host-triple", so it must be the first name that the Worker probes, not "native".')
+    expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName: 'native' }, []))
+      .toThrow('it must be the first name that the Worker probes, not undefined.')
+  })
+
   it.each(['', '.', '..', 'bin/native', 'bin\\native', 'native\0'])('rejects the executable name %j, which is not one file-name component', (binaryName) => {
     expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName })).toThrow('one file-name component')
   })

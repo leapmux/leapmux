@@ -2391,6 +2391,10 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodexOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codex axes both sides address' },
       { key: 'optionDefaults', goTable: 'OptionDefault', tsTable: 'OPTION_DEFAULT', tsType: 'CodexOptionDefault', defaultsFor: 'options', doc: 'the value each of those axes takes when the agent row stores none' },
+      // `goSlice`, because the ORDER crosses the boundary: the worker starts the first
+      // name that the shell finds, and the E2E suite must ask about the same names in
+      // the same order, or it runs the specs against a CLI that the worker never starts.
+      { key: 'executables', goTable: 'Executable', tsTable: 'EXECUTABLE', tsType: 'CodexExecutable', goSlice: true, readers: ['go'], readersWhy: 'the browser starts no process; the E2E suite under frontend/tests, which this check does not scan, reads the names to skip the Codex specs when the worker can start none of them', doc: 'executable names the worker probes on the search path, in preference order' },
     ],
   },
   {

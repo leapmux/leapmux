@@ -72,17 +72,34 @@ export type BinaryLookup
     | { path: null, skipReason: string }
 
 /**
+ * The executable name of a CLI, or the names that the worker probes for it in
+ * preference order. The worker starts the first name that its shell finds, so a
+ * lookup asks about the names in the same order.
+ */
+export type ExecutableNames = string | readonly string[]
+
+/**
  * The file that the E2E run starts for a CLI, or the reason to skip the provider's
  * specs. It finds the CLI with {@link findBinary}, so it runs no agent in the
  * developer's own HOME. A fixture that must also run the CLI, for its version, runs
  * this path, which is the file that the worker starts.
+ *
+ * For several names, the first name that the search path holds decides, as it does
+ * for the worker. A later name does not replace a first name that is a mise shim,
+ * because the worker starts the shim.
  */
-export function lookupBinary(binary: string, reason: string, env: NodeJS.ProcessEnv = process.env): BinaryLookup {
-  const path = findBinary(binary, env)
-  if (path === null)
-    return { path: null, skipReason: reason }
-  const unusable = unusableBinaryReason(binary, path)
-  return unusable === null ? { path, skipReason: null } : { path: null, skipReason: `${asSentence(reason)} ${unusable}` }
+export function lookupBinary(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): BinaryLookup {
+  const names = typeof binary === 'string' ? [binary] : binary
+  if (names.length === 0)
+    throw new Error('A binary lookup needs at least one executable name.')
+  for (const name of names) {
+    const path = findBinary(name, env)
+    if (path === null)
+      continue
+    const unusable = unusableBinaryReason(name, path)
+    return unusable === null ? { path, skipReason: null } : { path: null, skipReason: `${asSentence(reason)} ${unusable}` }
+  }
+  return { path: null, skipReason: reason }
 }
 
 /**
@@ -90,7 +107,7 @@ export function lookupBinary(binary: string, reason: string, env: NodeJS.Process
  * {@link lookupBinary} when the run cannot start one, so the failure keeps the
  * mise-shim cause.
  */
-export function requireBinary(binary: string, reason: string, env: NodeJS.ProcessEnv = process.env): string {
+export function requireBinary(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): string {
   const lookup = lookupBinary(binary, reason, env)
   if (lookup.path === null)
     throw new Error(lookup.skipReason)
@@ -124,7 +141,7 @@ export function versionOutput(path: string): string | null {
  * The reason to skip a provider's specs when the E2E run cannot start its CLI, or
  * null when it can. See {@link lookupBinary}.
  */
-export function missingBinaryReason(binary: string, reason: string, env: NodeJS.ProcessEnv = process.env): string | null {
+export function missingBinaryReason(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): string | null {
   return lookupBinary(binary, reason, env).skipReason
 }
 

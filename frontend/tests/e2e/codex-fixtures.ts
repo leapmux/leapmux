@@ -4,6 +4,7 @@
  */
 import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { CODEX_EXECUTABLE } from '../../src/generated/contracts/codex-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeContext } from './codex/scenarios'
 import { test as base, expect } from './fixtures'
@@ -11,7 +12,14 @@ import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
 
-export const CODEX_E2E_SKIP_REASON: string | null = missingBinaryReason('codex', 'Codex E2E requires the codex CLI on PATH')
+/**
+ * The Worker starts the first name of the contract that its search path holds, so the specs run when the path
+ * holds any one of them.
+ */
+export const CODEX_E2E_SKIP_REASON: string | null = missingBinaryReason(
+  Object.values(CODEX_EXECUTABLE),
+  `Codex E2E requires a Codex CLI on PATH under one of these names: ${Object.values(CODEX_EXECUTABLE).join(', ')}`,
+)
 
 /** How a Codex agent opens. */
 export const CODEX_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, prefix: 'codex-e2e' }

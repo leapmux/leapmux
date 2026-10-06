@@ -48,16 +48,24 @@ function passThroughWords(launch: NativeStartupLaunch): string[] {
  * Resolve a provider's runtime invocation to the executable that a Worker started with the private agent
  * environment finds. That Worker receives `hubSpawnEnv(environment)`, and the agent environment holds no PATH
  * where it needs no change, so the lookup reads the same merged environment.
+ *
+ * `executableNames` lists each name that the Worker probes for the provider, in its preference order, and the
+ * Worker starts the first name that its search path holds. The startup wrapper takes `launch.binaryName`, which
+ * must be the first name. The Worker then starts the wrapper whichever name the search path holds, and the wrapper
+ * runs the executable that this lookup finds.
  */
 export function resolveNativeStartupLaunch(
   environment: Record<string, string | undefined> | undefined,
   launch: Omit<NativeStartupLaunch, 'executable'>,
+  executableNames: readonly string[] = [launch.binaryName],
 ): NativeStartupLaunch {
   if (!environment)
     throw new Error('The native startup scenario requires the private agent environment.')
   if (!isFileNameComponent(launch.binaryName))
     throw new Error(`The native startup executable name must be one file-name component, not ${JSON.stringify(launch.binaryName)}.`)
-  const executable = requireBinary(launch.binaryName, `The isolated ${launch.binaryName} executable is absent from the PATH that the Worker receives`, hubSpawnEnv(environment))
+  if (executableNames[0] !== launch.binaryName)
+    throw new Error(`The startup wrapper takes ${JSON.stringify(launch.binaryName)}, so it must be the first name that the Worker probes, not ${JSON.stringify(executableNames[0])}.`)
+  const executable = requireBinary(executableNames, `The isolated ${executableNames.join(' or ')} executable is absent from the PATH that the Worker receives`, hubSpawnEnv(environment))
   return { ...launch, executable }
 }
 
