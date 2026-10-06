@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { answerPlanReview, controlBanner, enterControlFeedback, expectSettingsChip, messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, controlBanner, enterControlFeedback, expectSettingsChip, messageContents, openWorkspace, planReviewButton, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { mimoTest } from '../mimo-fixtures'
 import { MIMO_AGENT } from './scenarios'
@@ -62,7 +62,7 @@ mimoTest.describe('MiMo Code plan approval', () => {
 
     const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
-    await expect(page.getByTestId('plan-reject-btn').filter({ visible: true })).toHaveText('Reject')
+    await expect(planReviewButton(page, 'reject')).toHaveText('Reject')
     await answerPlanReview(page, 'reject')
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps(start + 2)
@@ -92,7 +92,7 @@ mimoTest.describe('MiMo Code plan approval', () => {
     const banner = controlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
     await enterControlFeedback(page, 'Split the migration into two steps')
-    await expect(page.getByTestId('plan-reject-btn').filter({ visible: true })).toHaveText('Send feedback')
+    await expect(planReviewButton(page, 'reject')).toHaveText('Send feedback')
     await answerPlanReview(page, 'reject')
     await expect(banner).toHaveCount(0)
     await expect(messageContents(page).filter({ hasText: 'PLAN_FEEDBACK_RECEIVED' }).first()).toBeVisible()

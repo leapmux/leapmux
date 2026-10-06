@@ -4,7 +4,7 @@ import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { focusComposer, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
+import { focusComposer, planReviewButton, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
@@ -301,7 +301,7 @@ test.describe('send feedback button labels', () => {
     const banner = await enterAndExitPlanMode({ page, modelScript, provider: AgentProvider.CLAUDE_CODE })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
-    const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
+    const rejectBtn = planReviewButton(page, 'reject')
 
     // With empty editor, button should say "Reject"
     await expect(rejectBtn).toHaveText('Reject')

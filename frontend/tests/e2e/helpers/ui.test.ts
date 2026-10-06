@@ -53,6 +53,8 @@ import {
   openTerminalViaUI,
   openWorkspace,
   openWorkspaceRowMenu,
+  PLAN_REVIEW_BUTTON_TEST_IDS,
+  planReviewButton,
   platformModifier,
   questionPagination,
   queuePauseButton,
@@ -1074,6 +1076,23 @@ describe('answerControl', () => {
     await answerControl(page, decision)
     expect(click).toHaveBeenCalledTimes(1)
     expect(click).toHaveBeenCalledWith()
+  })
+})
+
+describe('PLAN_REVIEW_BUTTON_TEST_IDS', () => {
+  it('lists the Approve button and the Reject button of a plan review', () => {
+    expect(PLAN_REVIEW_BUTTON_TEST_IDS).toEqual(['plan-approve-btn', 'plan-reject-btn'])
+  })
+})
+
+describe('planReviewButton', () => {
+  it.each(['approve', 'reject'] as const)('selects every visible %s button of the plan review', (decision) => {
+    const button = opaqueHandle<PlaywrightLocator>({})
+    const page = visibleTestIdPage((testId) => {
+      expect(testId).toBe(`plan-${decision}-btn`)
+      return button
+    })
+    expect(planReviewButton(page, decision)).toBe(button)
   })
 })
 

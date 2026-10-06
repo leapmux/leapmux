@@ -5,7 +5,8 @@
 import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { expectNoPlanOption, expectNoPlanReview, PLAN_REVIEW_BUTTON_TEST_IDS } from './unsupportedPlanMode'
+import { PLAN_REVIEW_BUTTON_TEST_IDS } from './ui'
+import { expectNoPlanOption, expectNoPlanReview } from './unsupportedPlanMode'
 
 /** The browser actions and checks that the fakes record, in order. */
 const recorded = vi.hoisted(() => ({ events: [] as string[], counts: {} as Record<string, number>, modes: [] as string[][] }))

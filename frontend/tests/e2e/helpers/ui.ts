@@ -443,12 +443,35 @@ export async function answerControl(page: Page, decision: 'allow' | 'deny'): Pro
   await controlButton(page, decision).click()
 }
 
+/** The decision that a plan review button sends. */
+export type PlanReviewDecision = 'approve' | 'reject'
+
+/** The test ID of each plan review button, by the decision that it sends. */
+const PLAN_REVIEW_BUTTON_TEST_ID = {
+  approve: 'plan-approve-btn',
+  reject: 'plan-reject-btn',
+} as const satisfies Record<PlanReviewDecision, string>
+
+/**
+ * The test IDs of the two buttons of a plan review.
+ * A proof that no plan review appears watches both, whether or not the provider has a plan mode.
+ */
+export const PLAN_REVIEW_BUTTON_TEST_IDS = [PLAN_REVIEW_BUTTON_TEST_ID.approve, PLAN_REVIEW_BUTTON_TEST_ID.reject] as const
+
+/**
+ * Locate every visible Approve or Reject button of a plan review.
+ * With text in the composer, the Reject button sends that text as feedback.
+ */
+export function planReviewButton(page: Page, decision: PlanReviewDecision): Locator {
+  return page.getByTestId(PLAN_REVIEW_BUTTON_TEST_ID[decision]).filter({ visible: true })
+}
+
 /**
  * Click the visible Approve or Reject button of a plan review.
  * The click is strict, as the click of `answerControl` is.
  */
-export async function answerPlanReview(page: Page, decision: 'approve' | 'reject'): Promise<void> {
-  await page.getByTestId(`plan-${decision}-btn`).filter({ visible: true }).click()
+export async function answerPlanReview(page: Page, decision: PlanReviewDecision): Promise<void> {
+  await planReviewButton(page, decision).click()
 }
 
 /**

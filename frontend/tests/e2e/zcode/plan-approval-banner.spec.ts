@@ -12,7 +12,7 @@ import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
-import { answerPlanReview, assistantBubbles, controlActions, controlBanner, enterControlFeedback, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, assistantBubbles, controlActions, controlBanner, enterControlFeedback, expectSettingsChip, openWorkspace, planReviewButton, savedControlAnswer, sendMessage, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { zcodeTest } from '../zcode-fixtures'
 import { ZCODE_AGENT } from './scenarios'
@@ -37,7 +37,7 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   const banner = controlBanner(page)
   await expect(banner).toContainText('Plan Ready for Review')
   await enterControlFeedback(page, 'approve')
-  const reject = page.getByTestId('plan-reject-btn').filter({ visible: true })
+  const reject = planReviewButton(page, 'reject')
   await expect(reject).toHaveText('Send feedback')
   await expect(reject).toBeInViewport({ ratio: 1 })
   // No queue toggle, visible or hidden, while the composer holds the feedback of a control.

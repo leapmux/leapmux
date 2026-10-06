@@ -4,7 +4,7 @@ import { claudeTest } from '../claude-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
-import { answerPlanReview, expectNoControlBanner, expectSettingsChip, settingsBar, waitForSettingsIdle } from '../helpers/ui'
+import { answerPlanReview, expectNoControlBanner, expectSettingsChip, planReviewButton, settingsBar, waitForSettingsIdle } from '../helpers/ui'
 import { CLAUDE_AGENT } from './scenarios'
 
 claudeTest.describe('plan mode - bypass permissions', () => {
@@ -41,7 +41,7 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     await bypassRadio.click()
     await expect(bypassRadio).toBeChecked()
 
-    await expect(page.getByTestId('plan-approve-btn').filter({ visible: true })).toBeEnabled()
+    await expect(planReviewButton(page, 'approve')).toBeEnabled()
     await answerPlanReview(page, 'approve')
 
     // Verify control banner disappears (plan was approved)

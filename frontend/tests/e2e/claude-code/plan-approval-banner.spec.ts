@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, PLATFORM_MOD, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
+import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, planReviewButton, PLATFORM_MOD, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
 import { CLAUDE_AGENT } from './scenarios'
 
@@ -150,8 +150,8 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     const control = (testId: string) => page.getByTestId(testId).filter({ visible: true })
 
     // The empty editor shows Reject, Approve, the Clear Context switch, and the permission pills.
-    await expect(control('plan-reject-btn')).toBeVisible()
-    await expect(control('plan-approve-btn')).toBeVisible()
+    await expect(planReviewButton(page, 'reject')).toBeVisible()
+    await expect(planReviewButton(page, 'approve')).toBeVisible()
     await expect(control('plan-clear-context-checkbox')).toBeVisible()
     await expect(control('control-permissions-pill-group')).toBeVisible()
 
@@ -159,8 +159,8 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     await enterControlFeedback(page, 'needs changes')
 
     // With editor content: Send feedback is visible and Approve is hidden.
-    await expect(control('plan-reject-btn')).toHaveText('Send feedback')
-    await expect(control('plan-approve-btn')).toHaveCount(0)
+    await expect(planReviewButton(page, 'reject')).toHaveText('Send feedback')
+    await expect(planReviewButton(page, 'approve')).toHaveCount(0)
     await expect(control('plan-clear-context-checkbox')).toHaveCount(0)
     await expect(control('control-permissions-pill-group')).toHaveCount(0)
 
@@ -169,8 +169,8 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     await page.keyboard.press('Backspace')
 
     // Reject and Approve visible again
-    await expect(control('plan-reject-btn')).toBeVisible()
-    await expect(control('plan-approve-btn')).toBeVisible()
+    await expect(planReviewButton(page, 'reject')).toBeVisible()
+    await expect(planReviewButton(page, 'approve')).toBeVisible()
   })
 
   claudeTest('lays the pill radios and their moving copies out identically', async ({ page, authenticatedWorkspace, modelScript }) => {

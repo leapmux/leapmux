@@ -3,8 +3,7 @@ import { commandCodeTest } from '../command-code-fixtures'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { exerciseNativeReadOnlyPlan } from '../helpers/nativeReadOnlyPlan'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
-import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
-import { PLAN_REVIEW_BUTTON_TEST_IDS } from '../helpers/unsupportedPlanMode'
+import { chooseSettingsOption, PLAN_REVIEW_BUTTON_TEST_IDS, waitForSettingsIdle } from '../helpers/ui'
 
 commandCodeTest('returns a native read-only plan without a plan approval dialog', async ({ native, page }) => {
   await expectNoNativeControl(native, { testId: 'control-banner', additionalTestIds: [...PLAN_REVIEW_BUTTON_TEST_IDS], relatedProof: async () => {

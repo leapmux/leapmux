@@ -6,10 +6,7 @@ import { currentNativeAgent, nativeModelContextText, nativeOptionGroup, nativeTe
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { bashToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
-import { closeComposerMenus, messageContents, openPlusMenu, openSettingsMenu, sendMessage, waitForNativeSettingsHydrated } from './ui'
-
-/** The test IDs of the two buttons of a plan review. */
-export const PLAN_REVIEW_BUTTON_TEST_IDS = ['plan-approve-btn', 'plan-reject-btn'] as const
+import { closeComposerMenus, messageContents, openPlusMenu, openSettingsMenu, PLAN_REVIEW_BUTTON_TEST_IDS, sendMessage, waitForNativeSettingsHydrated } from './ui'
 
 /** What {@link expectNoPlanReview} runs around its observation. */
 export interface NoPlanReviewOptions {
