@@ -39,6 +39,7 @@ import {
   isMaybeVisible,
   offeredSettingsOptions,
   openWorkspaceRowMenu,
+  platformModifier,
   questionPagination,
   queuePauseButton,
   resumePausedQueue,
@@ -56,6 +57,7 @@ import {
   toolRows,
   treeRow,
   waitForAgentIdle,
+  waitForAgentStarted,
   waitForControlBanner,
   waitForLayoutSave,
   waitForNativeSettingsHydrated,
@@ -1286,5 +1288,44 @@ describe('treeRow', () => {
     const { root } = fakeTree()
     expect((treeRow(root, 'src', { exact: true }) as unknown as { path: string }).path)
       .toBe(`${rows}[has=(page >> testid=tree-row-name >> text=src exact)].first`)
+  })
+})
+
+describe('waitForAgentStarted', () => {
+  const composer = 'page >> [data-testid="composer-editor"]:visible .ProseMirror'
+  const overlay = 'page >> testid=agent-startup-overlay[visible=true]'
+  const failure = 'page >> testid=agent-startup-error[visible=true]'
+
+  it('requires the visible composer, then no visible startup overlay, then no visible startup error', async () => {
+    const { root, log } = fakeTree()
+    await waitForAgentStarted(root)
+    expect(log).toEqual([`to.be.visible ${composer}`, `to.have.count ${overlay}`, `to.have.count ${failure}`])
+  })
+
+  it('fails while the startup overlay shows, and reads no startup error', async () => {
+    const { root, log } = fakeTree((_expression, path) => path !== overlay)
+    await expect(waitForAgentStarted(root)).rejects.toThrow('the agent ends its startup')
+    expect(log).not.toContain(`to.have.count ${failure}`)
+  })
+
+  it('fails when the startup failed', async () => {
+    const { root } = fakeTree((_expression, path) => path !== failure)
+    await expect(waitForAgentStarted(root)).rejects.toThrow('the agent starts with no error')
+  })
+
+  it('fails before it reads the overlay when no composer shows', async () => {
+    const { root, log } = fakeTree((_expression, path) => path !== composer)
+    await expect(waitForAgentStarted(root)).rejects.toThrow('the agent tab shows its composer')
+    expect(log).toEqual([`to.be.visible ${composer}`])
+  })
+})
+
+describe('platformModifier', () => {
+  it('uses Meta on macOS', () => {
+    expect(platformModifier('darwin')).toBe('Meta')
+  })
+
+  it.each(['linux', 'win32', 'freebsd'] as const)('uses Control on %s', (platform) => {
+    expect(platformModifier(platform)).toBe('Control')
   })
 })

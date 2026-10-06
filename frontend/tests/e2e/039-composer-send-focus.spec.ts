@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { CHAT_SCROLL_CONTAINER } from './helpers/ui'
+import { chatScrollContainer, focusComposer } from './helpers/ui'
 
 /**
  * Where the caret goes after a send. The decision itself is a pure function,
@@ -13,13 +13,8 @@ import { CHAT_SCROLL_CONTAINER } from './helpers/ui'
  * the transcript the user just uncovered.
  */
 test.describe('composer send focus', () => {
-  const EDITOR = '[data-testid="composer-editor"] .ProseMirror'
-
   test('a press on Send keeps the caret in the editor', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator(EDITOR)
-    await expect(editor).toBeVisible()
-
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('keep my caret')
     await expect(editor).toBeFocused()
 
@@ -35,15 +30,12 @@ test.describe('composer send focus', () => {
   })
 
   test('a send from a composer the user left does not take the caret back', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator(EDITOR)
-    await expect(editor).toBeVisible()
-
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('typed, then walked away')
 
     // Leaving the composer is what a phone user does to put the on-screen
     // keyboard away before they press Send.
-    await page.locator(CHAT_SCROLL_CONTAINER).click({ position: { x: 8, y: 8 } })
+    await chatScrollContainer(page).click({ position: { x: 8, y: 8 } })
     await expect(editor).not.toBeFocused()
 
     await page.locator('[data-testid="send-button"]').click()

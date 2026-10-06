@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { composerEditor, focusComposer, waitForEditorDraft } from './helpers/ui'
 
 /**
  * Per-agent draft isolation, the load/save/clear contract, and the empty-string
@@ -8,18 +9,16 @@ import { expect, test } from './fixtures'
  * the persisted markdown into the editor on remount.
  */
 test.describe('Draft Persistence', () => {
-  test('draft survives page reload', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    await editor.click()
+  test('draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    void authenticatedWorkspace
+    await focusComposer(page)
     await page.keyboard.type('draft text to preserve', { delay: 100 })
 
-    // Wait for the 500ms debounced save plus a small margin.
-    await page.waitForTimeout(700)
+    // Wait until the debounced save reaches browser storage. A fixed sleep
+    // guesses at the debounce and at the write queue behind it.
+    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'draft text to preserve')
 
     await page.reload()
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toContainText('draft text to preserve')
+    await expect(composerEditor(page)).toContainText('draft text to preserve')
   })
 })

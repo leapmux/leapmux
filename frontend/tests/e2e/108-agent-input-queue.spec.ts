@@ -1,22 +1,25 @@
 import type { Page } from '@playwright/test'
-import { Buffer } from 'node:buffer'
 import { getUserId } from './helpers/api'
+import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
+import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { withExtraClients } from './helpers/multiClient'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
+import { composerEditor, focusComposer, loginViaToken, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
-
-const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
 
 /**
  * Pause the queue and wait for its confirmation button.
  * The button label acknowledges the new state.
  * A send before that acknowledgement can reach the agent instead of the queue.
  * The resulting missing row can look like a rendering failure.
+ * The queue must be running. A paused queue fails the call, because a click on the toggle would resume it.
  */
 async function pauseQueue(page: Page) {
-  await page.getByTestId('queue-pause-button').click()
-  await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+  const button = queuePauseButton(page)
+  await expect(button).toHaveText('Pause Queue')
+  await button.click()
+  await expect(button).toHaveText('Resume Queue')
 }
 
 /**
@@ -28,7 +31,7 @@ async function pauseQueue(page: Page) {
  * Two previous copies used different patterns and produced that mismatch.
  */
 async function seedTwoQueuedRows(page: Page) {
-  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+  await expect(composerEditor(page)).toBeVisible()
   await pauseQueue(page)
   await sendMessage(page, 'first queued')
   await sendMessage(page, 'second queued')
@@ -45,29 +48,20 @@ async function seedTwoQueuedRows(page: Page) {
 
 test.describe('agent input queue', () => {
   test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker, modelScript }) => {
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     // Establish a provider session before the Worker restart. A fresh Claude
     // process reports an id before it stores a resumable conversation.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await page.getByTestId('queue-pause-button').click()
-    await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+    await sendScriptedTurn(page, modelScript)
+    await pauseQueue(page)
 
     await withExtraClients(browser, separateHubWorker, 1, async ([secondPage]) => {
       await loginViaToken(secondPage, separateHubWorker.adminToken)
       await openWorkspace(secondPage, authenticatedWorkspace.workspaceId)
-      await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-      await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+      await expect(composerEditor(secondPage)).toBeVisible()
+      await expect(queuePauseButton(secondPage)).toHaveText('Resume Queue')
 
       const queuedFirst = `${'x'.repeat(1200)} full text tail`
       const queuedFirstPreview = queuedFirst.slice(0, 80)
-      await page.getByTestId('file-input').setInputFiles({
-        name: 'queued-input.txt',
-        mimeType: 'text/plain',
-        buffer: Buffer.from('queued attachment'),
-      })
+      await attachFile(page, writeAttachmentFixture('text', 'queued-input.txt'))
       await sendMessage(page, queuedFirst)
       await sendMessage(page, 'queued second')
       for (const clientPage of [page, secondPage]) {
@@ -84,25 +78,21 @@ test.describe('agent input queue', () => {
       await expect(page.getByTestId('agent-input-queue')).toContainText(queuedFirstPreview)
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued second')
 
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+      const editor = composerEditor(page)
       await editor.fill('normal draft')
-      await page.getByTestId('file-input').setInputFiles({
-        name: 'normal-draft.txt',
-        mimeType: 'text/plain',
-        buffer: Buffer.from('normal attachment'),
-      })
-      await expect(page.getByTestId('attachment-pill')).toContainText('normal-draft.txt')
+      await attachFile(page, writeAttachmentFixture('text', 'normal-draft.txt'))
+      await expect(attachmentPills(page)).toContainText('normal-draft.txt')
       const first = page.getByTestId(/queued-input-/).filter({ hasText: queuedFirstPreview })
       await first.getByRole('button', { name: 'Edit', exact: true }).click()
       await expect(editor).toContainText('full text tail')
-      await expect(page.getByTestId('attachment-pill')).toContainText('queued-input.txt')
+      await expect(attachmentPills(page)).toContainText('queued-input.txt')
       await editor.fill('edited first')
       await page.keyboard.press('Meta+Enter')
       for (const clientPage of [page, secondPage])
         await expect(clientPage.getByTestId('agent-input-queue')).toContainText('edited first')
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued-input.txt')
       await expect(editor).toHaveText('normal draft')
-      await expect(page.getByTestId('attachment-pill')).toContainText('normal-draft.txt')
+      await expect(attachmentPills(page)).toContainText('normal-draft.txt')
 
       const edited = page.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
@@ -115,7 +105,7 @@ test.describe('agent input queue', () => {
       await waitForEditorDraft(page, adminUserId, 'unsaved queue edit')
       await page.reload()
       await expect(editor).toHaveText('unsaved queue edit')
-      await expect(page.getByTestId('attachment-pill')).toContainText('queued-input.txt')
+      await expect(attachmentPills(page)).toContainText('queued-input.txt')
       const resumedEdit = page.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await resumedEdit.getByRole('button', { name: 'Cancel Edit' }).click()
       await expect(editor).toHaveText('normal draft')
@@ -123,7 +113,7 @@ test.describe('agent input queue', () => {
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
       const secondClientItem = secondPage.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await secondClientItem.getByRole('button', { name: 'Take Over' }).click()
-      await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toHaveText('edited first')
+      await expect(composerEditor(secondPage)).toHaveText('edited first')
       await expect(editor).toHaveText('normal draft')
       await secondClientItem.getByRole('button', { name: 'Cancel Edit' }).click()
 
@@ -149,9 +139,8 @@ test.describe('agent input queue', () => {
       }
       for (const clientPage of [page, secondPage])
         await expect(clientPage.getByTestId('agent-input-queue')).toHaveCount(0)
-      await page.getByTestId('queue-pause-button').click()
-      await expect(page.getByTestId('queue-pause-button')).toHaveText('Pause Queue')
-      await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Pause Queue')
+      await resumePausedQueue(page)
+      await expect(queuePauseButton(secondPage)).toHaveText('Pause Queue')
     })
   })
 
@@ -186,7 +175,7 @@ test.describe('agent input queue', () => {
 
   test('shows no drag affordance when the queue contains one input', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
     await pauseQueue(page)
     await sendMessage(page, 'only queued input')
 
@@ -201,26 +190,19 @@ test.describe('agent input queue', () => {
     // A mouse is a fine pointer, so the row body handles the drag and the grip stays hidden.
     // The workspace list uses the same rule. A mouse cannot exercise the grip's touch path.
     const { rows, source, target } = await seedTwoQueuedRows(page)
-    const from = (await source.boundingBox())!
-    const to = (await target.boundingBox())!
-    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
-    await page.mouse.down()
-    try {
-      // Move beyond the sensor's 10px activation distance.
-      // Move to the target center in a separate step so the collision detector receives that movement.
-      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 20)
-      await expect(source).toHaveClass(/itemDragging/)
+    await mouseDragOnto(page, {
+      from: await boxCenter(source),
+      to: await boxCenter(target),
+      dragged: { row: source, draggingClass: /itemDragging/ },
       // The row must move only along the queue axis and add no horizontal scroll area.
       // Check the actual scroll width so any source of sideways movement fails this assertion.
-      await expect
+      // The activation move of the drag has a sideways part, so the check also covers a
+      // pointer that leaves the axis.
+      whileLifted: () => expect
         .poll(() => page.getByTestId('agent-input-queue')
           .evaluate(queue => queue.scrollWidth - queue.clientWidth))
-        .toBe(0)
-      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
-    }
-    finally {
-      await page.mouse.up()
-    }
+        .toBe(0),
+    })
 
     // Require the returned Worker order before accepting the reorder.
     await expect(rows.first()).toContainText('second queued')
@@ -229,7 +211,7 @@ test.describe('agent input queue', () => {
   // The queue steering shortcut and composer send control share the same key combination.
   // Only an empty composer permits the steering shortcut to consume it.
   // This case protects a send keypress from that shortcut.
-  // Use MOD because tinykeys maps $mod to Meta on Apple platforms and Control elsewhere.
+  // Use PLATFORM_MOD because tinykeys maps $mod to Meta on Apple platforms and Control elsewhere.
   // A fixed Meta key would bypass the queue shortcut on Linux and Windows.
   // The composer accepts either modifier, so both assertions could pass without testing the intended shortcut.
   test('leaves the send chord to the composer whenever there is something to send', async ({ page, authenticatedWorkspace }) => {
@@ -238,15 +220,14 @@ test.describe('agent input queue', () => {
 
     // With an empty composer and no active turn, the first queued input cannot steer.
     // The shortcut consumes the keypress without sending or queueing anything.
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.press(`${MOD}+Enter`)
+    const editor = await focusComposer(page)
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(rows).toHaveCount(2)
 
     // With composer text present, the same key combination must send the prompt.
     await editor.click()
     await page.keyboard.type('typed then sent')
-    await page.keyboard.press(`${MOD}+Enter`)
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(editor).toHaveText('')
     await expect(rows).toHaveCount(3)
     await expect(rows.last()).toContainText('typed then sent')
@@ -254,16 +235,12 @@ test.describe('agent input queue', () => {
 
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
     await pauseQueue(page)
     await sendMessage(page, 'a queued input')
     await expect(page.getByTestId('agent-input-queue')).toContainText('a queued input')
-    await page.getByTestId('file-input').setInputFiles({
-      name: 'notes.txt',
-      mimeType: 'text/plain',
-      buffer: Buffer.from('an attachment'),
-    })
-    await expect(page.getByTestId('attachment-pill')).toContainText('notes.txt')
+    await attachFile(page, writeAttachmentFixture('text', 'notes.txt'))
+    await expect(attachmentPills(page)).toContainText('notes.txt')
 
     // Measure the composer column's flex children.
     // The inner ProseMirror element excludes its container border and padding, so its rectangle cannot measure the actual gap.
@@ -309,7 +286,7 @@ test.describe('agent input queue', () => {
     void authenticatedWorkspace // fixture trigger
     // Use a viewport narrower than the supported phone sizes to test the action row's minimum available space.
     await page.setViewportSize({ width: 320, height: 720 })
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
 
     const plus = page.getByTestId('composer-plus-trigger')
     const footer = page.getByTestId('composer-footer-slot')
@@ -334,7 +311,7 @@ test.describe('agent input queue', () => {
     // A 320px viewport is below the sm threshold. A split or floating pane can be about 260px wide on a 1200px display.
     // A viewport media query would classify that narrow composer as wide.
     await page.setViewportSize({ width: 1200, height: 800 })
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
     await page.addStyleTag({ content: '[data-testid="agent-editor-panel"] { max-width: 260px; }' })
 
     const plus = page.getByTestId('composer-plus-trigger')

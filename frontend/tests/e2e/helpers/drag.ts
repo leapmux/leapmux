@@ -49,17 +49,21 @@ export interface DraggedRow {
  * so a press that never started a drag, or a release that the drag never saw, fails here and not later as an
  * unchanged layout. Omit it for a drag that moves the row out of the page, such as a move to another workspace:
  * the class check after the release needs the row on the page.
+ *
+ * `whileLifted` runs after the activation move, while the drag holds the row and before the move to the target, for
+ * a check of the lifted state. The button stays down until it returns, and a failure in it still releases the button.
  */
 export async function mouseDragOnto(page: Page, opts: {
   from: ViewportPoint
   to: ViewportPoint
   steps?: number
   dragged?: DraggedRow
+  whileLifted?: () => Promise<void>
 }): Promise<void> {
   const steps = opts.steps ?? 12
   if (!Number.isSafeInteger(steps) || steps < 1)
     throw new RangeError(`A drag needs a positive whole number of steps, not ${steps}.`)
-  const { from, to, dragged } = opts
+  const { from, to, dragged, whileLifted } = opts
   await page.mouse.move(from.x, from.y)
   await page.mouse.down()
   // `finally`, so a failed check still releases the button. A held button would turn every later mouse action of
@@ -68,6 +72,7 @@ export async function mouseDragOnto(page: Page, opts: {
     await page.mouse.move(from.x + ACTIVATION_MOVE.x, from.y + ACTIVATION_MOVE.y)
     if (dragged)
       await expect(dragged.row, 'the press started a drag').toHaveClass(dragged.draggingClass)
+    await whileLifted?.()
     await page.mouse.move(to.x, to.y, { steps })
     await settleFrames(page)
   }

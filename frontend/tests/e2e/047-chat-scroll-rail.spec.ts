@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { sendMessage, USER_BUBBLE_SELECTOR, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { PREVIEW, RAIL, RAIL_DOT, RAIL_FILLER_PREVIEW, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
+import { selectedText } from './helpers/selection'
+import { chatScrollContainer, USER_BUBBLE_SELECTOR, waitForAgentStarted } from './helpers/ui'
 
 /**
  * Smoke test for the seq-space chat scroll rail. The geometry math, the marks store,
@@ -12,10 +14,6 @@ import { sendMessage, USER_BUBBLE_SELECTOR, userBubbles, waitForAgentIdle } from
  * that message.
  */
 
-// A deliberately long message so each user bubble is tall enough that two of them
-// overflow the short viewport below -- otherwise the rail correctly hides itself.
-const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the quick brown fox jumps over the lazy dog. '.repeat(12)}`
-
 /**
  * How long to rest on the preview card before checking that it is still there. Comfortably
  * longer than POINTER_CLOSE_DELAY_MS, so a card that ignored the pointer would already be gone.
@@ -23,9 +21,13 @@ const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the qu
  */
 const POPOVER_LINGER_MS = 1000
 
-/** The virtual row wrapper (carries data-seq) for the Nth user message bubble. */
+/**
+ * The virtual row wrapper (carries data-seq) for the Nth user message bubble.
+ * Scoped to the scroll container, which excludes the hidden premeasure copies (they mount outside it) and the dots of
+ * the rail (which reuse data-seq).
+ */
 function userRow(page: Page, nth: number) {
-  return page
+  return chatScrollContainer(page)
     .locator('[data-seq]')
     .filter({ has: page.locator(USER_BUBBLE_SELECTOR) })
     .nth(nth)
@@ -36,35 +38,24 @@ test.describe('chat scroll rail', () => {
     // A short viewport so a couple of tall user bubbles overflow and the rail appears.
     await page.setViewportSize({ width: 720, height: 380 })
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    // Let the agent finish starting so the send takes the fast path (see 010).
-    await expect(page.getByText(/^Starting /)).not.toBeVisible()
+    await waitForAgentStarted(page)
 
     // The native scrollbar is hidden on the chat container -- the rail replaces it. This
     // holds regardless of conversation length, so assert it up front.
-    const scroller = page.locator('[data-chat-scroll-container="true"]')
+    const scroller = chatScrollContainer(page)
     await expect(scroller).toBeVisible()
     // Polled: the rail decides whether it owns scrolling from a MEASURED
     // viewport height, so right after setViewportSize the native bar is still
     // 'thin' until the resize observation lands.
     await expect.poll(() => scroller.evaluate(el => getComputedStyle(el).scrollbarWidth)).toBe('none')
 
-    // Send two messages, waiting for each turn to finish.
-    for (let turn = 0; turn < 2; turn++) {
-      await modelScript.queue({ text: 'ok' })
-      await sendMessage(page, modelScript.prompt(LONG_MESSAGE))
-      await modelScript.waitForSteps()
-      await waitForAgentIdle(page)
-    }
+    // Send two tall messages. Both user messages land (their server echoes carry real
+    // seqs), and they overflow the short viewport, so the rail shows.
+    await seedOverflowingConversation(page, modelScript, 2)
 
-    // Two user messages landed (their server echoes carry real seqs).
-    await expect(userBubbles(page)).toHaveCount(2)
-
-    // The tall bubbles overflow the short viewport, so the rail shows with a thumb.
-    const rail = page.locator('[data-testid="chat-scroll-rail"]')
-    await expect(rail).toBeVisible()
-    const thumb = page.locator('[data-testid="chat-scroll-rail-thumb"]')
+    // The rail shows with a thumb.
+    const rail = page.locator(RAIL)
+    const thumb = page.locator(THUMB)
     await expect(thumb).toBeVisible()
 
     // Each user message has a teal jump dot at its seq (there may be additional dots for
@@ -73,15 +64,16 @@ test.describe('chat scroll rail', () => {
     const secondUserSeq = await userRow(page, 1).getAttribute('data-seq')
     expect(firstUserSeq).not.toBeNull()
     expect(secondUserSeq).not.toBeNull()
-    await expect(page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${firstUserSeq}"]`)).toHaveCount(1)
-    await expect(page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${secondUserSeq}"]`)).toHaveCount(1)
+    const dot = (seq: string | null) => page.locator(`${RAIL_DOT}[data-seq="${seq}"]`)
+    await expect(dot(firstUserSeq)).toHaveCount(1)
+    await expect(dot(secondUserSeq)).toHaveCount(1)
 
     // Hovering a dot previews that message's content in a popover (shown immediately). The
     // message text begins with a fixed phrase, so the preview (extracted + truncated on the
     // client) must contain it.
-    await page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${firstUserSeq}"]`).hover()
-    const preview = page.locator('[data-testid="chat-scroll-rail-preview"]')
-    await expect(preview).toContainText('Please just reply with "ok"')
+    await dot(firstUserSeq).hover()
+    const preview = page.locator(PREVIEW)
+    await expect(preview).toContainText(RAIL_FILLER_PREVIEW)
 
     // The card is a place the reader can GO: the pointer leaves the dot, crosses the gutter, and
     // lands on the card, which then stays for as long as the pointer rests on it. Only a real
@@ -106,7 +98,7 @@ test.describe('chat scroll rail', () => {
     await page.mouse.down()
     await page.mouse.move(previewBox!.x + previewBox!.width + 4, previewBox!.y + 14, { steps: 10 })
     await page.mouse.up()
-    const selected = await page.evaluate(() => document.getSelection()?.toString() ?? '')
+    const selected = await selectedText(page)
     expect(selected.length, 'the drag must leave a selection the reader can copy').toBeGreaterThan(0)
     await page.waitForTimeout(POPOVER_LINGER_MS)
     await expect(preview).toBeVisible()
@@ -116,7 +108,7 @@ test.describe('chat scroll rail', () => {
     await expect(preview).toHaveCount(0)
 
     // Moving away closes it (after the same delay), so it is a card the reader visits, not a panel.
-    await page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${firstUserSeq}"]`).hover()
+    await dot(firstUserSeq).hover()
     await expect(preview).toBeVisible()
     await page.mouse.move(previewBox!.x - 200, previewBox!.y)
     await expect(preview).toHaveCount(0)
@@ -129,7 +121,7 @@ test.describe('chat scroll rail', () => {
     expect(thumbBox!.height).toBeLessThan(railBox!.height)
 
     // Clicking the FIRST user message's dot jumps the view (scrolled to the tail) up to it.
-    await page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${firstUserSeq}"]`).click()
+    await dot(firstUserSeq).click()
     await expect(userRow(page, 0)).toBeInViewport()
   })
 })

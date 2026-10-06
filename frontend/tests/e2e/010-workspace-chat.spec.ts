@@ -1,13 +1,12 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { workspaceRow } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, openAgentViaUI, renameTabViaUI, terminalTabs, visibleOnly, waitForAgentStarted, workspaceRow } from './helpers/ui'
 
 /** Wait for the fixture's native agent. A slow UI update must not create a second agent. */
 async function ensureAgentTab(page: Page): Promise<number> {
-  const tabs = page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
+  const tabs = visibleOnly(agentTabs(page))
   await expect(tabs.first()).toBeVisible()
-  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-  await expect(page.locator('[data-testid="agent-startup-overlay"]')).not.toBeVisible()
+  await waitForAgentStarted(page)
   return tabs.count()
 }
 
@@ -20,7 +19,7 @@ test.describe('Workspace Chat', () => {
   test('should rename a tab via double-click', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
 
     // Double-click the tab to edit its title.
     await agentTab.dblclick()
@@ -42,7 +41,7 @@ test.describe('Workspace Chat', () => {
   test('should cancel tab rename on Escape', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
 
     // Double-click the tab to edit its title.
     await agentTab.dblclick()
@@ -87,7 +86,7 @@ test.describe('Workspace Chat', () => {
 
     if (clickedShell) {
       // Require the new terminal tab.
-      await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+      await expect(terminalTabs(page)).toBeVisible()
     }
     else {
       // Close the menu when it contains no shell.
@@ -99,10 +98,10 @@ test.describe('Workspace Chat', () => {
     await ensureAgentTab(page)
 
     // Create a second agent through its button.
-    await page.locator('[data-testid^="new-agent-button"]').first().click()
+    await openAgentViaUI(page)
 
     // Require two agent tabs.
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
+    await expectAgentTabCount(page, 2)
   })
 
   test('should close dropdown when clicking outside', async ({ page, authenticatedWorkspace }) => {
@@ -123,17 +122,10 @@ test.describe('Workspace Chat', () => {
   test('should truncate long tab titles', async ({ page, authenticatedWorkspace }) => {
     await ensureAgentTab(page)
 
-    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentTab = agentTabs(page).first()
 
-    // Give the tab a long title.
-    await agentTab.dblclick()
-    const editInput = agentTab.locator('input')
-    await expect(editInput).toBeVisible()
-    await editInput.fill('This Is A Very Long Tab Title That Should Be Truncated')
-    await editInput.press('Enter')
-
-    // Require the entered title text.
-    await expect(agentTab).toContainText('This Is A Very Long Tab Title')
+    // Give the tab a long title. The helper requires the entered title text.
+    await renameTabViaUI(page, agentTab, 'This Is A Very Long Tab Title That Should Be Truncated')
 
     // Require the 200px maximum width that the tab stylesheet declares.
     const tabWidth = await agentTab.evaluate(el => el.getBoundingClientRect().width)
@@ -144,19 +136,19 @@ test.describe('Workspace Chat', () => {
     const initialCount = await ensureAgentTab(page)
 
     // Create an agent tab.
-    await page.locator('[data-testid^="new-agent-button"]').first().click()
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await expect(agentTabs).toHaveCount(initialCount + 1)
+    await openAgentViaUI(page)
+    const tabs = agentTabs(page)
+    await expect(tabs).toHaveCount(initialCount + 1)
 
     // The new tab becomes active. Select the first tab.
-    await agentTabs.first().click()
+    await tabs.first().click()
 
     // Double-click the last inactive tab to edit its title.
-    const lastIdx = await agentTabs.count() - 1
-    await agentTabs.nth(lastIdx).dblclick()
+    const lastIdx = await tabs.count() - 1
+    await tabs.nth(lastIdx).dblclick()
 
     // Require the title input and its focus.
-    const editInput = agentTabs.nth(lastIdx).locator('input')
+    const editInput = tabs.nth(lastIdx).locator('input')
     await expect(editInput).toBeVisible()
     await expect(editInput).toBeFocused()
 
@@ -166,28 +158,28 @@ test.describe('Workspace Chat', () => {
 
     // Require the entered title after the input closes.
     await expect(editInput).not.toBeVisible()
-    await expect(agentTabs.nth(lastIdx)).toContainText('Renamed Non-Active')
+    await expect(tabs.nth(lastIdx)).toContainText('Renamed Non-Active')
   })
 
   test('should close a tab on middle-click', async ({ page, authenticatedWorkspace }) => {
     const initialCount = await ensureAgentTab(page)
 
     // Create an agent tab.
-    await page.locator('[data-testid^="new-agent-button"]').first().click()
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await expect(agentTabs).toHaveCount(initialCount + 1)
+    await openAgentViaUI(page)
+    const tabs = agentTabs(page)
+    await expect(tabs).toHaveCount(initialCount + 1)
 
-    const countBefore = await agentTabs.count()
+    const countBefore = await tabs.count()
 
     // Close the last tab through a middle-button MouseEvent.
     // Playwright dispatchEvent can create an Event with no button value.
     // Its middle-button click can also fail inside a container that supports drag reordering.
     // The explicit MouseEvent supplies button=1 for the actual tab handler.
-    await agentTabs.nth(countBefore - 1).evaluate((el) => {
+    await tabs.nth(countBefore - 1).evaluate((el) => {
       el.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
     })
 
     // Require removal of the closed tab.
-    await expect(agentTabs).toHaveCount(countBefore - 1)
+    await expect(tabs).toHaveCount(countBefore - 1)
   })
 })

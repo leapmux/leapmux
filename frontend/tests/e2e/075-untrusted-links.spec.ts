@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { clickTerminalText, printTerminalHyperlink, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
-import { openAboutDialog, openTerminalViaUI, sendMessage, userBubbles } from './helpers/ui'
+import { openAboutDialog, openTerminalViaUI, userBubbles } from './helpers/ui'
 
 /**
  * Record what the app tries to open instead of opening it.
@@ -119,9 +120,7 @@ test.describe('Untrusted link prompt', () => {
     await recordOpenedUrls(page)
     // Rendered through the same pipeline an agent's reply takes, so the anchor
     // carries the mark `rehypeExternalLinks` puts on every link it hardens.
-    await modelScript.queue({ text: 'Noted.' })
-    await sendMessage(page, modelScript.prompt('[https://good.example](https://evil.example/steal)'))
-    await modelScript.waitForSteps()
+    await sendScriptedTurn(page, modelScript, { prompt: '[https://good.example](https://evil.example/steal)', answer: 'Noted.' })
 
     const link = userBubbles(page).first().getByRole('link', { name: 'https://good.example' })
     await expect(link).toBeVisible()

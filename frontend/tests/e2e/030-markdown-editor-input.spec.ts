@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { focusComposer } from './helpers/ui'
 
 /**
  * The Tab/Shift+Tab plugin (paragraph → heading promotion, list-item indent,
@@ -15,10 +16,7 @@ import { expect, test } from './fixtures'
  */
 test.describe('Markdown editor input — smoke', () => {
   test('the bullet-list input rule + Tab produces a nested list in the live editor', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    await editor.click()
+    const editor = await focusComposer(page)
     // `- ` is the bullet-list input rule; the formatting toolbar it replaced
     // was deleted with the composer rewrite.
     await page.keyboard.type('- ', { delay: 50 })

@@ -1,8 +1,10 @@
 import type { Locator, Page } from '@playwright/test'
 import type { TouchPoint } from './helpers/touch'
 import { expect, test } from './fixtures'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
+import { selectedText } from './helpers/selection'
 import { COARSE_POINTER_METRICS, touchHold, touchSwipe, touchTap } from './helpers/touch'
-import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { userBubbles } from './helpers/ui'
 
 /**
  * Selecting part of a message with a finger: double tap for the word, triple tap
@@ -94,25 +96,6 @@ async function aimAt(page: Page, row: Locator, word: string): Promise<TouchPoint
   return point
 }
 
-/**
- * The selected text, read from the RANGE rather than from the selection.
- *
- * `Selection.toString()` is layout-aware and reads empty over `user-select:
- * none`, which the app puts back the moment a finger lands away from the
- * highlight -- so it reports "nothing is selected" while the range is still
- * live. Every guard in the app asks the range (see `selectionInside` in
- * ~/src/lib/textSelection.ts), and so must this, or a spec passes on a
- * selection that never went away.
- */
-function selectedText(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const selection = window.getSelection()
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed)
-      return ''
-    return selection.getRangeAt(0).toString()
-  })
-}
-
 test.describe('tap to select text (phone)', () => {
   // Phone metrics: a coarse primary pointer, which is what puts `user-select:
   // none` on the message rows in the first place.
@@ -129,11 +112,8 @@ test.describe('tap to select text (phone)', () => {
    */
   test.beforeEach(async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await modelScript.queue({ text: MESSAGE })
-    await sendMessage(page, modelScript.prompt(MESSAGE))
-    await modelScript.waitForSteps()
+    await sendScriptedTurn(page, modelScript, { prompt: MESSAGE, answer: MESSAGE })
     await expect(userBubbles(page)).toHaveCount(1)
-    await waitForAgentIdle(page)
   })
 
   test('a double tap selects the word and offers to copy or quote it', async ({ page }) => {

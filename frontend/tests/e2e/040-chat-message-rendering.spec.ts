@@ -1,21 +1,7 @@
-import type { Page } from '@playwright/test'
-import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect, test } from './fixtures'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
-
-/**
- * Send one prompt and wait for the turn to settle. Every test below opens the
- * same way, and `sendMessage` also waits for the editor to empty, which is the
- * app's own acknowledgement that the send committed.
- */
-async function sendAndSettle(page: Page, script: ModelScript, prompt = ARITHMETIC_PROMPT, answer = ARITHMETIC_ANSWER_TEXT) {
-  await script.queue({ text: answer })
-  await sendMessage(page, script.prompt(prompt))
-  await script.waitForSteps(1)
-  await expect(firstAssistantBubble(page)).toBeVisible()
-  await waitForAgentIdle(page)
-}
+import { assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, userBubbles } from './helpers/ui'
 
 /**
  * Smoke test for end-to-end chat rendering: user input → real LLM response →
@@ -29,7 +15,7 @@ async function sendAndSettle(page: Page, script: ModelScript, prompt = ARITHMETI
 
 test.describe('Chat Message Rendering', () => {
   test('user message renders as human text and assistant reply renders as markdown', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await sendAndSettle(page, modelScript)
+    await sendScriptedTurn(page, modelScript)
 
     // User bubble: shows the human text, NOT the raw JSON envelope.
     const userBubble = userBubbles(page).first()
@@ -60,7 +46,7 @@ test.describe('Chat Message Rendering', () => {
    * deterministically, in `src/components/chat/useChatVirtualizer.geometry.test.ts`.
    */
   test('an assistant row paints a band that reaches both panel edges', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await sendAndSettle(page, modelScript)
+    await sendScriptedTurn(page, modelScript)
 
     await expect(bandRows(page, 'text').first()).toBeVisible()
 
@@ -131,7 +117,7 @@ test.describe('Chat Message Rendering', () => {
    * jsdom computes neither, which is why this lives here.
    */
   test('the turn-end divider runs its rule to both panel edges', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await sendAndSettle(page, modelScript)
+    await sendScriptedTurn(page, modelScript)
 
     const divider = page.locator('[data-testid="result-divider"]:visible').first()
     await expect(divider).toBeVisible()
@@ -142,7 +128,7 @@ test.describe('Chat Message Rendering', () => {
   })
 
   test('a user bubble meets the right panel edge and keeps its left side inset', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await sendAndSettle(page, modelScript, 'hi', 'Hello.')
+    await sendScriptedTurn(page, modelScript, { prompt: 'hi', answer: 'Hello.' })
 
     const bubble = userBubbles(page).first()
     await expect(bubble).toBeVisible()
@@ -241,7 +227,7 @@ test.describe('Chat Message Rendering', () => {
    * the row instead of the cursor would be obviously wrong.
    */
   test('right-click on a message opens its menu at the cursor, and leaves a selection to the browser', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await sendAndSettle(page, modelScript)
+    await sendScriptedTurn(page, modelScript)
 
     const bubble = firstAssistantBubble(page)
     await expect(bubble).toBeVisible()
@@ -338,7 +324,7 @@ test.describe('message long press (phone)', () => {
   test.use(COARSE_POINTER_METRICS)
 
   test('a long press opens the menu on the hold and the release leaves it up', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await sendAndSettle(page, modelScript)
+    await sendScriptedTurn(page, modelScript)
 
     const bubble = firstAssistantBubble(page)
     await expect(bubble).toBeVisible()

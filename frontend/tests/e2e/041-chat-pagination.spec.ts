@@ -1,5 +1,6 @@
 import { expect, test } from './fixtures'
-import { firstAssistantBubble, readAttached, sendMessage } from './helpers/ui'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
+import { chatScrollContainer, readAttached } from './helpers/ui'
 
 /**
  * Check chat layout and scroll position after a real streamed response.
@@ -9,22 +10,21 @@ import { firstAssistantBubble, readAttached, sendMessage } from './helpers/ui'
 
 test.describe('Chat Pagination & Scroll', () => {
   test('renders sequenced messages and clears the indicator after a response', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await modelScript.queue({ text: 'Hello.' })
-    await sendMessage(page, modelScript.prompt('Say hello.'))
-    await modelScript.waitForSteps(1)
+    // The helper waits for the answer in an assistant bubble, then for the
+    // thinking indicator of the visible chat to go away.
+    await sendScriptedTurn(page, modelScript, { prompt: 'Say hello.', answer: 'Hello.' })
 
-    const thinking = page.locator('[data-testid="thinking-indicator"]')
-
-    // Wait for the assistant bubble to appear.
-    await expect(firstAssistantBubble(page)).toBeVisible()
-
-    // After the turn completes, the thinking indicator should be gone.
+    // After the turn completes, no copy of the indicator and no Interrupt button remains.
     await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible()
-    await expect(thinking).not.toBeVisible()
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
 
     // Each rendered message wrapper carries a positive data-seq from the
     // server — this is what powers chat.store's pagination ordering.
-    const seqElements = page.locator('[data-seq]')
+    // Scoped to the scroll container, which excludes the hidden premeasure
+    // copies (they mount outside it) and the dots of the scroll rail (which
+    // reuse data-seq).
+    const scroller = chatScrollContainer(page)
+    const seqElements = scroller.locator('[data-seq]')
     const count = await seqElements.count()
     expect(count).toBeGreaterThan(1)
     for (let i = 0; i < count; i++) {
@@ -43,7 +43,6 @@ test.describe('Chat Pagination & Scroll', () => {
     expect(await rowTransform(seqElements.last())).toMatch(/^matrix/)
 
     // The viewport must stay at the bottom after a streamed turn with virtualized rows.
-    const scroller = page.locator('[data-chat-scroll-container="true"]')
     const distFromBottom = await scroller.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)
     expect(distFromBottom).toBeLessThan(40)
   })

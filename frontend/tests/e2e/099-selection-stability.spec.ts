@@ -1,5 +1,8 @@
+import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantMessageRow, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { QUICK_BROWN_FOX, sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
+import { selectedText } from './helpers/selection'
+import { ASSISTANT_BUBBLE_SELECTOR, chatScrollContainer, firstAssistantMessageRow } from './helpers/ui'
 
 /**
  * A text selection in the chat transcript must survive the mouse release, and
@@ -14,7 +17,11 @@ import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantMessageRow, sendMessage, waitF
  * `tileAgentTabIds` and `tabMetadata.touchMru`.
  */
 test.describe('chat text selection stability', () => {
-  async function dragSelectFirstLine(page: import('@playwright/test').Page) {
+  async function selectionLength(page: Page): Promise<number> {
+    return (await selectedText(page)).trim().length
+  }
+
+  async function dragSelectFirstLine(page: Page) {
     const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
     await expect(assistantBubble).toBeVisible()
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
@@ -24,20 +31,13 @@ test.describe('chat text selection stability', () => {
     await page.mouse.move(box.x + 4, y)
     await page.mouse.down()
     await page.mouse.move(box.x + Math.min(box.width - 4, 220), y, { steps: 12 })
-    const whileDown = await page.evaluate(() => (window.getSelection()?.toString() ?? '').trim().length)
+    const whileDown = await selectionLength(page)
     await page.mouse.up()
     return whileDown
   }
 
-  const selectionLength = (page: import('@playwright/test').Page) =>
-    page.evaluate(() => (window.getSelection()?.toString() ?? '').trim().length)
-
   test('a drag-selection survives the mouse release', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-    await modelScript.queue({ text: 'The quick brown fox jumps over the lazy dog' })
-    await sendMessage(page, modelScript.prompt('Say exactly: The quick brown fox jumps over the lazy dog'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
+    await sendScriptedTurn(page, modelScript, sayExactly(QUICK_BROWN_FOX))
 
     // Retry the whole measure-and-drag as one unit. The box is read, then the
     // pointer walks it -- and between those the transcript can grow (the
@@ -60,16 +60,11 @@ test.describe('chat text selection stability', () => {
   })
 
   test('selecting text while scrolled up does not move the viewport', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     // Enough turns to make the transcript scrollable, so "scrolled up" is a real state.
-    for (const n of [1, 2, 3, 4]) {
-      await modelScript.queue({ text: `line ${n} -- the quick brown fox jumps over the lazy dog` })
-      await sendMessage(page, modelScript.prompt(`Say exactly: line ${n} -- the quick brown fox jumps over the lazy dog`))
-      await modelScript.waitForSteps()
-      await waitForAgentIdle(page)
-    }
+    for (const n of [1, 2, 3, 4])
+      await sendScriptedTurn(page, modelScript, sayExactly(`line ${n} -- ${QUICK_BROWN_FOX.toLowerCase()}`))
 
-    const scroller = page.locator('[data-chat-scroll-container="true"]')
+    const scroller = chatScrollContainer(page)
     await scroller.evaluate(el => el.scrollTo({ top: 0 }))
     await page.waitForTimeout(300)
     const before = await scroller.evaluate(el => el.scrollTop)

@@ -92,6 +92,31 @@ describe('mouseDragOnto', () => {
     expect(log).toEqual(['move 0,0', 'down', 'move 8,20', 'to.have.class', 'move 200,0 in 12', 'frames', 'up', 'not to.have.class'])
   })
 
+  it('runs the lifted check after the drag starts and before the move to the target', async () => {
+    const log: string[] = []
+    await mouseDragOnto(recordingPage(log), {
+      from: { x: 0, y: 0 },
+      to: { x: 0, y: 200 },
+      whileLifted: async () => {
+        log.push('lifted check')
+      },
+    })
+    expect(log).toEqual(['move 0,0', 'down', 'move 8,20', 'lifted check', 'move 0,200 in 12', 'frames', 'up'])
+  })
+
+  it('releases the button when the lifted check fails, and reports that failure', async () => {
+    const log: string[] = []
+    const failure = new Error('The lifted row widened the queue.')
+    await expect(mouseDragOnto(recordingPage(log), {
+      from: { x: 0, y: 0 },
+      to: { x: 0, y: 200 },
+      whileLifted: async () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
+    expect(log).toEqual(['move 0,0', 'down', 'move 8,20', 'up'])
+  })
+
   it('releases the button when the press never starts a drag, and reports the failed press', async () => {
     const log: string[] = []
     const page = recordingPage(log)

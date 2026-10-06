@@ -1,8 +1,8 @@
 import type { Page } from '@playwright/test'
-import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect, test } from './fixtures'
+import { PREVIEW, RAIL, RAIL_DOT, RAIL_FILLER_PREVIEW, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
-import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { chatScrollContainer } from './helpers/ui'
 
 /**
  * Scrubbing the scroll rail: press anywhere on it, the view jumps there, and the SAME press
@@ -17,33 +17,7 @@ import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
  * here re-asserts them.
  */
 
-/**
- * Byte-for-byte 047's and 047b's filler. These specs drive a REAL agent, so the prompt is the
- * test's runtime. Make the VIEWPORT shorter, never the message longer, when a test needs more
- * overflow.
- */
-const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the quick brown fox jumps over the lazy dog. '.repeat(12)}`
-
-const RAIL = '[data-testid="chat-scroll-rail"]'
-const THUMB = '[data-testid="chat-scroll-rail-thumb"]'
-const PREVIEW = '[data-testid="chat-scroll-rail-preview"]'
-const SCROLLER = '[data-chat-scroll-container="true"]'
-
-/** Send one tall message so the conversation overflows and the rail takes over scrolling. */
-async function seedOverflowingConversation(page: Page, script: ModelScript) {
-  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  // Let the agent finish starting so the send takes the fast path (see 010).
-  await expect(page.getByText(/^Starting /)).not.toBeVisible()
-  await script.queue({ text: 'ok' })
-  await sendMessage(page, script.prompt(LONG_MESSAGE))
-  await script.waitForSteps()
-  await waitForAgentIdle(page)
-  await expect(userBubbles(page)).toHaveCount(1)
-  await expect(page.locator(RAIL)).toBeVisible()
-}
-
-const scrollTop = (page: Page) => page.locator(SCROLLER).evaluate((el: HTMLElement) => el.scrollTop)
+const scrollTop = (page: Page) => chatScrollContainer(page).evaluate((el: HTMLElement) => el.scrollTop)
 
 /** The thumb's centre in viewport coordinates, for "does the thumb follow the finger" checks. */
 async function thumbCentreY(page: Page): Promise<number> {
@@ -60,7 +34,7 @@ async function thumbCentreY(page: Page): Promise<number> {
  * Returns the rail's box, whose x is where every press below lands.
  */
 async function revealRailByTouch(page: Page) {
-  const scroller = page.locator(SCROLLER)
+  const scroller = chatScrollContainer(page)
   await scroller.evaluate((el: HTMLElement) => {
     el.scrollTop = 0
   })
@@ -131,7 +105,7 @@ test.describe('chat scroll rail scrubbing', () => {
       await seedOverflowingConversation(page, modelScript)
       await revealRailByTouch(page)
 
-      const dot = page.locator('[data-testid="chat-scroll-rail-dot"]').first()
+      const dot = page.locator(RAIL_DOT).first()
       const dotBox = await dot.boundingBox()
       expect(dotBox).not.toBeNull()
       const dotX = dotBox!.x + dotBox!.width / 2
@@ -139,7 +113,7 @@ test.describe('chat scroll rail scrubbing', () => {
 
       const finger = await touchDown(page, dotX, dotY)
       // The preview opens from the press alone, and shows the message the dot marks.
-      await expect(page.locator(PREVIEW)).toContainText('Please just reply with "ok"')
+      await expect(page.locator(PREVIEW)).toContainText(RAIL_FILLER_PREVIEW)
       // The same press scrubs on: dragging to the bottom moves the view off the dot's message.
       const railBox = await page.locator(RAIL).boundingBox()
       await finger.moveTo(dotX, railBox!.y + railBox!.height - 8)
@@ -155,7 +129,7 @@ test.describe('chat scroll rail scrubbing', () => {
     await page.setViewportSize({ width: 1024, height: 400 })
     await seedOverflowingConversation(page, modelScript)
 
-    const scroller = page.locator(SCROLLER)
+    const scroller = chatScrollContainer(page)
     await scroller.evaluate((el: HTMLElement) => {
       el.scrollTop = 0
     })

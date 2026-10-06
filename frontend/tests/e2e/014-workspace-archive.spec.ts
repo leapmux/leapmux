@@ -2,18 +2,16 @@ import { frontendRoot } from '~/test-support/sourceTree'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
 import { withCleanup } from './helpers/cleanup'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { sendActiveTerminalInput, typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import {
   agentTabs,
   archiveWorkspaceViaUI,
-  ARITHMETIC_ANSWER_TEXT,
-  ARITHMETIC_PROMPT,
   clickWorkspaceMenuItem,
   expectAssistantAnswer,
   openTerminalViaUI,
   openTreeContextMenu,
   openWorkspaceRowMenu,
-  sendMessage,
   terminalTabs,
   treeRow,
   workspaceMenuItem,
@@ -163,10 +161,7 @@ test.describe('workspace archive', () => {
     // The answer has to SURVIVE the archive and the resume below, so it is a
     // scripted turn: the transcript is the subject, and a live model would make
     // its content the variable this test cannot control.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
-    await expectAssistantAnswer(page)
+    await sendScriptedTurn(page, modelScript)
 
     await openTerminalViaUI(page)
     const terminalTab = terminalTabs(page).first()
@@ -311,10 +306,7 @@ processTest.describe('workspace archive reconciliation', () => {
     // a failure, so a later test of this Playwright worker does not fail for it.
     await withCleanup(async () => {
       await expect.poll(() => agentStatusViaAPI(separateHubWorker, workspaceId, agentId)).toBe(AgentStatus.ACTIVE)
-      await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-      await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-      await modelScript.waitForSteps(1)
-      await expectAssistantAnswer(page)
+      await sendScriptedTurn(page, modelScript)
 
       await stopWorker(separateHubWorker)
       await waitForWorkerOffline(separateHubWorker)

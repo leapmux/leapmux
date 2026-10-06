@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test'
 import type { ToolSpanRowPosition } from '../../../src/components/chat/model/row'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { FileSortOrder } from '../../../src/lib/fileSort'
+import process from 'node:process'
 import { fromJson } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
 import { permissionPresetsFor } from '../../../src/components/chat/providers/permissionPresets'
@@ -14,7 +15,7 @@ import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT
 import { callHub, SESSION_COOKIE_NAME } from './api'
 import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
-import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTabId } from './nativeScenario'
+import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
 import { E2E_BROWSER_HOST } from './server'
 import { readEntry, storageKeys, writeEntry } from './storage'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
@@ -143,6 +144,21 @@ export async function enterMessageText(page: Page, text: string, entry: MessageE
       await page.keyboard.insertText(line)
   }
 }
+
+/**
+ * The modifier key of the `$mod` chords of the app on `platform`: Meta on macOS, Control on every other platform.
+ * tinykeys maps `$mod` the same way.
+ */
+export function platformModifier(platform: NodeJS.Platform): 'Meta' | 'Control' {
+  return platform === 'darwin' ? 'Meta' : 'Control'
+}
+
+/**
+ * The modifier key of the `$mod` chords of the app on this host. Press it in place of a fixed Meta: a fixed Meta is a
+ * different chord on Linux and Windows, and the composer accepts either modifier for a send, so such a spec can pass
+ * without the chord under test. The browser runs on the host of the test runner, so the platform of the runner decides.
+ */
+export const PLATFORM_MOD = platformModifier(process.platform)
 
 /**
  * Locate the editable area of the visible composer.
@@ -702,6 +718,22 @@ export async function expectUserMessage(page: Page, text: string) {
 }
 
 /**
+ * Wait until the agent of the visible tab ends its startup.
+ *
+ * - The visible composer proves that the agent tab rendered.
+ * - The startup overlay shows while the agent is STARTING, so the wait requires that no visible overlay remains.
+ * - A failed startup shows `agent-startup-error`, which fails the wait here and not later as a send that went nowhere.
+ *
+ * The overlay is matched by its test ID, never by its text. The overlay shows the startup message of the provider when
+ * the provider reports one, so a check for "Starting ..." passes while the startup still runs.
+ */
+export async function waitForAgentStarted(page: Page): Promise<void> {
+  await expect(composerEditor(page), 'the agent tab shows its composer').toBeVisible()
+  await expect(visibleOnly(page.getByTestId('agent-startup-overlay')), 'the agent ends its startup').toHaveCount(0)
+  await expect(visibleOnly(page.getByTestId('agent-startup-error')), 'the agent starts with no error').toHaveCount(0)
+}
+
+/**
  * Maximum wait for the thinking indicator to appear after a send.
  * The indicator may finish before the wait starts. A short observation period avoids a full action timeout in that case.
  */
@@ -905,7 +937,7 @@ export async function openAgentViaUI(page: Page) {
   // Wait for the new agent tab to appear (the API call is async)
   await expectAgentTabCount(page, tabsBefore + 1)
   // Wait for the new tab to become selected and its editor to be ready
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]')).toBeVisible()
+  await expect(selectedAgentTab(page)).toBeVisible()
   await expect(composerEditor(page)).toBeVisible()
 }
 

@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
+import { composerEditor } from './helpers/ui'
 
 /**
  * The mobile drawers, driven by a finger instead of the tab bar's toggles.
@@ -326,7 +327,7 @@ test.describe('mobile drawer swipes (phone)', () => {
   // A finger sweeping the composer is placing a caret or extending a selection.
   // The recognizer declines every press inside an editing host for that reason.
   test('a swipe across the composer opens no drawer', async ({ page, authenticatedWorkspace }) => {
-    const editorBox = (await page.locator('[data-testid="composer-editor"] .ProseMirror').boundingBox())!
+    const editorBox = (await composerEditor(page).boundingBox())!
     const y = editorBox.y + editorBox.height / 2
     await touchSwipe(page, {
       from: { x: editorBox.x + editorBox.width * 0.25, y },
