@@ -5,6 +5,7 @@ import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { cleanupOnFailure, withCleanup } from '../helpers/cleanup'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
@@ -67,9 +68,7 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
     expect(nativeTask).toBeDefined()
     expect(nativeTask?.childAgentId).toBe('')
     const status = await context.modelScript.status()
-    const childRequest = status.requests.find(request => request.rule === rule)
-    if (!childRequest)
-      throw new Error('The remote Amp Task produced no actual child model request.')
+    const childRequest = ruleRequest(status, rule)
     let finished = false
     return {
       row,

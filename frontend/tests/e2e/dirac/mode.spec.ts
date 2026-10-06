@@ -2,6 +2,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { DIRAC_MODE } from '../../../src/generated/contracts/dirac-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { diracTest, expect } from '../dirac-fixtures'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
@@ -16,9 +17,9 @@ diracTest.describe('Dirac settings', () => {
 })
 
 diracTest.describe('Dirac settings apply', () => {
-  function nativeCurrentMode(request: MockModelRequestRecord | undefined): string {
-    expect(request?.protocol).toBe('openai-chat-completions')
-    const body = isObject(request?.body) ? request.body : null
+  function nativeCurrentMode(request: MockModelRequestRecord): string {
+    expect(request.protocol).toBe('openai-chat-completions')
+    const body = isObject(request.body) ? request.body : null
     const messages = Array.isArray(body?.messages) ? body.messages : []
     const user = messages.filter(isObject).findLast(message => message.role === 'user')
     const content = Array.isArray(user?.content) ? user.content : []
@@ -51,7 +52,7 @@ diracTest.describe('Dirac settings apply', () => {
     await waitForAgentIdle(page)
     await expectSettingsChip(page, 'Act')
     const status = await modelScript.status()
-    const actDetails = nativeCurrentMode(status.requests.find(request => request.rule === 'dirac-mode-change-resume'))
+    const actDetails = nativeCurrentMode(ruleRequest(status, 'dirac-mode-change-resume'))
     expect(actDetails).toContain('# Current Mode\nACT MODE')
     expect(actDetails).not.toContain('# Current Mode\nPLAN MODE')
   })

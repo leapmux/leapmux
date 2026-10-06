@@ -2,6 +2,7 @@ import { expect } from '@playwright/test'
 import { fastAgentTest } from '../fastagent-fixtures'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { expectStoredMessagesLack, writeChildMarkerFile } from '../helpers/liveChildTranscript'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
@@ -36,7 +37,7 @@ fastAgentTest('keeps the actual child read out of live rows and restores it from
     await modelScript.releaseGate(firstGate)
     await allowReadIfAsked(page, async () => (await modelScript.status()).pendingGates.includes(finalGate))
     const held = await modelScript.waitForGate(finalGate)
-    expect(nativeToolResult(held.requests.find(request => request.rule === 'fast-native-child-final'), 'native-live-read')).toContain(file.marker)
+    expect(nativeToolResult(ruleRequest(held, 'fast-native-child-final'), 'native-live-read')).toContain(file.marker)
     await expect(row).toHaveAttribute('data-status', 'running')
     await expectStoredMessagesLack(native, childId, file.marker)
     await expect(messageContents(page).filter({ hasText: file.marker })).toHaveCount(0)

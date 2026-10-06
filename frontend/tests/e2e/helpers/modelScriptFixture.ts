@@ -2,6 +2,7 @@ import type { Fixtures } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelRule, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
+import { expect } from '@playwright/test'
 import { withCleanup } from './cleanup'
 import {
   extendMockModelScenario,
@@ -101,6 +102,20 @@ export interface ModelScript {
    * Examples include an interrupt and a Worker restart during a turn.
    */
   allowUnconsumed: (reason: string) => void
+}
+
+/**
+ * Require that the turn ended after `nextStep` ordered steps of the script: the agent requested those steps and no
+ * more, and it sent no request that the script did not expect.
+ * Call it after the turn ended, for example after `waitForAgentIdle`. A step index from `queue` keeps the count
+ * correct after an earlier turn: a turn that queued one step at `start` ends after `start + 1`.
+ */
+export async function expectTurnEndedAfter(modelScript: Pick<ModelScript, 'status'>, nextStep: number): Promise<void> {
+  if (!Number.isSafeInteger(nextStep) || nextStep < 1)
+    throw new Error(`A turn ends after one or more ordered steps, not after ${nextStep}.`)
+  const status = await modelScript.status()
+  expect(status.unexpectedRequests, 'the agent sent no request that the script did not expect').toEqual([])
+  expect(status.nextStep, `the agent requested ${nextStep} ordered steps and no more`).toBe(nextStep)
 }
 
 export interface ModelScriptLifecycle {

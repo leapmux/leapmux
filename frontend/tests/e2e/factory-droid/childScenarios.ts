@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
 import { expect } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent, selectedAgentTabId } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
@@ -104,10 +105,9 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
     await sendMessage(page, followUp)
     await modelScript.waitForGate(followUpGate)
     await withCleanup(async () => {
-      const followUpRequest = (await modelScript.status()).requests.find(request => request.rule === 'the Droid child answers its tab follow-up')
-      expect(followUpRequest).toBeDefined()
-      expect(JSON.stringify(followUpRequest?.body ?? {}).includes('DROID_CHILD_FINAL')).toBe(true)
-      expect(JSON.stringify(followUpRequest?.body ?? {}).includes('DROID_ROOT_DONE')).toBe(false)
+      const followUpRequest = ruleRequest(await modelScript.status(), 'the Droid child answers its tab follow-up')
+      expect(JSON.stringify(followUpRequest.body).includes('DROID_CHILD_FINAL')).toBe(true)
+      expect(JSON.stringify(followUpRequest.body).includes('DROID_ROOT_DONE')).toBe(false)
       await expect(userBubbles(page).filter({ hasText: 'Report the file marker once more.' })).toHaveCount(1)
       await expect(row).toHaveAttribute('data-status', 'running')
       await tabById(page, rootTabID).click()

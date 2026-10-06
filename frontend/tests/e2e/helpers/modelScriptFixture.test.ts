@@ -5,7 +5,7 @@ import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { MOCK_SESSION_TITLE, readScenarioStatus } from './mockModelScenario'
 import { MAX_SCENARIO_REQUEST_RECORDS } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
-import { modelScriptFixtures, startModelScript } from './modelScriptFixture'
+import { expectTurnEndedAfter, modelScriptFixtures, startModelScript } from './modelScriptFixture'
 import { currentTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 const servers: MockModelServer[] = []
@@ -66,6 +66,38 @@ describe('modelScriptFixtures', () => {
       throw failure
     }, { timeout: 120_000 })).rejects.toBe(failure)
     expect(currentTestDeadline()).toBeUndefined()
+  })
+})
+
+describe('expectTurnEndedAfter', () => {
+  function status(nextStep: number, unexpected = 0): MockModelScenarioStatus {
+    return {
+      complete: true,
+      nextStep,
+      stepCount: nextStep,
+      requests: [],
+      unexpectedRequests: Array.from({ length: unexpected }, () => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', reason: 'unscripted', body: {} })),
+      ruleMatches: {},
+      pendingGates: [],
+    }
+  }
+
+  it('accepts a turn that requested exactly the stated steps', async () => {
+    await expect(expectTurnEndedAfter({ status: async () => status(3) }, 3)).resolves.toBeUndefined()
+  })
+
+  it.each([2, 4])('refuses a turn that requested %i ordered steps instead of 3', async (nextStep) => {
+    await expect(expectTurnEndedAfter({ status: async () => status(nextStep) }, 3)).rejects.toThrow('the agent requested 3 ordered steps and no more')
+  })
+
+  it('refuses a request that the script did not expect', async () => {
+    await expect(expectTurnEndedAfter({ status: async () => status(3, 1) }, 3)).rejects.toThrow('the agent sent no request that the script did not expect')
+  })
+
+  it.each([0, -1, 1.5, Number.NaN])('refuses the step count %s before it reads the script', async (nextStep) => {
+    const read = vi.fn(async () => status(1))
+    await expect(expectTurnEndedAfter({ status: read }, nextStep)).rejects.toThrow('one or more ordered steps')
+    expect(read).not.toHaveBeenCalled()
   })
 })
 

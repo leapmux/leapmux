@@ -1,13 +1,12 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { MockModelScenarioStatus } from './mockModelScript'
 import type { NativeControlFrame } from './nativeControlWatch'
 import type { NativeMessageSnapshot } from './nativeMessages'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD, MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { AgentChatMessageSchema, ContentCompression, ControlResponseState, MarkType, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectTurnEndedAfter, onlyObservedNativeControl, readNativeStoredControlDecision, readObservedNativeDecision, waitForOneNativeControl } from './nativeStoredControlDecision'
+import { onlyObservedNativeControl, readNativeStoredControlDecision, readObservedNativeDecision, waitForOneNativeControl } from './nativeStoredControlDecision'
 
 const reads = vi.hoisted(() => ({ snapshot: vi.fn<(context: unknown, agentId: string) => Promise<NativeMessageSnapshot>>() }))
 vi.mock('./nativeMessages', () => ({ readNativeMessageSnapshot: reads.snapshot }))
@@ -253,37 +252,5 @@ describe('readObservedNativeDecision', () => {
   it('refuses a stored request that differs from the observed payload', async () => {
     reads.snapshot.mockResolvedValue(snapshot([decisionRow({ supplemental: supplement(REQUEST_ID, CLAIM_TOKEN, { ...NATIVE_REQUEST, id: 1 }) })]))
     await expect(readObservedNativeDecision(context, agent, { controls: () => [observed] }, observed)).rejects.toThrow('the Worker stored the native request that the browser answered')
-  })
-})
-
-describe('expectTurnEndedAfter', () => {
-  function status(nextStep: number, unexpected = 0): MockModelScenarioStatus {
-    return {
-      complete: true,
-      nextStep,
-      stepCount: nextStep,
-      requests: [],
-      unexpectedRequests: Array.from({ length: unexpected }, () => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', reason: 'unscripted', body: {} })),
-      ruleMatches: {},
-      pendingGates: [],
-    }
-  }
-
-  it('accepts a turn that requested exactly the stated steps', async () => {
-    await expect(expectTurnEndedAfter({ status: async () => status(3) }, 3)).resolves.toBeUndefined()
-  })
-
-  it.each([2, 4])('refuses a turn that requested %i ordered steps instead of 3', async (nextStep) => {
-    await expect(expectTurnEndedAfter({ status: async () => status(nextStep) }, 3)).rejects.toThrow()
-  })
-
-  it('refuses a request that the script did not expect', async () => {
-    await expect(expectTurnEndedAfter({ status: async () => status(3, 1) }, 3)).rejects.toThrow()
-  })
-
-  it.each([0, -1, 1.5, Number.NaN])('refuses the step count %s before it reads the script', async (nextStep) => {
-    const read = vi.fn(async () => status(1))
-    await expect(expectTurnEndedAfter({ status: read }, nextStep)).rejects.toThrow('one or more ordered steps')
-    expect(read).not.toHaveBeenCalled()
   })
 })

@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { finishCleanup } from '../helpers/cleanup'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { backgroundBashToolCall } from '../helpers/providerToolCalls'
@@ -41,10 +42,10 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
       await expectRowBecomesFinal(page, row)
       await expect.poll(async () => (await modelScript.status()).ruleMatches[rule] ?? 0).toBeGreaterThan(0)
       await expect(assistantBubbles(page).filter({ hasText: 'The background command finished.' })).not.toHaveCount(0)
-      const notification = (await modelScript.status()).requests.find(request => request.rule === rule)
+      const notification = ruleRequest(await modelScript.status(), rule)
       // Kimi Code does not inline a finished task's output in the notification.
       // It links the saved output file, so the marker proof reads that file.
-      const body = notification?.body as { messages?: readonly { content?: unknown }[] } | undefined
+      const body = notification.body as { messages?: readonly { content?: unknown }[] } | undefined
       const notificationText = (body?.messages ?? []).map(message => typeof message.content === 'string' ? message.content : '').join('\n')
       const outputFile = /<output-file path="(?<path>[^"<]+)" bytes="(?<bytes>\d+)">/.exec(notificationText)
       if (!outputFile?.groups?.path || !outputFile.groups.bytes)

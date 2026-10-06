@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalObjective, submitGoal } from '../helpers/goalsAndTodos'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { waitForAgentIdle } from '../helpers/ui'
 import { captureDeepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
@@ -18,10 +19,7 @@ deepseekHarnessTest('keeps the literal clear objective and clears the actual nat
     // The objective is exactly the reserved word, so the check requires the whole text, not a part of it.
     await expect(goalObjective(page)).toHaveText('clear')
     await expectGoalStatus(page, 'active')
-    const status = await modelScript.status()
-    const goal = status.requests.find(request => request.rule === 'the exact reserved objective round')
-    if (!goal)
-      throw new Error('The literal objective reached no actual native goal round.')
+    const goal = ruleRequest(await modelScript.status(), 'the exact reserved objective round')
     expect(deepseekHarnessModelContextText(goal)).toContain('Objective: "clear"')
     await clearGoal(page)
     await expectEmptyGoalCard(page)

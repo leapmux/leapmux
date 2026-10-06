@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
-import { stepRequest } from '../helpers/mockModelScript'
+import { ruleRequest, stepRequest } from '../helpers/mockModelScript'
 import { nativeModelContextText, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { nativeToolResult } from '../helpers/nativeToolResult'
@@ -59,10 +59,7 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     const completed = await modelScript.status()
     expect(completed.ruleMatches['the first actual workflow child replies']).toBe(1)
     expect(completed.ruleMatches['the second actual workflow child replies']).toBe(1)
-    const notification = completed.requests.find(record => record.rule === 'the parent receives the actual workflow completion')
-    if (!notification)
-      throw new Error('The native workflow sent no completion notification to its parent.')
-    const nativeContext = nativeModelContextText(notification)
+    const nativeContext = nativeModelContextText(ruleRequest(completed, 'the parent receives the actual workflow completion'))
     expect(nativeContext).toContain(firstAnswer)
     expect(nativeContext).toContain(secondAnswer)
     await waitForAgentIdle(page)

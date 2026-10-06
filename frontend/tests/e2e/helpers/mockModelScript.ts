@@ -391,6 +391,26 @@ export function stepRequest(status: MockModelScenarioStatus, stepIndex: number):
   throw new Error(`The model script holds no request for step ${stepIndex}: ${cause}; ${describeScenarioStatus(status)}.`)
 }
 
+/**
+ * Return the first request that the rule `ruleName` answered. A rule that must answer one request only states
+ * `once: true`. The read fails with the script state in two cases:
+ *
+ * - The rule answered no request yet.
+ * - The rule answered, but the server dropped its records at the {@link MAX_SCENARIO_REQUEST_RECORDS} cap.
+ */
+export function ruleRequest(status: MockModelScenarioStatus, ruleName: string): MockModelRequestRecord {
+  if (ruleName.trim() === '')
+    throw new Error('A rule request read needs the name of the rule.')
+  const request = status.requests.find(record => record.rule === ruleName)
+  if (request)
+    return request
+  const matches = status.ruleMatches[ruleName] ?? 0
+  const cause = matches > 0
+    ? `the rule answered ${matches} request(s), but the server keeps only the newest ${MAX_SCENARIO_REQUEST_RECORDS} request records`
+    : 'the rule answered no request'
+  throw new Error(`The model script holds no request of the rule "${ruleName}": ${cause}; ${describeScenarioStatus(status)}.`)
+}
+
 export function validateScenarioID(id: string): void {
   if (!SCENARIO_ID_PATTERN.test(id))
     throw new Error('A model scenario ID must use 1 to 128 ASCII letters, digits, underscores, or hyphens')

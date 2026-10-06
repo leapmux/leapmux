@@ -6,10 +6,11 @@ import { QWEN_MODE, QWEN_PERMISSION_OPTION, QWEN_TOOL } from '../../../src/gener
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '../../../src/lib/jsonPick'
 import { withCleanup } from '../helpers/cleanup'
+import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
-import { expectTurnEndedAfter, readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
+import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { answerPlanReview, assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 

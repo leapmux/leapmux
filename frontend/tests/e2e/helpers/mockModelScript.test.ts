@@ -11,6 +11,7 @@ import {
   MAX_STEP_DELAY_MS,
   parseScenarioSpec,
   resolveStepCaptures,
+  ruleRequest,
   SCENARIO_MARKER,
   selectScenarioID,
   stepRequest,
@@ -741,6 +742,47 @@ describe('stepRequest', () => {
 
   it.each([-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER, Number.POSITIVE_INFINITY])('rejects the index %s, which identifies no step', (index) => {
     expect(() => stepRequest(status(), index)).toThrow('A model script step index must be a nonnegative safe integer')
+  })
+})
+
+describe('ruleRequest', () => {
+  function status(overrides: Partial<MockModelScenarioStatus> = {}): MockModelScenarioStatus {
+    return {
+      complete: false,
+      nextStep: 1,
+      stepCount: 1,
+      ruleMatches: { notice: 2, title: 1 },
+      pendingGates: [],
+      requests: [
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 0, body: { marker: 'step' } },
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', rule: 'notice', body: { marker: 'first notice' } },
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', rule: 'title', body: { marker: 'title' } },
+        { protocol: 'openai-chat-completions', path: '/v1/chat/completions', rule: 'notice', body: { marker: 'second notice' } },
+      ],
+      unexpectedRequests: [],
+      ...overrides,
+    }
+  }
+
+  it('returns the first request that the rule answered, not a step or another rule', () => {
+    expect(ruleRequest(status(), 'notice').body).toEqual({ marker: 'first notice' })
+    expect(ruleRequest(status(), 'title').body).toEqual({ marker: 'title' })
+  })
+
+  it('states that the rule answered no request, with the script state', () => {
+    expect(() => ruleRequest(status(), 'absent')).toThrow(
+      'The model script holds no request of the rule "absent": the rule answered no request; 1 of 1 queued answers consumed',
+    )
+  })
+
+  it('states that the record cap dropped the requests of a rule that answered', () => {
+    expect(() => ruleRequest(status({ requests: [] }), 'notice')).toThrow(
+      `the rule answered 2 request(s), but the server keeps only the newest ${MAX_SCENARIO_REQUEST_RECORDS} request records`,
+    )
+  })
+
+  it.each(['', ' '])('refuses the rule name %j', (name) => {
+    expect(() => ruleRequest(status(), name)).toThrow('needs the name of the rule')
   })
 })
 

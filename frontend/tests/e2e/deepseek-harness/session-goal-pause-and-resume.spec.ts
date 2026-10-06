@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { waitForAgentIdle } from '../helpers/ui'
 import { captureDeepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
@@ -33,9 +34,7 @@ deepseekHarnessTest('pauses the native goal driver and resumes its own second mo
     await modelScript.waitForGate(secondGate)
     await expectGoalStatus(page, 'active')
     const status = await modelScript.status()
-    const resumed = status.requests.find(request => request.rule === 'the second actual native goal round')
-    if (!resumed)
-      throw new Error('The native goal resume started no second model round.')
+    const resumed = ruleRequest(status, 'the second actual native goal round')
     expect(deepseekHarnessModelContextText(resumed)).toContain(marker)
     expect(deepseekHarnessModelContextText(resumed)).toContain('Round: 2/')
     expect(status.ruleMatches['the first actual native goal round']).toBe(1)
