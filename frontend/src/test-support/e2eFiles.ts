@@ -20,6 +20,8 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  *   of `PLATFORM_MOD`.
  * - `expectImports.test.ts`: no module passes the plain `expect` of Playwright
  *   on.
+ * - `escapedIdSelectors.test.ts`: no spec or helper interpolates an unescaped
+ *   value into the selector of an ID attribute.
  *
  * One walk serves every guard. A change to what counts as an e2e file -- a
  * `.mts` helper, a fixtures directory to skip -- thus moves every guard, and

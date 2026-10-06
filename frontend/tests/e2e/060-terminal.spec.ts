@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { test } from './fixtures'
+import { tabIdSelector } from './helpers/tabSelectors'
 import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
@@ -285,7 +286,7 @@ test.describe('Terminal', () => {
     const terminalId = await openTerminalViaUI(page)
     const terminalTab = terminalTabs(page)
 
-    const leaf = visibleOnly(sidebarLeaves(page, authenticatedWorkspace.workspaceId).and(page.locator(`[data-tab-id="${terminalId}"]`)))
+    const leaf = visibleOnly(sidebarLeaves(page, authenticatedWorkspace.workspaceId).and(page.locator(tabIdSelector(terminalId))))
     await leaf.dblclick()
     const renameInput = leaf.locator('input')
     // Settle the editor BEFORE typing into it, and commit from the keyboard.

@@ -17,12 +17,11 @@ import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import type { RunningNativeChild } from './runningChildProof'
 import { expect } from '@playwright/test'
 import { cleanupOnFailure, withCleanup } from './cleanup'
-import { cssAttributeValue } from './cssAttribute'
 import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
-import { AGENT_TAB_SELECTOR } from './tabSelectors'
+import { AGENT_TAB_SELECTOR, tabIdSelector } from './tabSelectors'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expandSidebarSection, expectAssistantAnswer, interruptButton, sendMessage, tabById, waitForAgentIdle } from './ui'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
@@ -117,7 +116,7 @@ export async function openChildTabFromRow(page: Page, row: Locator): Promise<str
   await row.click()
   await expect(agentTabs).toHaveCount(expectedIds.length)
   expect((await tabIds()).sort(), 'the row selects only its exact native child tab').toEqual(expectedIds)
-  const childTab = page.locator(`${AGENT_TAB_SELECTOR}[data-tab-id="${cssAttributeValue(childId)}"]:visible`)
+  const childTab = page.locator(`${AGENT_TAB_SELECTOR}${tabIdSelector(childId)}:visible`)
   await expect(childTab).toBeVisible()
   await expect(childTab).toHaveAttribute('aria-selected', 'true')
   return childId

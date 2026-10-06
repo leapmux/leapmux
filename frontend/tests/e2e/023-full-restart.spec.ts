@@ -1,5 +1,6 @@
 import type { AgentServer } from './helpers/api'
 import { expect } from '@playwright/test'
+import { tabIdSelector } from './helpers/tabSelectors'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
@@ -86,7 +87,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await waitForTerminalText(page, 'EXITEDRESTORE')
 
     const restoredLeaf = sidebarLeaves(page, authenticatedWorkspace.workspaceId)
-      .and(page.locator(`[data-tab-id="${terminalId}"]:visible`))
+      .and(page.locator(`${tabIdSelector(terminalId)}:visible`))
       .first()
     await expect(restoredLeaf).toContainText('Recovered Title')
   })

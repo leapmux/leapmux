@@ -8,6 +8,7 @@ import { AgentGoalStatus, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMes
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
+import { cssAttributeValue } from '../helpers/cssAttribute'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
 import { ruleRequest, stepRequest } from '../helpers/mockModelScript'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -311,7 +312,7 @@ kiroTest.describe('Kiro session goal', () => {
       await assertNoSavedStaleAnswer()
       await expect(messageContents(page).filter({ hasText: staleAnswer })).toHaveCount(0)
       await expandBackgroundTasksSection(page)
-      const stepRow = page.locator(`[data-testid="bg-task-row"]:visible[data-child-agent-id="${step.childAgentId}"]`).first()
+      const stepRow = page.locator(`[data-testid="bg-task-row"]:visible[data-child-agent-id="${cssAttributeValue(step.childAgentId)}"]`).first()
       expect(await openChildTabFromRow(page, stepRow)).toBe(step.childAgentId)
       await expect(messageContents(page).filter({ hasText: staleAnswer })).toHaveCount(0)
       await tabById(page, agentId).click()

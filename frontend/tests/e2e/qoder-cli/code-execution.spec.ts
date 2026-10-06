@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
+import { cssAttributeValue } from '../helpers/cssAttribute'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
@@ -152,7 +153,7 @@ qoderTest('executes native Workflow code and preserves the computed result and s
     expect(launch).toEqual(run.launch)
     expect(tasks.find(task => task.id === `workflow:${run.launch.sessionId}:${run.launch.callId}`)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
     const taskId = `workflow:${run.launch.sessionId}:${run.launch.callId}`
-    const row = page.locator(`[data-testid="bg-task-row"][data-task-id="${taskId}"]:visible[data-kind="workflow"]`).first()
+    const row = page.locator(`[data-testid="bg-task-row"][data-task-id="${cssAttributeValue(taskId)}"]:visible[data-kind="workflow"]`).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-task-id', taskId)
     await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'completed')
