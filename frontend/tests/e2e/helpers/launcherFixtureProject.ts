@@ -499,6 +499,11 @@ export async function runLauncherFixtureProject(root: string, options: FixtureRu
       failWatcher(error)
     }
   }
+  // A directory watch alone is enough for `releaseCases`, unlike `waitForFile` in the fixture project. macOS starts
+  // the FSEvents stream of a watcher after watch() returns, and a file that appears before the stream starts gives no
+  // event. This watch starts before the launcher. Each entry record comes from a Playwright worker, which the launcher
+  // starts only after its build and its discovery run. The stream therefore runs before the first record appears. Each
+  // event reads the complete directory again, so the event of the latest entry record also sees each earlier one.
   const listener = watch(records, releaseCases)
   listener.once('error', failWatcher)
   let launcher: ReturnType<typeof startLauncher> | undefined

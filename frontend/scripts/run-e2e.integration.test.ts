@@ -59,6 +59,16 @@ function startPrivateRunner(root: string): ReturnType<typeof startLauncher> {
   return startLauncher(root)
 }
 
+/**
+ * Wait until the fixture writes each of the files into the records directory.
+ *
+ * A directory watch and one first check are enough here, unlike `waitForFile` in the fixture project. macOS starts
+ * the FSEvents stream of a watcher after watch() returns, and a file that appears before the stream starts gives no
+ * event. Each caller starts the launcher and then this wait in one synchronous step, and the launcher writes no record
+ * itself. The process that writes a record starts only after the launcher starts Task or Playwright, and that chain of
+ * process starts takes far longer than the start of the stream. The stream therefore runs before the first record
+ * appears, and the first check finds a file that exists already.
+ */
 function waitForFixtureFiles(records: string, files: string[], completion: Promise<LauncherCompletion>, signal: AbortSignal): Promise<void> {
   return new Promise((accept, reject) => {
     let finished = false
