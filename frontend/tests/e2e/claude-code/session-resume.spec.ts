@@ -4,6 +4,7 @@ import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI, openPinnedModeAgentViaAPI } from '../helpers/api'
+import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, menuOptionLabel, messageBubbles, openMenu, openSettingsMenu, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, listAgentsViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
@@ -90,48 +91,16 @@ test.describe('worker restart thinking indicator', () => {
       // The Worker restarts the agent process. Its idle turn shows no thinking indicator.
       await expect(thinkingIndicator).not.toBeVisible()
 
-      // Install a MutationObserver BEFORE sending the message so we can
-      // detect even a brief flash of the thinking indicator.
-      await page.evaluate(() => {
-        Reflect.set(window, '__thinkingIndicatorSeen', false)
-        const observer = new MutationObserver(() => {
-          if (document.querySelector('[data-testid="thinking-indicator"]')) {
-            Reflect.set(window, '__thinkingIndicatorSeen', true)
-            observer.disconnect()
-          }
-        })
-        Reflect.set(window, '__thinkingIndicatorObserver', observer)
-        observer.observe(document.body, { childList: true, subtree: true })
-        // Also check immediately in case it's already visible.
-        if (document.querySelector('[data-testid="thinking-indicator"]')) {
-          Reflect.set(window, '__thinkingIndicatorSeen', true)
-          observer.disconnect()
-        }
-      })
-
-      let sawThinking = false
-      try {
-        // A new message reaches the resumed agent. The distinct answer cannot
-        // match the first turn's saved bubble.
+      // A new message reaches the resumed agent. The distinct answer cannot
+      // match the first turn's saved bubble. The watch starts before the send,
+      // so it records even a short indicator before the answer streams.
+      const sawThinking = await thinkingIndicatorShownDuring(page, async () => {
         await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
         await editor.click()
         await page.keyboard.type(modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
         await page.keyboard.press('Meta+Enter')
         await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-      }
-      finally {
-        sawThinking = await page.evaluate(() => {
-          const observer = Reflect.get(window, '__thinkingIndicatorObserver')
-          if (observer instanceof MutationObserver)
-            observer.disconnect()
-          Reflect.deleteProperty(window, '__thinkingIndicatorObserver')
-          const seen = Reflect.get(window, '__thinkingIndicatorSeen') === true
-          Reflect.deleteProperty(window, '__thinkingIndicatorSeen')
-          return seen
-        })
-      }
-
-      // Detect even a short indicator before streaming starts.
+      })
       expect(sawThinking).toBe(true)
     }
     finally {

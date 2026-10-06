@@ -3,6 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
+import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { chooseSettingsOption, expectSettingsChip, openAgentViaUI, openSettingsMenu, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 test.describe('Agent Settings', () => {
@@ -109,50 +110,31 @@ test.describe('Agent Settings', () => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    // Install a MutationObserver to detect even a brief flash of the thinking indicator.
-    // ThinkingIndicator remains in the DOM with grid-template-rows: 0fr.
-    // Detect its displayed state through grid-template-rows: 1fr.
-    await page.evaluate(() => {
-      const observed: Window & { __thinkingIndicatorSeen?: boolean, __thinkingObserver?: MutationObserver } = window
-      observed.__thinkingIndicatorSeen = false
-      const observer = new MutationObserver(() => {
-        const el = document.querySelector<HTMLElement>('[data-testid="thinking-indicator"]')
-        if (el && el.style.gridTemplateRows === '1fr') {
-          observed.__thinkingIndicatorSeen = true
-        }
-      })
-      observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] })
-      observed.__thinkingObserver = observer
+    // The watch records even a short flash of the thinking indicator.
+    const sawThinking = await thinkingIndicatorShownDuring(page, async () => {
+      // Switch permission mode to Plan Mode
+      await chooseSettingsOption(page, 'permissionMode-plan')
+      await expectSettingsChip(page, 'Plan Mode')
+      await waitForSettingsIdle(page)
+
+      // Switch model to Haiku (effort section hidden for Haiku)
+      await chooseSettingsOption(page, 'model-haiku')
+      await expectSettingsChip(page, 'Haiku')
+      await waitForSettingsIdle(page)
+
+      // Select Sonnet to restore the effort section. Select High effort afterward.
+      await chooseSettingsOption(page, 'model-sonnet')
+      await expectSettingsChip(page, 'Sonnet')
+      await waitForSettingsIdle(page)
+
+      await chooseSettingsOption(page, 'effort-high')
+      await waitForSettingsIdle(page)
+
+      await waitForAgentIdle(page)
     })
-
-    // Switch permission mode to Plan Mode
-    await chooseSettingsOption(page, 'permissionMode-plan')
-    await expectSettingsChip(page, 'Plan Mode')
-    await waitForSettingsIdle(page)
-
-    // Switch model to Haiku (effort section hidden for Haiku)
-    await chooseSettingsOption(page, 'model-haiku')
-    await expectSettingsChip(page, 'Haiku')
-    await waitForSettingsIdle(page)
-
-    // Select Sonnet to restore the effort section. Select High effort afterward.
-    await chooseSettingsOption(page, 'model-sonnet')
-    await expectSettingsChip(page, 'Sonnet')
-    await waitForSettingsIdle(page)
-
-    await chooseSettingsOption(page, 'effort-high')
-    await waitForSettingsIdle(page)
-
-    await waitForAgentIdle(page)
     expect((await modelScript.status()).requests).toHaveLength(0)
 
     // Verify indicator was never shown
-    const sawThinking = await page.evaluate(() => {
-      const observed: Window & { __thinkingIndicatorSeen?: boolean, __thinkingObserver?: MutationObserver } = window
-      observed.__thinkingObserver?.disconnect()
-      delete observed.__thinkingObserver
-      return observed.__thinkingIndicatorSeen
-    })
     expect(sawThinking).toBe(false)
 
     // Direct check too
