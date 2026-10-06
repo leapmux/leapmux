@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
+import { answerControl, controlBanner, openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { OH_MY_PI_AGENT, ohMyPiTest } from '../ohmypi-fixtures'
 
@@ -62,11 +62,10 @@ export default function(pi) {
     if ('interrupt' in scenario) {
       // A pending control request hides the composer input and its Interrupt button.
       // The control banner holds the Interrupt control while the editor waits.
-      await page.locator('[data-testid="control-banner"]:visible').getByTestId('control-interrupt').click()
+      await controlBanner(page).getByTestId('control-interrupt').click()
     }
     else {
-      const button = 'cancel' in scenario ? 'control-deny-btn' : 'control-allow-btn'
-      await page.locator(`[data-testid="${button}"]:visible`).first().click()
+      await answerControl(page, 'cancel' in scenario ? 'deny' : 'allow')
     }
     await expect.poll(() => existsSync(log)).toBe(true)
     const reply: unknown = JSON.parse(readFileSync(log, 'utf8'))

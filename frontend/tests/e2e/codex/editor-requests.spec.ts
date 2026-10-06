@@ -2,37 +2,32 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { codexExtractControl } from '../../../src/components/chat/providers/codex/extractControl'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexEscalatedCommandToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
-import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
+import { exerciseUnsupportedControlThroughPermission } from '../helpers/unsupportedNativeControl'
 
-codexTest('classifies an actual native permission and confirms the absent editor-requests route', async ({ authenticatedCodexWorkspace, page, leapmuxServer, modelScript }) => {
-  const context = { page, modelScript, leapmuxServer, provider: AgentProvider.CODEX, workspaceId: authenticatedCodexWorkspace.workspaceId }
-  await chooseSettingsOption(page, 'permissionMode-on-request')
-  await waitForSettingsIdle(page)
+// The escalated command is the tool that requests Codex's native approval (see `codexEscalatedCommandToolCall`), so
+// the proof keeps it and does not use the default write.
+codexTest('classifies an actual native permission and confirms the absent editor-requests route', async ({ native }) => {
+  await chooseSettingsOption(native.page, 'permissionMode-on-request')
+  await waitForSettingsIdle(native.page)
   const file = join(createTestDirectory('native-editor-'), 'native-control.txt')
   const callId = 'native-control-permission'
   const command = `printf 'NATIVECONTROL%s\\n' "$((40 + 2))" > ${quotePosixShellArgument(file)}; cat ${quotePosixShellArgument(file)}`
-  await exerciseUnsupportedNativeControl(context, {
+  await exerciseUnsupportedControlThroughPermission(native, {
     purpose: 'editor',
     classify: codexExtractControl,
-    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
+    operation: {
       toolCall: codexEscalatedCommandToolCall(callId, command),
-      decision: 'allow',
-      beforeDecision: async (banner) => {
-        expect(existsSync(file)).toBe(false)
-        await beforeDecision(banner)
-      },
+      beforeDecision: () => expect(existsSync(file)).toBe(false),
       nativeProof: (request) => {
         expect(nativeToolResult(request, callId)).toContain('NATIVECONTROL42')
         expect(readFileSync(file, 'utf8')).toBe('NATIVECONTROL42\n')
       },
-    }),
+    },
   })
 })

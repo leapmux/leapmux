@@ -7,7 +7,7 @@ import { piEditorProbeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { withMockPiModel } from '../helpers/scriptedPiModel'
 import { readEntry, storageKeys } from '../helpers/storage'
-import { expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { composerEditor, controlBanner, controlButton, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
 for (const scenario of [
@@ -49,10 +49,10 @@ export default function (pi) {
         { text: 'Protocol test complete.' },
       )
       await sendMessage(page, modelScript.prompt('Run the configured editor probe.'))
-      const banner = page.getByTestId('control-banner').filter({ visible: true })
-      const editor = page.getByTestId('dialog-editor')
+      const banner = controlBanner(page)
+      const editor = banner.getByTestId('dialog-editor')
       await expect(banner).toContainText('Edit the probe text')
-      await expect(banner.getByTestId('dialog-editor')).toBeVisible()
+      await expect(editor).toBeVisible()
       await expect(page.getByTestId('composer-editor')).toBeHidden()
       expect(await editor.evaluate((element) => {
         const banner = element.closest('[data-testid="control-banner"]')!
@@ -71,7 +71,7 @@ export default function (pi) {
       await page.reload()
       await expect(editor).toHaveValue(scenario.text)
       await expect(page.getByTestId('queue-pause-button')).toHaveCount(0)
-      const action = page.getByTestId(scenario.cancel ? 'control-deny-btn' : 'control-allow-btn')
+      const action = controlButton(page, scenario.cancel ? 'deny' : 'allow')
       await expect(action).toBeInViewport({ ratio: 1 })
       // One path for every scenario. The `whitespace` case used to branch here
       // into a storage-failure flow: a SQLite trigger aborted the response
@@ -82,17 +82,16 @@ export default function (pi) {
       // product no longer reaches here. See
       // https://github.com/leapmux/leapmux/issues/489.
       await action.click()
-      await expect(banner).toHaveCount(0)
+      await expectNoControlBanner(page)
       await modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(page)
-      await expect(page.getByTestId('composer-editor')).toBeVisible()
-      await expect(page.getByTestId('composer-editor').locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true')
+      await expect(composerEditor(page)).toHaveAttribute('contenteditable', 'true')
       await expect(messageBubbles(page).filter({ hasText: 'EDITOR_RESPONSE_RECEIVED' }).first()).toBeVisible()
       expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(scenario.cancel
         ? { cancelled: true }
         : { value: scenario.text, cancelled: false })
       if (scenario.label === 'whitespace') {
-        const answer = page.getByTestId('control-response-text').filter({ hasText: 'first line' })
+        const answer = savedControlAnswer(page).filter({ hasText: 'first line' })
         expect(await answer.textContent()).toBe(scenario.text)
         expect(await answer.evaluate((element) => {
           const range = document.createRange()
@@ -102,7 +101,7 @@ export default function (pi) {
         })).toBeGreaterThan(0)
       }
       else if (scenario.label === 'empty text') {
-        await expect(page.getByTestId('control-response-text')).toHaveText('Empty answer')
+        await expect(savedControlAnswer(page)).toHaveText('Empty answer')
       }
       expect(errors).toEqual([])
     })
