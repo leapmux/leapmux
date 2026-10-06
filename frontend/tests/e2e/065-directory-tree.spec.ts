@@ -5,6 +5,7 @@ import { expect, test } from './fixtures'
 import { createTestDirectory } from './helpers/runDirectory'
 import { agentTabs, clickTreeContextItem, openTreeContextMenu, terminalTabs, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
 import { showWorkspaceWithAgents } from './helpers/workspace'
+import { waitForAgentStartupViaAPI } from './helpers/worktree'
 
 const ABSOLUTE_PATH_RE = /^\//
 
@@ -331,8 +332,13 @@ test.describe('DirectoryTree', () => {
    * The tree is the clean control for the right-click path: its rows carry no
    * drag, so nothing else competes for the press.
    */
-  test('right-click opens a row menu without selecting the row', async ({ page, authenticatedWorkspace }) => {
-    void authenticatedWorkspace
+  test('right-click opens a row menu without selecting the row', async ({ page, leapmuxServer, authenticatedWorkspace }) => {
+    // The Files tree waits for the active agent: while the agent starts, a
+    // startup spinner takes its place, and the tree builds its rows again when
+    // the agent leaves STARTING. A menu that opened on the old rows closes with
+    // them. So the right-click waits until the Worker reports the agent started.
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
 
     const row = treeRow(page, 'package.json')
     await expect(row).toBeVisible()
