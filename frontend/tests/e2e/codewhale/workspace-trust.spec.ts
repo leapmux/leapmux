@@ -2,21 +2,18 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { codewhaleExtractControl } from '../../../src/components/chat/providers/codewhale/extractControl'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions } from '../agentSettings'
 import { codewhaleTest } from '../codewhale-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
+import { currentNativeAgent, expectNativeOptionValue, nativeModelContextText, nativeOptionGroup, nativeOptionValue } from '../helpers/nativeScenario'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { withAgentWorkspace } from '../helpers/workspace'
+import { openProviderAgent, withAgentWorkspace } from '../helpers/workspace'
 import { CODEWHALE_AGENT, nativeContext } from './scenarios'
 
 codewhaleTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
@@ -36,10 +33,10 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
       await openWorkspace(page, workspaceId)
       const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
       const baselineAgent = await currentNativeAgent(context)
-      const selectedModel = baselineAgent.optionGroups.find(group => group.id === 'model')?.currentValue
+      const selectedModel = nativeOptionValue(baselineAgent, 'model')
       if (!selectedModel || !baselineAgent.agentSessionId)
         throw new Error('The native Codewhale baseline requires its selected model and session ID.')
-      const effort = baselineAgent.optionGroups.find(group => group.id === 'effort')
+      const effort = nativeOptionGroup(baselineAgent, 'effort')
       expect(effort?.currentValue).toBe('auto')
       expect(effort?.defaultValue).toBe('auto')
       expect(effort?.options.map(option => option.id)).toEqual(expect.arrayContaining(['low', 'high']))
@@ -66,8 +63,8 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
             expect(projectAgent.id).toBe(agentId)
             expect(projectAgent.workingDir).toBe(directory)
             expect(projectAgent.agentSessionId).not.toBe(baselineAgent.agentSessionId)
-            expect(projectAgent.optionGroups.find(group => group.id === 'model')?.currentValue).toBe(selectedModel)
-            expect(projectAgent.optionGroups.find(group => group.id === 'effort')?.currentValue).toBe('auto')
+            expect(nativeOptionValue(projectAgent, 'model')).toBe(selectedModel)
+            expect(nativeOptionValue(projectAgent, 'effort')).toBe('auto')
             for (const prompt of ['Reply once while the project effort file is present.', 'Reply once again while the same project effort file remains present.']) {
               const project = await sendNativeAnswer(privateContext, prompt, `The native project configuration check completed for ${prompt}`)
               if (!isObject(project.body))
@@ -78,14 +75,14 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
               expect(nativeModelContextText(project)).not.toContain(baselinePrompt)
             }
             rmSync(config)
-            const nextId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, directory, agentOpenOptions(AgentProvider.CODEWHALE))
+            const { agentId: nextId } = await openProviderAgent(server, workspaceId, CODEWHALE_AGENT, { workingDir: directory })
             await tabById(page, nextId).click()
             const restoredAgent = await currentNativeAgent(privateContext)
             expect(restoredAgent.id).toBe(nextId)
             expect(restoredAgent.workingDir).toBe(directory)
             expect(restoredAgent.agentSessionId).not.toBe(projectAgent.agentSessionId)
-            expect(restoredAgent.optionGroups.find(group => group.id === 'model')?.currentValue).toBe(selectedModel)
-            expect(restoredAgent.optionGroups.find(group => group.id === 'effort')?.currentValue).toBe('auto')
+            expect(nativeOptionValue(restoredAgent, 'model')).toBe(selectedModel)
+            expect(nativeOptionValue(restoredAgent, 'effort')).toBe('auto')
             const restored = await sendNativeAnswer(privateContext, 'Reply once after the project effort configuration is removed.', 'The native project configuration default returned.')
             if (!isObject(restored.body))
               throw new Error('The restored native Codewhale turn requires a model request object.')
@@ -118,7 +115,7 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
       await withAgentWorkspace(server, { ...CODEWHALE_AGENT, prefix: 'codewhale-global-config' }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
         const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
-        expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'effort')?.currentValue).toBe('auto')
+        await expectNativeOptionValue(context, 'effort', 'auto')
         const global = await sendNativeAnswer(context, 'Reply through the actual private global Codewhale configuration.', 'The native global configuration control completed.')
         expect(global.body).toHaveProperty('model', baseline.model)
         expect(global.body).toHaveProperty('reasoning_effort', baseline.control)

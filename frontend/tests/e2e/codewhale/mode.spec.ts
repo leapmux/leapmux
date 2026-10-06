@@ -4,15 +4,15 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, chooseSettingsOption, expectSettingsChip, openPlusMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { expectCodewhalePosture } from './scenarios'
+import { applyPermissionPreset, chooseSettingsOption, expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codewhaleTest.describe('Codewhale settings', () => {
   codewhaleTest('applies the mode, the effort and the posture, and keeps them after a reload', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
     void authenticatedCodewhaleWorkspace
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Agent')
-    await expectCodewhalePosture(page, 'ask')
+    // The status bar draws one mode chip, the agent or plan mode of Codewhale, so the posture reads from its group.
+    await expectSettingsOptionChosen(page, 'permissionMode-ask')
 
     await chooseSettingsOption(page, 'codewhale_mode-plan')
     await waitForSettingsIdle(page)
@@ -31,21 +31,18 @@ codewhaleTest.describe('Codewhale settings', () => {
     await waitForAgentIdle(page)
 
     // Both presets map onto a posture of the runtime: Smart onto its own review
-    // rules, Bypass onto full access.
-    const menu = await openPlusMenu(page)
-    await expect(menu.getByTestId('composer-smart-permissions')).toBeVisible()
-    await expect(menu.getByTestId('composer-bypass-permissions')).toBeVisible()
-    await page.keyboard.press('Escape')
+    // rules, Bypass onto full access. The Ask posture leaves both enabled.
+    await expectPermissionShortcuts(page, { smart: 'offered', bypass: 'offered' })
     await applyPermissionPreset(page, 'bypass')
-    await expectCodewhalePosture(page, 'full_access')
+    await expectSettingsOptionChosen(page, 'permissionMode-full_access')
     await applyPermissionPreset(page, 'smart')
-    await expectCodewhalePosture(page, 'auto_review')
+    await expectSettingsOptionChosen(page, 'permissionMode-auto_review')
 
     await page.reload()
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Plan')
     await expectSettingsChip(page, 'High')
-    await expectCodewhalePosture(page, 'auto_review')
+    await expectSettingsOptionChosen(page, 'permissionMode-auto_review')
 
     const restoredStep = await modelScript.queue(
       { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'mode-plan-restored', 'echo "restored-plan-$((40 + 2))"')] },
@@ -59,7 +56,7 @@ codewhaleTest.describe('Codewhale settings', () => {
     await chooseSettingsOption(page, 'permissionMode-ask')
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Agent')
-    await expectCodewhalePosture(page, 'ask')
+    await expectSettingsOptionChosen(page, 'permissionMode-ask')
 
     await applyPermissionPreset(page, 'bypass')
     const agentStep = await modelScript.queue(
@@ -71,6 +68,6 @@ codewhaleTest.describe('Codewhale settings', () => {
     await waitForAgentIdle(page)
     await chooseSettingsOption(page, 'permissionMode-ask')
     await waitForSettingsIdle(page)
-    await expectCodewhalePosture(page, 'ask')
+    await expectSettingsOptionChosen(page, 'permissionMode-ask')
   })
 })

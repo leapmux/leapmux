@@ -2,8 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { answerControl, expectNoControlBanner, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { expectCodewhalePosture } from './scenarios'
+import { answerControl, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 const CODEWHALE = AgentProvider.CODEWHALE
 
@@ -29,7 +28,7 @@ codewhaleTest.describe('Codewhale approvals', () => {
     await waitForAgentIdle(page)
     await expect(toolRows(page).filter({ hasText: 'bypass-42' }).first()).toBeVisible()
     // The same posture that the composer menu's bypass shortcut lands on.
-    await expectCodewhalePosture(page, 'full_access')
+    await expectSettingsOptionChosen(page, 'permissionMode-full_access')
 
     // Full Access runs a command that writes without asking.
     const unasked = await modelScript.queue(
