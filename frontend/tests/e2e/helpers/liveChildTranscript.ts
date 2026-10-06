@@ -7,6 +7,7 @@ import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { decompressContentToString } from '../../../src/lib/decompress'
+import { markdownToPlainText } from '../../../src/lib/markdownPlainText'
 import { finishCleanup, withCleanup } from './cleanup'
 import { readAllAgentMessages } from './nativeMessages'
 import { expandNativeResultView } from './nativeResultView'
@@ -48,12 +49,18 @@ export type LiveChildToolProof
 
 export interface LiveChildSpec {
   childWhen: MockModelMatcher
+  /**
+   * The task that the spawn call gives the child. The child tab shows it in a user bubble, which renders it as
+   * Markdown, so the helper looks for its words without the Markdown syntax: the bubble of `` Run `echo x` `` shows
+   * "Run echo x". The task must show one or more words.
+   */
   childTask: string
   parentTask: string
   /**
    * The native final response of the child. The default is the text CHILD_LIVE_DONE.
    * The gate holds this response, with or without the tool of `toolProof`.
-   * When the response holds text, that text must stay out of the child tab while the gate holds it.
+   * When the response holds text, the words of that text must stay out of the child tab while the gate holds it. An
+   * assistant bubble renders the text as Markdown, as a user bubble does.
    */
   childResponse?: Omit<MockModelStep, 'gate'>
   /**
@@ -125,11 +132,15 @@ function liveChildRules(context: LiveChildContext, spec: LiveChildSpec, finalRes
  */
 export async function exerciseLiveChildTranscript(context: LiveChildContext, spec: LiveChildSpec): Promise<LiveChild> {
   const { page, modelScript } = context
+  // A chat bubble renders its text as Markdown, so each text check reads the words that the bubble shows.
+  const taskWords = markdownToPlainText(spec.childTask)
+  if (taskWords === '')
+    throw new Error(`A live child needs a task that shows words in its tab, not ${JSON.stringify(spec.childTask)}.`)
   const gate = `live-child-${context.provider}`
   const parentGate = spec.holdParentAnswer ? `live-parent-${context.provider}` : undefined
   const finalResponse: MockModelStep = { ...(spec.childResponse ?? { text: DEFAULT_CHILD_ANSWER }), gate }
-  // A final response that only calls a tool shows no answer text to check.
-  const heldText = finalResponse.text
+  // A final response that only calls a tool shows no answer words to check.
+  const heldWords = finalResponse.text === undefined ? '' : markdownToPlainText(finalResponse.text)
   const read: MarkerRead | undefined = spec.toolProof && 'read' in spec.toolProof
     ? { filePath: join(spec.toolProof.read.workingDir, `live-child-${context.provider}.txt`), marker: uniqueMarker('CHILDREAD') }
     : undefined
@@ -154,9 +165,9 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
     const row = await requireRegistryRow(page)
     await expect(row).toHaveAttribute('data-status', spec.allowPaused ? /^(?:running|paused)$/ : 'running')
     const childId = await openChildTabFromRow(page, row)
-    await expect(userBubbles(page).filter({ hasText: spec.childTask }).first()).toBeVisible()
-    if (heldText !== undefined)
-      await expect(assistantBubbles(page).filter({ hasText: heldText })).toHaveCount(0)
+    await expect(userBubbles(page).filter({ hasText: taskWords }).first()).toBeVisible()
+    if (heldWords !== '')
+      await expect(assistantBubbles(page).filter({ hasText: heldWords })).toHaveCount(0)
     if (read) {
       await expect(toolRows(page).filter({ hasText: basename(read.filePath) }).first()).toBeVisible()
       if (spec.toolProof && 'read' in spec.toolProof && spec.toolProof.read.expandResult)
@@ -180,8 +191,8 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
     ...(parentGate ? [modelScript.releaseGateIfHeld(parentGate)] : []),
   ]))
   await completeLiveChildTranscript(modelScript, async () => {
-    if (heldText !== undefined && (spec.finalAnswerInChildTab ?? true))
-      await expect(assistantBubbles(page).filter({ hasText: heldText }).first()).toBeVisible()
+    if (heldWords !== '' && (spec.finalAnswerInChildTab ?? true))
+      await expect(assistantBubbles(page).filter({ hasText: heldWords }).first()).toBeVisible()
     await spec.afterComplete?.()
   })
   return child

@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { markdownToPlainText } from '../../../src/lib/markdownPlainText'
 import { deferred } from '../../../src/test-support/async'
 import { withCleanup } from './cleanup'
 import { completeLiveChildTranscript, exerciseLiveChildTranscript, expectChildToolOutputDeferred, LIVE_CHILD_SHELL_CALL_ID, writeChildMarkerFile } from './liveChildTranscript'
@@ -251,6 +252,18 @@ const SHELL_COMMAND = 'printf unit-child-live'
 const DEFAULT_FINAL: Omit<MockModelStep, 'gate'> = { text: 'CHILD_LIVE_DONE' }
 const YIELD_FINAL: Omit<MockModelStep, 'gate'> = { toolCalls: [ohMyPiYieldToolCall('unit-native-yield', 'CHILD_LIVE_DONE')] }
 
+/** A child task with inline code. It holds `CHILD_TASK`, which the scripted matcher reads. */
+const MARKDOWN_TASK = `${CHILD_TASK} Run \`printf unit-markdown\` once.`
+
+/** The words that the bubble of {@link MARKDOWN_TASK} shows. */
+const MARKDOWN_TASK_WORDS = `${CHILD_TASK} Run printf unit-markdown once.`
+
+/** A held answer with strong emphasis. */
+const MARKDOWN_ANSWER = { text: 'The **custom** child report.' }
+
+/** The words that the bubble of {@link MARKDOWN_ANSWER} shows. */
+const MARKDOWN_ANSWER_WORDS = 'The custom child report.'
+
 /** One model answer as the simulated native agent received it. */
 interface ReceivedStep {
   text?: string
@@ -331,11 +344,17 @@ function findString(value: unknown, accept: (text: string) => boolean): string |
   return undefined
 }
 
+/**
+ * Add one visible row to a tab.
+ * The chat renders the text of a user or assistant row as Markdown, so such a row shows the words of its text without
+ * the Markdown syntax, such as the backticks of inline code. The fake draws those rows the same way.
+ */
 function appendRow(tab: string, kind: RowKind, text: string, hiddenUntilExpanded?: string): void {
   const transcript = browser.tabs.get(tab)
   if (!transcript)
     throw new Error(`The fake browser has no tab ${tab}.`)
-  transcript.push({ kind, text, ...(hiddenUntilExpanded === undefined ? {} : { hiddenUntilExpanded }) })
+  const shown = kind === 'tool' ? text : markdownToPlainText(text)
+  transcript.push({ kind, text: shown, ...(hiddenUntilExpanded === undefined ? {} : { hiddenUntilExpanded }) })
 }
 
 /**
@@ -438,6 +457,8 @@ interface LiveChildRun {
 let workingDir = ''
 
 function startLiveChild(serverURL: string, script: ModelScript, options: {
+  /** The task of the child. It must hold `CHILD_TASK`, which the scripted matcher and the simulated parent read. */
+  childTask?: string
   childResponse?: Omit<MockModelStep, 'gate'>
   /** The tool that the spec asks the child to run. */
   tool?: 'read' | 'shell'
@@ -481,7 +502,7 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
   }
   const spec: LiveChildSpec = {
     childWhen: { user: CHILD_TASK },
-    childTask: CHILD_TASK,
+    childTask: options.childTask ?? CHILD_TASK,
     parentTask: PARENT_TASK,
     ...(options.childResponse ? { childResponse: options.childResponse } : {}),
     ...(options.tool === 'read' ? { toolProof: { read: { workingDir, ...(options.expandResult ? { expandResult: true } : {}) } } } : {}),
@@ -729,6 +750,47 @@ describe('exerciseLiveChildTranscript', () => {
       await run.agent
       expectOrder(run.log, ['gate-released', 'final-delivered'])
     })
+  })
+
+  it('finds a child task with Markdown syntax by the words that its bubble shows', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { childTask: MARKDOWN_TASK })
+      await run.helper
+      await run.agent
+      // The bubble drops the backticks of the inline code, so the task text of the spec is not in the child tab.
+      const shown = (browser.tabs.get(CHILD_AGENT) ?? []).filter(row => row.kind === 'user').map(row => row.text)
+      expect(shown.some(text => text.includes(MARKDOWN_TASK_WORDS))).toBe(true)
+      expect(shown.some(text => text.includes(MARKDOWN_TASK))).toBe(false)
+      expectOrder(run.log, ['gate-released', 'final-delivered'])
+    })
+  })
+
+  it('fails when the words of a held answer with Markdown syntax show in the child tab before the release', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { childResponse: MARKDOWN_ANSWER, earlyAnswer: MARKDOWN_ANSWER.text })
+      await expect(run.helper).rejects.toThrow(`the assistant rows that hold ${MARKDOWN_ANSWER_WORDS} in tab ${CHILD_AGENT}`)
+      await run.agent
+      expect(run.log).not.toContain('gate-released')
+    })
+  })
+
+  it('requires the words of a final answer with Markdown syntax in the child tab after the release', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      const run = startLiveChild(serverURL, script, { childResponse: MARKDOWN_ANSWER })
+      await run.helper
+      const receipt = await run.agent
+      expect(receipt.childResponses).toEqual([MARKDOWN_ANSWER])
+      expectOrder(run.log, ['gate-released', 'final-delivered'])
+    })
+  })
+
+  it.each(['', '   ', '![](child.png)'])('refuses a child task that shows no words, before it acts: %j', async (childTask) => {
+    // The guard must refuse the task before the helper uses the model script, which this fake leaves empty.
+    const context = { page: fakePage(), modelScript: {} as ModelScript, provider: PROVIDER, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+    await expect(exerciseLiveChildTranscript(context, { childWhen: { user: CHILD_TASK }, childTask, parentTask: PARENT_TASK }))
+      .rejects
+      .toThrow('A live child needs a task that shows words in its tab')
+    expect(browser.events).toEqual([])
   })
 })
 
