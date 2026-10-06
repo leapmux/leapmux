@@ -7,28 +7,26 @@
           "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "CodeBuddy Code 2.160.0 never writes this kind; the worker stores a frame of it whole from its default branch, and the browser draws it as an unrecognized row"
       },
       "ControlNotification": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker stores a frame of this kind whole from its default branch; the browser classifies it from the stored bytes"
       },
       "Error": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker stores a frame of this kind whole from its default branch; the browser classifies it from the stored bytes"
       },
       "ToolProgress": {
         "sides": [
           "go",
           "ts"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "CodeBuddy Code 2.160.0 never writes this kind; the worker stores a frame of it whole from its default branch, and the browser draws it as an unrecognized row"
       }
     },
     "controlRequestSubtypes": {
@@ -74,25 +72,25 @@
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker stores every system frame whole without a branch on its subtype; the browser classifies this one from the stored bytes"
       },
       "Status": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker stores every system frame whole without a branch on its subtype; the browser classifies this one from the stored bytes"
       },
-      "TaskNotification": {
+      "McpStatus": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker stores every system frame whole without a branch on its subtype; the browser classifies this one from the stored bytes"
       },
-      "TaskStarted": {
+      "Informational": {
         "sides": [
           "go"
         ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
+        "why": "the worker stores every system frame whole without a branch on its subtype; the browser classifies this one from the stored bytes"
       }
     }
   },
@@ -136,6 +134,8 @@
     "Init": "init",
     "Status": "status",
     "Keepalive": "keepalive",
+    "McpStatus": "mcp_status",
+    "Informational": "informational",
     "TaskStarted": "task_started",
     "TaskNotification": "task_notification"
   }

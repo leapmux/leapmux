@@ -2738,7 +2738,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'controlRequestSubtypes', frameKind: 'name', goTable: 'ControlRequestSubtype', tsTable: 'CONTROL_REQUEST_SUBTYPE', tsType: 'CodebuddyControlRequestSubtype', readers: ['go'], readersWhy: 'the worker dispatches the control channel; the browser never spells a subtype', doc: '`request.subtype` values of a control frame' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CodebuddyMode', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'permission modes' },
       { key: 'effortLevels', goTable: 'EffortLevel', tsTable: 'EFFORT_LEVEL', tsType: 'CodebuddyEffortLevel', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'the --effort values CodeBuddy owns' },
-      { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'CodebuddySystemSubtype', readers: ['go'], readersWhy: 'the worker classifies a system frame and persists it whole; the browser draws the notification', doc: '`subtype` values of a `system` line' },
+      { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'CodebuddySystemSubtype', doc: '`subtype` values of a `system` line' },
     ],
   },
   {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -187,11 +188,11 @@ func (a *Agent) handleTaskEvent(raw []byte) bool {
 		return false
 	}
 	switch event.Subtype {
-	case "task_started":
+	case contracts.CodebuddySystemSubtypeTaskStarted:
 		a.handleTaskStarted(&event)
 	case "task_progress":
 		a.handleTaskProgress(&event)
-	case "task_notification":
+	case contracts.CodebuddySystemSubtypeTaskNotification:
 		a.handleTaskNotification(&event)
 	case "task_updated", "background_tasks_changed":
 		// The notification closes a task. An update can precede that final event.
