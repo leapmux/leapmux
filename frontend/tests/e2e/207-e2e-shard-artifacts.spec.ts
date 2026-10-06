@@ -52,7 +52,7 @@ function traceRecords(entries: ReadonlyMap<string, Uint8Array>, suffix: string):
 }
 
 test.describe('isolated browser shard full tool output', () => {
-  test('retains the failed browser trace after both private native shards close', async ({ page }, testInfo) => {
+  test('retains the failed browser trace after both private Playwright shards close', async ({ page }, testInfo) => {
     const root = createLauncherFixtureProject({ browserTrace: true })
     const callerState = { nonce: process.env.LEAPMUX_E2E_NONCE, statePath: process.env.E2E_STATE_PATH, outputFileDir: process.env.LEAPMUX_E2E_OUTPUT_FILE_DIR }
     try {
