@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { stepRequest } from './mockModelScript'
-import { openResumeSubject, resumePickerScenario } from './nativeResumePicker'
+import { openResumeSubject, resumePickerScenario, sessionPickerRepository } from './nativeResumePicker'
 
 const STORED_SESSION = 'stored-native-session'
 const KEEPER_ID = 'keeper-agent'
@@ -276,6 +276,21 @@ beforeEach(() => {
   picker.closeRefusal = undefined
   picker.bubblesPerAnswer = []
   picker.historyInBody = true
+})
+
+describe('sessionPickerRepository', () => {
+  it('creates a repository of its own under the data directory, with a new name at each call', () => {
+    const first = sessionPickerRepository('/unit/data', 'picker-one-')
+    const second = sessionPickerRepository('/unit/data', 'picker-one-')
+    expect(first).toMatch(/^\/unit\/data\/picker-one-[0-9a-f-]{36}$/)
+    expect(second).toMatch(/^\/unit\/data\/picker-one-[0-9a-f-]{36}$/)
+    expect(first).not.toBe(second)
+    expect(picker.events).toEqual(['repo:one', 'repo:one'])
+  })
+
+  it('refuses a data directory that is not an absolute path', () => {
+    expect(() => sessionPickerRepository('unit/data', 'picker-one-')).toThrow('must be an absolute path')
+  })
 })
 
 describe('openResumeSubject', () => {

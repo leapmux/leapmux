@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 
 import type { ChannelManager } from '../../../src/lib/channel'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -723,10 +724,20 @@ function assertOpenAgentOptions(options: OpenAgentOptions): void {
     throw new Error('openAgentViaAPI: an explicit provider must not be UNSPECIFIED. Omit `agentProvider` for the Worker default.')
 }
 
+/** The open options of an agent of the Worker default provider: every field of {@link OpenAgentOptions} but the provider. */
+type WorkerDefaultAgentOptions = OpenAgentOptions & { agentProvider?: never }
+
 /**
  * Open an agent through an encrypted channel to the Worker. Register its tab on the Hub and return the agent ID.
- * Omit `workingDir` for the Worker's default directory.
+ *
+ * An open of the Worker default provider takes any directory, or none for the Worker's default directory. An open
+ * that states `agentProvider` requires a `ProviderWorkingDir` (`./providerWorkingDir.ts`): a directory that the rule
+ * of the provider made, or a layout that `deliberateWorkingDir` states.
  */
+export function openAgentViaAPI(server: AgentServer, workspaceId: string, workingDir?: string, options?: WorkerDefaultAgentOptions): Promise<string>
+// The last signature states the parameters that `vi.mocked(openAgentViaAPI).mock.calls` holds, so it is the one that
+// admits every option.
+export function openAgentViaAPI(server: AgentServer, workspaceId: string, workingDir: ProviderWorkingDir, options?: OpenAgentOptions): Promise<string>
 export async function openAgentViaAPI(
   server: AgentServer,
   workspaceId: string,

@@ -2,6 +2,7 @@ import type { ChannelTransport } from '../../../src/lib/channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { ChannelManager } from '../../../src/lib/channel'
 import {
   API_POLL_INTERVAL_MS,
@@ -115,13 +116,13 @@ describe('openAgentViaAPI', () => {
 
   it('sends the model in the options map beside the option values, and the provider', async () => {
     const stopped = stopWorkerRequest()
-    await expect(openAgentViaAPI(server(), 'workspace', undefined, {
+    await expect(openAgentViaAPI(server(), 'workspace', unitWorkingDir('/project'), {
       agentProvider: AgentProvider.CODEX,
       model: 'gpt-mock',
       optionValues: { effort: 'high' },
     })).rejects.toBe(stopped)
     expect(callWorker.mock.calls[0]?.[4]).toMatchObject({
-      workingDir: '',
+      workingDir: '/project',
       agentProvider: AgentProvider.CODEX,
       options: { effort: 'high', model: 'gpt-mock' },
     })
@@ -131,6 +132,7 @@ describe('openAgentViaAPI', () => {
     const stopped = stopWorkerRequest()
     await expect(openAgentViaAPI(server(), 'workspace')).rejects.toBe(stopped)
     const request = callWorker.mock.calls[0]?.[4]
+    expect(request).toMatchObject({ workingDir: '' })
     expect(request).not.toHaveProperty('options')
     expect(request).not.toHaveProperty('agentProvider')
     expect(request).not.toHaveProperty('title')
@@ -143,7 +145,7 @@ describe('openAgentViaAPI', () => {
     { label: 'a blank model', options: { model: '  ' }, message: 'a model needs a model ID' },
     { label: 'an explicit unspecified provider', options: { agentProvider: AgentProvider.UNSPECIFIED }, message: 'must not be UNSPECIFIED' },
   ])('refuses $label before it opens a channel', async ({ options, message }) => {
-    await expect(openAgentViaAPI(server(), 'workspace', '/project', options)).rejects.toThrow(message)
+    await expect(openAgentViaAPI(server(), 'workspace', unitWorkingDir('/project'), options)).rejects.toThrow(message)
     expect(createTestChannelManager).not.toHaveBeenCalled()
     expect(callWorker).not.toHaveBeenCalled()
   })

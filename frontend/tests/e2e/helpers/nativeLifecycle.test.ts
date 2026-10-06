@@ -19,7 +19,7 @@ import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/genera
 import { agentOpenOptions } from '../agentSettings'
 import { exerciseAgentStartup, exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
 import { stopProcess } from './process'
-import { gitRepositoryWorkingDir } from './worktree'
+import { gitRepositoryWorkingDir } from './providerWorkingDir'
 
 const resume = vi.hoisted(() => ({
   events: [] as string[],
@@ -370,6 +370,15 @@ describe('exerciseSessionResume', () => {
     expect(resume.picker).toHaveBeenCalledTimes(1)
     expect(resume.reopen).toHaveBeenCalledTimes(1)
     expect(resume.conversation).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['', 'relative/native-resume-project'])('refuses the stored directory %j before it opens the keeper or closes the original agent', async (workingDir) => {
+    const { context, prior } = scenario()
+    prior.workingDir = workingDir
+    await expect(exerciseSessionResume(context, options())).rejects.toThrow(`must be an absolute path, not ${JSON.stringify(workingDir)}`)
+    expect(resume.open).not.toHaveBeenCalled()
+    expect(resume.close).not.toHaveBeenCalled()
+    expect(resume.picker).not.toHaveBeenCalled()
   })
 
   it('fails before the reopen when the Worker refuses the close of the original agent', async () => {

@@ -4,6 +4,7 @@ import type { NativeMessageSnapshot } from './nativeMessages'
 import type { NativeModelTurn } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
@@ -599,7 +600,7 @@ describe('expectResumedAnswerUnmerged', () => {
 
 describe('openNewAgentFor', () => {
   it('opens the dialog, chooses the provider, and enters the working directory, in order', async () => {
-    const dialog = await openNewAgentFor(pickerPage, AgentProvider.CODEX, '/project')
+    const dialog = await openNewAgentFor(pickerPage, AgentProvider.CODEX, unitWorkingDir('/project'))
     expect(dialog).toMatchObject({ pickerProbe: 'dialog' })
     expect(dialogState.events).toEqual([
       'dialog',
@@ -611,7 +612,7 @@ describe('openNewAgentFor', () => {
   })
 
   it('refuses an empty working directory before it opens the dialog', async () => {
-    await expect(openNewAgentFor(pickerPage, AgentProvider.CODEX, '')).rejects.toThrow('requires a working directory')
+    await expect(openNewAgentFor(pickerPage, AgentProvider.CODEX, unitWorkingDir(''))).rejects.toThrow('requires a working directory')
     expect(dialogState.events).toEqual([])
   })
 })
@@ -694,7 +695,7 @@ describe('createFromSessionRow', () => {
 describe('reopenFromSessionPicker', () => {
   it('opens the dialog for the stored session and creates the agent from its row', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
-    await reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: '/project', sessionId: 'stored' })
+    await reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored' })
     expect(dialogState.events).toEqual([
       'dialog',
       'worker',
@@ -710,7 +711,7 @@ describe('reopenFromSessionPicker', () => {
 
   it('requires the sole session when the list states it', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
-    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: '/project', sessionId: 'stored', list: 'sole-session' })).rejects.toThrow()
+    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored', list: 'sole-session' })).rejects.toThrow()
     expect(dialogState.events).not.toContain('click:Create')
   })
 })

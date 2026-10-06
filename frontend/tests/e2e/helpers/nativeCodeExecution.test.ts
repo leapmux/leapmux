@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProviderAgent } from './workspace'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
@@ -149,7 +150,7 @@ describe('openNativeCatalogTurn', () => {
   })
 
   it('creates the directory by the working directory rule of the provider', async () => {
-    const workingDir = vi.fn((prefix: string) => `/run/${prefix}repository/repo`)
+    const workingDir = vi.fn((prefix: string) => unitWorkingDir(`/run/${prefix}repository/repo`))
     await openNativeCatalogTurn(contextOf({ ...cursor, workingDir }))
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-limit-')
     expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-repository/repo', agentOpenOptions(AgentProvider.CURSOR))

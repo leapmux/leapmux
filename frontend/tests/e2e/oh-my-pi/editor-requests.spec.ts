@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { answerControl, controlBanner, openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 import { OH_MY_PI_AGENT } from './scenarios'
 

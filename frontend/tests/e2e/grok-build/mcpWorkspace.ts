@@ -5,8 +5,9 @@ import { expect } from '@playwright/test'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { answerControl, expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { GROK_AGENT } from './scenarios'
 
 /** Open an actual project MCP server through Grok's native trust decision. */

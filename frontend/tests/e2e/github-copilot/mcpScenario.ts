@@ -8,9 +8,10 @@ import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { COPILOT_AGENT, nativeContext } from './scenarios'
 
 /**

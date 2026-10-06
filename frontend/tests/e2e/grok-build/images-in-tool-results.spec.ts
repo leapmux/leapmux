@@ -6,9 +6,10 @@ import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { expectMcpToolImage, expectToolRowWithoutImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
 import { answerControl, expectNoControlBanner, expectSettingsOptionChosen, openWorkspace, waitForControlBanner } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build images in tool results', () => {

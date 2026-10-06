@@ -1,5 +1,6 @@
 import type { ServerInfo } from '../fixtures'
 import type { PrivateWorkerSetup } from '../helpers/privateNativeWorkspace'
+import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import type { WorkspaceFixture } from '../helpers/workspace'
 import type { DiracStdioMcpServer } from './mcpConfiguration'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -19,7 +20,7 @@ import { DIRAC_AGENT } from './scenarios'
 interface AnthropicDiracWorkspace extends WorkspaceFixture {
   server: ServerInfo
   agentId: string
-  workingDir: string
+  workingDir: ProviderWorkingDir
 }
 
 /**
@@ -73,7 +74,7 @@ export const anthropicDiracTest = diracTest.extend<{
 export interface ConfiguredMcpDiracWorkspace extends WorkspaceFixture {
   server: ServerInfo
   agentId: string
-  workingDir: string
+  workingDir: ProviderWorkingDir
   sessionReceipt: string
   formReceipt: string
   configuredServers: DiracStdioMcpServer[]

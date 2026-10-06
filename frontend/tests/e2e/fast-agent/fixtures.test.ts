@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
 import { withPrivateNativeWorkspace } from '../helpers/privateNativeWorkspace'
 import { openProviderAgent } from '../helpers/workspace'
@@ -74,14 +75,15 @@ describe('fastAgentModesWorkspace', () => {
     vi.mocked(withPrivateNativeWorkspace).mockImplementation(async (_page, _server, given) => {
       options = given as PrivateNativeWorkspaceOptions<PrivateWorkerHub, undefined>
     })
-    vi.mocked(openProviderAgent).mockResolvedValue({ agentId: 'fast-agent', workingDir: '/private/wd' })
+    const workingDir = unitWorkingDir('/private/wd')
+    vi.mocked(openProviderAgent).mockResolvedValue({ agentId: 'fast-agent', workingDir })
     await fixture()({ page: {}, leapmuxServer: { ...leapmuxServer, agentEnv: { ...leapmuxServer.agentEnv, FAST_AGENT_HOME: sharedHome } } }, async () => {})
     if (!options)
       throw new Error('The fixture started no private workspace.')
     expect(options).toMatchObject({ prefix: 'fast-agent-modes', workerName: 'Fast Agent modes', providerAgent: FAST_AGENT_AGENT })
     const server = { ...leapmuxServer, workerId: 'private-worker' }
-    await expect(options.openAgent(server, 'private-workspace', '/private/wd')).resolves.toBe('fast-agent')
-    expect(openProviderAgent).toHaveBeenCalledExactlyOnceWith(server, 'private-workspace', FAST_AGENT_AGENT, { workingDir: '/private/wd', optionValues: { permissionMode: 'reader' } })
+    await expect(options.openAgent(server, 'private-workspace', workingDir)).resolves.toBe('fast-agent')
+    expect(openProviderAgent).toHaveBeenCalledExactlyOnceWith(server, 'private-workspace', FAST_AGENT_AGENT, { workingDir, optionValues: { permissionMode: 'reader' } })
   })
 
   it('refuses a suite environment with no Fast Agent home before it starts a Worker', async () => {

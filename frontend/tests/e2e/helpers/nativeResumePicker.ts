@@ -6,12 +6,14 @@ import type { ModelScript } from './modelScriptFixture'
 import type { NativeResumeResult } from './nativeLifecycle'
 import type { StoredSessionList } from './nativeResume'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from './nativeScenario'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import { expect } from '@playwright/test'
 import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { stepRequest } from './mockModelScript'
 import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
 import { nativeAgentById, nativeModelConversationTurns, nativeTextStep } from './nativeScenario'
+import { deliberateWorkingDir } from './providerWorkingDir'
 import { retryUntilPass } from './retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 import { closeNativeAgentAndWait } from './workerTabs'
@@ -48,12 +50,29 @@ export interface ResumePickerOptions {
   readonly resumedBodyHoldsOriginalAnswer?: boolean
 }
 
+/**
+ * Create a git repository of its own for one directory of a session picker flow, as `<dataDir>/<prefix><UUID>`.
+ *
+ * The rule of a provider cannot make this layout. It makes a plain directory of the run for most providers, and the
+ * run directory sits inside the git repository of the LeapMux checkout. A provider can list the sessions of the whole
+ * git repository around a directory: Amp keeps the threads of the git top level of the directory. So each directory of
+ * a picker flow is the root of a repository of its own, and the picker of one directory lists only the sessions of
+ * that directory.
+ */
+export function sessionPickerRepository(dataDir: string, prefix: string): ProviderWorkingDir {
+  return deliberateWorkingDir(
+    createGitRepo(dataDir, `${prefix}${crypto.randomUUID()}`),
+    'The session picker of one directory must list only the sessions of that directory, so the directory is the root of a git repository of its own.',
+  )
+}
+
 /** The two agents of a picker resume flow, and the directory of the subject. */
 export interface ResumeSubject {
   workspaceId: string
   keeperId: string
   subjectId: string
-  subjectDir: string
+  /** The repository of the subject, where the session picker finds its stored session (`sessionPickerRepository`). */
+  subjectDir: ProviderWorkingDir
 }
 
 /**
@@ -64,17 +83,17 @@ export interface ResumeSubject {
  *   returns, or with the Worker default when the flow states none. The callback runs after the workspace exists and
  *   before either agent opens, so a flow can build a context for the workspace there.
  *
- * Each agent works in a git repository of its own, so the picker of the subject directory lists the subject's
- * sessions alone. The flow selects the subject by its tab, because the tab that the app selects on load is not the
- * contract of the flow.
+ * Each agent works in a git repository of its own (`sessionPickerRepository`), so the picker of the subject directory
+ * lists the subject's sessions alone. The flow selects the subject by its tab, because the tab that the app selects on
+ * load is not the contract of the flow.
  */
 export async function openResumeSubject(
   fixtures: ResumePickerFixtures,
   options: { label: string, subjectOptions?: (workspaceId: string) => AgentOpenOptions | Promise<AgentOpenOptions> },
 ): Promise<ResumeSubject> {
   const { page, leapmuxServer: server } = fixtures
-  const keeperDir = createGitRepo(server.dataDir, `resume-keeper-${crypto.randomUUID()}`)
-  const subjectDir = createGitRepo(server.dataDir, `resume-subject-${crypto.randomUUID()}`)
+  const keeperDir = sessionPickerRepository(server.dataDir, 'resume-keeper-')
+  const subjectDir = sessionPickerRepository(server.dataDir, 'resume-subject-')
   const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, `${options.label} resume ${crypto.randomUUID()}`)
   const subjectOptions = await options.subjectOptions?.(workspaceId)
   const keeperId = await openAgentViaAPI(server, workspaceId, keeperDir, { title: 'Keeper' })

@@ -3,10 +3,11 @@ import type { ChildProcess } from 'node:child_process'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { AgentOpenOverrides } from '../agentSettings'
 import type { AgentServer } from './api'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { withCleanup } from './cleanup'
-import { createTestDirectory } from './runDirectory'
+import { newProviderWorkingDir } from './providerWorkingDir'
 import { loginViaToken, openWorkspace } from './ui'
 
 export interface WorkspaceFixture {
@@ -40,7 +41,8 @@ export function agentWorkspaceFixture(workspace: WorkspaceFixture, agentId: stri
 /** A workspace with one agent of a provider, and the directory that the agent works in. */
 export interface AgentWorkspace {
   workspaceId: string
-  workingDir: string
+  /** The directory that the rule of the provider made. Another agent of the provider can open there too. */
+  workingDir: ProviderWorkingDir
 }
 
 /**
@@ -63,7 +65,7 @@ type WorkspaceServer = WorkspaceHub & AgentServer
  * - The workspace fixtures of the provider fixture file.
  * - The scenario context that `managedNativeContext` builds (`./nativeScenario.ts`). Each helper that opens a native
  *   agent of the context reads it there (`newNativeWorkingDir` in `./nativeAgentOpen.ts`).
- * - `openProviderAgent` and `newProviderWorkingDir`.
+ * - `openProviderAgent`, and `newProviderWorkingDir` (`./providerWorkingDir.ts`).
  */
 export interface ProviderAgent {
   provider: AgentProvider
@@ -72,17 +74,9 @@ export interface ProviderAgent {
   /**
    * Create a working directory whose name starts with the given prefix. Omit it for a fresh private directory of the
    * run, which suits every provider that reads no configuration from the git repository around it. A provider that
-   * reads such configuration states `gitRepositoryWorkingDir` (`./worktree.ts`).
+   * reads such configuration states `gitRepositoryWorkingDir` (`./providerWorkingDir.ts`).
    */
-  workingDir?: (prefix: string) => string
-}
-
-/**
- * Create a new working directory for an agent of `agent`, by the rule of its provider.
- * The name of the directory starts with `prefix`. The default prefix is `<agent prefix>-wd-`.
- */
-export function newProviderWorkingDir(agent: ProviderAgent, prefix = `${agent.prefix}-wd-`): string {
-  return (agent.workingDir ?? createTestDirectory)(prefix)
+  workingDir?: (prefix: string) => ProviderWorkingDir
 }
 
 /** Keep workspace creation and disposal identical across agent providers. */
@@ -190,15 +184,18 @@ export async function showWorkspaceWithAgents(
 
 /** What a test states for one more agent that it opens in an existing workspace. */
 export interface ProviderAgentOpenOptions extends AgentOpenOverrides {
-  /** The directory that the agent works in. The default is a new directory of the provider. */
-  workingDir?: string
+  /**
+   * An existing directory that the agent works in: one that the rule of the provider made, or a layout that
+   * `deliberateWorkingDir` states. The default is a new directory of the provider.
+   */
+  workingDir?: ProviderWorkingDir
   /**
    * The prefix of the name of the new directory, which `newProviderWorkingDir` creates by the rule of the provider.
    * The default is `<agent prefix>-wd-`. An existing `workingDir` takes no prefix.
    */
   directoryPrefix?: string
   /** Write into the working directory before the agent starts, for a configuration that the agent reads at its start. */
-  prepare?: (workingDir: string) => void
+  prepare?: (workingDir: ProviderWorkingDir) => void
 }
 
 /**
@@ -210,7 +207,7 @@ export async function openProviderAgent(
   workspaceId: string,
   agent: ProviderAgent,
   options: ProviderAgentOpenOptions = {},
-): Promise<{ agentId: string, workingDir: string }> {
+): Promise<{ agentId: string, workingDir: ProviderWorkingDir }> {
   if (options.workingDir !== undefined && options.directoryPrefix !== undefined)
     throw new Error('An agent opens in an existing directory or in a new one, not in both.')
   // Build the request first, so an override that the merge rule refuses creates and prepares no directory.

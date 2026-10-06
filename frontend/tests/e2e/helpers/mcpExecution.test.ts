@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { fakeLocator } from '~/test-support/fakeLocator'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { exerciseMcpEcho, invokeNativeMcpTool, nativeMcpAnswer, withNativeMcpFormAgent } from './mcpExecution'
 import { MCP_FORM_SERVER_NAME } from './mcpFormServer'
 
@@ -206,7 +207,7 @@ describe('withNativeMcpFormAgent', () => {
     const workingDir = vi.fn((prefix: string) => {
       const repository = join(mkdtempSync(join(run.scratch, prefix)), 'repo')
       mkdirSync(repository)
-      return repository
+      return unitWorkingDir(repository)
     })
     const receipts: string[] = []
     await withNativeMcpFormAgent(context(AgentProvider.CLAUDE_CODE, { ...claude, workingDir }), {
@@ -223,7 +224,7 @@ describe('withNativeMcpFormAgent', () => {
   it('refuses the agent of another provider before it writes the server or the configuration', async () => {
     mkdirSync(dirname(run.configurationPath), { recursive: true })
     writeFileSync(run.configurationPath, 'original')
-    const workingDir = vi.fn(() => run.scratch)
+    const workingDir = vi.fn(() => unitWorkingDir(run.scratch))
     const use = vi.fn()
     await expect(withNativeMcpFormAgent(context(AgentProvider.CLAUDE_CODE, { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir }), {
       directoryPrefix: 'form-agent-',

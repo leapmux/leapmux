@@ -1,5 +1,6 @@
 import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
@@ -21,7 +22,7 @@ import { COMMAND_CODE_AGENT } from './scenarios'
  *
  * Command Code reads its MCP servers from `~/.commandcode/mcp.json`, which the isolated profile already holds.
  */
-export async function withCommandCodeMcp(context: ManagedNativeScenarioContext, options: { server: McpProbeServer, workingDir: string }, run: () => Promise<void>): Promise<void> {
+export async function withCommandCodeMcp(context: ManagedNativeScenarioContext, options: { server: McpProbeServer, workingDir: ProviderWorkingDir }, run: () => Promise<void>): Promise<void> {
   const home = context.leapmuxServer.agentEnv?.HOME
   if (!home)
     throw new Error('The native Command Code MCP proof requires a private home.')

@@ -5,12 +5,11 @@ import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSessionRow, openStoredSessionRow, sessionMenu, sessionMenuTrigger } from '../helpers/nativeResume'
-import { openResumeSubject } from '../helpers/nativeResumePicker'
+import { openResumeSubject, sessionPickerRepository } from '../helpers/nativeResumePicker'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, interruptButton, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait, listAgentsViaAPI, waitForAgentStatusViaAPI } from '../helpers/workerTabs'
-import { createGitRepo } from '../helpers/worktree'
 import { restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
 import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from './workerRestart'
 
@@ -520,7 +519,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     leapmuxServer,
   }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const emptyDir = createGitRepo(dataDir, 'session-picker-empty')
+    const emptyDir = sessionPickerRepository(dataDir, 'session-picker-empty-')
 
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Empty Picker WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, emptyDir)

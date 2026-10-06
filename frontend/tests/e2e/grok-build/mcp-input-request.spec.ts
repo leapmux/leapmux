@@ -8,8 +8,9 @@ import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall } from '../helpers/providerToolCalls'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { answerControl, assistantBubbles, expectNoControlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {

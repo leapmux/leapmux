@@ -1,9 +1,11 @@
 import type { PrivateNativeWorkspace, PrivateNativeWorkspaceOptions, PrivateWorkerHub } from '../helpers/privateNativeWorkspace'
+import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
@@ -45,7 +47,7 @@ type AnyWorkspace = PrivateNativeWorkspace<PrivateWorkerHub, unknown>
 
 const leapmuxServer = { hubUrl: 'http://private-hub.test', adminToken: 'private-token', workerId: 'suite-worker', agentEnv: { HOME: '/suite/home' }, mockModelUrl: 'http://127.0.0.1:1' }
 const privateServer = { ...leapmuxServer, workerId: 'private-worker' }
-let directory: string
+let directory: ProviderWorkingDir
 
 /** The fixture definition `name` that the fixture file registered. */
 function fixture(name: string): (fixtures: object, use: (value: unknown) => Promise<void>) => Promise<void> {
@@ -83,7 +85,7 @@ function runWorkspace(workspace: Partial<AnyWorkspace>): { options: () => AnyOpt
 beforeEach(() => {
   const scratch = resolve(process.cwd(), '../.tmp')
   mkdirSync(scratch, { recursive: true })
-  directory = mkdtempSync(join(scratch, 'dirac-private-fixture-'))
+  directory = unitWorkingDir(mkdtempSync(join(scratch, 'dirac-private-fixture-')))
   vi.mocked(createMockAgentEnvironment).mockReset()
   vi.mocked(withPrivateNativeWorkspace).mockReset()
   vi.mocked(requireBinary).mockReset().mockReturnValue(process.execPath)

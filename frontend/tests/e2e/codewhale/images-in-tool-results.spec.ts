@@ -17,10 +17,11 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codewhaleReadMediaToolCall, mcpToolCall } from '../helpers/providerToolCalls'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { getGlobalState } from '../helpers/server'
 import { expectMcpToolImage, expectToolRowImage, mcpResultImage, writeToolImage } from '../helpers/toolImages'
 import { applyPermissionPreset, openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { CODEWHALE_AGENT, nativeContext } from './scenarios'
 
 /** Prove that the actual image bytes reside in the completed Worker's stored row. */

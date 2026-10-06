@@ -7,9 +7,10 @@ import { clineTest } from '../cline-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { createFromSessionRow, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts, openNewAgentFor, openSoleSessionRow } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { hubSpawnEnv } from '../helpers/server'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, menuOptionLabel, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { createGitRepo } from '../helpers/worktree'
+import { CLINE_AGENT } from './scenarios'
 
 /** The longest the one-shot CLI run may take on a loaded machine. */
 const CLI_RUN_TIMEOUT_MS = 120_000
@@ -35,9 +36,10 @@ async function runClineOnce(cwd: string, agentEnv: Record<string, string>, promp
  * The test creates the external session with Cline's installed CLI and isolated environment. `cline history --json` lists it. The Worker recreates the selected session with its stored messages.
  */
 clineTest('offers a Cline session of the working directory and resumes the one picked', async ({ page, leapmuxServer, modelScript }) => {
-  const { hubUrl, adminToken, workerId, dataDir, agentEnv } = leapmuxServer
-  const subjectDir = createGitRepo(dataDir, `cline-picker-subject-${crypto.randomUUID()}`)
-  const otherDir = createGitRepo(dataDir, `cline-picker-other-${crypto.randomUUID()}`)
+  const { hubUrl, adminToken, workerId, agentEnv } = leapmuxServer
+  // The picker keeps the sessions of one working directory, so two directories of the rule of Cline keep them apart.
+  const subjectDir = newProviderWorkingDir(CLINE_AGENT, 'cline-picker-subject-')
+  const otherDir = newProviderWorkingDir(CLINE_AGENT, 'cline-picker-other-')
 
   // One session in the subject directory, and one in another directory. The
   // session title is the first line of the prompt, so the marker goes on the

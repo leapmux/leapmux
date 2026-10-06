@@ -8,9 +8,10 @@ import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt, waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeToolResult } from '../helpers/nativeToolResult'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { getGlobalState } from '../helpers/server'
 import { messageBubbles, openWorkspace } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { CODEX_AGENT, nativeContext } from './scenarios'
 
 codexTest('executes the native MCP echo tool and preserves its argument refusal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

@@ -6,6 +6,7 @@ import { agentOpenOptions } from '../agentSettings'
 import { fastAgentTest } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { reopenFromSessionPicker } from '../helpers/nativeResume'
+import { sessionPickerRepository } from '../helpers/nativeResumePicker'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
@@ -13,7 +14,6 @@ import { backgroundTaskRows, expandBackgroundTasksSection, openChildTabFromRow, 
 import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
-import { createGitRepo } from '../helpers/worktree'
 import { allowReadIfAsked } from './readPermission'
 import { FAST_AGENT_AGENT } from './scenarios'
 
@@ -196,8 +196,9 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
   fastAgentTest('restores a completed child transcript after its root session reopens', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const workspaceId = authenticatedEmptyWorkspace.workspaceId
-    const keeperDir = createGitRepo(dataDir, `fast-child-keeper-${crypto.randomUUID()}`)
-    const workingDir = createGitRepo(dataDir, `fast-child-resume-${crypto.randomUUID()}`)
+    // The root agent reopens through the session picker of its directory.
+    const keeperDir = sessionPickerRepository(dataDir, 'fast-child-keeper-')
+    const workingDir = sessionPickerRepository(dataDir, 'fast-child-resume-')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, keeperDir, { title: 'Keeper' })
     const rootID = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, workingDir, {
       ...agentOpenOptions(PROVIDER),

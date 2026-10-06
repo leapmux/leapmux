@@ -23,6 +23,7 @@ import { withNativeStartupWorker } from './nativeStartupWorker'
 import { approveNativeToolsUntil } from './nativeToolExecution'
 import { isAlive, listProcesses } from './processTree'
 import { bashToolCall } from './providerToolCalls'
+import { deliberateWorkingDir } from './providerWorkingDir'
 import { retryUntilPass } from './retryUntilPass'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
@@ -309,6 +310,12 @@ export async function exerciseSessionResume(
   const originalRequest = await sendNativeAnswer(context, texts.originalPrompt, texts.originalAnswer)
   const before = await currentNativeAgent(context)
   expect(before.agentSessionId).not.toBe('')
+  // The context holds no directory of its agent, so the directory comes from the Worker. The check runs before the
+  // keeper opens and the original agent closes.
+  const storedDir = deliberateWorkingDir(
+    before.workingDir,
+    'The picker lists the stored session in the directory where the Worker ran the original agent, so the reopened agent opens there.',
+  )
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'stored', prior: before })
   const originalAnswerRows = await countOriginalAnswerRows(context, before.id, texts)
@@ -321,7 +328,7 @@ export async function exerciseSessionResume(
   await closeNativeAgentAndWait(context, before.id)
   await tabById(context.page, keeper).click()
   await currentNativeAgent(context)
-  await reopenFromSessionPicker(context.page, { provider: context.provider, workingDir: before.workingDir, sessionId: before.agentSessionId })
+  await reopenFromSessionPicker(context.page, { provider: context.provider, workingDir: storedDir, sessionId: before.agentSessionId })
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'opened', prior: before })
   const reopened = await expectReopenedNativeAgent(context, before, [before.id, keeper])

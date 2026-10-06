@@ -1,29 +1,46 @@
+import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
+import { deliberateWorkingDir } from '../helpers/providerWorkingDir'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 import { opencodeTest } from '../opencode-fixtures'
 import { exerciseOpenCodeFamilyDenial } from './permissionDenial'
-import { nativeContext } from './scenarios'
+import { nativeContext, OPENCODE_AGENT } from './scenarios'
+
+/**
+ * Write a probe file that holds `content` into a new directory of the run whose name starts with `prefix`, and make a
+ * working directory beside it. Return both. The name of the probe file is `<prefix>probe.txt`.
+ *
+ * OpenCode treats the whole git worktree of its directory as its project, and asks its `external_directory`
+ * permission only for a path outside that project. The rule of OpenCode makes a plain directory of the run, whose
+ * worktree is the LeapMux checkout, and the checkout holds the probe file too. So the working directory is the root of
+ * a repository of its own, and the probe file sits in its parent, outside the project.
+ */
+function projectBesideProbe(prefix: string, content: string): { workingDir: ProviderWorkingDir, file: string } {
+  const parent = createTestDirectory(prefix)
+  const file = join(parent, `${prefix}probe.txt`)
+  writeFileSync(file, content)
+  const workingDir = deliberateWorkingDir(
+    createGitRepo(parent, 'repo'),
+    'OpenCode asks its external_directory permission only for a path outside the git worktree of its directory, so the directory is a repository of its own and the probe file sits in its parent.',
+  )
+  return { workingDir, file }
+}
 
 opencodeTest('asks before a shell command touches a file outside the working directory', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-  const parent = createTestDirectory('opencode-permission-')
-  const workingDir = createGitRepo(parent, 'repo')
-  const file = join(parent, 'opencode-permission-probe.txt')
-  writeFileSync(file, 'remove this test file')
-  await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OPENCODE))
+  const { workingDir, file } = projectBesideProbe('opencode-permission-', 'remove this test file')
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, OPENCODE_AGENT, { workingDir })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   // The path leaves the working directory, so OpenCode asks its external_directory permission.
-  const command = 'rm ../opencode-permission-probe.txt'
+  const command = `rm ../${basename(file)}`
   await exerciseNativePermissionDecision(context, {
     toolCall: bashToolCall(context.provider, 'opencode-permission', command),
     decision: 'allow',
@@ -38,16 +55,13 @@ opencodeTest('asks before a shell command touches a file outside the working dir
 })
 
 opencodeTest('keeps exact outside-directory bytes after a native Deny decision', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-  const parent = createTestDirectory('opencode-denied-permission-')
-  const workingDir = createGitRepo(parent, 'repo')
-  const file = join(parent, 'opencode-denied-permission-probe.txt')
   const original = `KEEP_THE_OUTSIDE_FILE_${randomUUID()}\n`
-  writeFileSync(file, original)
-  await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OPENCODE))
+  const { workingDir, file } = projectBesideProbe('opencode-denied-permission-', original)
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, OPENCODE_AGENT, { workingDir })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   // The path leaves the working directory, so OpenCode asks its external_directory permission.
-  const command = 'rm ../opencode-denied-permission-probe.txt'
+  const command = `rm ../${basename(file)}`
   await exerciseOpenCodeFamilyDenial(context, {
     toolCall: bashToolCall(context.provider, 'opencode-denied-removal', command),
     prompt: 'Run the exact shell command in the scripted tool call.',

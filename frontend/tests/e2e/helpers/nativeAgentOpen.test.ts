@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProviderAgent } from './workspace'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { newNativeWorkingDir, openNativeAgent, requireOwnProviderAgent } from './nativeAgentOpen'
@@ -57,7 +58,7 @@ const context = contextOf()
 function repositoryAgent() {
   const workingDir = vi.fn((prefix: string) => {
     opened.events.push(`repository ${prefix}`)
-    return `/run/${prefix}repository/repo`
+    return unitWorkingDir(`/run/${prefix}repository/repo`)
   })
   return { agent: { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e', workingDir } satisfies ProviderAgent, workingDir }
 }
@@ -106,13 +107,13 @@ describe('openNativeAgent', () => {
 
   it('opens the agent in an existing directory, and neither the rule of the provider nor the run creates one', async () => {
     const { agent, workingDir } = repositoryAgent()
-    expect(await openNativeAgent(contextOf(agent), { workingDir: '/run/existing' })).toEqual({ agentId: 'agent-1', workingDir: '/run/existing' })
+    expect(await openNativeAgent(contextOf(agent), { workingDir: unitWorkingDir('/run/existing') })).toEqual({ agentId: 'agent-1', workingDir: '/run/existing' })
     expect(workingDir).not.toHaveBeenCalled()
     expect(opened.events).toEqual(['open /run/existing', 'workspace workspace-1', 'selected tab'])
   })
 
   it('refuses an existing directory and a prefix together, before it opens an agent', async () => {
-    await expect(openNativeAgent(context, { workingDir: '/run/existing', directoryPrefix: 'native-' })).rejects.toThrow('not in both')
+    await expect(openNativeAgent(context, { workingDir: unitWorkingDir('/run/existing'), directoryPrefix: 'native-' })).rejects.toThrow('not in both')
     expect(opened.events).toEqual([])
     expect(opened.open).not.toHaveBeenCalled()
   })

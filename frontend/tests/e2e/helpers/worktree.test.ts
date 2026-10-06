@@ -1,18 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  addWorktree,
-  branchExists,
-  commitFile,
-  createGitRepo,
-  createGitRepoWithRemote,
-  ensureGitRepositoryRoot,
-  gitRepositoryWorkingDir,
-  initGitRepo,
-  managedWorktreePath,
-} from './worktree'
+import { gitRepositoryWorkingDir } from './providerWorkingDir'
+import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, ensureGitRepositoryRoot, initGitRepo, managedWorktreePath } from './worktree'
 
 // The run directory of these tests is the scratch directory of the current test.
 const runDirectory = vi.hoisted(() => ({ root: '' }))
@@ -46,20 +37,6 @@ describe('git repository helpers', () => {
     expect(gitOutput(dir, ['config', '--local', 'user.email'])).toBe('test@test.com')
     expect(gitOutput(dir, ['config', '--local', 'user.name'])).toBe('Test')
     expect(gitOutput(dir, ['symbolic-ref', '--short', 'HEAD'])).toBe('main')
-  })
-
-  it('gitRepositoryWorkingDir makes a new directory of the run with the prefix, and a repository of its own in it', () => {
-    const first = gitRepositoryWorkingDir('agent-wd-')
-    const second = gitRepositoryWorkingDir('agent-wd-')
-    expect(first).not.toBe(second)
-    for (const dir of [first, second]) {
-      expect(basename(dir)).toBe('repo')
-      expect(dirname(dirname(dir))).toBe(root)
-      expect(basename(dirname(dir))).toMatch(/^agent-wd-/)
-      // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.
-      expect(gitOutput(dir, ['rev-parse', '--show-toplevel'])).toBe(realpathSync(dir))
-      expect(gitOutput(dir, ['log', '--pretty=%s'])).toBe('init')
-    }
   })
 
   it('ensureGitRepositoryRoot makes a plain directory the root of a repository of its own, with the README commit', () => {

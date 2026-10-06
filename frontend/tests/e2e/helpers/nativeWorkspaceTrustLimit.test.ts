@@ -4,16 +4,18 @@ import type { ModelScript } from './modelScriptFixture'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProjectMcpServer } from './nativeWorkspaceTrustLimit'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import type { ProviderAgent } from './workspace'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, ignoredMcpServerProjectConfiguration, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, PROJECT_MCP_SERVER_NAME, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
-import { gitRepositoryWorkingDir } from './worktree'
+import { gitRepositoryWorkingDir } from './providerWorkingDir'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
 
@@ -125,9 +127,9 @@ function detachedContext(overrides: Partial<ManagedNativeScenarioContext> = {}):
   }
 }
 
-function scratchDirectory(directories: string[], prefix: string): string {
+function scratchDirectory(directories: string[], prefix: string): ProviderWorkingDir {
   mkdirSync(SCRATCH_ROOT, { recursive: true })
-  const directory = mkdtempSync(join(SCRATCH_ROOT, prefix))
+  const directory = unitWorkingDir(mkdtempSync(join(SCRATCH_ROOT, prefix)))
   directories.push(directory)
   return directory
 }

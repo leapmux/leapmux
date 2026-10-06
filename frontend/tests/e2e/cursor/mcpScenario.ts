@@ -11,6 +11,7 @@ import { mcpReceiptListsTool, readMcpServerReceipt } from '../helpers/mcpServerR
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
+import { deliberateWorkingDir } from '../helpers/providerWorkingDir'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { hubSpawnEnv } from '../helpers/server'
 import { assistantBubbles, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -40,7 +41,10 @@ export function cursorAutomaticMcpDecline(receipt: McpServerReceipt) {
 export async function exerciseCursorMcpSession(context: ManagedNativeScenarioContext): Promise<void> {
   const { page, modelScript, leapmuxServer } = context
   const parent = createTestDirectory('cursor-mcp-form-')
-  const workingDir = createGitRepo(parent, 'repo')
+  const workingDir = deliberateWorkingDir(
+    createGitRepo(parent, 'repo'),
+    'Cursor reads `.cursor/mcp.json` and keeps the approval of `agent mcp enable` for the project of its directory. A repository of its own makes the directory that project, and the server and its receipt stay outside it in the parent.',
+  )
   const receiptLog = join(parent, 'native-mcp-receipt.json')
   const echoArguments = { query: 'cursor', limit: 0, tail: 'END_MCP_ARGUMENTS' }
   const server = writeMcpFormServer(parent, 'form-server.mjs', { expectedEchoArguments: echoArguments, receiptLog })

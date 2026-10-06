@@ -9,10 +9,11 @@ import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, readToolCall } from '../helpers/providerToolCalls'
+import { deliberateWorkingDir, newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { hubSpawnEnv } from '../helpers/server'
 import { answerControl, controlActions, controlButton, enterControlFeedback, expectNoControlBanner, messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 import { mimoTest } from '../mimo-fixtures'
 import { MIMO_AGENT, nativeContext } from './scenarios'
@@ -108,11 +109,13 @@ mimoTest.describe('MiMo Code permission requests', () => {
   // MiMo keeps an `always` answer for the patterns that its request states. A read
   // outside the project asks `external_directory` with the directory as that
   // pattern, so a second read in the same directory asks nothing.
-  //
-  // MiMo treats the full Git worktree as its project. A sibling directory stays
-  // outside this agent's fresh repository and inside the private E2E run.
   mimoTest('an always answer covers the next read in the same outside directory', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-    const workingDir = createGitRepo(createTestDirectory('mimo-outside-project-'), 'repo')
+    // The rule of MiMo makes a plain directory of the run, whose git worktree is the whole LeapMux checkout, and the
+    // checkout also holds the sibling directory below.
+    const workingDir = deliberateWorkingDir(
+      createGitRepo(createTestDirectory('mimo-outside-project-'), 'repo'),
+      'MiMo treats the whole git worktree of its directory as its project. A repository of its own keeps the sibling directory of the run outside the project.',
+    )
     const outside = createTestDirectory('mimo-always-outside-')
     const gitEnv = hubSpawnEnv(leapmuxServer.agentEnv)
     expect(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: workingDir, env: gitEnv, encoding: 'utf8' }).trim()).toBe(workingDir)

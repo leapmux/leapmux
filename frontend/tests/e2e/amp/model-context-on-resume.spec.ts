@@ -8,9 +8,9 @@ import { ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { createFromSessionRow, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts, openNewAgentFor, openSoleSessionRow } from '../helpers/nativeResume'
+import { sessionPickerRepository } from '../helpers/nativeResumePicker'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, menuOptionLabel, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { createGitRepo } from '../helpers/worktree'
 
 async function seedThread(mockModelUrl: string, thread: AmpSeededThread): Promise<void> {
   const response = await fetch(`${mockModelUrl}${AMP_E2E_THREADS_PATH}`, { method: 'POST', body: JSON.stringify(thread) })
@@ -34,8 +34,9 @@ function savedMessages(label: string, prompt = 'Remember the earlier topic.'): A
  */
 ampTest('offers the workspace\'s Amp threads and resumes the one picked', async ({ page, leapmuxServer, modelScript }) => {
   const { hubUrl, adminToken, workerId, dataDir, mockModelUrl } = leapmuxServer
-  const subjectDir = createGitRepo(dataDir, `amp-picker-subject-${crypto.randomUUID()}`)
-  const otherDir = createGitRepo(dataDir, `amp-picker-other-${crypto.randomUUID()}`)
+  // Amp states the workspace of a thread as the git top level of its directory, so each directory is a repository.
+  const subjectDir = sessionPickerRepository(dataDir, 'amp-picker-subject-')
+  const otherDir = sessionPickerRepository(dataDir, 'amp-picker-other-')
   const subjectTree = pathToFileURL(realpathSync(subjectDir)).href
   const seeded = `T-${crypto.randomUUID()}`
   const texts = nativeResumeTexts()

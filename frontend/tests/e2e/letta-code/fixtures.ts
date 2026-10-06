@@ -2,6 +2,7 @@ import type { ServerInfo } from '../fixtures'
 import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { PrivateWorkerSetup } from '../helpers/privateNativeWorkspace'
+import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import type { WorkspaceFixture } from '../helpers/workspace'
 import type { LettaMcpServer } from './mcpConfiguration'
 import { expect } from '@playwright/test'
@@ -27,14 +28,14 @@ export interface PrivateMcpLettaWorkspace extends WorkspaceFixture {
   home: string
   backendDirectory: string
   nodeExecutable: string
-  workingDir: string
+  workingDir: ProviderWorkingDir
 }
 
 /** Open the actual initial or resumed agent for the private MCP fixture. */
 export function openMcpLettaAgent(
   server: Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId'>,
   workspaceId: string,
-  workingDir: string,
+  workingDir: ProviderWorkingDir,
   agentSessionId?: string,
 ): Promise<string> {
   return openAgentViaAPI(server, workspaceId, workingDir, {
@@ -104,6 +105,8 @@ export async function withRegisteredLettaMcp(
   const before = await currentNativeAgent(context)
   expect(before.agentProvider).toBe(AgentProvider.LETTA)
   expect(before.agentSessionId).not.toBe('')
+  // The conversation reopens in the directory of the agent of the workspace, which the rule of the provider made.
+  expect(before.workingDir).toBe(workspace.workingDir)
   const server = workspace.server
   // The private Worker holds the agent, so the close and its wait both go there.
   const close = (agentId: string) => closeNativeAgentAndWait({ leapmuxServer: server }, agentId)
@@ -111,7 +114,7 @@ export async function withRegisteredLettaMcp(
   const configuration = configureLettaMcp({ ...workspace, conversationId: before.agentSessionId, servers })
   let reopened = ''
   await withCleanup(async () => {
-    reopened = await openMcpLettaAgent(server, context.workspaceId, before.workingDir, before.agentSessionId)
+    reopened = await openMcpLettaAgent(server, context.workspaceId, workspace.workingDir, before.agentSessionId)
     expect(reopened).not.toBe(before.id)
     await tabById(context.page, reopened).click()
     await waitForSettingsHydrated(context.page)

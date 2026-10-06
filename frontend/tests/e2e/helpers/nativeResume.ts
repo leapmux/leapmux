@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import type { AgentChatMessage, AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext, NativeModelTurn } from './nativeScenario'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -45,8 +46,11 @@ export function sessionMenuTrigger(dialog: Locator): Locator {
   return dialog.getByTestId(`${SESSION_MENU}-trigger`)
 }
 
-/** Open the New Agent dialog for `provider` in `workingDir`, and return the dialog. */
-export async function openNewAgentFor(page: Page, provider: AgentProvider, workingDir: string): Promise<Locator> {
+/**
+ * Open the New Agent dialog for `provider` in `workingDir`, and return the dialog.
+ * The dialog opens an agent of `provider` there, so the directory is a `ProviderWorkingDir` as for every native open.
+ */
+export async function openNewAgentFor(page: Page, provider: AgentProvider, workingDir: ProviderWorkingDir): Promise<Locator> {
   if (!workingDir)
     throw new Error('The New Agent dialog requires a working directory.')
   await openNewAgentDialog(page)
@@ -108,7 +112,7 @@ export async function createFromSessionRow(dialog: Locator, row: Locator, sessio
 /** Reopen the stored session `sessionId` of `workingDir` through the session menu of the New Agent dialog. */
 export async function reopenFromSessionPicker(page: Page, options: {
   provider: AgentProvider
-  workingDir: string
+  workingDir: ProviderWorkingDir
   sessionId: string
   list?: StoredSessionList
 }): Promise<void> {

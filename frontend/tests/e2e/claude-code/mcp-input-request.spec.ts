@@ -4,8 +4,9 @@ import { claudeTest } from '../claude-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { exerciseMcpProbeFormRoundTrip } from '../helpers/mcpProbeForm'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { openWorkspace } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { CLAUDE_AGENT, nativeContext } from './scenarios'
 
 claudeTest.describe('Claude Code MCP input form', () => {

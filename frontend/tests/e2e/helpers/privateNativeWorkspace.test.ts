@@ -10,10 +10,11 @@ import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/genera
 import { currentNativeAgent } from './nativeScenario'
 import { withNativeWorker } from './nativeWorker'
 import { withPrivateNativeWorkspace } from './privateNativeWorkspace'
+import { newProviderWorkingDir } from './providerWorkingDir'
 import { createTestDirectory } from './runDirectory'
 import { createServerOutput } from './serverOutput'
 import { loginViaToken, openWorkspace } from './ui'
-import { newProviderWorkingDir, withTestWorkspace } from './workspace'
+import { withTestWorkspace } from './workspace'
 
 const events = vi.hoisted(() => [] as string[])
 
@@ -27,11 +28,13 @@ vi.mock('./ui', () => ({
   loginViaToken: vi.fn(async () => { events.push('login') }),
   openWorkspace: vi.fn(async (_page: Page, workspaceId: string) => { events.push(`show ${workspaceId}`) }),
 }))
-vi.mock('./workspace', () => ({
+vi.mock('./providerWorkingDir', () => ({
   newProviderWorkingDir: vi.fn((_agent: unknown, prefix: string) => {
     events.push(`working directory ${prefix}`)
     return `/private/${prefix}`
   }),
+}))
+vi.mock('./workspace', () => ({
   withTestWorkspace: vi.fn(async (_server: unknown, prefix: string, use: (workspace: { workspaceId: string }) => Promise<void>) => {
     events.push(`workspace ${prefix}`)
     await use({ workspaceId: 'private-workspace' })

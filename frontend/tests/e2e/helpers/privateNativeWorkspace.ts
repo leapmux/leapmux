@@ -2,13 +2,15 @@ import type { Page } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ServerInfo } from '../fixtures'
 import type { NativeWorker } from './nativeWorker'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import type { ProviderAgent, WorkspaceFixture } from './workspace'
 import { rmSync } from 'node:fs'
 import { currentNativeAgent } from './nativeScenario'
 import { withNativeWorker } from './nativeWorker'
+import { newProviderWorkingDir } from './providerWorkingDir'
 import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { loginViaToken, openWorkspace } from './ui'
-import { newProviderWorkingDir, withTestWorkspace } from './workspace'
+import { withTestWorkspace } from './workspace'
 
 /** The suite server that a private Worker registers with. */
 export type PrivateWorkerHub = Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId' | 'agentEnv'>
@@ -42,8 +44,11 @@ export interface PrivateNativeWorkspaceOptions<Server extends PrivateWorkerHub, 
    * starts. The run directory goes away after the Worker exited, or at once when no Worker starts.
    */
   prepare: (runDirectory: string) => Promise<PrivateWorkerSetup<Setup>> | PrivateWorkerSetup<Setup>
-  /** Open the agent of the workspace on the private Worker, in `workingDir`, and return its ID. */
-  openAgent: (server: NativeWorker<Server>['server'], workspaceId: string, workingDir: string) => Promise<string>
+  /**
+   * Open the agent of the workspace on the private Worker, in `workingDir`, and return its ID. The rule of the provider
+   * made `workingDir`.
+   */
+  openAgent: (server: NativeWorker<Server>['server'], workspaceId: string, workingDir: ProviderWorkingDir) => Promise<string>
 }
 
 /** One workspace on a private Worker, with the one agent that it opened and that the page shows. */
@@ -51,7 +56,7 @@ export interface PrivateNativeWorkspace<Server extends PrivateWorkerHub, Setup> 
   /** The server of the private Worker: the suite server with the Worker ID and the agent environment of the Worker. */
   server: NativeWorker<Server>['server']
   agentId: string
-  workingDir: string
+  workingDir: ProviderWorkingDir
   /** The opened agent as the Worker reports it, after the Worker reports it active. */
   agent: AgentInfo
   /** The directory of the private files. */

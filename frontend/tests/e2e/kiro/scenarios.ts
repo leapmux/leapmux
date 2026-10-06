@@ -5,7 +5,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
-import { gitRepositoryWorkingDir } from '../helpers/worktree'
+import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
 import { kiroModelTurns } from './modelTurns'
 import { kiroToolResult } from './toolResult'
 

@@ -4,8 +4,9 @@ import { claudeTest } from '../claude-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { openWorkspace } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { CLAUDE_AGENT, nativeContext } from './scenarios'
 
 claudeTest('executes the native MCP echo tool and keeps empty string results', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {

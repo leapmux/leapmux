@@ -8,9 +8,9 @@ import { currentNativeAgent, managedNativeContext } from '../helpers/nativeScena
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { gitRepositoryWorkingDir } from '../helpers/worktree'
 
 /** How a Command Code agent opens. Its working directory is the root of a git repository of its own. */
 export const COMMAND_CODE_AGENT: ProviderAgent = { provider: AgentProvider.COMMAND_CODE, prefix: 'command-code-e2e', workingDir: gitRepositoryWorkingDir }

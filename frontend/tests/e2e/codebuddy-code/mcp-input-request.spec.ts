@@ -9,8 +9,9 @@ import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot }
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/providerToolCalls'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { expectNoControlBanner, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
-import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
+import { openProviderAgent } from '../helpers/workspace'
 import { withCodebuddyUserMcpServer } from './mcpConfiguration'
 import { CODEBUDDY_AGENT, nativeContext } from './scenarios'
 

@@ -3,6 +3,7 @@ import type { MockModelToolCall } from './mockModelScript'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -25,7 +26,8 @@ import { exerciseUnsupportedControlThroughPermission } from './unsupportedNative
 import { ensureGitRepositoryRoot } from './worktree'
 
 export interface NativeProjectConfiguration {
-  directory: string
+  /** The project, which the rule of the provider made. Each agent of the scenario opens there. */
+  directory: ProviderWorkingDir
   marker: string
 }
 

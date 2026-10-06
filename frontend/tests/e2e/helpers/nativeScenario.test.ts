@@ -6,6 +6,7 @@ import type { ProviderAgent } from './workspace'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeLocator } from '~/test-support/fakeLocator'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   currentNativeAgent,
@@ -46,7 +47,7 @@ describe('managedNativeContext', () => {
     leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker' },
     workspaceId: 'workspace',
   }
-  const kiro: ProviderAgent = { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: prefix => `/run/${prefix}repo` }
+  const kiro: ProviderAgent = { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: prefix => unitWorkingDir(`/run/${prefix}repo`) }
 
   it('takes the provider from the agent of the provider, and keeps that agent and every fixture', () => {
     expect(managedNativeContext(fixtures, kiro)).toEqual({ ...fixtures, provider: AgentProvider.KIRO, providerAgent: kiro })

@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
-import { createTestDirectory } from './runDirectory'
 
 /** Run one git command in `cwd` with no shell, so a path or a name reaches git as one argument. */
 function git(cwd: string, args: string[]): string {
@@ -79,26 +78,16 @@ export function createGitRepo(dataDir: string, name: string): string {
 }
 
 /**
- * Create a working directory that is the root of a git repository of its own, inside a new directory of the run whose
- * name starts with `prefix`.
- *
- * Some providers read configuration from the git repository around their working directory: rules, skills, steering
- * documents, hooks, an `AGENTS.md` or an `.mcp.json`. The run directory sits inside the LeapMux checkout, whose root
- * holds such files. A repository of its own holds none of them, so the agent reads none of the checkout's
- * configuration. The `ProviderAgent` of each such provider states this rule (`./workspace.ts`).
- */
-export function gitRepositoryWorkingDir(prefix: string): string {
-  return createGitRepo(createTestDirectory(prefix), 'repo')
-}
-
-/**
  * Make `dir` the root of a git repository of its own, as `createGitRepo` makes one, unless it is the root of a work
  * tree already. A `.git` entry marks that root: a directory for a repository, and a file for a linked worktree.
  *
  * A project that a scenario prepares needs a root of its own when its provider reads the project configuration up to
  * the repository root. The rule of some providers makes each working directory such a root already
- * (`gitRepositoryWorkingDir`), and a second `createGitRepo` there fails, because its README commit has nothing to
- * commit.
+ * (`gitRepositoryWorkingDir` in `./providerWorkingDir.ts`), and a second `createGitRepo` there fails, because its
+ * README commit has nothing to commit.
+ *
+ * The function returns nothing, so it cannot give the brand of a `ProviderWorkingDir` (`./providerWorkingDir.ts`) to a
+ * directory that a test made by hand. A project keeps the brand that the rule of its provider gave it.
  */
 export function ensureGitRepositoryRoot(dir: string): void {
   if (!existsSync(join(dir, '.git')))

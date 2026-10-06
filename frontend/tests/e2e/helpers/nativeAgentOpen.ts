@@ -1,17 +1,22 @@
 import type { AgentOpenOverrides } from '../agentSettings'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ProviderWorkingDir } from './providerWorkingDir'
 import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
 import { selectedAgentTabId } from './nativeScenario'
+import { newProviderWorkingDir } from './providerWorkingDir'
 import { openWorkspace } from './ui'
-import { newProviderWorkingDir, openProviderAgent } from './workspace'
+import { openProviderAgent } from './workspace'
 
 /** How {@link openNativeAgent} opens its agent. */
 export interface NativeAgentOpenOptions {
   /** The prefix of the name of the new working directory of the agent. */
   directoryPrefix?: string
-  /** An existing private working directory, for an agent that reads a file of the test there. It replaces the prefix. */
-  workingDir?: string
+  /**
+   * An existing private working directory, for an agent that reads a file of the test there. It replaces the prefix.
+   * The rule of the provider made it ({@link newNativeWorkingDir}), or `deliberateWorkingDir` states its layout.
+   */
+  workingDir?: ProviderWorkingDir
   /** The open settings over the pinned settings of the provider. */
   overrides?: AgentOpenOverrides
 }
@@ -41,7 +46,7 @@ export function requireOwnProviderAgent(context: Pick<ManagedNativeScenarioConte
  * its own, and every other provider gets a fresh directory of the run. A helper that opens a native agent in a
  * directory of its own creates the directory here, never with `createTestDirectory`.
  */
-export function newNativeWorkingDir(context: Pick<ManagedNativeScenarioContext, 'provider' | 'providerAgent'>, prefix: string): string {
+export function newNativeWorkingDir(context: Pick<ManagedNativeScenarioContext, 'provider' | 'providerAgent'>, prefix: string): ProviderWorkingDir {
   return newProviderWorkingDir(requireOwnProviderAgent(context), prefix)
 }
 
@@ -56,7 +61,7 @@ export function newNativeWorkingDir(context: Pick<ManagedNativeScenarioContext, 
 export async function openNativeAgent(
   context: ManagedNativeScenarioContext,
   options: NativeAgentOpenOptions = {},
-): Promise<{ agentId: string, workingDir: string }> {
+): Promise<{ agentId: string, workingDir: ProviderWorkingDir }> {
   const providerAgent = requireOwnProviderAgent(context)
   if (options.workingDir !== undefined && options.directoryPrefix !== undefined)
     throw new Error('A native agent opens in an existing directory or in a new one, not in both.')

@@ -1,6 +1,7 @@
 import type { DeepseekHarnessEnvironmentOptions } from '../helpers/deepseekHarnessEnvironment'
 import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { createDeepseekHarnessEnvironment } from '../helpers/deepseekHarnessEnvironment'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -13,8 +14,8 @@ import { openProviderAgent } from '../helpers/workspace'
 export interface DeepseekHarnessMcpSetup {
   /** The MCP server that the native profile registers under its own name. */
   server: McpProbeServer
-  /** The working directory of the native agent. */
-  workingDir: string
+  /** The working directory of the native agent, which the rule of the provider made. */
+  workingDir: ProviderWorkingDir
   /** The native default preset. An absent value keeps the native standard default. */
   agentPreset?: DeepseekHarnessEnvironmentOptions['agentPreset']
 }

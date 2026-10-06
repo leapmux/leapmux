@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { mcpProbeServer } from '../helpers/mcpProbeServer'
@@ -91,7 +92,7 @@ describe('exerciseOpencodeMcpInputLimit', () => {
   })
 
   it('opens the agent in the working directory that the rule of the provider creates, beside the form server', async () => {
-    const workingDir = vi.fn((prefix: string) => mkdtempSync(join(limit.run, `${prefix}rule-`)))
+    const workingDir = vi.fn((prefix: string) => unitWorkingDir(mkdtempSync(join(limit.run, `${prefix}rule-`))))
     const providerAgent: ProviderAgent = { provider: AgentProvider.OPENCODE, prefix: 'opencode-e2e', workingDir }
     const context: ManagedNativeScenarioContext = {
       page: {} as Page,
