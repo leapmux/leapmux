@@ -1,6 +1,7 @@
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
+import { CLAUDE_SUMMARIZER_PATTERN } from '../helpers/manualCompaction'
 import { sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 /** Exercise the actual native compaction path and preserve its context assertions. */
@@ -12,7 +13,8 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
   const olderAnswer = Array.from({ length: 3000 }, (_, index) => `${oldMarker} item ${index} records detail ${index * 7}.`).join(' ')
   await modelScript.rule({
     name: 'qoder manual summary',
-    when: { body: 'CRITICAL: Respond with TEXT ONLY' },
+    // Qoder CLI derives from Claude Code, and its summarizer prompt holds the same directive.
+    when: { body: CLAUDE_SUMMARIZER_PATTERN },
     respond: {
       text: `<analysis>Keep only the task state.</analysis><summary>${summaryMarker} The prior work recorded the task state and recent decisions.</summary>`,
       usage: { inputTokens: 8000, outputTokens: 40 },

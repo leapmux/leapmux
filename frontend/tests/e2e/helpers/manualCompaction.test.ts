@@ -4,7 +4,8 @@ import type { MockModelRequestRecord, MockModelRule, MockModelStep } from './moc
 import type { ModelScript } from './modelScriptFixture'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { compactionSummaryText, exerciseNativeCompaction, MANUAL_COMPACTION_MARKER, MANUAL_COMPACTION_SUMMARY, OLDER_CONTEXT_MARKER } from './manualCompaction'
+import { CLAUDE_SUMMARIZER_PATTERN, compactionSummaryText, exerciseNativeCompaction, MANUAL_COMPACTION_MARKER, MANUAL_COMPACTION_SUMMARY, OLDER_CONTEXT_MARKER } from './manualCompaction'
+import { matchesRequest } from './mockModelScript'
 
 /** A simulated native agent: what it sent, what the transcript shows, and how it compacts. */
 const agent = vi.hoisted(() => ({
@@ -123,6 +124,20 @@ function context(script: ModelScript) {
 
 beforeEach(() => {
   agent.transcript = []
+})
+
+describe('CLAUDE_SUMMARIZER_PATTERN', () => {
+  const request = (userText: string) => ({ protocol: 'anthropic-messages' as const, systemText: '', userText, body: { messages: [{ role: 'user', content: userText }] } })
+
+  it('matches the summarizer directive of the Claude Code /compact prompt, as a user and as a body pattern', () => {
+    const prompt = 'Keep it.\n\nCRITICAL: Respond with TEXT ONLY. Do NOT call any tools.'
+    expect(matchesRequest({ user: CLAUDE_SUMMARIZER_PATTERN }, request(prompt))).toBe(true)
+    expect(matchesRequest({ body: CLAUDE_SUMMARIZER_PATTERN }, request(prompt))).toBe(true)
+  })
+
+  it('does not match an ordinary turn', () => {
+    expect(matchesRequest({ user: CLAUDE_SUMMARIZER_PATTERN }, request('Respond with the next step.'))).toBe(false)
+  })
 })
 
 describe('compactionSummaryText', () => {

@@ -2,8 +2,16 @@ import type { MockModelMatcher, MockModelRequestRecord, MockModelUsage } from '.
 import type { NativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from './ui'
+
+/**
+ * The matcher pattern of the directive that the summarizer prompt of Claude Code's own `/compact` holds:
+ * "CRITICAL: Respond with TEXT ONLY". Qoder CLI, which derives from Claude Code, sends the same directive. A matcher
+ * pattern is a regular expression, so the pattern escapes the text.
+ */
+export const CLAUDE_SUMMARIZER_PATTERN = escapeRegExp('CRITICAL: Respond with TEXT ONLY')
 
 export const MANUAL_COMPACTION_MARKER = 'CEDAR_MANUAL_SUMMARY'
 export const MANUAL_COMPACTION_SUMMARY = [
