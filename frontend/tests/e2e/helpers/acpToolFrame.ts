@@ -9,7 +9,7 @@ import { acpToolSupplement } from '../../../src/components/chat/providers/acp/to
 import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 
 /** The ACP tool-call statuses that end a call. */
-export const ACP_CLOSING_STATUSES: readonly string[] = ['completed', 'failed']
+const ACP_CLOSING_STATUSES: readonly string[] = ['completed', 'failed']
 
 /**
  * Whether `frame` is the `tool_call_update` that closes call `callId` with one of
