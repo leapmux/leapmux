@@ -2,6 +2,7 @@ import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
+import { settleFrames, settleTransitions } from './helpers/frames'
 import { createTestDirectory } from './helpers/runDirectory'
 import { agentTabs, clickTreeContextItem, openTreeContextMenu, terminalTabs, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
 import { waitForAgentStartupViaAPI } from './helpers/workerTabs'
@@ -57,13 +58,16 @@ test.describe('DirectoryTree', () => {
     // Wait for the file tree to load
     await expect(treeRow(page, 'package.json')).toBeVisible()
 
-    // Hover on package.json file and open context menu. We anchor on the
-    // tree-row testid because the label is now nested inside a Tooltip
-    // span pair, so `.locator('..')` from the text no longer lands on the
-    // row hosting the context button.
+    // Open the context menu of the package.json row. The locator starts at the
+    // tree-row test id, because a Tooltip wraps the label in a pair of spans.
+    // A `.locator('..')` from the label text does not reach the row that holds
+    // the menu button.
     await openTreeContextMenu(treeRow(page, 'package.json'))
 
-    // Info block (size + modified), mention, copy path, copy relative path — but NOT terminal
+    // The menu of a file holds these items, and no terminal item:
+    // - The info block, with the size and the modification time.
+    // - The mention item.
+    // - The two copy items.
     const fileInfo = page.locator('[data-testid="tree-info-button"]:visible')
     await expect(fileInfo).toContainText('Size:')
     await expect(fileInfo).toContainText('Modified:')
@@ -80,8 +84,9 @@ test.describe('DirectoryTree', () => {
     const rootNode = page.locator('[data-testid="tree-root-node"]')
     await expect(rootNode).toBeVisible()
 
-    // Open the root directory's context menu and click "Open a terminal tab
-    // here" as one retried unit -- same detach hazard as the copy-path test.
+    // Open the context menu of the root row and click "Open a terminal tab
+    // here" as one retried unit. The item can detach between two separate
+    // steps, for the reason that the copy-path test gives.
     await clickTreeContextItem(rootNode, 'tree-open-terminal-button')
 
     // A terminal tab should appear
@@ -95,11 +100,12 @@ test.describe('DirectoryTree', () => {
     // Wait for file tree
     await expect(treeRow(page, 'package.json')).toBeVisible()
 
-    // Open the context menu on package.json and click "Copy path" as ONE
-    // retried unit (anchored to tree-row testid; see earlier note about the
-    // Tooltip span wrap). Opening and clicking as two separate steps lets a
-    // sidebar re-render between them detach the item mid-click -- which is
-    // what "element was detached from the DOM" was reporting here.
+    // Open the context menu of package.json and click "Copy path" as ONE
+    // retried unit. The locator starts at the tree-row test id, for the
+    // Tooltip reason that the file context menu test gives. With two separate
+    // steps, a re-render of the sidebar between them can detach the item
+    // during the click, and Playwright then fails with "element was detached
+    // from the DOM".
     await clickTreeContextItem(treeRow(page, 'package.json'), 'tree-copy-path-button')
 
     // Clipboard should contain the absolute path (ends with /package.json)
@@ -116,19 +122,30 @@ test.describe('DirectoryTree', () => {
     await expect(rootNode).toBeVisible()
     await expect(treeRow(page, 'package.json')).toBeVisible()
 
+    // The expand and collapse transitions of the rows run inside the tree.
+    const tree = page.getByRole('tree', { name: 'Directory tree' })
+
     // Expand "src" to add more items to the tree. `exact`, so a longer name
     // that contains "src" cannot answer for it.
     const srcNode = treeRow(page, 'src', { exact: true })
     await expect(srcNode).toBeVisible()
     await srcNode.click()
-    await page.waitForTimeout(500)
+    // The listing of "src" arrived and the row expanded. The tree scrolls the
+    // new children into view when the expand transition ends, so the scroll
+    // setup below starts after that end.
+    await expect(srcNode).toHaveAttribute('aria-expanded', 'true')
+    await expect(treeRow(page, 'components', { exact: true })).toBeVisible()
+    await settleTransitions(tree)
 
     // Select a file to change selectedPath away from "src".
     // This is needed because clicking src again to collapse only triggers
     // the scroll-on-select effect when selectedPath actually changes.
     const fileNode = treeRow(page, 'package.json')
     await fileNode.click()
-    await page.waitForTimeout(200)
+    // The scroll-on-select effect of the file scrolls in the frame after the
+    // selection.
+    await expect(fileNode).toHaveAttribute('aria-selected', 'true')
+    await settleFrames(page)
 
     // Find the tree scroll container (first ancestor with overflow: auto)
     // and constrain its height to force it to be scrollable.
@@ -154,7 +171,11 @@ test.describe('DirectoryTree', () => {
       if (el)
         (el as HTMLElement).style.maxHeight = '150px'
     })
-    await page.waitForTimeout(100)
+    // The ResizeObserver of the tree sees the new height in the next frame,
+    // and it scrolls the selected row back into view in a frame callback. The
+    // frames after the change run both, so that scroll cannot land after the
+    // scroll position that this test sets below.
+    await settleFrames(page)
 
     // Verify the container is now scrollable
     const scrollable = await scrollContainerHandle.evaluate(
@@ -167,7 +188,8 @@ test.describe('DirectoryTree', () => {
       if (el)
         (el as HTMLElement).scrollTop = Math.min(50, el.scrollHeight - el.clientHeight)
     })
-    await page.waitForTimeout(100)
+    // The page dispatches the `scroll` event in the next frame.
+    await settleFrames(page)
 
     const scrollTopBefore = await scrollContainerHandle.evaluate(
       el => el ? (el as HTMLElement).scrollTop : 0,
@@ -181,8 +203,13 @@ test.describe('DirectoryTree', () => {
     // auto-scroll-into-view which would change scrollTop before the
     // toggle handler captures it. The row itself carries the click handler.
     await srcNode.dispatchEvent('click')
-    // Wait for rAF (the scroll-on-select effect fires in requestAnimationFrame)
-    await page.waitForTimeout(300)
+    // The collapse and the selection of "src" landed. The scroll-on-select
+    // effect runs in the frame after the selection, and the collapse
+    // transition ends 150ms later with its `transitionend`. Both are over
+    // before the scroll position is read.
+    await expect(srcNode).toHaveAttribute('aria-expanded', 'false')
+    await expect(srcNode).toHaveAttribute('aria-selected', 'true')
+    await settleTransitions(tree)
 
     const scrollTopAfter = await scrollContainerHandle.evaluate(
       el => el ? (el as HTMLElement).scrollTop : 0,
@@ -202,7 +229,7 @@ test.describe('DirectoryTree', () => {
     const srcNode = treeRow(page, 'src', { exact: true })
     await expect(srcNode).toBeVisible()
     await srcNode.click()
-    await page.waitForTimeout(500)
+    await expect(srcNode).toHaveAttribute('aria-expanded', 'true')
 
     // "components" should now be visible (child of src)
     const componentsNode = treeRow(page, 'components', { exact: true })
@@ -210,15 +237,17 @@ test.describe('DirectoryTree', () => {
 
     // Click collapse all button
     await page.locator('[data-testid="files-collapse-all"]').click()
-    // Wait for collapse animation (150ms transition)
-    await page.waitForTimeout(300)
+    // "src" collapses. Its children stay visible until the 150ms collapse
+    // transition ends, so "components" (child of src) is hidden only after
+    // that end. The checks of the root-level rows come after it, so they
+    // cannot pass before the collapse ended.
+    await expect(srcNode).toHaveAttribute('aria-expanded', 'false')
+    await expect(componentsNode).not.toBeVisible()
 
     // Root should still be expanded — root-level items still visible
     await expect(treeRow(page, 'package.json')).toBeVisible()
     // "src" is a root child, so it should still be visible
     await expect(srcNode).toBeVisible()
-    // But "components" (child of src) should be hidden because src is collapsed
-    await expect(componentsNode).not.toBeVisible()
   })
 
   test('large directory shows truncation indicator', async ({ page, leapmuxServer }) => {
@@ -253,34 +282,30 @@ test.describe('DirectoryTree', () => {
     await expect(rootNode).toBeVisible()
     await expect(treeRow(page, 'package.json')).toBeVisible()
 
-    // Expand "src" directory
+    // Expand "src" directory. The tree shows a directory collapsed by default,
+    // so an expanded "src" is the state that a reset tree cannot show.
     const srcNode = treeRow(page, 'src', { exact: true })
     await expect(srcNode).toBeVisible()
     await srcNode.click()
-    await page.waitForTimeout(500)
+    await expect(srcNode).toHaveAttribute('aria-expanded', 'true')
 
     // "components" should now be visible (child of src)
     const componentsNode = treeRow(page, 'components', { exact: true })
     await expect(componentsNode).toBeVisible()
 
-    // Collapse "src"
-    await srcNode.click()
-    await expect(componentsNode).not.toBeVisible()
-
-    // Switch to a terminal tab (if exists) or create one
-    const terminalTab = terminalTabs(page)
-    const hasTerminal = await terminalTab.count() > 0
-    if (hasTerminal) {
-      await terminalTab.first().click()
-    }
+    // Switch to a terminal tab. A terminal that the tree opens becomes the
+    // active tab.
+    await clickTreeContextItem(rootNode, 'tree-open-terminal-button')
+    await expect(terminalTabs(page)).toHaveAttribute('aria-selected', 'true')
 
     // Switch back to agent tab
-    await agentTabs(page).first().click()
-    await page.waitForTimeout(500)
+    const agentTab = agentTabs(page).first()
+    await agentTab.click()
+    await expect(agentTab).toHaveAttribute('aria-selected', 'true')
 
-    // "src" should still be collapsed (state persisted via sessionStorage)
-    await expect(srcNode).toBeVisible()
-    await expect(componentsNode).not.toBeVisible()
+    // "src" should still be expanded
+    await expect(srcNode).toHaveAttribute('aria-expanded', 'true')
+    await expect(componentsNode).toBeVisible()
   })
 
   test('sort menu reorders the tree and the choice survives a reload', async ({ page, leapmuxServer }) => {

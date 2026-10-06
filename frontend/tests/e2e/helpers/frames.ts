@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 /**
  * Waits that end at a rendered frame of the page, for the E2E specs and helpers.
@@ -26,4 +26,24 @@ export async function settleFrames(page: Pick<Page, 'evaluate'>): Promise<void> 
   await page.evaluate(() => new Promise<void>(resolve =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   ))
+}
+
+/**
+ * Wait until each CSS transition that runs on `scope` or in its subtree ended, then {@link settleFrames}.
+ *
+ * Call it after the state change that starts the transitions. `getAnimations` updates the style first, so a class
+ * that the page already set has its transition at the call. A transition that starts later is not part of the wait.
+ *
+ * - The page ends a transition and dispatches its `transitionend` in one rendering step. So the `transitionend`
+ *   handlers ran before the frames that this wait ends with.
+ * - A transition that a later change cancels also ends the wait for it.
+ * - An animation that is not a transition stays out of the wait, because an infinite one, such as a spinner, never
+ *   finishes.
+ */
+export async function settleTransitions(scope: Locator): Promise<void> {
+  await scope.evaluate(async (element) => {
+    const transitions = element.getAnimations({ subtree: true }).filter(animation => animation instanceof CSSTransition)
+    await Promise.allSettled(transitions.map(transition => transition.finished))
+  })
+  await settleFrames(scope.page())
 }
