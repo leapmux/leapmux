@@ -9,7 +9,7 @@ import { openResumeSubject } from '../helpers/nativeResumePicker'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, interruptButton, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-import { closeNativeAgentAndWait, listAgentsViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait, listAgentsViaAPI, waitForAgentStatusViaAPI } from '../helpers/workerTabs'
 import { createGitRepo } from '../helpers/worktree'
 import { restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
 import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from './workerRestart'
@@ -214,7 +214,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
 test.describe('Settings and /clear after Worker restart', () => {
   test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page, modelScript }) => {
-    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Worker Restart Settings Test', pinnedMode: true }, async () => {
+    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Worker Restart Settings Test', pinnedMode: true }, async ({ workspaceId, agentId }) => {
       // Step 1: Send a message and wait for a response (agent starts)
       await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
       await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
@@ -233,6 +233,11 @@ test.describe('Settings and /clear after Worker restart', () => {
       // The original conversation should be visible (loaded from Worker DB).
       await expectUserMessage(page, '1234 + 5678')
       await expectAssistantAnswer(page)
+      // The restarted Worker resumes the agent on its own, as the eager-resume
+      // test below proves. The history comes from the Worker's store, so it
+      // shows before that. Until the resume, the Worker reports the agent
+      // INACTIVE, and `chooseSettingsOption` acts only on an active agent.
+      await waitForAgentStatusViaAPI(separateHubWorker, workspaceId, agentId, AgentStatus.ACTIVE)
 
       // Wait for a notification bubble to contain the expected text.
       const waitForNotification = (text: string) =>
