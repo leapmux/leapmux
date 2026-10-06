@@ -1,24 +1,11 @@
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest, createClineWorkingDir } from '../cline-fixtures'
-import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
-import { hubSpawnEnv } from '../helpers/server'
+import { nativeLaunch } from './scenarios'
 
-clineTest('delivers input through a controlled native startup', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE }
-  const executable = findBinary('cline', hubSpawnEnv(leapmuxServer.agentEnv))
-  expect(executable).not.toBeNull()
-  if (!executable)
-    throw new Error('The installed native startup executable is absent.')
-  await exerciseAgentStartup(context, { launch: { binaryName: 'cline', executable, holdWhen: ['--no-connectors'], lazy: false }, workingDir: createClineWorkingDir() })
+clineTest('delivers input through a controlled native startup', async ({ native }) => {
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native), workingDir: createClineWorkingDir() })
 })
 
-clineTest('retains input after the actual native launch fails', async ({ page, modelScript, leapmuxServer, authenticatedClineWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedClineWorkspace.workspaceId, provider: AgentProvider.CLINE }
-  const executable = findBinary('cline', hubSpawnEnv(leapmuxServer.agentEnv))
-  expect(executable).not.toBeNull()
-  if (!executable)
-    throw new Error('The installed native startup executable is absent.')
-  await exerciseAgentStartup(context, { launch: { binaryName: 'cline', executable, holdWhen: ['--no-connectors'], lazy: false }, workingDir: createClineWorkingDir(), failed: true })
+clineTest('retains input after the actual native launch fails', async ({ native }) => {
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native), workingDir: createClineWorkingDir(), failed: true })
 })

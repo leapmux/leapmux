@@ -8,6 +8,7 @@ import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, projectConfigurationWorker } from '../helpers/nativeWorkspaceTrustLimit'
 import { mimoTest } from '../mimo-fixtures'
 import { createMiMoControlDeletion } from './controlScenarios'
+import { nativeLaunch } from './scenarios'
 
 mimoTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, {
@@ -19,7 +20,7 @@ mimoTest('classifies real native controls and proves the missing workspace-trust
 
 mimoTest('loads project instructions without a workspace trust decision', async ({ native, leapmuxServer }) => {
   await exerciseNativeWorkspaceTrustLimit(native, {
-    worker: projectConfigurationWorker(leapmuxServer.agentEnv, { binaryName: 'mimo', holdWhen: ['serve'], lazy: false }, 'MIMOCODE_DISABLE_PROJECT_CONFIG'),
+    worker: projectConfigurationWorker(leapmuxServer.agentEnv, nativeLaunch(native), 'MIMOCODE_DISABLE_PROJECT_CONFIG'),
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
         const instructions = join(directory, 'native-project-instructions.md')

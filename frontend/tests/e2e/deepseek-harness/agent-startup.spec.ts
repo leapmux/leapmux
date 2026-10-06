@@ -1,9 +1,8 @@
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
-import { nativeContext, nativeLaunch } from './scenarios'
+import { nativeLaunch } from './scenarios'
 
-deepseekHarnessTest('delivers queued startup input and keeps it after a native startup failure', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  await exerciseAgentStartup(context, { launch: nativeLaunch(context) })
-  await exerciseAgentStartup(context, { launch: nativeLaunch(context), failed: true })
+deepseekHarnessTest('delivers queued startup input and keeps it after a native startup failure', async ({ native }) => {
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native) })
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: true })
 })

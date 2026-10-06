@@ -167,25 +167,12 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
 })
 
 describe('projectConfigurationWorker', () => {
-  const directories: string[] = []
-  afterEach(() => {
-    for (const directory of directories.splice(0))
-      rmSync(directory, { recursive: true, force: true })
-  })
+  // The provider's `nativeLaunch` resolves the executable; `resolveNativeStartupLaunch` has the tests of that lookup.
+  const launch = { binaryName: 'native-agent', executable: '/private/native-agent', holdWhen: ['acp'] }
 
-  function privateExecutable(name: string): { directory: string, executable: string } {
-    mkdirSync(SCRATCH_ROOT, { recursive: true })
-    const directory = mkdtempSync(join(SCRATCH_ROOT, 'project-configuration-worker-'))
-    directories.push(directory)
-    const executable = join(directory, name)
-    writeFileSync(executable, 'This fixture must never run.\n', { mode: 0o755 })
-    return { directory, executable }
-  }
-
-  it('starts the isolated executable and turns the project configuration back on', () => {
-    const { directory, executable } = privateExecutable('native-agent')
-    const worker = projectConfigurationWorker({ PATH: directory, NATIVE_DISABLE_PROJECT_CONFIG: 'true' }, { binaryName: 'native-agent', holdWhen: ['acp'] }, 'NATIVE_DISABLE_PROJECT_CONFIG')
-    expect(worker.launch).toEqual({ binaryName: 'native-agent', holdWhen: ['acp'], executable })
+  it('starts the stated launch and turns the project configuration back on', () => {
+    const worker = projectConfigurationWorker({ NATIVE_DISABLE_PROJECT_CONFIG: 'true' }, launch, 'NATIVE_DISABLE_PROJECT_CONFIG')
+    expect(worker.launch).toBe(launch)
     expect(Reflect.apply(worker.workerEnvironment, undefined, [])).toEqual({ NATIVE_DISABLE_PROJECT_CONFIG: 'false' })
   })
 
@@ -195,14 +182,7 @@ describe('projectConfigurationWorker', () => {
     { label: 'a variable that already loads project configuration', environment: { NATIVE_DISABLE_PROJECT_CONFIG: 'false' } },
     { label: 'a variable set to 1', environment: { NATIVE_DISABLE_PROJECT_CONFIG: '1' } },
   ])('refuses $label', ({ environment }) => {
-    const { directory } = privateExecutable('native-agent')
-    const withPath = environment === undefined ? undefined : { PATH: directory, ...environment }
-    expect(() => projectConfigurationWorker(withPath, { binaryName: 'native-agent' }, 'NATIVE_DISABLE_PROJECT_CONFIG')).toThrow('NATIVE_DISABLE_PROJECT_CONFIG')
-  })
-
-  it('refuses an absent executable', () => {
-    const { directory } = privateExecutable('native-agent')
-    expect(() => projectConfigurationWorker({ PATH: directory, NATIVE_DISABLE_PROJECT_CONFIG: 'true' }, { binaryName: 'absent-agent' }, 'NATIVE_DISABLE_PROJECT_CONFIG')).toThrow('executable is absent')
+    expect(() => projectConfigurationWorker(environment, launch, 'NATIVE_DISABLE_PROJECT_CONFIG')).toThrow('NATIVE_DISABLE_PROJECT_CONFIG')
   })
 })
 

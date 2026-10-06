@@ -1,13 +1,11 @@
 import { diracTest } from '../dirac-fixtures'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
-import { nativeContext, nativeLaunch } from './scenarios'
+import { nativeLaunch } from './scenarios'
 
-diracTest('delivers input queued while the actual native process starts', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
-  await exerciseAgentStartup(context, { launch: nativeLaunch(context), failed: false })
+diracTest('delivers input queued while the actual native process starts', async ({ native }) => {
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: false })
 })
 
-diracTest('keeps queued input when the actual native launch fails', async ({ authenticatedDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDiracWorkspace.workspaceId })
-  await exerciseAgentStartup(context, { launch: nativeLaunch(context), failed: true })
+diracTest('keeps queued input when the actual native launch fails', async ({ native }) => {
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: true })
 })

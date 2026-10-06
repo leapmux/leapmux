@@ -15,7 +15,6 @@ import { sendNativeAnswer } from './nativeConversation'
 import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from './nativePermission'
 import { nativeAgentById, nativeModelInstructionText } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
-import { resolveNativeStartupLaunch } from './nativeStartupWrapper'
 import { nativeToolResult } from './nativeToolResult'
 import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
@@ -57,18 +56,18 @@ export type NativeWorkspaceTrustOptions = NativeWorkspaceTrustBaseOptions & (
  * its agent on a private Worker where the variable is `false`. The shared environment must
  * disable it, which also refuses a misspelled variable that would leave the configuration off.
  *
- * `resolveNativeStartupLaunch` finds the executable that a Worker spawned with the agent
- * environment finds.
+ * `launch` is the `nativeLaunch` of the provider, which finds the executable that a Worker
+ * spawned with the agent environment finds.
  */
 export function projectConfigurationWorker(
   environment: Record<string, string> | undefined,
-  launch: Omit<NativeStartupLaunch, 'executable'>,
+  launch: NativeStartupLaunch,
   disableVariable: string,
 ): NonNullable<NativeWorkspaceTrustBaseOptions['worker']> {
   if (environment?.[disableVariable] !== 'true')
     throw new Error(`The shared agent environment does not turn off project configuration through ${disableVariable}.`)
   return {
-    launch: resolveNativeStartupLaunch(environment, launch),
+    launch,
     workerEnvironment: () => ({ [disableVariable]: 'false' }),
   }
 }

@@ -1,4 +1,5 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
+import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,6 +7,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { currentNativeAgent, nativeModelLastUserText } from '../helpers/nativeScenario'
+import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -15,6 +17,11 @@ import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 /** Build the scenario context of Gemini CLI. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   return { ...fixtures, provider: AgentProvider.GEMINI_CLI }
+}
+
+/** Select the actual isolated executable and hold only its native runtime invocation. */
+export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'gemini', holdWhen: ['--acp'], lazy: false })
 }
 
 /** Use a native file tool to prove automatic approval in autoEdit. */

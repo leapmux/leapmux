@@ -4,11 +4,11 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
-import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from '../helpers/timingFixture'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, settingsBar } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, sendMessage, settingsBar } from '../helpers/ui'
+import { nativeLaunch } from './scenarios'
 
 /** Measure native startup on a traced private Worker against the suite Hub. */
 const timingTest = claudeTest.extend<{ timingWorker: TimingWorker }>({
@@ -62,8 +62,8 @@ timingTest.describe('Claude Code agent open timing', () => {
       await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
       await loginViaToken(page, srv.adminToken)
       await openWorkspace(page, workspaceId)
-      await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
-      await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+      await expectAgentTabCount(page, 1)
+      await expect(composerEditor(page)).toBeVisible()
 
       await installRpcListeners(page)
 
@@ -111,15 +111,15 @@ timingTest.describe('Claude Code agent open timing', () => {
           w.__tabObserver.observe(document.body, { childList: true, subtree: true })
         })
         const logsBefore = srv.logLines.length
-        const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
+        const tabsBefore = await agentTabs(page).count()
 
         const clockAnchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
         const tClickMs = clockAnchor.perf
         const clockAnchorWallMs = clockAnchor.wall
         await page.getByTestId(`new-agent-button-${AgentProvider.CLAUDE_CODE}`).filter({ visible: true }).first().click()
 
-        await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
-        await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+        await expectAgentTabCount(page, tabsBefore + 1)
+        await expect(composerEditor(page)).toBeVisible()
         // OpenAgent returns STARTING before native startup finishes. Match this iteration's agent ID and wait for its actual startup log.
         await expect.poll(() => findNewAgentId(srv.logLines, logsBefore) !== null).toBeTruthy()
         const iterAgentId = findNewAgentId(srv.logLines, logsBefore)!
@@ -254,12 +254,9 @@ function renderMedianDeltas(runs: PhaseMark[][]): string {
 }
 
 claudeTest.describe('Claude Code agent startup queue', () => {
-  claudeTest('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
-    const executable = findBinary('claude', leapmuxServer.agentEnv)
-    if (!executable)
-      throw new Error('The isolated Claude executable is absent.')
-    await exerciseAgentStartup({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE, workspaceId: authenticatedWorkspace.workspaceId }, {
-      launch: { binaryName: 'claude', executable, holdWhen: ['--input-format', 'stream-json'] },
+  claudeTest('queues a typed-during-startup message and delivers it on ACTIVE', async ({ native, page }) => {
+    await exerciseAgentStartup(native, {
+      launch: nativeLaunch(native),
       prompt: ARITHMETIC_PROMPT,
       answer: ARITHMETIC_ANSWER_TEXT,
     })
@@ -288,10 +285,7 @@ startupErrorTest.describe('Claude Code agent startup error', () => {
       await expect(errorPanel.locator('pre code')).toBeVisible()
 
       // The Worker retains the input as a failed queue item.
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-      await editor.click()
-      await page.keyboard.type('hello')
-      await page.keyboard.press('Meta+Enter')
+      await sendMessage(page, 'hello')
       await expect(page.getByTestId('agent-input-queue')).toContainText('Failed')
       await expect(page.getByTestId('agent-input-queue')).toContainText('hello')
     }, () => deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId))
