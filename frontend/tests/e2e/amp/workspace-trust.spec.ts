@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
@@ -21,8 +20,8 @@ ampTest('keeps untrusted project MCP servers blocked without an interactive trus
     optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll },
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
-        expectedConfiguration = { command: process.execPath, args: [script] }
+        const server = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
+        expectedConfiguration = { command: server.command, args: [...server.args] }
         const config = join(directory, '.amp', 'settings.json')
         mkdirSync(dirname(config), { recursive: true })
         writeFileSync(config, JSON.stringify({ 'amp.mcpServers': { [marker]: expectedConfiguration } }))

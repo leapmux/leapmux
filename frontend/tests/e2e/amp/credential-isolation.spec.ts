@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import process from 'node:process'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
@@ -22,10 +21,10 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
   const configHome = createTestDirectory('amp-credential-profile-')
   await withCleanup(async () => {
     const receiptLog = join(configHome, 'native-credential-mcp-receipt.json')
-    const { script } = writeMcpEchoServer(configHome, { receiptLog })
+    const server = writeMcpEchoServer(configHome, { receiptLog })
     const configuration = join(configHome, 'amp', 'settings.json')
     mkdirSync(dirname(configuration), { recursive: true })
-    writeFileSync(configuration, JSON.stringify({ 'amp.mcpServers': { credential_probe: { command: process.execPath, args: [script] } } }))
+    writeFileSync(configuration, JSON.stringify({ 'amp.mcpServers': { credential_probe: { command: server.command, args: [...server.args] } } }))
     await withNativeWorker(leapmuxServer, {
       dataDirPrefix: 'amp-credential-worker',
       workerName: 'Amp credential profile',

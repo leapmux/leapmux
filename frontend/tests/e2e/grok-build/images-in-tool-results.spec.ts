@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { grokTest } from '../grok-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
+import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
@@ -32,7 +33,7 @@ grokTest.describe('Grok Build images in tool results', () => {
     const workingDir = newProviderWorkingDir(GROK_AGENT)
     const imageName = writeToolImage(workingDir, 'grok-mcp')
     const server = writeMcpImageServer(workingDir, imageName)
-    writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: server.command, args: server.args } } }))
+    writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
     await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, context.workspaceId)
 
@@ -43,8 +44,8 @@ grokTest.describe('Grok Build images in tool results', () => {
 
     const callID = 'show-grok-image'
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, callID, { server: 'image_probe', tool: 'show', input: {} })],
-      prompt: 'Call the image_probe show tool.',
+      toolCalls: [mcpToolCall(context.provider, callID, { server: server.name, tool: 'show', input: {} })],
+      prompt: `Call the ${server.name} show tool.`,
       answer: 'The MCP tool returned an image.',
     })
     expect(JSON.stringify(resultRequest.body)).toContain(`MCP image ${imageName}`)

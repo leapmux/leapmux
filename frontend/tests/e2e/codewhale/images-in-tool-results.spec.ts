@@ -62,14 +62,14 @@ codewhaleTest('draws the actual native MCP image before and after reload', async
   const imageName = writeToolImage(workingDir, 'codewhale-native-mcp')
   const server = writeMcpImageServer(workingDir, imageName)
   const config = join(leapmuxServer.agentEnv.CODEWHALE_HOME!, 'mcp.json')
-  await withNativeConfigurationFile({ path: config, content: JSON.stringify({ servers: { image_probe: { command: server.command, args: server.args } } }), runDir: getGlobalState().tmpDir }, async () => {
+  await withNativeConfigurationFile({ path: config, content: JSON.stringify({ servers: { [server.name]: { command: server.command, args: server.args } } }), runDir: getGlobalState().tmpDir }, async () => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     await openProviderAgent(leapmuxServer, context.workspaceId, CODEWHALE_AGENT, { workingDir, model: CODEWHALE_VISION_MODEL_ID })
     await openWorkspace(page, context.workspaceId)
     await applyPermissionPreset(page, 'bypass')
     const start = await modelScript.queue(
-      { toolCalls: [mcpToolCall(context.provider, 'image-load', { server: 'image_probe', tool: 'show', input: {} })] },
-      { toolCalls: [mcpToolCall(context.provider, 'image-result', { server: 'image_probe', tool: 'show', input: {} })] },
+      { toolCalls: [mcpToolCall(context.provider, 'image-load', { server: server.name, tool: 'show', input: {} })] },
+      { toolCalls: [mcpToolCall(context.provider, 'image-result', { server: server.name, tool: 'show', input: {} })] },
       { text: 'The actual image tool completed.' },
     )
     await sendMessage(page, modelScript.prompt('Load the registered image tool, then call it and consume its result.'))

@@ -1,5 +1,6 @@
+import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { writeMcpImageServer } from '../helpers/mcpImageServer'
+import { MCP_IMAGE_SERVER_NAME, writeMcpImageServer } from '../helpers/mcpImageServer'
 import { readAllAgentMessages } from '../helpers/nativeMessages'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
@@ -19,13 +20,13 @@ junieTest.describe('Junie images in tool results', () => {
     await openProviderAgent(leapmuxServer, context.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
       imageName = writeToolImage(workingDir, 'junie-mcp')
       const server = writeMcpImageServer(workingDir, imageName)
-      writeJunieMcpConfig(workingDir, 'image_probe', server.command, server.args)
+      writeJunieMcpConfig(workingDir, server.name, server.command, server.args)
     } })
     await openWorkspace(page, context.workspaceId)
     await modelScript.rule(junieCapabilityAnswer('junie-image-capability', '1'))
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, 'junie-mcp-image', { server: 'image_probe', tool: 'show', input: {} })],
-      prompt: 'Call the image_probe show tool once.',
+      toolCalls: [mcpToolCall(context.provider, 'junie-mcp-image', { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} })],
+      prompt: `Call the ${MCP_IMAGE_SERVER_NAME} show tool once.`,
       answer: 'The MCP image is ready.',
     })
     expectPngInRequest(resultRequest)
@@ -45,8 +46,8 @@ junieTest.describe('Junie images in tool results', () => {
         content?: unknown[]
         _meta?: { is_mcp_tool_call?: boolean }
       }
-    }).find(row => row?.sessionUpdate === 'tool_call_update'
-      && row.title === 'image_probe/show'
+    }).find(row => row?.sessionUpdate === ACP_UPDATE.ToolCallUpdate
+      && row.title === `${MCP_IMAGE_SERVER_NAME}/show`
       && row.status === 'completed'
       && row._meta?.is_mcp_tool_call === true)
     junieExpect(completed).toBeDefined()

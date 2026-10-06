@@ -1,5 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import { isObject } from '../../../src/lib/jsonPick'
 import { expect, gooseTest } from '../goose-fixtures'
+import { acpClosedToolCall } from '../helpers/acpToolFrame'
 import { nativeMessageBody, nativeMessageSupplement } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
@@ -20,8 +22,7 @@ gooseTest('records the native client terminal output limit and retains its exact
         const records = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId)
           .filter((message) => {
             const body = nativeMessageBody(message)
-            return typeof body === 'object' && body !== null && 'sessionUpdate' in body && body.sessionUpdate === 'tool_call_update'
-              && 'toolCallId' in body && body.toolCallId === capture.call.id && 'status' in body && body.status === 'completed'
+            return isObject(body) && acpClosedToolCall(body, capture.call.id, ['completed'])
           })
         expect(records).toHaveLength(1)
         const record = records[0]

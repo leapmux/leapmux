@@ -5,15 +5,16 @@ import { expect } from '@playwright/test'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
-import { controlButton, expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
+import { answerControl, expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { GROK_AGENT } from './scenarios'
 
 /** Open an actual project MCP server through Grok's native trust decision. */
-export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext, decision: 'allow' | 'deny'): Promise<{ workingDir: string, receiptLog: string }> {
+export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext, decision: 'allow' | 'deny'): Promise<{ workingDir: string, receiptLog: string, serverName: string }> {
   const workingDir = newProviderWorkingDir(GROK_AGENT)
   const receiptLog = join(workingDir, 'native-mcp-receipt.json')
-  writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(writeMcpEchoServer(workingDir, { receiptLog }))))
+  const mcpServer = writeMcpEchoServer(workingDir, { receiptLog })
+  writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(mcpServer)))
   const server = context.leapmuxServer
   await openProviderAgent(server, context.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
   await openWorkspace(context.page, context.workspaceId)
@@ -21,9 +22,9 @@ export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext
   await expect(banner).toContainText('Trust the workspace')
   await expect(banner).toContainText('mcp')
   expect(existsSync(receiptLog)).toBe(false)
-  await controlButton(context.page, decision).first().click()
+  await answerControl(context.page, decision)
   await expectNoControlBanner(context.page)
   if (decision === 'allow')
     await waitForMcpToolListed(receiptLog, 'echo')
-  return { workingDir, receiptLog }
+  return { workingDir, receiptLog, serverName: mcpServer.name }
 }

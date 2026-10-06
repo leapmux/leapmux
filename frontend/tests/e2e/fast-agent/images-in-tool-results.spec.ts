@@ -15,16 +15,16 @@ fastAgentTest.describe('Fast Agent images in tool results', () => {
     const server = writeMcpImageServer(workingDir, imageName)
     await openWorkspace(page, context.workspaceId)
 
-    await sendMessage(page, `/mcp connect --name image_probe ${JSON.stringify(server.command)} ${JSON.stringify(server.script)}`)
+    await sendMessage(page, `/mcp connect --name ${server.name} ${JSON.stringify(server.command)} ${JSON.stringify(server.script)}`)
     await waitForAgentIdle(page)
     await expect.poll(() => existsSync(server.ready)).toBe(true)
 
     const callID = 'show-fastagent-image'
     const start = await modelScript.queue(
-      { toolCalls: [mcpToolCall(context.provider, callID, { server: 'image_probe', tool: 'show', input: {} })] },
+      { toolCalls: [mcpToolCall(context.provider, callID, { server: server.name, tool: 'show', input: {} })] },
       { text: 'The MCP tool returned an image.' },
     )
-    await sendMessage(page, modelScript.prompt('Call image_probe show.'))
+    await sendMessage(page, modelScript.prompt(`Call ${server.name} show.`))
     await modelScript.waitForSteps(start + 1)
     await expect(await waitForControlBanner(page)).toContainText('show')
     const nativeRequest = toolRows(page).filter({ hasText: 'show' }).last()

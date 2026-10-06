@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { grokTest } from '../grok-fixtures'
+import { MCP_FORM_SERVER_NAME } from '../helpers/mcpFormServer'
 import { writeMcpNameFormServer } from '../helpers/mcpNameFormServer'
 import { mcpServersConfig } from '../helpers/mcpProbeServer'
 import { nativeTextStep } from '../helpers/nativeScenario'
@@ -18,7 +19,7 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
   grokTest('trusts a repository, loads its MCP server and answers the server\'s form', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const repository = newProviderWorkingDir(GROK_AGENT, 'grok-trust-')
     const name = 'grok-e2e'
-    const server = writeMcpNameFormServer(repository, { serverName: 'form_probe', expectedName: name })
+    const server = writeMcpNameFormServer(repository, { serverName: MCP_FORM_SERVER_NAME, expectedName: name })
     writeFileSync(join(repository, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { workingDir: repository })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
