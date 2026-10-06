@@ -1,7 +1,7 @@
-import { authedHeaders, createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { getTerminalText, sendActiveTerminalInput } from './helpers/terminal'
 import { loginViaToken, openTerminalViaUI, openWorkspace } from './helpers/ui'
-import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, expect, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Terminal Disconnection', () => {
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page }) => {
@@ -33,16 +33,9 @@ test.describe('Terminal Disconnection', () => {
       // Stop the worker
       await stopWorker(separateHubWorker)
 
-      // Verify the Hub reports the worker as offline via API
-      await expect(async () => {
-        const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
-          method: 'POST',
-          headers: authedHeaders(adminToken),
-          body: '{}',
-        })
-        const data = await res.json() as { workers: Array<{ online: boolean }> }
-        expect(data.workers?.[0]?.online).toBeFalsy()
-      }).toPass()
+      // Verify the Hub reports this worker as offline. The check reads the
+      // worker by its ID, not by its place in the list.
+      await waitForWorkerOffline(separateHubWorker)
 
       // Wait for the exit notice to appear in xterm buffer. Worker
       // shutdown forcibly tears down children before reaping their exit

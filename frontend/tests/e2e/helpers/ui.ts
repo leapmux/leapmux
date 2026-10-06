@@ -1,3 +1,4 @@
+import type { JsonValue } from '@bufbuild/protobuf'
 import type { Locator, Page } from '@playwright/test'
 import type { ToolSpanRowPosition } from '../../../src/components/chat/model/row'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -10,7 +11,7 @@ import { hasOptions } from '../../../src/components/chat/settingsGroups'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
-import { authedHeaders } from './api'
+import { callHub, SESSION_COOKIE_NAME } from './api'
 import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
 import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTabId } from './nativeScenario'
@@ -1050,9 +1051,6 @@ export async function setInitialBrowserPref(page: Page, userId: string, field: s
   await writeEntry(page, storedKey, prefs, Date.now() + BROWSER_PREFS_TTL_MS)
 }
 
-/** The hub's session cookie name, as `readSessionCookie` looks it up. */
-const SESSION_COOKIE_NAME = 'leapmux-session'
-
 /**
  * The session cookie the browser context currently holds, as the
  * "leapmux-session=<value>" token `loginViaToken` takes. Its inverse.
@@ -1214,14 +1212,11 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
   await waitForSettingsIdle(page)
   const agentId = await selectedAgentTabId(page)
   const cookie = await readSessionCookie(page, 'The native settings lookup')
-  const response = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/LocateTab`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ tabId: agentId, tabType: TabType.AGENT }),
+  const located = await callHub<JsonValue>(hubUrl, 'WorkspaceService/LocateTab', { tabId: agentId, tabType: TabType.AGENT }, {
+    cookie,
+    operation: 'The native settings tab lookup',
   })
-  if (!response.ok)
-    throw new Error(`The native settings tab lookup failed with HTTP ${response.status}.`)
-  const { tab } = fromJson(LocateTabResponseSchema, await response.json())
+  const { tab } = fromJson(LocateTabResponseSchema, located)
   if (!tab || tab.tabId !== agentId || tab.tabType !== TabType.AGENT || !tab.workerId)
     throw new Error('The native settings tab lookup returned no matching Worker identity.')
   const context = { leapmuxServer: { hubUrl, adminToken: cookie, workerId: tab.workerId } }

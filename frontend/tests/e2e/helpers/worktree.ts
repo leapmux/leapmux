@@ -23,7 +23,7 @@ import {
   ListTerminalsRequestSchema,
   ListTerminalsResponseSchema,
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
-import { API_POLL_INTERVAL_MS, authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
+import { API_POLL_INTERVAL_MS, callHub, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { expectAnyVisible, isMaybeVisible } from './ui'
 
 /**
@@ -367,6 +367,25 @@ export async function waitForAgentsViaAPI(
 }
 
 /**
+ * Read the IDs of the workspace's tabs of one type from the hub's ListTabs.
+ * The hub's list is the first half of every Worker read below: a Worker RPC takes tab IDs, not a workspace ID.
+ */
+async function workspaceTabIdsViaAPI(
+  hubUrl: string,
+  token: string,
+  workspaceId: string,
+  tabType: 'TAB_TYPE_AGENT' | 'TAB_TYPE_TERMINAL',
+): Promise<string[]> {
+  const data = await callHub<{ tabs?: Array<{ tabType: string, tabId: string }> }>(
+    hubUrl,
+    'WorkspaceService/ListTabs',
+    { workspaceIds: [workspaceId] },
+    { cookie: token, operation: `workspaceTabIdsViaAPI(${workspaceId})` },
+  )
+  return (data.tabs ?? []).filter(tab => tab.tabType === tabType).map(tab => tab.tabId)
+}
+
+/**
  * List agents for a workspace via hub ListTabs + worker ListAgents.
  * The ListAgents RPC now accepts tab_ids instead of workspace_id,
  * so we first fetch the tab list from the hub and then request agents by ID.
@@ -377,20 +396,7 @@ export async function listAgentsViaAPI(
   workerId: string,
   workspaceId: string,
 ): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
-  // Get tab IDs from the hub's ListTabs endpoint.
-  const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
-    method: 'POST',
-    headers: authedHeaders(token),
-    body: JSON.stringify({ workspaceIds: [workspaceId] }),
-  })
-  if (!tabsRes.ok) {
-    throw new Error(`ListTabs failed: ${tabsRes.status}`)
-  }
-  const tabsData = await tabsRes.json() as { tabs?: Array<{ tabType: string, tabId: string }> }
-  const agentTabIds = (tabsData.tabs ?? [])
-    .filter(t => t.tabType === 'TAB_TYPE_AGENT')
-    .map(t => t.tabId)
-
+  const agentTabIds = await workspaceTabIdsViaAPI(hubUrl, token, workspaceId, 'TAB_TYPE_AGENT')
   if (agentTabIds.length === 0) {
     return []
   }
@@ -429,19 +435,7 @@ export async function listTerminalsViaAPI(
   workerId: string,
   workspaceId: string,
 ): Promise<Array<{ id: string, title: string, status: number, exited: boolean }>> {
-  const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
-    method: 'POST',
-    headers: authedHeaders(token),
-    body: JSON.stringify({ workspaceIds: [workspaceId] }),
-  })
-  if (!tabsRes.ok) {
-    throw new Error(`ListTabs failed: ${tabsRes.status}`)
-  }
-  const tabsData = await tabsRes.json() as { tabs?: Array<{ tabType: string, tabId: string }> }
-  const terminalTabIds = (tabsData.tabs ?? [])
-    .filter(t => t.tabType === 'TAB_TYPE_TERMINAL')
-    .map(t => t.tabId)
-
+  const terminalTabIds = await workspaceTabIdsViaAPI(hubUrl, token, workspaceId, 'TAB_TYPE_TERMINAL')
   if (terminalTabIds.length === 0) {
     return []
   }

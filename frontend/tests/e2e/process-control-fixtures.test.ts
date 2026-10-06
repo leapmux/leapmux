@@ -3,13 +3,13 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
-import { listOnlineWorkerIDsViaAPI, loginViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
+import { listOnlineWorkerIDsViaAPI, listWorkersViaAPI, loginViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
 import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { findFreePort, waitForHubReady, waitForHubStateFile, waitForServer } from './helpers/server'
 import { reportStartupFailure } from './helpers/serverOutput'
-import { restartHub, restartWorker } from './process-control-fixtures'
+import { ensureWorkerOnline, restartHub, restartWorker } from './process-control-fixtures'
 
 const startup = vi.hoisted(() => ({ root: '', fixtures: new Map<string, unknown>() }))
 
@@ -30,6 +30,7 @@ vi.mock('@playwright/test', async (original) => {
 vi.mock('./helpers/api', () => ({
   API_POLL_INTERVAL_MS: 150,
   listOnlineWorkerIDsViaAPI: vi.fn(),
+  listWorkersViaAPI: vi.fn(),
   loginViaAPI: vi.fn(),
   signUpViaAPI: vi.fn(async () => 'private-session'),
   elevateSessionViaAPI: vi.fn(async () => {}),
@@ -134,6 +135,29 @@ describe('process restart cleanup', () => {
       expect(stopProcess).toHaveBeenLastCalledWith(replacement)
       expect(reportStartupFailure).toHaveBeenCalledWith(server.output, expect.any(String), result)
     })
+  })
+})
+
+describe('ensureWorkerOnline', () => {
+  it('keeps a Worker that the hub lists as online, with no restart', async () => {
+    vi.mocked(listWorkersViaAPI).mockResolvedValue([{ id: 'other-worker', online: false }, { id: 'worker', online: true }])
+    const previous = server.workerProc
+    await ensureWorkerOnline(server)
+    expect(stopProcess).not.toHaveBeenCalled()
+    expect(spawnTestProcess).not.toHaveBeenCalled()
+    expect(server.workerProc).toBe(previous)
+  })
+
+  it.each([
+    { label: 'offline', arrange: () => vi.mocked(listWorkersViaAPI).mockResolvedValue([{ id: 'worker', online: false }]) },
+    { label: 'absent', arrange: () => vi.mocked(listWorkersViaAPI).mockResolvedValue([{ id: 'other-worker', online: true }]) },
+    { label: 'unreadable', arrange: () => vi.mocked(listWorkersViaAPI).mockRejectedValue(new Error('The hub refused ListWorkers.')) },
+  ])('restarts a Worker that the hub reports as $label', async ({ arrange }) => {
+    arrange()
+    const previous = server.workerProc
+    await ensureWorkerOnline(server)
+    expect(stopProcess).toHaveBeenCalledExactlyOnceWith(previous)
+    expect(server.workerProc).toBe(replacement)
   })
 })
 

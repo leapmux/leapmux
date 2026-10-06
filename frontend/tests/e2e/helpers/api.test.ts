@@ -2,10 +2,34 @@ import type { ChannelTransport } from '../../../src/lib/channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelManager } from '../../../src/lib/channel'
-import { API_POLL_INTERVAL_MS, closeTestChannels, deleteAllWorkspacesViaAPI, deleteWorkspaceViaAPI, getTestChannel, hubSettingsDrift, openAgentViaAPI, resetHubSettingsViaAPI, waitForNewOnlineWorkerViaAPI } from './api'
+import {
+  API_POLL_INTERVAL_MS,
+  attemptLoginViaAPI,
+  callHub,
+  closeTestChannels,
+  configureBrokenSmtpViaAPI,
+  deleteAllWorkspacesViaAPI,
+  deletePasskeyViaAPI,
+  deleteWorkspaceViaAPI,
+  getTestChannel,
+  getWorkerId,
+  hubRefusal,
+  hubSettingsDrift,
+  listOnlineWorkerIDsViaAPI,
+  listWorkersViaAPI,
+  loginViaAPI,
+  logoutViaAPI,
+  openAgentViaAPI,
+  resetHubSettingsViaAPI,
+  sqliteTextLiteral,
+  waitForNewOnlineWorkerViaAPI,
+} from './api'
 import { createTestChannelManager } from './e2e-channel'
 
 vi.mock('./e2e-channel', () => ({ createTestChannelManager: vi.fn() }))
+vi.mock('./altcha', () => ({
+  solveCaptchaViaAPI: vi.fn(async () => ({ captchaPayload: 'solved-captcha', honeypot: '' })),
+}))
 
 let hubNumber = 0
 let hubUrl: string
@@ -170,8 +194,8 @@ describe('deleteAllWorkspacesViaAPI', () => {
     expect(failure).toBeInstanceOf(AggregateError)
     const messages = (failure as AggregateError).errors.map(error => (error as Error).message)
     expect(messages).toEqual([
-      'deleteWorkspaceViaAPI(ws-1) failed: 500 refused ws-1',
-      'deleteWorkspaceViaAPI(ws-3) failed: 503 refused ws-3',
+      'deleteWorkspaceViaAPI(ws-1) failed: WorkspaceService/DeleteWorkspace returned HTTP 500: refused ws-1',
+      'deleteWorkspaceViaAPI(ws-3) failed: WorkspaceService/DeleteWorkspace returned HTTP 503: refused ws-3',
     ])
   })
 
@@ -266,9 +290,9 @@ describe('resetHubSettingsViaAPI', () => {
   })
 
   it.each([
-    { method: 'ListSettings', message: 'listCustomizedHubSettingsViaAPI failed: 403 refused ListSettings' },
-    { method: 'ElevateSession', message: 'elevateSessionViaAPI failed: 403 refused ElevateSession' },
-    { method: 'ResetSettings', message: 'resetHubSettingsViaAPI could not reset smtp: 403 refused ResetSettings' },
+    { method: 'ListSettings', message: 'listCustomizedHubSettingsViaAPI failed: AdminSettingsService/ListSettings returned HTTP 403: refused ListSettings' },
+    { method: 'ElevateSession', message: 'elevateSessionViaAPI failed: UserService/ElevateSession returned HTTP 403: refused ElevateSession' },
+    { method: 'ResetSettings', message: 'resetHubSettingsViaAPI(smtp) failed: AdminSettingsService/ResetSettings returned HTTP 403: refused ResetSettings' },
   ])('reports a refused $method with its status and body', async ({ method, message }) => {
     settingsResponses([{ key: 'smtp', valueJson: '{}', customized: true }], { [method]: 403 })
     await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' })).rejects.toThrow(message)
@@ -426,5 +450,231 @@ describe('waitForNewOnlineWorkerViaAPI', () => {
     abort.abort(reason)
     finishBody({ workers: [{ id: 'stopped-worker', online: true }] })
     await rejected
+  })
+
+  it('keeps polling through a failed read and gives the last failure as the cause of the timeout', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(async () => new Response('worker table locked', { status: 503 }))
+    vi.stubGlobal('fetch', fetch)
+    const waiting = waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set(), API_POLL_INTERVAL_MS * 2)
+    const outcome = waiting.then(() => null, (error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS * 3)
+    const failure = await outcome
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toContain('no new worker came online')
+    expect(((failure as Error).cause as Error).message)
+      .toBe('listWorkersViaAPI failed: WorkerManagementService/ListWorkers returned HTTP 503: worker table locked')
+    expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('fails at once when a read cannot reach the hub', async () => {
+    const unreachable = new TypeError('fetch failed')
+    const fetch = vi.fn(async () => {
+      throw unreachable
+    })
+    vi.stubGlobal('fetch', fetch)
+    await expect(waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set())).rejects.toBe(unreachable)
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('returns a worker that comes online after a failed read', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(new Response('restarting', { status: 503 }))
+      .mockImplementation(async () => Response.json({ workers: [{ id: 'late-worker', online: true }] }))
+    vi.stubGlobal('fetch', fetch)
+    const waiting = waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set())
+    await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
+    await expect(waiting).resolves.toBe('late-worker')
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+/** Record each request that reaches `fetch`, and answer it with `answer`. */
+function recordedRequests(answer: (method: string) => Response) {
+  const requests: Array<{ url: string, method: string, headers: Record<string, string>, body: unknown, redirect?: RequestRedirect }> = []
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    const method = url.split('.v1.').at(-1) ?? ''
+    requests.push({
+      url,
+      method,
+      headers: init?.headers as Record<string, string>,
+      body: JSON.parse(String(init?.body)),
+      ...(init?.redirect ? { redirect: init.redirect } : {}),
+    })
+    return answer(method)
+  }))
+  return requests
+}
+
+describe('callHub', () => {
+  it('posts the JSON body with the session cookie and returns the JSON answer', async () => {
+    const requests = recordedRequests(() => Response.json({ workspaceId: 'ws-9' }))
+    await expect(callHub(hubUrl, 'WorkspaceService/CreateWorkspace', { title: 'Docs' }, { cookie: 'leapmux-session=s1', operation: 'unit' }))
+      .resolves
+      .toEqual({ workspaceId: 'ws-9' })
+    expect(requests).toEqual([{
+      url: `${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`,
+      method: 'WorkspaceService/CreateWorkspace',
+      headers: { 'Content-Type': 'application/json', 'Cookie': 'leapmux-session=s1' },
+      body: { title: 'Docs' },
+    }])
+  })
+
+  it('sends no cookie for an RPC that needs no session', async () => {
+    const requests = recordedRequests(() => Response.json({}))
+    await callHub(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'unit' })
+    expect(requests[0]?.headers).toEqual({ 'Content-Type': 'application/json' })
+  })
+
+  it('states the operation, the RPC, the status, and the hub reason of a refusal', async () => {
+    recordedRequests(() => new Response('{"code":"permission_denied","message":"admin only"}', { status: 403 }))
+    await expect(callHub(hubUrl, 'AdminSettingsService/ListSettings', {}, { cookie: 'c', operation: 'listSettings(unit)' }))
+      .rejects
+      .toThrow('listSettings(unit) failed: AdminSettingsService/ListSettings returned HTTP 403: {"code":"permission_denied","message":"admin only"}')
+  })
+})
+
+describe('hubRefusal', () => {
+  it('reads the code and the message of a Connect error', async () => {
+    const res = new Response('{"code":"unauthenticated","message":"invalid credentials"}', { status: 401 })
+    await expect(hubRefusal(res)).resolves.toEqual({ code: 'unauthenticated', message: 'invalid credentials' })
+  })
+
+  it('reads an absent message as empty', async () => {
+    await expect(hubRefusal(new Response('{"code":"not_found"}', { status: 404 }))).resolves.toEqual({ code: 'not_found', message: '' })
+  })
+
+  it('throws for a successful response, so an expected refusal cannot pass on an accepted request', async () => {
+    await expect(hubRefusal(Response.json({ user: {} }))).rejects.toThrow('the test expects a refusal')
+  })
+
+  it.each([
+    { label: 'a body that is not JSON', body: '<html>Bad gateway</html>' },
+    { label: 'a JSON body with no code', body: '{"message":"no code"}' },
+    { label: 'a JSON body whose code is not text', body: '{"code":16}' },
+  ])('throws for $label', async ({ body }) => {
+    await expect(hubRefusal(new Response(body, { status: 502 }))).rejects.toThrow('holds no Connect error')
+  })
+})
+
+describe('attemptLoginViaAPI', () => {
+  it('sends the solved captcha fields with the credentials and returns a refusal as it is', async () => {
+    const requests = recordedRequests(() => new Response('{"code":"unauthenticated","message":"invalid credentials"}', { status: 401 }))
+    const res = await attemptLoginViaAPI(hubUrl, 'alice', 'old-password')
+    expect(res.status).toBe(401)
+    expect(requests).toEqual([{
+      url: `${hubUrl}/leapmux.v1.AuthService/Login`,
+      method: 'AuthService/Login',
+      headers: { 'Content-Type': 'application/json' },
+      body: { username: 'alice', password: 'old-password', captchaPayload: 'solved-captcha', honeypot: '' },
+      redirect: 'manual',
+    }])
+  })
+})
+
+describe('loginViaAPI', () => {
+  it('returns the session cookie of an accepted sign-in', async () => {
+    recordedRequests(() => new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=abc; Path=/; HttpOnly' } }))
+    await expect(loginViaAPI(hubUrl, 'alice', 'secret')).resolves.toBe('leapmux-session=abc')
+  })
+
+  it('states the hub reason of a refused sign-in', async () => {
+    recordedRequests(() => new Response('{"code":"unauthenticated","message":"invalid credentials"}', { status: 401 }))
+    await expect(loginViaAPI(hubUrl, 'alice', 'wrong')).rejects.toThrow('loginViaAPI failed: AuthService/Login returned HTTP 401: {"code":"unauthenticated","message":"invalid credentials"}')
+  })
+})
+
+describe('logoutViaAPI', () => {
+  it('ends the session of the cookie', async () => {
+    const requests = recordedRequests(() => Response.json({}))
+    await logoutViaAPI(hubUrl, 'leapmux-session=s2')
+    expect(requests.map(request => [request.method, request.headers.Cookie])).toEqual([['AuthService/Logout', 'leapmux-session=s2']])
+  })
+
+  it('throws for a refused logout', async () => {
+    recordedRequests(() => new Response('gone', { status: 500 }))
+    await expect(logoutViaAPI(hubUrl, 'leapmux-session=s2')).rejects.toThrow('logoutViaAPI failed: AuthService/Logout returned HTTP 500: gone')
+  })
+})
+
+describe('listWorkersViaAPI', () => {
+  it('reads each worker with its online state, and an absent state as offline', async () => {
+    recordedRequests(() => Response.json({ workers: [{ id: 'w-1', online: true }, { id: 'w-2' }] }))
+    await expect(listWorkersViaAPI(hubUrl, 'c')).resolves.toEqual([{ id: 'w-1', online: true }, { id: 'w-2', online: false }])
+  })
+
+  it('reads an absent workers field as no worker', async () => {
+    recordedRequests(() => Response.json({}))
+    await expect(listWorkersViaAPI(hubUrl, 'c')).resolves.toEqual([])
+  })
+
+  it('refuses a worker with no ID', async () => {
+    recordedRequests(() => Response.json({ workers: [{ online: true }] }))
+    await expect(listWorkersViaAPI(hubUrl, 'c')).rejects.toThrow('a worker with no ID')
+  })
+})
+
+describe('listOnlineWorkerIDsViaAPI', () => {
+  it('returns only the online workers', async () => {
+    recordedRequests(() => Response.json({ workers: [{ id: 'on', online: true }, { id: 'off', online: false }] }))
+    await expect(listOnlineWorkerIDsViaAPI(hubUrl, 'c')).resolves.toEqual(['on'])
+  })
+})
+
+describe('getWorkerId', () => {
+  it('waits until the first worker is online and returns its ID', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(Response.json({ workers: [{ id: 'w-1', online: false }] }))
+      .mockImplementation(async () => Response.json({ workers: [{ id: 'w-1', online: true }] }))
+    vi.stubGlobal('fetch', fetch)
+    const waiting = getWorkerId(hubUrl, 'c')
+    await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
+    await expect(waiting).resolves.toBe('w-1')
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws a refused read at once', async () => {
+    recordedRequests(() => new Response('admin only', { status: 403 }))
+    await expect(getWorkerId(hubUrl, 'c')).rejects.toThrow('listWorkersViaAPI failed: WorkerManagementService/ListWorkers returned HTTP 403: admin only')
+  })
+})
+
+describe('configureBrokenSmtpViaAPI', () => {
+  it('writes an SMTP relay on loopback port 1, where nothing listens', async () => {
+    const requests = recordedRequests(() => Response.json({}))
+    await configureBrokenSmtpViaAPI(hubUrl, 'admin-cookie')
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.method).toBe('AdminSettingsService/UpdateSetting')
+    const body = requests[0]?.body as { key: string, partialJson: string }
+    expect(body.key).toBe('smtp')
+    expect(JSON.parse(body.partialJson)).toEqual({ host: '127.0.0.1', port: 1, from_address: 'hub@test.local', tls_mode: 'none' })
+  })
+})
+
+describe('deletePasskeyViaAPI', () => {
+  it('states the passkey and the hub reason of a refused delete', async () => {
+    recordedRequests(() => new Response('{"code":"failed_precondition"}', { status: 400 }))
+    await expect(deletePasskeyViaAPI(hubUrl, 'c', 'pk-1')).rejects.toThrow('deletePasskeyViaAPI(pk-1) failed: UserService/DeletePasskey returned HTTP 400: {"code":"failed_precondition"}')
+  })
+})
+
+describe('sqliteTextLiteral', () => {
+  it('quotes a plain value', () => {
+    expect(sqliteTextLiteral('alice')).toBe('\'alice\'')
+  })
+
+  it('doubles each quote character, so the value cannot end the literal', () => {
+    expect(sqliteTextLiteral('o\'brien\'; DROP TABLE users; --')).toBe('\'o\'\'brien\'\'; DROP TABLE users; --\'')
+  })
+
+  it('quotes an empty value', () => {
+    expect(sqliteTextLiteral('')).toBe('\'\'')
+  })
+
+  it('refuses a NUL character, which the sqlite3 command line cannot carry', () => {
+    expect(() => sqliteTextLiteral('a\0b')).toThrow('NUL')
   })
 })

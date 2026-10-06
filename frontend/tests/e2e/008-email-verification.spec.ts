@@ -1,10 +1,11 @@
 import { expect, test } from './fixtures'
-import { solveCaptchaViaAPI } from './helpers/altcha'
 import {
-  authedHeaders,
+  attemptLoginViaAPI,
   clearSmtpViaAPI,
   configureBrokenSmtpViaAPI,
   expirePendingEmailCooldown,
+  hubRefusal,
+  logoutViaAPI,
   readPendingEmailToken,
   signUpViaAPI,
   waitForEmailEnabled,
@@ -64,11 +65,7 @@ test.describe('Email verification', () => {
       await expect(page).toHaveURL(/\/verify-email/)
 
       const cookie = await readSessionCookie(page, 'sign-up')
-      await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Logout`, {
-        method: 'POST',
-        headers: authedHeaders(cookie),
-        body: '{}',
-      })
+      await logoutViaAPI(leapmuxServer.hubUrl, cookie)
       await page.goto('/login')
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 
@@ -96,20 +93,9 @@ test.describe('Email verification', () => {
     await expect(page.getByText(/sign-up failed|unavailable|failed/i)).toBeVisible()
     await expect(page).toHaveURL(/\/signup/)
 
-    const captcha = await solveCaptchaViaAPI(leapmuxServer.hubUrl)
-    const loginResp = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username,
-        password: 'password123',
-        captchaPayload: captcha.captchaPayload,
-        honeypot: captcha.honeypot,
-      }),
-    })
-    expect(loginResp.ok).toBe(false)
-    const loginBody = await loginResp.json() as { code?: string }
-    expect(String(loginBody.code ?? '')).toMatch(/unauthenticated/i)
+    // A signup that failed closed must leave no account that its password signs in to.
+    const loginRefusal = await hubRefusal(await attemptLoginViaAPI(leapmuxServer.hubUrl, username, 'password123'))
+    expect(loginRefusal.code).toBe('unauthenticated')
   })
 
   test('enabling SMTP later restricts previously unverified users', async ({ page, leapmuxServer }) => {

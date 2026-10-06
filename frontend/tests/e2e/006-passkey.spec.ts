@@ -1,5 +1,6 @@
+import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
 import { expect, test } from './fixtures'
-import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, ELEVATION_REQUIRED_HEADER, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
 import {
   loginViaToken,
   loginViaUI,

@@ -9,11 +9,11 @@ import { test as base, expect } from '@playwright/test'
 import { agentDefaultsEnv } from './agentSettings'
 import {
   API_POLL_INTERVAL_MS,
-  authedHeaders,
   closeTestChannels,
   elevateSessionViaAPI,
   enableSignupViaAPI,
   listOnlineWorkerIDsViaAPI,
+  listWorkersViaAPI,
   loginViaAPI,
   mintRegistrationKeyViaAPI,
   openPinnedModeAgentViaAPI,
@@ -79,16 +79,9 @@ export async function waitForWorkerOffline(serverInfo: SeparateServerInfo, timeo
  */
 export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
   try {
-    const res = await fetch(`${serverInfo.hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
-      method: 'POST',
-      headers: authedHeaders(serverInfo.adminToken),
-      body: JSON.stringify({}),
-    })
-    if (res.ok) {
-      const data = await res.json() as { workers: Array<{ id: string, online: boolean }> }
-      if (data.workers.some(w => w.id === serverInfo.workerId && w.online))
-        return
-    }
+    const workers = await listWorkersViaAPI(serverInfo.hubUrl, serverInfo.adminToken)
+    if (workers.some(worker => worker.id === serverInfo.workerId && worker.online))
+      return
   }
   catch {
     // The status request failed. Restart the Worker after this failure.

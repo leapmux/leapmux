@@ -1,9 +1,12 @@
 import { expect, test } from './fixtures'
 import { solveCaptchaViaAPI } from './helpers/altcha'
 import {
-  authedHeaders,
+  attemptLoginViaAPI,
+  hubRefusal,
+  hubRequest,
   listPasskeysViaAPI,
   loginViaAPI,
+  logoutViaAPI,
   readPendingEmailToken,
   signUpViaAPI,
   verifyEmailViaAPI,
@@ -61,24 +64,16 @@ test.describe('Account recovery', () => {
       const newCookie = await loginViaAPI(leapmuxServer.hubUrl, username, newPassword)
       expect(await listPasskeysViaAPI(leapmuxServer.hubUrl, newCookie)).toHaveLength(0)
 
-      await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Logout`, {
-        method: 'POST',
-        headers: authedHeaders(newCookie),
-        body: '{}',
-      })
+      await logoutViaAPI(leapmuxServer.hubUrl, newCookie)
 
       const captcha = await solveCaptchaViaAPI(leapmuxServer.hubUrl)
-      const passkeyBegin = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/BeginPasskeyLogin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          captchaPayload: captcha.captchaPayload,
-          honeypot: captcha.honeypot,
-        }),
+      const passkeyBegin = await hubRequest(leapmuxServer.hubUrl, 'AuthService/BeginPasskeyLogin', {
+        username,
+        captchaPayload: captcha.captchaPayload,
+        honeypot: captcha.honeypot,
       })
-      expect(passkeyBegin.ok).toBe(false)
-      expect(await passkeyBegin.text()).toMatch(/no passkeys|failed_precondition|not found/i)
+      const passkeyRefusal = await hubRefusal(passkeyBegin)
+      expect(`${passkeyRefusal.code}: ${passkeyRefusal.message}`).toMatch(/no passkeys|failed_precondition|not found/i)
 
       await loginViaUI(page, username, newPassword)
     })
@@ -128,12 +123,14 @@ test.describe('Account recovery', () => {
 
       // The account is passkey-only now: the password the flow cleared no
       // longer authenticates, and one passkey -- the recovery's -- remains.
-      const passwordAttempt = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+      // The attempt carries a solved captcha, and the check requires the
+      // credential refusal itself. A refusal for another reason, such as a
+      // missing captcha, would pass whatever the password state is.
+      const passwordRefusal = await hubRefusal(await attemptLoginViaAPI(leapmuxServer.hubUrl, username, password))
+      expect(passwordRefusal, 'the hub refuses the cleared password as a credential').toEqual({
+        code: 'unauthenticated',
+        message: 'invalid credentials',
       })
-      expect(passwordAttempt.ok).toBe(false)
 
       const newCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
       expect(await listPasskeysViaAPI(leapmuxServer.hubUrl, newCookie)).toHaveLength(1)

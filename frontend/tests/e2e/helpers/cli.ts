@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { elevateSessionViaAPI, getCurrentUser, TEST_ADMIN_PASSWORD } from './api'
+import { callHub, elevateSessionViaAPI, getCurrentUser, TEST_ADMIN_PASSWORD } from './api'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 
@@ -89,24 +89,15 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
 
   // Connect-JSON: the body is the message object directly (int64s as
   // strings), and the response JSON is the message object.
-  const res = await fetch(`${hubURL}/leapmux.v1.AdminUserService/IssueAPIToken`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-    body: JSON.stringify({
-      userId: userID,
-      // Identify this app installation. An app can hold separate credentials on multiple machines.
-      installationName: `e2e-${Date.now()}`,
-      ttlSeconds: '3600',
-      // See E2E_CLI_SCOPES.
-      scopes: E2E_CLI_SCOPES,
-    }),
-  })
-  if (!res.ok) {
-    // Include the response body in an issuance error.
-    // Connect supplies the refusal message there. A status alone cannot identify which setup requirement failed.
-    throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}: ${await res.text()}`)
-  }
-  const minted = await res.json() as { accessToken?: string }
+  // A refusal states the hub's reason, which identifies the setup requirement that failed.
+  const minted = await callHub<{ accessToken?: string }>(hubURL, 'AdminUserService/IssueAPIToken', {
+    userId: userID,
+    // Identify this app installation. An app can hold separate credentials on multiple machines.
+    installationName: `e2e-${Date.now()}`,
+    ttlSeconds: '3600',
+    // See E2E_CLI_SCOPES.
+    scopes: E2E_CLI_SCOPES,
+  }, { cookie, operation: 'mintCLITokenForAdmin' })
   const bearer = minted.accessToken
   if (!bearer) {
     throw new Error('mintCLITokenForAdmin: no accessToken in IssueAPIToken response')
