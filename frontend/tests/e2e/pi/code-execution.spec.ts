@@ -16,8 +16,7 @@ import { verifyPiOutputFilePaths } from './outputFilePaths'
 import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
-piTest('keeps the native codemode output path and preview without an MCP call after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+piTest('keeps the native codemode output path and preview without an MCP call after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-codemode-full-output-')
   const output = `${Array.from({ length: 3000 }, (_, index) => `codemode-line-${index}`).join('\n')}\nNATIVE_CODEMODE_COMPLETE`
   activateNativeCodemode(directory, getGlobalState().tmpDir)

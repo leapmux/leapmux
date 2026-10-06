@@ -8,7 +8,7 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { mcpToolCall, piCodemodeToolCall, piMcpResourceToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
-import { messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
+import { chatScrollContainer, messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { newProviderWorkingDir } from '../helpers/workspace'
 import { piTest } from '../pi-fixtures'
 import { activateNativeCodemode } from './codemodeConfiguration'
@@ -18,8 +18,7 @@ import { verifyPiOutputFilePaths } from './outputFilePaths'
 import { nativeContext, PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
 
-piTest('keeps the native real MCP output path and preview after reload', async ({ page, context, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+piTest('keeps the native real MCP output path and preview after reload', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const directory = newProviderWorkingDir(PI_AGENT, 'renderer-pi-full-output-')
   const outputFile = `${Array.from({ length: 3000 }, (_, index) => `full-output-line-${index}`).join('\n')}\nPI_OUTPUT_FILE_RECOVERED`
@@ -50,7 +49,7 @@ piTest('keeps the native real MCP output path and preview after reload', async (
     expect(exchange.result).toMatchObject({ structuredContent: { nextCount: 1, enabled: false, text: outputFile } })
     const completed = await readPiMcpResult(native, 'full-output-call', 'codemode')
     expect(isObject(completed.result.details) && completed.result.details.fullOutputPath).toMatch(/pi-codemode-[0-9a-f]{16}\.txt$/)
-    const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })
+    const chat = chatScrollContainer(page)
     const output = toolCallRow(page, 'full-output-call')
     await expect(output).toHaveCount(1)
     await expect(output).toContainText('full-output-line-2999')
