@@ -6,6 +6,7 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD, ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { RAIL } from '../helpers/chatScrollRail'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -51,12 +52,13 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   // Asserting "Rejected" here contradicted the rule the product documents.
   //
   // The model's reasoning can move the earlier response outside the rendered
-  // message window.
+  // message window. The scroll rail then holds the one dot of that response.
+  // Each locator is strict, because the test sends one control response only.
   const rejection = userBubbles(page).getByText('approve', { exact: true })
   if (await rejection.count() === 0)
-    await visibleOnly(page.getByRole('button', { name: 'Your response', exact: true })).first().click()
-  await rejection.first().scrollIntoViewIfNeeded()
-  await expect(rejection.first()).toBeInViewport({ ratio: 1 })
+    await visibleOnly(page.locator(RAIL).getByRole('button', { name: 'Your response', exact: true })).click()
+  await rejection.scrollIntoViewIfNeeded()
+  await expect(rejection).toBeInViewport({ ratio: 1 })
   // PLAN, not Build. ZCode asks for the plan approval as the permission check of
   // its ExitPlanMode tool, and the tool's handler, which leaves plan mode, runs
   // only after an approval. This test declines (the stored row below records
