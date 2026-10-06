@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
-import { findBinary } from '../helpers/binaryOnPath'
+import { findBinary, requireBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { hubSpawnEnv } from '../helpers/server'
 import { zcodeTest } from '../zcode-fixtures'
@@ -36,9 +36,9 @@ zcodeTest.describe('zcode agent startup', () => {
       }
       const script = process.env.LEAPMUX_ZCODE_SCRIPT
         ?? zcodeScriptCandidatePaths(process.platform, homedir(), process.env).find(existsSync)
-      const executable = findBinary('node', spawnEnvironment)
-      if (!script || !existsSync(script) || !executable)
-        throw new Error('The controlled ZCode startup requires its actual script and Node interpreter.')
+      if (!script || !existsSync(script))
+        throw new Error('The controlled ZCode startup requires its actual script.')
+      const executable = requireBinary('node', 'The controlled ZCode startup requires the Node interpreter', spawnEnvironment)
       await exerciseAgentStartup(native, {
         launch: { binaryName: 'node', executable, ...APP_SERVER_LAUNCH },
         failed,

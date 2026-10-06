@@ -9,7 +9,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanupSync } from '../helpers/cleanup'
 import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
@@ -134,9 +134,10 @@ export function createKimiCatalogCapture(directory: string, launch: NativeStartu
   const nativeIsScript = envNode || absoluteJavaScript
   if (firstLine.startsWith('#!') && !nativeIsScript)
     throw new Error('The native Kimi CLI header uses an unsupported or relative JavaScript interpreter.')
-  const interpreter = envNode ? findBinary('node', environment) : absoluteJavaScript ? absoluteInterpreter : executable
-  if (!interpreter)
-    throw new Error('The Kimi catalog capture cannot resolve the native Node interpreter from its private environment.')
+  // `requireBinary` throws the reason of the lookup, so a mise shim on the private search path states its cause.
+  const interpreter = envNode
+    ? requireBinary('node', 'The Kimi catalog capture requires the Node interpreter of its private environment', environment)
+    : absoluteJavaScript ? absoluteInterpreter : executable
   const capture = {
     directory,
     scriptPath: join(directory, 'kimi-catalog.cjs'),

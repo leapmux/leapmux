@@ -362,6 +362,15 @@ describe('createKimiCatalogCapture', () => {
     expect(capture.runtimeExecutable).toBe(realpathSync(interpreter))
   })
 
+  it('states the reason of the binary lookup when the private environment holds no Node executable', () => {
+    const emptyPath = join(directory, 'path-without-node')
+    mkdirSync(emptyPath, { recursive: true })
+    const script = join(directory, 'env-native-cli-without-node.mjs')
+    writeFileSync(script, '#!/usr/bin/env node\nNative script body.\n', { mode: 0o700 })
+    expect(() => createKimiCatalogCapture(join(directory, 'env-wrapper-without-node'), { binaryName: 'kimi', executable: script }, { PATH: emptyPath, HOME: directory }))
+      .toThrow('The Kimi catalog capture requires the Node interpreter of its private environment')
+  })
+
   it.each(['#!/usr/bin/env python', '#!node', '#!./node', '#!/absolute/unsupported-interpreter'])('rejects an unsupported or relative script interpreter: %s', (header) => {
     const script = join(directory, 'unsupported-native-cli.mjs')
     writeFileSync(script, `${header}\nNative script body.\n`, { mode: 0o700 })
