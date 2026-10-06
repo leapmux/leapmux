@@ -194,12 +194,13 @@ describe('captureGeminiResumeEvidence', () => {
       expect(object(result.workerBefore).startupError).toBe(f.agent.startupError)
   })
 
-  it('refuses a physically impossible pending row with sequence zero', async () => {
+  // The pending read pages by the rule of the shared Worker reader, which a started agent's read uses also.
+  it('keeps a pending row with sequence zero, as the read of a started agent does', async () => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
     calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [create(AgentChatMessageSchema, { ...f.row, seq: 0n })] }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
-    expect(object(result.workerRead).state).toBe('failed')
+    expect(object(result.workerRead).state).toBe('complete-observation')
     expect(objects(result.messages)[0]?.seq).toBe('0')
   })
 

@@ -2,8 +2,8 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
-import { AgentChatMessageSchema, AgentInfoSchema, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readAllAgentMessages, readNativeMessageSnapshot, readNativeToolOutputRecord } from './nativeMessages'
+import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeMessageBody, nativeMessagesHoldingText, nativeMessageSupplement, readAllAgentMessages, readNativeMessageSnapshot, readNativeToolOutputRecord, sameAgentOwnership } from './nativeMessages'
 
 const calls = vi.hoisted(() => ({ agent: vi.fn(), worker: vi.fn() }))
 vi.mock('./nativeScenario', () => ({ nativeAgentById: calls.agent }))
@@ -36,6 +36,54 @@ describe('readAllAgentMessages', () => {
     calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 0n)], hasMore: true }))
       .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 1n)] }))
     await expect(readAllAgentMessages(context, 'parent')).rejects.toThrow('duplicate message ID')
+  })
+
+  it('hands each page to its observer before the checks, so the bytes of a failed page remain', async () => {
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('first', 1n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('regressed', 1n)] }))
+    const pages: string[][] = []
+    await expect(readAllAgentMessages(context, 'parent', page => pages.push(page.map(value => value.id)))).rejects.toThrow('cursor did not advance')
+    expect(pages).toEqual([['first'], ['regressed']])
+  })
+
+  it('hands an empty final page to its observer', async () => {
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema))
+    const pages: string[][] = []
+    expect(await readAllAgentMessages(context, 'parent', page => pages.push(page.map(value => value.id)))).toEqual([])
+    expect(pages).toEqual([[]])
+  })
+})
+
+describe('sameAgentOwnership', () => {
+  const agent = create(AgentInfoSchema, {
+    id: 'agent',
+    workerId: 'worker',
+    agentProvider: AgentProvider.GEMINI_CLI,
+    agentSessionId: 'native-session',
+    workingDir: '/work',
+    parentAgentId: 'parent',
+    rootAgentId: 'root',
+    spawnSpanId: 'span',
+    providerChildKey: 'child-key',
+    status: AgentStatus.ACTIVE,
+  })
+
+  it('accepts two reads that differ only in state, such as the status', () => {
+    expect(sameAgentOwnership(agent, create(AgentInfoSchema, { ...agent, status: AgentStatus.INACTIVE }))).toBe(true)
+  })
+
+  it.each([
+    ['id', { id: 'other' }],
+    ['workerId', { workerId: 'other' }],
+    ['agentProvider', { agentProvider: AgentProvider.CODEX }],
+    ['agentSessionId', { agentSessionId: 'other' }],
+    ['workingDir', { workingDir: '/other' }],
+    ['parentAgentId', { parentAgentId: 'other' }],
+    ['rootAgentId', { rootAgentId: 'other' }],
+    ['spawnSpanId', { spawnSpanId: 'other' }],
+    ['providerChildKey', { providerChildKey: 'other' }],
+  ] as const)('refuses a change of %s', (_field, change) => {
+    expect(sameAgentOwnership(agent, create(AgentInfoSchema, { ...agent, ...change }))).toBe(false)
   })
 })
 

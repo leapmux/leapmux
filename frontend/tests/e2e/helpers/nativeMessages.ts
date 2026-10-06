@@ -1,4 +1,4 @@
-import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
 import { AgentStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -34,21 +34,34 @@ export async function readNativeMessageSnapshot(
     throw new Error('The native message read requires a started agent with a native session or linked virtual child.')
   const messages = await readAllAgentMessages(context, agentId)
   const after = await nativeAgentById(context, agentId)
-  if (!after || after.status !== AgentStatus.ACTIVE || after.id !== before.id || after.agentSessionId !== before.agentSessionId
-    || after.parentAgentId !== before.parentAgentId || after.spawnSpanId !== before.spawnSpanId || after.rootAgentId !== before.rootAgentId || after.providerChildKey !== before.providerChildKey) {
+  if (!after || after.status !== AgentStatus.ACTIVE || !sameAgentOwnership(before, after))
     throw new Error('The native session changed or its agent ownership links changed during the Worker message read.')
-  }
   return { agentId, agentSessionId: before.agentSessionId, messages }
+}
+
+/**
+ * Whether two Worker reads of one agent state the same owner: the same agent, Worker, provider, native session,
+ * working directory, and child links. A read of the agent's messages is stable only between two such reads.
+ */
+export function sameAgentOwnership(first: AgentInfo, second: AgentInfo): boolean {
+  return first.id === second.id && first.workerId === second.workerId && first.agentProvider === second.agentProvider
+    && first.agentSessionId === second.agentSessionId && first.workingDir === second.workingDir
+    && first.parentAgentId === second.parentAgentId && first.rootAgentId === second.rootAgentId
+    && first.spawnSpanId === second.spawnSpanId && first.providerChildKey === second.providerChildKey
 }
 
 /**
  * Read every stored Worker message of one agent, oldest first, page by page.
  * A page that repeats a message ID, does not advance the cursor, or claims another page with no message fails the read.
  * The read does not check the agent identity. `readNativeMessageSnapshot` adds that check.
+ *
+ * `onPage` receives each page as the Worker returned it, before the checks, so a diagnostic caller keeps the bytes
+ * of a page that then fails.
  */
 export async function readAllAgentMessages(
   context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
   agentId: string,
+  onPage?: (messages: readonly AgentChatMessage[]) => void,
 ): Promise<AgentChatMessage[]> {
   if (agentId.trim() === '')
     throw new Error('The Worker message read requires a nonempty agent ID.')
@@ -64,6 +77,7 @@ export async function readAllAgentMessages(
       ...(cursor === undefined ? {} : { cursorSeq: cursor }),
       limit: MESSAGE_PAGE_LIMIT,
     })
+    onPage?.(response.messages)
     if (response.messages.length === 0 && response.hasMore)
       throw new Error('The Worker message page is empty but claims another page.')
     for (const message of response.messages) {

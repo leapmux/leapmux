@@ -10,12 +10,10 @@ import { createHash } from 'node:crypto'
 import { readdirSync, writeFileSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { toJson } from '@bufbuild/protobuf'
-import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
-import { AgentChatMessageSchema, AgentInfoSchema, AgentStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentInfoSchema, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { getTestChannel } from '../helpers/api'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { readAllAgentMessages, readNativeMessageSnapshot, sameAgentOwnership } from '../helpers/nativeMessages'
 import { nativeAgentById, selectedAgentTab } from '../helpers/nativeScenario'
 import { readNativeToolOutputFile } from '../helpers/nativeToolOutputFile'
 import { geminiNativeProject, waitForGeminiArchiveMinuteToPass } from './nativeStore'
@@ -164,51 +162,12 @@ function evidenceError(error: unknown): EvidenceError {
   return { ...componentHeader(error), components }
 }
 
-function sameOwner(first: AgentInfo, second: AgentInfo): boolean {
-  return first.id === second.id && first.workerId === second.workerId && first.agentProvider === second.agentProvider
-    && first.agentSessionId === second.agentSessionId && first.workingDir === second.workingDir
-    && first.parentAgentId === second.parentAgentId && first.rootAgentId === second.rootAgentId
-    && first.spawnSpanId === second.spawnSpanId && first.providerChildKey === second.providerChildKey
-}
-
 function expectedOwner(agent: AgentInfo, prior: Readonly<AgentInfo>, workerId: string): boolean {
   return agent.workerId === workerId && agent.agentProvider === prior.agentProvider && agent.workingDir === prior.workingDir
     && agent.parentAgentId === '' && agent.spawnSpanId === '' && agent.providerChildKey === ''
     && (agent.rootAgentId === '' || agent.rootAgentId === agent.id)
     && (agent.agentSessionId === prior.agentSessionId || (agent.agentSessionId === ''
       && (agent.status === AgentStatus.STARTING || agent.status === AgentStatus.STARTUP_FAILED)))
-}
-
-/** Read pending or failed Worker rows as observations, without requiring completed native startup. */
-async function pendingMessages(context: ManagedNativeScenarioContext, agentId: string, messages: AgentChatMessage[]): Promise<void> {
-  const server = context.leapmuxServer
-  const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  const seen = new Set<string>()
-  let cursor: bigint | undefined
-  for (;;) {
-    const response = await channel.callWorker(server.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, {
-      agentId,
-      anchor: cursor === undefined ? MessagePageAnchor.OLDEST : MessagePageAnchor.AFTER,
-      ...(cursor === undefined ? {} : { cursorSeq: cursor }),
-      limit: MESSAGE_PAGE_LIMIT,
-    })
-    // Retain the returned bytes even when this diagnostic page fails validation.
-    messages.push(...response.messages)
-    if (response.messages.length === 0 && response.hasMore)
-      throw new Error('The resume evidence page is empty but claims another page.')
-    for (const message of response.messages) {
-      if (message.id.trim() === '' || seen.has(message.id))
-        throw new Error('The resume evidence page contains an absent or duplicate message ID.')
-      if (message.seq <= 0n)
-        throw new Error('The resume evidence page contains a zero or negative message sequence.')
-      if (cursor !== undefined && message.seq <= cursor)
-        throw new Error('The resume evidence cursor did not advance.')
-      seen.add(message.id)
-      cursor = message.seq
-    }
-    if (!response.hasMore)
-      return
-  }
 }
 
 /** Verify native ownership without projecting history or assigning a replay boundary. */
@@ -321,7 +280,8 @@ export async function captureGeminiResumeEvidence(
       if (before.status === AgentStatus.ACTIVE)
         messages.push(...(await readNativeMessageSnapshot(context, before.id)).messages)
       else
-        await pendingMessages(context, before.id, messages)
+        // A pending or failed startup has no ACTIVE state for the snapshot read. Keep each page's bytes before its checks.
+        await readAllAgentMessages(context, before.id, page => messages.push(...page))
       receipt.workerRead.state = 'complete-observation'
     }
   }
@@ -333,7 +293,7 @@ export async function captureGeminiResumeEvidence(
     try {
       const after = await nativeAgentById(context, before.id)
       receipt.workerAfter = after ? toJson(AgentInfoSchema, after, { alwaysEmitImplicit: true }) : null
-      if (!after || !sameOwner(before, after)) {
+      if (!after || !sameAgentOwnership(before, after)) {
         const ownerFailure = new Error('The Worker session or owner changed during the resume evidence read.')
         receipt.workerRead = {
           state: 'unstable',
