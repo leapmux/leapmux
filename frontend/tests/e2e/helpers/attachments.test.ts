@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { basename, join, resolve } from 'node:path'
 import { crc32, inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeLocator } from '~/test-support/fakeLocator'
 import { expectAttachmentOutcome, selectAttachmentFixture, sendWithAttachment, writeAttachmentFixture } from './attachments'
 
 let runDir: string
@@ -18,6 +19,8 @@ vi.mock('./ui', () => ({
   sendMessage: ui.send,
   waitForNativeSettingsHydrated: ui.hydration,
 }))
+const toasts = vi.hoisted(() => ({ recorded: vi.fn<(page: unknown, text: string | RegExp) => Promise<void>>() }))
+vi.mock('./toast', () => ({ expectToastRecorded: toasts.recorded }))
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
@@ -180,6 +183,25 @@ describe('expectAttachmentOutcome', () => {
     await expect(expectAttachmentOutcome(attachingPage(stop), 'text', { supported, fileName: 'notes.txt' })).rejects.toBe(stop)
     expect(ui.hydration).toHaveBeenCalledTimes(1)
     expect(ui.events).toEqual(['hydrated', 'attach:notes.txt'])
+  })
+
+  it('requires no pill and a recorded refusal toast that names the kind, for a refused kind', async () => {
+    const pills = fakeLocator(check => check.expression === 'to.have.count' && check.expectedNumber === 0)
+    const visible = vi.fn()
+    const page = {
+      locator: (selector: string) => {
+        if (selector === '[data-testid="file-input"]')
+          return { setInputFiles: async () => { ui.events.push('attach') } }
+        if (selector === '[data-testid="attachment-pill"]:visible')
+          return pills
+        visible(selector)
+        throw new Error(`The refused outcome must not read ${selector}.`)
+      },
+    } as unknown as Page
+    toasts.recorded.mockResolvedValue(undefined)
+    await expectAttachmentOutcome(page, 'pdf', { supported: false })
+    expect(toasts.recorded).toHaveBeenCalledExactlyOnceWith(page, /pdf/i)
+    expect(visible).not.toHaveBeenCalled()
   })
 
   it('writes and attaches no file when the native settings catalog never hydrates', async () => {

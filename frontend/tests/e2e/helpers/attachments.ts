@@ -5,6 +5,7 @@ import { basename, join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 import { createTestDirectory } from './runDirectory'
+import { expectToastRecorded } from './toast'
 import { sendMessage, waitForNativeSettingsHydrated } from './ui'
 
 /**
@@ -185,7 +186,8 @@ export async function expectAttachmentOutcome(
     return path
   }
   await expect(attachmentPills(page)).toHaveCount(0)
-  await expect(page.locator('output .toast-message').filter({ hasText: new RegExp(kind, 'i') })).toBeVisible()
+  // The recorder keeps a toast after it leaves the screen, so the check cannot miss a refusal that came and went.
+  await expectToastRecorded(page, new RegExp(kind, 'i'))
   return path
 }
 

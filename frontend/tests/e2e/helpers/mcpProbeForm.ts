@@ -8,7 +8,7 @@ import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { MCP_FORM_SERVER_NAME } from './mcpFormServer'
 import { nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { mcpToolCall } from './providerToolCalls'
-import { readEntry, storageKeys } from './storage'
+import { waitForStoredEntry } from './storage'
 import { controlActions, messageBubbles, sendMessage, waitForAgentIdle } from './ui'
 
 /** Fill the disposable MCP server's form with values that expose false and zero. */
@@ -44,20 +44,12 @@ export function mcpProbeFormDraftSaved(record: unknown): boolean {
  * Call it before a `page.reload()` that must restore the form.
  *
  * The page saves each answer through a write queue. The last click of the fill returns before the queue commits its row.
- * A reload that overtakes the commit loses that answer, and the form restores without it.
- * A fixed sleep cannot account for a busy host, so poll the stored row.
- * The caller lacks the agent ID, so inspect the control answer rows of the account.
- * Build the prefix with accountStorageKey and compare with startsWith. A regular expression would interpret metacharacters in the key.
+ * A reload that overtakes the commit loses that answer, and the form restores without it. So the wait polls the stored
+ * rows through `waitForStoredEntry`. The caller lacks the agent ID, so the wait reads every control answer row of the
+ * account.
  */
 export async function waitForMcpProbeFormDraft(page: Page, userId: string): Promise<void> {
-  const prefix = accountStorageKey(userId, PREFIX_CONTROL_STATE)
-  await expect.poll(async () => {
-    for (const key of await storageKeys(page)) {
-      if (key.startsWith(prefix) && mcpProbeFormDraftSaved((await readEntry(page, key))?.v))
-        return true
-    }
-    return false
-  }, 'the probe form answers must be persisted before the reload').toBe(true)
+  await waitForStoredEntry(page, accountStorageKey(userId, PREFIX_CONTROL_STATE), mcpProbeFormDraftSaved, 'the probe form answers must be persisted before the reload')
 }
 
 /** Require the answers of `fillMcpProbeForm` in the form that the page restored after a reload. */
