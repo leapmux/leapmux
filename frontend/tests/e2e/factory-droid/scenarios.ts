@@ -27,7 +27,11 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
   return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'droid', holdWhen: ['exec'] })
 }
 
-/** Open this provider's actual child task and hold its native final answer. */
+/**
+ * Open this provider's actual child task and hold its native final answer.
+ * The script comes from `runningChildOptions`, apart from this browser operation, because `scenarios.test.ts` checks
+ * that script with no browser.
+ */
 export async function runningChild(context: ManagedNativeScenarioContext, options: { allowExistingRows?: boolean } = {}): Promise<HeldNativeChild> {
   return openRunningNativeChild(context, runningChildOptions(nativeChildScriptContext(context), options))
 }

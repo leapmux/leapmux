@@ -2,11 +2,11 @@ import type { TestInfo } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isObject } from '../../../src/lib/jsonPick'
 import { expect } from '../droid-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { ruleRequest } from '../helpers/mockModelScript'
 import { currentNativeAgent, selectedAgentTabId } from '../helpers/nativeScenario'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
@@ -15,8 +15,11 @@ import { droidChildNoticeRule } from './childNotice'
 
 const CHILD_TASK = 'Read the child note and report its marker.'
 
-/** Keep the native child Read, archive, and follow-up assertions in one provider-owned scenario. */
-export async function exerciseNativeChildTranscript(context: ManagedNativeScenarioContext, testInfo: TestInfo, options: { followUp: boolean }): Promise<string> {
+/**
+ * Keep the native child Read, archive, and follow-up assertions in one provider-owned scenario.
+ * The scenario ends with the tab of the child selected.
+ */
+export async function exerciseNativeChildTranscript(context: ManagedNativeScenarioContext, testInfo: TestInfo, options: { followUp: boolean }): Promise<void> {
   const { page, modelScript, leapmuxServer } = context
   const { workingDir } = await currentNativeAgent(context)
 
@@ -53,20 +56,15 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
   )
   await sendMessage(page, modelScript.prompt('Delegate the note inspection to a background child.'))
   await modelScript.waitForSteps(start + 2)
-  const rootBody = (await modelScript.requestAt(start + 1)).body
-  if (!isObject(rootBody) || !Array.isArray(rootBody.messages))
-    throw new Error('the Droid model request has no messages after its Task call')
-  const toolResult = rootBody.messages.find(message => isObject(message) && message.role === 'tool')
-  if (!isObject(toolResult) || typeof toolResult.content !== 'string')
-    throw new Error('the Droid model request has no Task result')
-  await testInfo.attach('droid-native-task-result', { body: toolResult.content, contentType: 'text/plain' })
+  const taskResult = nativeToolResult(await modelScript.requestAt(start + 1), 'droid-spawn')
+  await testInfo.attach('droid-native-task-result', { body: taskResult, contentType: 'text/plain' })
   const factoryHome = leapmuxServer.agentEnv?.FACTORY_HOME_OVERRIDE
   if (!factoryHome)
     throw new Error('the Droid test needs an isolated Factory home')
   const nativeLog = join(factoryHome, '.factory', 'logs', 'droid-log-single.log')
   if (existsSync(nativeLog))
     await testInfo.attach('droid-native-log', { body: readFileSync(nativeLog), contentType: 'text/plain' })
-  expect(toolResult.content).toContain('Task launched in background')
+  expect(taskResult).toContain('Task launched in background')
   await expect.poll(async () => (await modelScript.status()).ruleMatches['the Droid child reads its note'] ?? 0).toBe(1)
   // The root is the agent on screen before the child tab opens.
   const rootTabID = await selectedAgentTabId(page)
@@ -123,5 +121,5 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
     expect(finalStatus.unexpectedRequests).toHaveLength(0)
   }
 
-  return childTabID
+  await expect(tabById(page, childTabID)).toHaveAttribute('aria-selected', 'true')
 }

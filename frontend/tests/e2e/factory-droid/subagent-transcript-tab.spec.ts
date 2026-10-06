@@ -1,9 +1,7 @@
-import { expect } from '@playwright/test'
 import { droidTest } from '../droid-fixtures'
-import { tabById } from '../helpers/ui'
 import { exerciseNativeChildTranscript } from './childScenarios'
 
+// The scenario opens the tab of the child, proves its prompt and its final answer, and ends with that tab selected.
 droidTest('opens a separate native child tab with the prompt and final archive', async ({ native }, testInfo) => {
-  const childId = await exerciseNativeChildTranscript(native, testInfo, { followUp: false })
-  await expect(tabById(native.page, childId)).toHaveAttribute('aria-selected', 'true')
+  await exerciseNativeChildTranscript(native, testInfo, { followUp: false })
 })
