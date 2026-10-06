@@ -92,9 +92,9 @@ export async function exerciseModelError(
   const failed = failedTurnRequests(status.requests, stepIndex, attempts)
   expect(failed.map(request => request.stepIndex)).toEqual(Array.from({ length: attempts }, (_, offset) => stepIndex + offset))
   await options.answerFailure?.(error)
+  // The idle wait requires the visible thinking indicator to clear, so no second indicator check follows.
   await waitForAgentIdle(context.page)
   await expect(visibleOnly(context.page.getByText(error.message, { exact: false })).first()).toBeVisible()
-  await expect(context.page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
   await resumeQueueAfterFailure(context.page, options.queueAfterFailure)
   await sendNativeAnswer(context, 'Reply once after the native service failure.', `RECOVERED${marker}`)
   return failed
