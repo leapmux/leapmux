@@ -158,7 +158,9 @@ test.describe('pill group segmented control', () => {
       await Promise.allSettled(element.getAnimations().map(animation => animation.finished))
     })
 
-    const transitionedProperty = await group.evaluate((element, optionButtons) => new Promise<string>((resolve, reject) => {
+    // The target takes its ring only after the slide ends, so the listener reads the ring at the start of the slide.
+    // A read from the test after the event comes a round trip later, and a short slide can end before it.
+    const slideStart = await group.evaluate((element, optionButtons) => new Promise<{ property: string, targetRing: string }>((resolve, reject) => {
       const fill = element.querySelector<HTMLElement>(':scope > [data-pill-selection-fill]')
       const target = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
         .find(button => button.textContent === 'Dark')
@@ -178,15 +180,14 @@ test.describe('pill group segmented control', () => {
         if (event.propertyName !== 'clip-path')
           return
         window.clearTimeout(timeout)
-        resolve(event.propertyName)
+        resolve({ property: event.propertyName, targetRing: getComputedStyle(target).boxShadow })
       })
       target.click()
     }), OPTION_BUTTONS)
 
-    expect(transitionedProperty).toBe('clip-path')
+    expect(slideStart, 'the fill slides, and the target shows no ring while it slides').toEqual({ property: 'clip-path', targetRing: 'none' })
     const dark = group.getByRole('radio', { name: 'Dark' })
     await expect(dark).toHaveAttribute('aria-checked', 'true')
-    expect(await dark.evaluate(element => getComputedStyle(element).boxShadow)).toBe('none')
 
     await indicator.evaluate(async (element) => {
       await Promise.allSettled(element.getAnimations().map(animation => animation.finished))
