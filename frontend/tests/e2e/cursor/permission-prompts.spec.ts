@@ -1,16 +1,19 @@
 import { expect } from '@playwright/test'
 import { cursorTest } from '../cursor-fixtures'
 import { cursorWebFetchPermissionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { answerControl, assistantBubbles, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
-cursorTest('forwards a native web-fetch permission decision', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
-  void authenticatedCursorWorkspace
-  await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-fetch', 'https://example.invalid/cursor-probe')] })
+// The Cursor CLI answers its own Run stream with the result of the web fetch, and the mock Cursor service ends the
+// turn with that result. So each turn queues the tool call alone, and the turn needs no second model answer.
+
+cursorTest('forwards a native web-fetch permission decision', async ({ native }) => {
+  const { page, modelScript } = native
+  const start = await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-fetch', 'https://example.invalid/cursor-probe')] })
   await sendMessage(page, modelScript.prompt('Ask permission to fetch the scripted URL.'))
-  await modelScript.waitForSteps()
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
+  await modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(page)
   await expect(banner).toContainText('https://example.invalid/cursor-probe')
-  await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+  await answerControl(page, 'allow')
 
   await waitForAgentIdle(page)
   await expect(assistantBubbles(page).filter({ hasText: 'Cursor web fetch approved' }).first()).toBeVisible()
@@ -26,20 +29,20 @@ cursorTest('forwards a native web-fetch permission decision', async ({ authentic
  */
 const CURSOR_WEB_FETCH_REFUSAL = 'Cursor web fetch rejected: User rejected'
 
-cursorTest('forwards a native web-fetch Deny decision', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
-  void authenticatedCursorWorkspace
+cursorTest('forwards a native web-fetch Deny decision', async ({ native }) => {
+  const { page, modelScript } = native
   // The CLI skips the question for a domain on its allowlist, and "Allow always" adds one.
   // A separate reserved domain keeps this question independent of any approval of example.invalid.
   const url = 'https://cursor-denied-probe.invalid/native-web-fetch'
-  await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-denied-fetch', url)] })
+  const start = await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-denied-fetch', url)] })
   await sendMessage(page, modelScript.prompt('Ask permission to fetch the scripted private URL.'))
-  await modelScript.waitForSteps()
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
+  await modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(page)
   await expect(banner).toContainText(url)
-  await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
+  await answerControl(page, 'deny')
 
   await waitForAgentIdle(page)
-  await expect(banner).toHaveCount(0)
+  await expectNoControlBanner(page)
   await expect(assistantBubbles(page).filter({ hasText: CURSOR_WEB_FETCH_REFUSAL }).first()).toBeVisible()
   await expect(assistantBubbles(page).filter({ hasText: 'Cursor web fetch approved' })).toHaveCount(0)
   await page.reload()

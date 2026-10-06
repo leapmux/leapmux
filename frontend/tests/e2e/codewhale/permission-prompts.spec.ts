@@ -1,12 +1,13 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect } from '@playwright/test'
 
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
-import { nativeToolResultAt } from '../helpers/nativeToolExecution'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-
-const CODEWHALE = AgentProvider.CODEWHALE
+import { expectNoControlBanner, toolRows } from '../helpers/ui'
 
 codewhaleTest.describe('Codewhale approvals', () => {
   // The Ask posture asks before a command that writes. A read-only command runs
@@ -16,46 +17,40 @@ codewhaleTest.describe('Codewhale approvals', () => {
   // such as `approved-42` from `approved-$((40 + 2))`. The row's header shows the
   // command, so a marker that the command text holds matches the row whether or
   // not the command ran.
-  codewhaleTest('runs a command that the reader allows', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-    void authenticatedCodewhaleWorkspace
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(CODEWHALE, 'allow-call', 'touch approved.txt && echo "approved-$((40 + 2))"')] },
-      { text: 'I created approved.txt.' },
-    )
-    await sendMessage(page, modelScript.prompt('Create approved.txt.'))
-    await modelScript.waitForSteps(1)
-
-    // The approval states no arguments of its own. The banner draws the command
-    // from the call that the runtime reported before it asked.
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText('touch approved.txt')
-    await page.getByTestId('control-allow-btn').click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await expect(toolRows(page).filter({ hasText: 'approved-42' }).first()).toBeVisible()
-    await expect(assistantBubbles(page).filter({ hasText: 'I created approved.txt.' })).toBeVisible()
+  codewhaleTest('runs a command that the reader allows', async ({ native }) => {
+    const approved = join((await currentNativeAgent(native)).workingDir, 'approved.txt')
+    await exerciseNativePermissionDecision(native, {
+      toolCall: bashToolCall(native.provider, 'allow-call', 'touch approved.txt && echo "approved-$((40 + 2))"'),
+      decision: 'allow',
+      // The approval states no arguments of its own. The banner draws the command
+      // from the call that the runtime reported before it asked.
+      beforeDecision: async (banner) => {
+        await expect(banner).toContainText('touch approved.txt')
+        expect(existsSync(approved)).toBe(false)
+      },
+      nativeProof: (request) => {
+        expect(existsSync(approved)).toBe(true)
+        expect(nativeToolResult(request, 'allow-call')).toContain('approved-42')
+      },
+      viewProof: async () => {
+        await expectNoControlBanner(native.page)
+        await expect(toolRows(native.page).filter({ hasText: 'approved-42' }).first()).toBeVisible()
+      },
+    })
   })
 
-  codewhaleTest('refuses a command that the reader denies', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
-    void authenticatedCodewhaleWorkspace
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(CODEWHALE, 'deny-call', 'touch denied.txt')] },
-      { text: 'The command was not approved.' },
-    )
-    await sendMessage(page, modelScript.prompt('Create denied.txt.'))
-    await modelScript.waitForSteps(1)
-
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText('touch denied.txt')
-    await page.getByTestId('control-deny-btn').click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    // The runtime fails the call, and the model reads why.
-    expect(await nativeToolResultAt(modelScript, 1, 'deny-call')).toContain('denied by user')
-    await expect(assistantBubbles(page).filter({ hasText: 'The command was not approved.' })).toBeVisible()
+  codewhaleTest('refuses a command that the reader denies', async ({ native }) => {
+    const denied = join((await currentNativeAgent(native)).workingDir, 'denied.txt')
+    await exerciseNativePermissionDecision(native, {
+      toolCall: bashToolCall(native.provider, 'deny-call', 'touch denied.txt'),
+      decision: 'deny',
+      beforeDecision: banner => expect(banner).toContainText('touch denied.txt'),
+      // The runtime fails the call, and the model reads why.
+      nativeProof: (request) => {
+        expect(nativeToolResult(request, 'deny-call')).toContain('denied by user')
+        expect(existsSync(denied)).toBe(false)
+      },
+      viewProof: () => expectNoControlBanner(native.page),
+    })
   })
 })

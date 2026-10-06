@@ -2,83 +2,72 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codebuddyTest, expect } from '../codebuddy-fixtures'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, controlButton, enterControlFeedback, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code control requests', () => {
-  codebuddyTest('raises a banner for a tool call and runs it once allowed', async ({ askingCodebuddyWorkspace, page, modelScript }) => {
+  codebuddyTest('raises a banner for a tool call and runs it once allowed', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
     const output = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-permission-allowed.txt')
     const command = 'printf CODEBUDDY_ALLOWED > ./codebuddy-permission-allowed.txt'
-    const call = bashToolCall(AgentProvider.CODEBUDDY, 'call-1', command)
-    await modelScript.queue({ toolCalls: [call] })
-    await modelScript.queue({ text: 'The command ran.' })
-    await sendMessage(page, modelScript.prompt('Run the scripted write command.'))
-
-    // Wait for the native model request before you check the banner.
-    // Agent startup can exceed the banner assertion deadline.
-    await modelScript.waitForSteps(1)
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
-    await expect(banner).toContainText(command)
-    expect(existsSync(output)).toBe(false)
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
-    expect(readFileSync(output, 'utf8')).toBe('CODEBUDDY_ALLOWED')
+    await exerciseNativePermissionDecision(context, {
+      toolCall: bashToolCall(context.provider, 'call-1', command),
+      decision: 'allow',
+      beforeDecision: async (banner) => {
+        await expect(banner).toContainText(command)
+        expect(existsSync(output)).toBe(false)
+      },
+      nativeProof: () => {
+        expect(readFileSync(output, 'utf8')).toBe('CODEBUDDY_ALLOWED')
+      },
+      viewProof: () => expectNoControlBanner(page),
+    })
   })
 
   codebuddyTest('does not run a denied write command', async ({ askingCodebuddyWorkspace, page, modelScript }) => {
     const output = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-permission-denied.txt')
     const command = 'printf CODEBUDDY_DENIED > ./codebuddy-permission-denied.txt'
-    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CODEBUDDY, 'denied-call', command)] })
+    const start = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CODEBUDDY, 'denied-call', command)] })
+    // The fallback answers any request after the denial. This test proves only that the denied command never runs,
+    // so it does not state whether the runtime asks the model again.
     await modelScript.fallback({ text: 'The denied call ended.' })
     await sendMessage(page, modelScript.prompt('Try the scripted write command.'))
-    await modelScript.waitForSteps(1)
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
+    // Wait for the native model request before you check the banner.
+    // Agent startup can exceed the banner assertion deadline.
+    await modelScript.waitForSteps(start + 1)
+    const banner = await waitForControlBanner(page)
     await expect(banner).toContainText(command)
     expect(existsSync(output)).toBe(false)
-    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
+    await answerControl(page, 'deny')
     await waitForAgentIdle(page)
-    await expect(banner).toHaveCount(0)
+    await expectNoControlBanner(page)
     expect(existsSync(output)).toBe(false)
   })
 })
 
 codebuddyTest.describe('CodeBuddy Code control answers', () => {
-  const PROVIDER = AgentProvider.CODEBUDDY
-
-  function laterRequests(status: { requests: { stepIndex?: number, body: unknown }[] }, from: number): string {
-    return status.requests
-      .filter(request => (request.stepIndex ?? -1) >= from)
-      .map(request => JSON.stringify(request.body))
-      .join('\n')
-  }
-
-  codebuddyTest('a denied command does not run, and the reason reaches the model', async ({ askingCodebuddyWorkspace, page, modelScript }) => {
-    const { workingDir } = askingCodebuddyWorkspace
-    const marker = join(workingDir, 'codebuddy-denied-marker')
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'deny-call', 'touch codebuddy-denied-marker')] },
-      { text: 'I stopped at the denial.' },
-    )
-    await sendMessage(page, modelScript.prompt('Create the marker file.'))
-    await modelScript.waitForSteps(1)
-
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText('touch codebuddy-denied-marker')
-    // Typing turns the deny button into "Send feedback", which sends the typed
-    // text as the denial reason.
-    await page.locator('[data-testid="composer-editor"] .ProseMirror').click()
-    await page.keyboard.type('the probe is not wanted here', { delay: 50 })
-    const deny = page.getByTestId('control-deny-btn')
-    await expect(deny).toHaveText('Send feedback')
-    await deny.click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    expect(existsSync(marker), 'the denied command never ran').toBe(false)
-    expect(laterRequests(status, 1)).toContain('the probe is not wanted here')
-    await expect(assistantBubbles(page).filter({ hasText: 'I stopped at the denial.' }).first()).toBeVisible()
+  codebuddyTest('a denied command does not run, and the reason reaches the model', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
+    const marker = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-denied-marker')
+    const reason = 'the probe is not wanted here'
+    await exerciseNativePermissionDecision(context, {
+      toolCall: bashToolCall(context.provider, 'deny-call', 'touch codebuddy-denied-marker'),
+      decision: 'deny',
+      beforeDecision: async (banner) => {
+        await expect(banner).toContainText('touch codebuddy-denied-marker')
+        // Typing turns the deny button into "Send feedback", which sends the typed
+        // text as the denial reason.
+        await enterControlFeedback(page, reason)
+        await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
+      },
+      nativeProof: (request) => {
+        expect(existsSync(marker), 'the denied command never ran').toBe(false)
+        // The model reads the reason in the request that follows the denial.
+        expect(JSON.stringify(request.body)).toContain(reason)
+      },
+      viewProof: () => expectNoControlBanner(page),
+    })
   })
 })

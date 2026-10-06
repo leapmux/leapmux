@@ -7,13 +7,17 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { expectTurnEndedAfter } from '../helpers/nativeStoredControlDecision'
+import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { hubSpawnEnv } from '../helpers/server'
-import { messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, controlActions, controlButton, enterControlFeedback, expectNoControlBanner, messageContents, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 import { createGitRepo } from '../helpers/worktree'
 import { mimoTest } from '../mimo-fixtures'
+import { nativeContext } from './scenarios'
 
 interface Server {
   hubUrl: string
@@ -37,44 +41,44 @@ async function openAgentWithFile(page: Page, server: Server, workspace: Workspac
 mimoTest.describe('MiMo Code permission requests', () => {
   mimoTest('an approved deletion runs, and the saved answer states the option', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const file = await openAgentWithFile(page, leapmuxServer, authenticatedEmptyWorkspace, 'mimo-permission-allow-')
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.MIMO_CODE, 'delete-call', 'rm -f doomed.txt')] },
-      { text: 'DELETED_AFTER_APPROVAL' },
-    )
-    await sendMessage(page, modelScript.prompt('Delete doomed.txt.'))
-    await modelScript.waitForSteps(1)
-
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText('rm -f doomed.txt')
-    // MiMo asks every delete, and reads an `always` answer to one as `once`. So
-    // the banner offers no scope that MiMo would not keep.
-    await expect(page.getByRole('radiogroup', { name: 'Allow scope' })).toHaveCount(0)
-    await expect(page.getByTestId('control-decision-always')).toHaveCount(0)
-    expect(existsSync(file)).toBe(true)
-    await page.getByTestId('control-allow-btn').click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    expect(existsSync(file)).toBe(false)
-    await expect(messageContents(page).filter({ hasText: 'DELETED_AFTER_APPROVAL' }).first()).toBeVisible()
-    // The transcript keeps the answer as MiMo's own option word.
-    await expect(savedControlAnswer(page)).toHaveText('Allow once')
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await exerciseNativePermissionDecision(context, {
+      toolCall: bashToolCall(context.provider, 'delete-call', 'rm -f doomed.txt'),
+      decision: 'allow',
+      beforeDecision: async (banner) => {
+        await expect(banner).toContainText('rm -f doomed.txt')
+        // MiMo asks every delete, and reads an `always` answer to one as `once`. So
+        // the control actions offer no scope that MiMo would not keep.
+        await expect(page.getByRole('radiogroup', { name: 'Allow scope' })).toHaveCount(0)
+        await expect(page.getByTestId('control-decision-always')).toHaveCount(0)
+        expect(existsSync(file)).toBe(true)
+      },
+      nativeProof: () => {
+        expect(existsSync(file)).toBe(false)
+      },
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        // The transcript keeps the answer as MiMo's own option word.
+        await expect(savedControlAnswer(page)).toHaveText('Allow once')
+      },
+    })
   })
 
-  // A plain rejection stops MiMo's loop, so the model is not asked again.
+  // A plain rejection stops MiMo's loop, so MiMo does not ask the model again.
   mimoTest('a rejected deletion does not run, and the call reads as declined', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const file = await openAgentWithFile(page, leapmuxServer, authenticatedEmptyWorkspace, 'mimo-permission-reject-')
-    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.MIMO_CODE, 'delete-call', 'rm -f doomed.txt')] })
+    const start = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.MIMO_CODE, 'delete-call', 'rm -f doomed.txt')] })
     await sendMessage(page, modelScript.prompt('Delete doomed.txt.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 1)
 
     await waitForControlBanner(page)
-    await page.getByTestId('control-deny-btn').click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    expect(existsSync(file)).toBe(true)
+    await answerControl(page, 'deny')
+    await expectNoControlBanner(page)
     await waitForAgentIdle(page)
 
     expect(existsSync(file)).toBe(true)
+    await expectTurnEndedAfter(modelScript, start + 1)
     await expect(messageContents(page).filter({ hasText: 'Declined' }).first()).toBeVisible()
     await expect(savedControlAnswer(page)).toHaveText('Reject')
   })
@@ -83,26 +87,24 @@ mimoTest.describe('MiMo Code permission requests', () => {
   // its loop continues.
   mimoTest('a rejection with feedback reaches the model as the reason', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const file = await openAgentWithFile(page, leapmuxServer, authenticatedEmptyWorkspace, 'mimo-permission-feedback-')
-    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.MIMO_CODE, 'delete-call', 'rm -f doomed.txt')] })
-    await modelScript.rule({
-      name: 'the model reads the rejection feedback',
-      when: { body: 'Keep the file for the audit' },
-      respond: { text: 'FEEDBACK_RECEIVED' },
-      once: true,
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const reason = 'Keep the file for the audit'
+    await exerciseNativePermissionDecision(context, {
+      toolCall: bashToolCall(context.provider, 'delete-call', 'rm -f doomed.txt'),
+      decision: 'deny',
+      beforeDecision: async (banner) => {
+        await expect(banner).toContainText('rm -f doomed.txt')
+        expect(existsSync(file)).toBe(true)
+        await enterControlFeedback(page, reason)
+        await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
+      },
+      // The model reads the reason in the request that continues the loop.
+      nativeProof: (request) => {
+        expect(JSON.stringify(request.body)).toContain(reason)
+        expect(existsSync(file)).toBe(true)
+      },
+      viewProof: () => expectNoControlBanner(page),
     })
-    await sendMessage(page, modelScript.prompt('Delete doomed.txt.'))
-    await modelScript.waitForSteps()
-
-    await waitForControlBanner(page)
-    const editor = page.getByTestId('composer-editor').locator('.ProseMirror')
-    await editor.fill('Keep the file for the audit')
-    const reject = page.getByTestId('control-deny-btn')
-    await expect(reject).toHaveText('Send feedback')
-    await reject.click()
-    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-    await expect(messageContents(page).filter({ hasText: 'FEEDBACK_RECEIVED' }).first()).toBeVisible()
-    await waitForAgentIdle(page)
-    expect(existsSync(file)).toBe(true)
   })
 
   // MiMo keeps an `always` answer for the patterns that its request states. A read
@@ -130,27 +132,32 @@ mimoTest.describe('MiMo Code permission requests', () => {
     try {
       writeFileSync(join(outside, 'first.txt'), 'FIRST_OUTSIDE_FILE\n')
       writeFileSync(join(outside, 'second.txt'), 'SECOND_OUTSIDE_FILE\n')
-      await modelScript.queue(
+      const start = await modelScript.queue(
         { toolCalls: [readToolCall(AgentProvider.MIMO_CODE, 'outside-first', join(outside, 'first.txt'))] },
         { toolCalls: [readToolCall(AgentProvider.MIMO_CODE, 'outside-second', join(outside, 'second.txt'))] },
         { text: 'READ_BOTH_OUTSIDE_FILES' },
       )
       await sendMessage(page, modelScript.prompt('Read the two files outside the project.'))
-      await modelScript.waitForSteps(1)
+      await modelScript.waitForSteps(start + 1)
 
       await waitForControlBanner(page)
-      const scope = page.getByRole('radiogroup', { name: 'Allow scope' })
+      // The scope pills sit in the control actions of the composer, not in the banner.
+      const scope = controlActions(page).getByRole('radiogroup', { name: 'Allow scope' })
       await scope.getByRole('radio', { name: 'Always' }).click()
       await expect(scope.getByRole('radio', { name: 'Always' })).toBeChecked()
-      await page.getByTestId('control-allow-btn').click()
-      await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
-      await modelScript.waitForSteps()
+      await answerControl(page, 'allow')
+      await expectNoControlBanner(page)
+      // The second read asks nothing, so the turn reaches its answer with no further decision.
+      await modelScript.waitForSteps(start + 3)
       await waitForAgentIdle(page)
 
-      await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
+      await expectNoControlBanner(page)
       await expect(savedControlAnswer(page)).toHaveCount(1)
       await expect(savedControlAnswer(page)).toHaveText('Always allow')
       await expect(messageContents(page).filter({ hasText: 'READ_BOTH_OUTSIDE_FILES' }).first()).toBeVisible()
+      // Each read returned its own file, so the second read ran under the kept answer.
+      expect(nativeToolResult(await modelScript.requestAt(start + 1), 'outside-first')).toContain('FIRST_OUTSIDE_FILE')
+      expect(nativeToolResult(await modelScript.requestAt(start + 2), 'outside-second')).toContain('SECOND_OUTSIDE_FILE')
     }
     finally {
       rmSync(outside, { recursive: true, force: true })

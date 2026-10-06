@@ -1,60 +1,42 @@
-import type { Page } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { diracTest, expect } from '../dirac-fixtures'
-import { bashToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
-import { messageContents, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { bashToolCall } from '../helpers/providerToolCalls'
+import { chatText, controlButton, expectNoControlBanner } from '../helpers/ui'
+import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac control requests', () => {
-  const PROVIDER = AgentProvider.DIRAC
-
-  function banner(page: Page) {
-    return page.getByTestId('control-banner').filter({ visible: true })
-  }
-
-  async function chatText(page: Page): Promise<string> {
-    return (await messageContents(page).allTextContents()).join(' ')
-  }
-
-  diracTest('runs a command after the reader approves it', async ({ askingDiracWorkspace, page, modelScript }) => {
-    void askingDiracWorkspace
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'dirac-allow', 'echo "dirac-allow-$(printf 42)"')] },
-      { toolCalls: [diracRespondToolCall('dirac-allow-done', 'complete', 'The command ran.')] },
-    )
-    await sendMessage(page, modelScript.prompt('Run the scripted command.'))
-    // The call waits on the banner, so the second step waits too.
-    await modelScript.waitForSteps(1)
-
-    await waitForControlBanner(page)
-    await expect(banner(page)).toContainText('dirac-allow')
-    await expect(page.getByTestId('control-allow-btn').filter({ visible: true })).toHaveText('Allow')
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await expect(banner(page)).toHaveCount(0)
-    // The command computes the marker, so only a run prints it.
-    await expect.poll(() => chatText(page)).toContain('dirac-allow-42')
+  diracTest('runs a command after the reader approves it', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
+    // The context answers through Dirac's own respond tool, as the model of a Dirac turn does.
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+    await exerciseNativePermissionDecision(context, {
+      toolCall: bashToolCall(context.provider, 'dirac-allow', 'echo "dirac-allow-$(printf 42)"'),
+      decision: 'allow',
+      beforeDecision: async (banner) => {
+        await expect(banner).toContainText('dirac-allow')
+        await expect(controlButton(page, 'allow')).toHaveText('Allow')
+      },
+      // The command computes the marker, so only a run prints it.
+      nativeProof: request => expect(JSON.stringify(request.body)).toContain('dirac-allow-42'),
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        await expect.poll(() => chatText(page)).toContain('dirac-allow-42')
+      },
+    })
   })
 
-  diracTest('keeps the command from running after the reader rejects it', async ({ askingDiracWorkspace, page, modelScript }) => {
-    void askingDiracWorkspace
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'dirac-deny', 'echo "dirac-deny-$(printf 42)"')] },
-      { toolCalls: [diracRespondToolCall('dirac-deny-done', 'complete', 'I did not run it.')] },
-    )
-    await sendMessage(page, modelScript.prompt('Run the scripted command.'))
-    await modelScript.waitForSteps(1)
-
-    await waitForControlBanner(page)
-    await expect(page.getByTestId('control-deny-btn').filter({ visible: true })).toHaveText('Deny')
-    await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await expect(banner(page)).toHaveCount(0)
-    // A denied call reaches no shell, so its output marker is nowhere on the
-    // page. The command text itself never states the number below.
-    await expect.poll(() => chatText(page)).not.toContain('dirac-deny-42')
+  diracTest('keeps the command from running after the reader rejects it', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+    await exerciseNativePermissionDecision(context, {
+      toolCall: bashToolCall(context.provider, 'dirac-deny', 'echo "dirac-deny-$(printf 42)"'),
+      decision: 'deny',
+      beforeDecision: () => expect(controlButton(page, 'deny')).toHaveText('Deny'),
+      // A denied call reaches no shell, so its output marker is nowhere in the model request
+      // or on the page. The command text itself never states the number below.
+      nativeProof: request => expect(JSON.stringify(request.body)).not.toContain('dirac-deny-42'),
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        await expect.poll(() => chatText(page)).not.toContain('dirac-deny-42')
+      },
+    })
   })
 })

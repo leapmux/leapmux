@@ -33,6 +33,12 @@ export async function exerciseCommandCodePermissionLimit(context: ManagedNativeS
     },
   })
   await applyPermissionPreset(context.page, 'bypass')
-  await write('native-bypass-write')
-  expect(readFileSync(path, 'utf8')).toBe(content)
+  // The tool turn allows any banner that appears, so the observation proves that Bypass runs the write with none.
+  await expectNoNativeControl(context, {
+    testId: 'control-banner',
+    relatedProof: async () => {
+      await write('native-bypass-write')
+      expect(readFileSync(path, 'utf8')).toBe(content)
+    },
+  })
 }

@@ -3,11 +3,13 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { exerciseAllowThenFeedbackRejection } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { answerControl, assistantBubbles, controlActions, expectNoControlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
+import { nativeContext } from './scenarios'
 
 const PROVIDER = AgentProvider.KIRO
 
@@ -34,35 +36,8 @@ kiroTest.describe('Kiro control requests', () => {
   kiroTest('approves one command and rejects the next with a reason the turn reads', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const approved = join(workingDir, 'approved.txt')
-    const rejected = join(workingDir, 'rejected.txt')
-
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'kiro-approved', `printf approved > ${approved}`)] },
-      { toolCalls: [bashToolCall(PROVIDER, 'kiro-rejected', `printf rejected > ${rejected}`)] },
-      { text: 'I read the reason and stopped.' },
-    )
-    await sendMessage(page, modelScript.prompt('Create the two scripted files.'))
-    await modelScript.waitForSteps(1)
-    const banner = controlBanner(page)
-    await expect(banner).toContainText(`printf approved > ${approved}`)
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-
-    await modelScript.waitForSteps(2)
-    await expect(banner).toContainText(`printf rejected > ${rejected}`)
-    expect(existsSync(approved)).toBe(true)
-    const editor = page.getByTestId('composer-editor').locator('.ProseMirror')
-    await editor.fill('Do not create the second file.')
-    await page.keyboard.press('Meta+Enter')
-    await expect(banner).toHaveCount(0)
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    const status = await modelScript.status()
-    expect(JSON.stringify(status.requests.at(-1)?.body)).toContain('Do not create the second file.')
-    await expect(messageBubbles(page).filter({ hasText: 'Sent feedback:' }).filter({ hasText: 'Do not create the second file.' }).first()).toBeVisible()
-    await expect(assistantBubbles(page).filter({ hasText: 'I read the reason and stopped.' })).toBeVisible()
-    expect(existsSync(rejected)).toBe(false)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await exerciseAllowThenFeedbackRejection(context, { workingDir })
   })
 
   // Kiro keeps Always Allow in the session unless the reply supplies a wider scope.
@@ -79,23 +54,23 @@ kiroTest.describe('Kiro control requests', () => {
     const workspaceRulesBefore = workspaceRuleFiles(home)
     const userRulesBefore = readIfPresent(userRuleFile)
 
-    await modelScript.queue(
+    const start = await modelScript.queue(
       { toolCalls: [bashToolCall(PROVIDER, 'kiro-always-1', command)] },
       { toolCalls: [bashToolCall(PROVIDER, 'kiro-always-2', command)] },
       { text: 'Both ran.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted command twice.'))
-    await modelScript.waitForSteps(1)
-    const banner = controlBanner(page)
+    await modelScript.waitForSteps(start + 1)
+    const banner = await waitForControlBanner(page)
     await expect(banner).toContainText(command)
     // The scope pills sit in the control actions of the composer, not in the banner.
-    await page.getByTestId('control-actions').filter({ visible: true }).getByRole('radio', { name: 'Workspace', exact: true }).click()
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-    await expect(banner).toHaveCount(0)
+    await controlActions(page).getByRole('radio', { name: 'Workspace', exact: true }).click()
+    await answerControl(page, 'allow')
 
     // The second call runs under the rule, with no request of its own.
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 3)
     await waitForAgentIdle(page)
+    await expectNoControlBanner(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Both ran.' })).toBeVisible()
     await expect(messageBubbles(page).filter({ hasText: 'Always allow in this workspace' }).first()).toBeVisible()
     expect(readFileSync(marker, 'utf8'), 'both commands ran').toBe('alwaysalways')
