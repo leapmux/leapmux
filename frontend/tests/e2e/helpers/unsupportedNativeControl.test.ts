@@ -42,6 +42,8 @@ vi.mock('./nativeControlObservation', () => ({
   },
 }))
 
+// `allowNativeOperation` has its own cases in `./nativePermission.test.ts`. This double records what the proof hands it,
+// shows the banner to the check of the proof, and runs the extra proof after the decision.
 vi.mock('./nativePermission', () => ({
   createNativePermissionFileWrite: async (_context: unknown, options: Record<string, unknown>) => {
     harness.events.push(`default write:${JSON.stringify(options)}`)
@@ -49,16 +51,15 @@ vi.mock('./nativePermission', () => ({
       throw new Error('The test gives no default plan.')
     return harness.defaultPlan
   },
-  exerciseNativePermissionDecision: async (_context: unknown, options: Record<string, unknown> & {
-    beforeDecision: (banner: Locator) => Promise<void>
-    nativeProof: (request: MockModelRequestRecord) => Promise<void>
-  }) => {
-    harness.decisions.push(options)
-    harness.events.push('decision banner')
-    await options.beforeDecision(BANNER)
-    harness.events.push(`decision ${String(options.decision)}`)
-    await options.nativeProof(RESULT_REQUEST)
-  },
+  allowNativeOperation: (_context: unknown, operation: NativePermissionOperationPlan, nativeProof?: (request: MockModelRequestRecord) => void | Promise<void>) =>
+    async (checkBanner: (banner: Locator) => Promise<void>) => {
+      harness.decisions.push({ operation, nativeProof })
+      harness.events.push('decision banner')
+      await checkBanner(BANNER)
+      harness.events.push('decision allow')
+      await nativeProof?.(RESULT_REQUEST)
+      return RESULT_REQUEST
+    },
 }))
 
 vi.mock('@playwright/test', async (importOriginal) => {
@@ -117,41 +118,37 @@ beforeEach(() => {
 })
 
 describe('exerciseUnsupportedControlThroughPermission', () => {
-  it('writes the default native file and runs its guard before the control guard', async () => {
+  it('writes the default native file and allows it while the observation checks the banner', async () => {
     harness.defaultPlan = plan('default')
     await exerciseUnsupportedControlThroughPermission(context(), { purpose: 'editor', classify: permissionClassifier() })
     expect(harness.events).toEqual([
       `default write:${JSON.stringify(defaultControlPermissionWrite('editor'))}`,
       'observe:dialog-editor',
       'decision banner',
-      'default guard',
       'banner visible',
       'no editor:0',
       'decision allow',
-      'default proof:1',
       'no editor:0',
       'watch cancelled',
     ])
-    expect(harness.decisions[0]).toMatchObject({ toolCall: harness.defaultPlan.toolCall, decision: 'allow' })
-    expect(harness.decisions[0]).not.toHaveProperty('outputGate')
+    expect(harness.decisions).toEqual([{ operation: harness.defaultPlan, nativeProof: undefined }])
   })
 
-  it('uses the caller operation, forwards its output gate, and runs the extra proof after the operation proof', async () => {
+  it('allows the caller operation and hands it the extra proof', async () => {
     const gate = { shown: async () => {} } as unknown as GatedOutput
     const operation = plan('caller', gate)
+    const nativeProof = (request: MockModelRequestRecord) => {
+      harness.events.push(`extra proof:${request.stepIndex}`)
+    }
     await exerciseUnsupportedControlThroughPermission(context(), {
       purpose: 'workspace-trust',
       classify: permissionClassifier(),
       operation,
-      nativeProof: (request) => {
-        harness.events.push(`extra proof:${request.stepIndex}`)
-      },
+      nativeProof,
     })
     expect(harness.events.some(event => event.startsWith('default write'))).toBe(false)
-    expect(harness.decisions[0]).toMatchObject({ toolCall: operation.toolCall, outputGate: gate })
-    const proofs = harness.events.filter(event => event.includes('proof'))
-    expect(proofs).toEqual(['caller proof:1', 'extra proof:1'])
-    expect(harness.events.indexOf('caller guard')).toBeLessThan(harness.events.indexOf('banner visible'))
+    expect(harness.decisions).toEqual([{ operation, nativeProof }])
+    expect(harness.events).toContain('extra proof:1')
   })
 
   it('observes both question surfaces and refuses a frame that the provider marks as a question', async () => {
@@ -165,14 +162,16 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     expect(harness.events.at(-1)).toBe('watch cancelled')
   })
 
-  it('stops before the decision when the operation guard fails', async () => {
-    const failure = new Error('The target changed before the decision.')
-    harness.defaultPlan = { ...plan('default'), beforeDecision: () => {
-      throw failure
-    } }
-    await expect(exerciseUnsupportedControlThroughPermission(context(), { purpose: 'editor', classify: permissionClassifier() })).rejects.toBe(failure)
-    expect(harness.events).not.toContain('banner visible')
-    expect(harness.events).not.toContain('decision allow')
+  it('cancels the watch when the allowed operation fails', async () => {
+    harness.defaultPlan = plan('default')
+    const failure = new Error('The native result is absent.')
+    await expect(exerciseUnsupportedControlThroughPermission(context(), {
+      purpose: 'editor',
+      classify: permissionClassifier(),
+      nativeProof: () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
     expect(harness.events.at(-1)).toBe('watch cancelled')
   })
 })

@@ -1,14 +1,15 @@
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { codewhaleTest } from '../codewhale-fixtures'
+import { configuredMcpScript, MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
 import { exerciseMcpEcho } from '../helpers/mcpExecution'
-import { configuredMcpScript, exerciseCloseAgent } from '../helpers/nativeLifecycle'
+import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 
 codewhaleTest('closes the UI tab and waits for owned process exit and Worker close', async ({ native, leapmuxServer }) => {
   const home = leapmuxServer.agentEnv.CODEWHALE_HOME
   if (!home)
     throw new Error('The Codewhale close test requires its isolated native home.')
-  const mcpScript = configuredMcpScript(join(home, 'mcp.json'), 'servers', 'echo_probe')
+  const mcpScript = configuredMcpScript(join(home, 'mcp.json'), 'servers', MCP_ECHO_SERVER_NAME)
   await exerciseCloseAgent(native, {
     // Codewhale starts a configured MCP server only for the first call of one of its tools,
     // and the server then runs as a child of the runtime until the runtime ends. A runtime

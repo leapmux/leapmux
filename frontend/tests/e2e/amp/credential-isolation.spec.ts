@@ -6,10 +6,10 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { AMP_AGENT, AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
+import { waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { withNativeWorker } from '../helpers/nativeWorker'
-import { expectMcpServerLoaded } from '../helpers/nativeWorkspaceTrustLimit'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
@@ -54,7 +54,7 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
         if (!isObject(profile))
           throw new Error('The private Amp profile must contain a settings object.')
         expect(profile['amp.mcpServers']).toHaveProperty('credential_probe')
-        await expectMcpServerLoaded(receiptLog)
+        await waitForMcpToolListed(receiptLog, 'echo')
       })
     })
   }, async () => rmSync(configHome, { recursive: true, force: true }))

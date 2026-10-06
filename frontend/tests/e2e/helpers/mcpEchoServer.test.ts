@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { MCP_ECHO_SERVER_NAME, writeMcpEchoServer } from './mcpEchoServer'
+import { configuredMcpScript, MCP_ECHO_SERVER_NAME, writeMcpEchoServer } from './mcpEchoServer'
 import { mcpCallExchange, readMcpServerReceipt } from './mcpServerReceipt'
 
 function executeEcho(argumentsValue: unknown) {
@@ -47,5 +47,53 @@ describe('writeMcpEchoServer', () => {
     const { receipt, replies } = executeEcho(args)
     expect(replies.find(reply => reply.id === 2)?.error?.code).toBe(-32602)
     expect(receipt.toolResults).toEqual([])
+  })
+})
+
+describe('configuredMcpScript', () => {
+  const SCRATCH_ROOT = resolve(import.meta.dirname, '../../../..', '.tmp')
+
+  function writeConfiguration(value: unknown): string {
+    mkdirSync(SCRATCH_ROOT, { recursive: true })
+    const directory = mkdtempSync(join(SCRATCH_ROOT, 'configured-mcp-script-'))
+    const path = join(directory, 'mcp.json')
+    writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value))
+    return path
+  }
+
+  it.each(['servers', 'mcpServers'] as const)('reads the first argument of the server under %s', (serversKey) => {
+    const path = writeConfiguration({ [serversKey]: { echo_probe: { command: 'node', args: ['/private/echo.mjs', '--flag'] } } })
+    try {
+      expect(configuredMcpScript(path, serversKey, 'echo_probe')).toBe('/private/echo.mjs')
+    }
+    finally {
+      rmSync(join(path, '..'), { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { label: 'another servers key', value: { mcpServers: { echo_probe: { args: ['/private/echo.mjs'] } } } },
+    { label: 'another server', value: { servers: { other: { args: ['/private/echo.mjs'] } } } },
+    { label: 'no arguments', value: { servers: { echo_probe: { command: 'node' } } } },
+    { label: 'an empty script', value: { servers: { echo_probe: { args: [''] } } } },
+    { label: 'a script that is not a string', value: { servers: { echo_probe: { args: [42] } } } },
+  ])('refuses a configuration with $label', ({ value }) => {
+    const path = writeConfiguration(value)
+    try {
+      expect(() => configuredMcpScript(path, 'servers', 'echo_probe')).toThrow('states no script for the server echo_probe')
+    }
+    finally {
+      rmSync(join(path, '..'), { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a file that holds no JSON', () => {
+    const path = writeConfiguration('not json')
+    try {
+      expect(() => configuredMcpScript(path, 'servers', 'echo_probe')).toThrow(SyntaxError)
+    }
+    finally {
+      rmSync(join(path, '..'), { recursive: true, force: true })
+    }
   })
 })

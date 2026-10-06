@@ -1,7 +1,7 @@
 import type { McpExchangeEntry, McpServerReceipt } from './mcpServerReceipt'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   mcpCallArguments,
   mcpCallExchange,
@@ -16,6 +16,13 @@ import {
   readMcpServerReceipt,
   waitForMcpToolListed,
 } from './mcpServerReceipt'
+
+// The poll of vitest ends after one second, and the poll of Playwright after five, which is the limit of a vitest case.
+// The wait reads a receipt that the runtime replaces through a rename, so no read throws, and both polls act alike.
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  return { ...actual, expect }
+})
 
 function emptyReceipt(): McpServerReceipt {
   return { initializeCapabilities: null, toolCatalogs: [], elicitationRequests: [], elicitationReplies: [], toolResults: [], exchange: [] }
@@ -252,9 +259,47 @@ describe('readMcpServerReceipt', () => {
 })
 
 describe('waitForMcpToolListed', () => {
+  /** Write a receipt whose server answered `initialize` with `initializeCapabilities` and listed `tools`. */
+  function writeListing(initializeCapabilities: Record<string, unknown> | null, tools: string[]): void {
+    writeFileSync(path, JSON.stringify({
+      ...emptyReceipt(),
+      initializeCapabilities,
+      toolCatalogs: [{ id: 1, tools: tools.map(name => ({ name, inputSchema: { type: 'object' } })) }],
+    }))
+  }
+
   it('returns once the receipt lists the tool', async () => {
     writeFileSync(path, JSON.stringify(refusalReceipt()))
     await expect(waitForMcpToolListed(path, 'ask')).resolves.toBeUndefined()
+  })
+
+  it('accepts a server that answered initialize and listed the tool among others', async () => {
+    writeListing({ tools: {} }, ['ask', 'probe'])
+    await expect(waitForMcpToolListed(path, 'probe')).resolves.toBeUndefined()
+  })
+
+  it('waits for a receipt that the server writes after the wait starts', async () => {
+    const waited = waitForMcpToolListed(path, 'echo')
+    setTimeout(writeListing, 50, {}, ['echo'])
+    await expect(waited).resolves.toBeUndefined()
+  })
+
+  it('refuses a server that lists no such tool', async () => {
+    writeListing({}, ['ask'])
+    await expect(waitForMcpToolListed(path, 'echo')).rejects.toThrow('lists the tool echo')
+  })
+
+  it('refuses a server that never answered initialize', async () => {
+    writeListing(null, ['echo'])
+    await expect(waitForMcpToolListed(path, 'echo')).rejects.toThrow('answered initialize')
+  })
+
+  it('refuses an absent receipt', async () => {
+    await expect(waitForMcpToolListed(path, 'echo')).rejects.toThrow('lists the tool echo')
+  })
+
+  it.each(['', ' '])('refuses the tool name %j before it reads the receipt', async (toolName) => {
+    await expect(waitForMcpToolListed(path, toolName)).rejects.toThrow('needs the name of a tool')
   })
 })
 

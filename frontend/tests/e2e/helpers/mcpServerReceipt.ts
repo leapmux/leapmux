@@ -141,15 +141,22 @@ export function mcpReceiptListsTool(receipt: Pick<McpServerReceipt, 'toolCatalog
 }
 
 /**
- * Wait until the server of `receiptLog` lists `toolName` to an agent.
+ * Wait until the server of `receiptLog` answered `initialize` and lists `toolName` to an agent.
+ *
  * The server writes its receipt when it starts, and an agent starts its servers at a time that the test does not
- * control, so the wait accepts an absent file until the poll ends.
+ * control, so the wait accepts an absent file until the poll ends. The receipt runtime replaces the file through a
+ * rename (`./mcpReceiptRuntime.ts`), so a read never finds it half written, and `expect.poll` can read it. The server
+ * writes the receipt again after each message, so a receipt can exist before the server lists a tool, and the wait
+ * requires the tool, not only the file.
  */
 export async function waitForMcpToolListed(receiptLog: string, toolName: string): Promise<void> {
+  if (toolName.trim() === '')
+    throw new Error('The MCP server check needs the name of a tool.')
   await expect.poll(
     () => existsSync(receiptLog) && mcpReceiptListsTool(readMcpServerReceipt(receiptLog), toolName),
     { message: `the MCP server of ${receiptLog} lists the tool ${toolName}` },
   ).toBe(true)
+  expect(readMcpServerReceipt(receiptLog).initializeCapabilities, `the MCP server of ${receiptLog} answered initialize`).not.toBeNull()
 }
 
 /** The messages that the server received, in order. */

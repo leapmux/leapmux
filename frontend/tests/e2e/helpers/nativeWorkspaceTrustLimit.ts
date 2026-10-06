@@ -5,14 +5,15 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
-import { readMcpServerReceipt } from './mcpServerReceipt'
+import { writeMcpEchoServer } from './mcpEchoServer'
+import { waitForMcpToolListed } from './mcpServerReceipt'
 import { expectNoNativeStartupControl } from './nativeControlObservation'
 import { sendNativeAnswer } from './nativeConversation'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from './nativePermission'
 import { nativeAgentById, nativeModelInstructionText } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { nativeToolResult } from './nativeToolResult'
@@ -20,7 +21,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { chooseSettingsOption, tabById, waitForSettingsIdle } from './ui'
-import { exerciseUnsupportedNativeControl } from './unsupportedNativeControl'
+import { exerciseUnsupportedControlThroughPermission } from './unsupportedNativeControl'
 import { createGitRepo } from './worktree'
 
 export interface NativeProjectConfiguration {
@@ -167,18 +168,34 @@ export function instructionFileConfiguration(
   }
 }
 
+/** The private MCP server that `mcpServerProjectConfiguration` registers, as the configuration of a provider states it. */
+export interface ProjectMcpServer {
+  /** The server name in the configuration. */
+  name: string
+  command: string
+  args: string[]
+}
+
+/** The receipt file of the server that `mcpServerProjectConfiguration` registers, in the project directory. */
+const PROJECT_MCP_RECEIPT = 'workspace-mcp-receipt.json'
+
 /**
- * Wait until the MCP server of `receiptLog` answered `initialize` and listed `tool`.
- *
- * The server writes its receipt again after each message, so the receipt can exist before the server lists a tool.
- * The wait therefore requires the tool, not only the file.
+ * A git project that registers a private MCP echo server, and the proof that the provider started that server from
+ * the project configuration: one native turn completes, and the server answered `initialize` and listed `echo`.
+ * `writeConfiguration` writes the project configuration file of the provider, which starts `server`.
  */
-export async function expectMcpServerLoaded(receiptLog: string, tool = 'echo'): Promise<void> {
-  if (!tool)
-    throw new Error('The MCP server check requires the name of a tool.')
-  const listed = () => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(entry => entry.name === tool))
-  await expect.poll(listed, { message: `the MCP server of ${receiptLog} lists ${tool}` }).toBe(true)
-  expect(readMcpServerReceipt(receiptLog).initializeCapabilities).not.toBeNull()
+export function mcpServerProjectConfiguration(writeConfiguration: (directory: string, server: ProjectMcpServer) => void): NativeProjectConfigurationProof {
+  return {
+    prepare: ({ directory }) => {
+      createGitRepo(directory, '.')
+      const { script } = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
+      writeConfiguration(directory, { name: 'trust_probe', command: process.execPath, args: [script] })
+    },
+    prove: async (context, { directory }) => {
+      await sendNativeAnswer(context, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')
+      await waitForMcpToolListed(join(directory, PROJECT_MCP_RECEIPT), 'echo')
+    },
+  }
 }
 
 /**
@@ -204,22 +221,11 @@ export async function exerciseMissingWorkspaceTrustRoute(
     throw new Error('The missing workspace-trust route requires the option under which the provider asks.')
   await chooseSettingsOption(context.page, options.askOption)
   await waitForSettingsIdle(context.page)
-  const operation = options.operation
-    ? await options.operation()
-    : await createNativePermissionFileWrite(context, { fileName: 'native-workspace-trust-control.txt', callId: 'native-workspace-trust-permission', outputPrefix: 'NATIVECONTROL' })
-  await exerciseUnsupportedNativeControl(context, {
+  // The operation is prepared after the ask option applies, because a provider can restart its process to apply it.
+  await exerciseUnsupportedControlThroughPermission(context, {
     purpose: 'workspace-trust',
     classify: options.classify,
-    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
-      toolCall: operation.toolCall,
-      ...(operation.outputGate ? { outputGate: operation.outputGate } : {}),
-      decision: 'allow',
-      beforeDecision: async (banner) => {
-        await operation.beforeDecision()
-        await beforeDecision(banner)
-      },
-      nativeProof: operation.nativeProof,
-    }),
+    ...(options.operation ? { operation: await options.operation() } : {}),
   })
 }
 

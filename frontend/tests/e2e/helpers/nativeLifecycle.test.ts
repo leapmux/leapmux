@@ -13,7 +13,7 @@ import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { configuredMcpScript, exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
+import { exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
 import { stopProcess } from './process'
 
 const resume = vi.hoisted(() => ({
@@ -568,54 +568,6 @@ describe('heldToolScript', () => {
     finally {
       await stopProcess(child)
       rmSync(workingDir, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('configuredMcpScript', () => {
-  const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
-
-  function writeConfiguration(value: unknown): string {
-    mkdirSync(SCRATCH_ROOT, { recursive: true })
-    const directory = mkdtempSync(join(SCRATCH_ROOT, 'configured-mcp-script-'))
-    const path = join(directory, 'mcp.json')
-    writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value))
-    return path
-  }
-
-  it.each(['servers', 'mcpServers'] as const)('reads the first argument of the server under %s', (serversKey) => {
-    const path = writeConfiguration({ [serversKey]: { echo_probe: { command: 'node', args: ['/private/echo.mjs', '--flag'] } } })
-    try {
-      expect(configuredMcpScript(path, serversKey, 'echo_probe')).toBe('/private/echo.mjs')
-    }
-    finally {
-      rmSync(join(path, '..'), { recursive: true, force: true })
-    }
-  })
-
-  it.each([
-    { label: 'another servers key', value: { mcpServers: { echo_probe: { args: ['/private/echo.mjs'] } } } },
-    { label: 'another server', value: { servers: { other: { args: ['/private/echo.mjs'] } } } },
-    { label: 'no arguments', value: { servers: { echo_probe: { command: 'node' } } } },
-    { label: 'an empty script', value: { servers: { echo_probe: { args: [''] } } } },
-    { label: 'a script that is not a string', value: { servers: { echo_probe: { args: [42] } } } },
-  ])('refuses a configuration with $label', ({ value }) => {
-    const path = writeConfiguration(value)
-    try {
-      expect(() => configuredMcpScript(path, 'servers', 'echo_probe')).toThrow('states no script for the server echo_probe')
-    }
-    finally {
-      rmSync(join(path, '..'), { recursive: true, force: true })
-    }
-  })
-
-  it('refuses a file that holds no JSON', () => {
-    const path = writeConfiguration('not json')
-    try {
-      expect(() => configuredMcpScript(path, 'servers', 'echo_probe')).toThrow(SyntaxError)
-    }
-    finally {
-      rmSync(join(path, '..'), { recursive: true, force: true })
     }
   })
 })

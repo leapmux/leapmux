@@ -1,14 +1,16 @@
 import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
+import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { GatedOutput, OutputGate } from './outputGate'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { createNativePermissionFileWrite, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, expectDeclinedToolRow } from './nativePermission'
+import { allowNativeOperation, createNativePermissionFileWrite, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, expectDeclinedToolRow } from './nativePermission'
 import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
@@ -245,6 +247,68 @@ describe('exerciseNativePermissionDecision', () => {
       nativeProof: () => {},
     })).rejects.toThrow('A denied command prints no output')
     expect(outputGate.shown).not.toHaveBeenCalled()
+  })
+})
+
+describe('allowNativeOperation', () => {
+  /** An operation that records its guard and its proof. */
+  function operation(outputGate?: GatedOutput): NativePermissionOperationPlan {
+    return {
+      toolCall: { id: 'decided-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      ...(outputGate ? { outputGate } : {}),
+      beforeDecision: () => { flow.events.push('guard') },
+      nativeProof: () => { flow.events.push('operation proof') },
+    }
+  }
+
+  it('reads the target before the banner check, allows, and proves the operation before the extra proof', async () => {
+    const { context: decided, request } = flowContext()
+    const allow = allowNativeOperation(decided, operation(), (read) => {
+      expect(read).toBe(request)
+      flow.events.push('extra proof')
+    })
+    expect(await allow(async () => {
+      flow.events.push('banner check')
+    })).toBe(request)
+    expect(flow.events).toEqual([
+      'queue',
+      'send',
+      'steps:5',
+      'banner',
+      'guard',
+      'banner check',
+      'locator:[data-testid="dialog-editor"]:visible',
+      'answer:allow',
+      'steps:6',
+      'idle',
+      'request:5',
+      'operation proof',
+      'extra proof',
+    ])
+  })
+
+  it('holds the command of the operation behind its output gate until the browser shows the output', async () => {
+    const { context: decided } = flowContext()
+    const release = vi.fn()
+    const shown = vi.fn(async () => {
+      flow.events.push('output shown')
+    })
+    const gate = { gate: { release } as unknown as OutputGate, shown }
+    await allowNativeOperation(decided, operation(gate))(async () => {})
+    expect(gate.shown).toHaveBeenCalledOnce()
+    expect(release).toHaveBeenCalled()
+    expect(flow.events.indexOf('output shown')).toBeGreaterThan(flow.events.indexOf('answer:allow'))
+  })
+
+  it('stops before the decision when the guard of the operation fails', async () => {
+    const { context: decided } = flowContext()
+    const failure = new Error('The target changed before the decision.')
+    const check = vi.fn(async () => {})
+    await expect(allowNativeOperation(decided, { ...operation(), beforeDecision: () => {
+      throw failure
+    } })(check)).rejects.toBe(failure)
+    expect(check).not.toHaveBeenCalled()
+    expect(flow.events).not.toContain('answer:allow')
   })
 })
 

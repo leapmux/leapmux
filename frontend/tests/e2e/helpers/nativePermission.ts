@@ -104,6 +104,34 @@ export async function exerciseNativePermissionDecision(context: NativeScenarioCo
 }
 
 /**
+ * Return a proof that allows one real native operation through its permission banner, for a check that observes the
+ * banner while the operation runs.
+ *
+ * Before the decision, the guard of the operation reads the target first, so nothing can change it before the read.
+ * The check of the caller reads the banner next. After the decision, the native proof of the operation runs, then
+ * `nativeProof`. An output gate of the operation goes with its tool call.
+ */
+export function allowNativeOperation(
+  context: NativeScenarioContext,
+  operation: NativePermissionOperationPlan,
+  nativeProof?: (request: MockModelRequestRecord) => void | Promise<void>,
+): (checkBanner: (banner: Locator) => Promise<void>) => Promise<MockModelRequestRecord> {
+  return checkBanner => exerciseNativePermissionDecision(context, {
+    toolCall: operation.toolCall,
+    ...(operation.outputGate ? { outputGate: operation.outputGate } : {}),
+    decision: 'allow',
+    beforeDecision: async (banner) => {
+      await operation.beforeDecision()
+      await checkBanner(banner)
+    },
+    nativeProof: async (request) => {
+      await operation.nativeProof(request)
+      await nativeProof?.(request)
+    },
+  })
+}
+
+/**
  * Allow one shell command that writes a file, then refuse the next one with a typed reason that the same turn reads.
  * The runtime puts the reason into its native refusal, hands it to the model inside the same turn, and the model
  * answers. The refused command never runs, and the saved answer shows the reason, not the words of an option.

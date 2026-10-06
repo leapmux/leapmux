@@ -7,7 +7,7 @@ import { expect } from '@playwright/test'
 import { withCleanup } from './cleanup'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { watchNativeControls } from './nativeControlWatch'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from './nativePermission'
+import { allowNativeOperation, createNativePermissionFileWrite } from './nativePermission'
 import { currentNativeAgent } from './nativeScenario'
 
 /** The control route that a provider lacks. */
@@ -100,18 +100,6 @@ export async function exerciseUnsupportedControlThroughPermission(
     purpose: options.purpose,
     classify: options.classify,
     ...(options.isQuestionRequest ? { isQuestionRequest: options.isQuestionRequest } : {}),
-    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
-      toolCall: operation.toolCall,
-      ...(operation.outputGate ? { outputGate: operation.outputGate } : {}),
-      decision: 'allow',
-      beforeDecision: async (banner) => {
-        await operation.beforeDecision()
-        await beforeDecision(banner)
-      },
-      nativeProof: async (request) => {
-        await operation.nativeProof(request)
-        await options.nativeProof?.(request)
-      },
-    }),
+    relatedProof: allowNativeOperation(context, operation, options.nativeProof),
   })
 }

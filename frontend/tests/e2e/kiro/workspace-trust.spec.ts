@@ -8,9 +8,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { kiroToolResult } from '../helpers/kiroToolResult'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
-import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
+import { readMcpServerReceipt, waitForMcpToolListed } from '../helpers/mcpServerReceipt'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, expectMcpServerLoaded } from '../helpers/nativeWorkspaceTrustLimit'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
@@ -32,7 +32,7 @@ kiroTest('loads project MCP configuration without a workspace trust decision', a
       prove: async (privateContext, { directory, marker }) => {
         const request = await sendNativeAnswer(privateContext, 'Reply once after project MCP configuration loads.', 'The project MCP turn completed.')
         const receiptLog = join(directory, 'native-project-mcp-receipt.json')
-        await expectMcpServerLoaded(receiptLog)
+        await waitForMcpToolListed(receiptLog, 'echo')
         const body = isObject(request.body) ? request.body : undefined
         const state = isObject(body?.conversationState) ? body.conversationState : undefined
         const current = isObject(state?.currentMessage) ? state.currentMessage : undefined

@@ -4,13 +4,14 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
+import { reopenFromSessionPicker } from '../helpers/nativeResume'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, expectRowsInOrder, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
+import { closeAgentViaAPI, createGitRepo } from '../helpers/worktree'
 import { allowReadIfAsked } from './readPermission'
 
 fastAgentTest.describe('Fast Agent subagent transcript', () => {
@@ -249,17 +250,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     })
     await closeAgentViaAPI(hubUrl, adminToken, workerId, rootID)
 
-    await openNewAgentDialog(page)
-    await waitForWorker(page)
-    const dialog = page.getByRole('dialog')
-    await dialog.getByTestId('agent-provider-selector-trigger').click()
-    await page.getByTestId(`agent-provider-option-${PROVIDER}`).click()
-    await setWorkingDir(page, workingDir)
-    await openMenu(dialog, 'session-select-menu')
-    const session = dialog.getByTestId('session-select-menu').getByTestId(`loading-menu-option-${sessionID}`)
-    await expect(session).toBeVisible()
-    await session.click()
-    await dialog.getByRole('button', { name: 'Create' }).click()
+    await reopenFromSessionPicker(page, { provider: PROVIDER, workingDir, sessionId: sessionID })
 
     await expect(userBubbles(page).filter({ hasText: 'Delegate the count, then report.' })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: 'FAST_ROOT_RESUME_DONE' })).toHaveCount(1)

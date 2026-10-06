@@ -1,19 +1,20 @@
-import type { Locator, Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { ProjectMcpServer } from './nativeWorkspaceTrustLimit'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, expectMcpServerLoaded, instructionFileConfiguration, outsideFileWriteOperation, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
 
 /** The calls that the mocked browser, permission, and repository helpers receive, in order. */
-const calls = vi.hoisted(() => ({ events: [] as string[], request: undefined as unknown, decision: undefined as unknown, classify: undefined as unknown }))
+const calls = vi.hoisted(() => ({ events: [] as string[], request: undefined as unknown, proof: undefined as unknown }))
 
 /** The private run directory that `createTestDirectory` creates its directories in. */
 const run = vi.hoisted(() => ({ tmpDir: '' }))
@@ -49,6 +50,13 @@ vi.mock('./nativeConversation', async importOriginal => ({
   },
 }))
 
+vi.mock('./mcpServerReceipt', async importOriginal => ({
+  ...await importOriginal<typeof import('./mcpServerReceipt')>(),
+  waitForMcpToolListed: async (receiptLog: string, toolName: string) => {
+    calls.events.push(`listed ${toolName} in ${receiptLog}`)
+  },
+}))
+
 vi.mock('./worktree', async importOriginal => ({
   ...await importOriginal<typeof import('./worktree')>(),
   createGitRepo: (directory: string, name: string) => {
@@ -57,44 +65,19 @@ vi.mock('./worktree', async importOriginal => ({
   },
 }))
 
-vi.mock('./nativePermission', async importOriginal => ({
-  ...await importOriginal<typeof import('./nativePermission')>(),
-  createNativePermissionFileWrite: async (_context: unknown, options: { fileName: string }): Promise<NativePermissionOperationPlan> => {
-    calls.events.push(`default operation ${options.fileName}`)
-    return {
-      toolCall: { id: 'default-call', name: 'Bash', arguments: {} },
-      beforeDecision: () => {
-        calls.events.push('default before')
-      },
-      nativeProof: () => {
-        calls.events.push('default proof')
-      },
-    }
-  },
-  exerciseNativePermissionDecision: async (_context: unknown, options: { beforeDecision: (banner: Locator) => Promise<void>, nativeProof: (request: MockModelRequestRecord) => Promise<void> | void }) => {
-    calls.decision = options
-    calls.events.push('decision')
-    await options.beforeDecision({} as Locator)
-    await options.nativeProof({} as MockModelRequestRecord)
-  },
-}))
-
+// `exerciseUnsupportedControlThroughPermission` has its own cases in `./unsupportedNativeControl.test.ts`.
 vi.mock('./unsupportedNativeControl', async importOriginal => ({
   ...await importOriginal<typeof import('./unsupportedNativeControl')>(),
-  exerciseUnsupportedNativeControl: async (_context: unknown, options: { purpose: string, classify: unknown, relatedProof: (beforeDecision: (banner: Locator) => Promise<void>) => Promise<void> }) => {
+  exerciseUnsupportedControlThroughPermission: async (_context: unknown, options: { purpose: string, classify: unknown, operation?: NativePermissionOperationPlan }) => {
     calls.events.push(`unsupported ${options.purpose}`)
-    calls.classify = options.classify
-    await options.relatedProof(async () => {
-      calls.events.push('route check')
-    })
+    calls.proof = options
   },
 }))
 
 beforeEach(() => {
   calls.events = []
   calls.request = undefined
-  calls.decision = undefined
-  calls.classify = undefined
+  calls.proof = undefined
   mkdirSync(SCRATCH_ROOT, { recursive: true })
   run.tmpDir = mkdtempSync(join(SCRATCH_ROOT, 'workspace-trust-run-'))
 })
@@ -251,91 +234,60 @@ describe('instructionFileConfiguration', () => {
   })
 })
 
-describe('expectMcpServerLoaded', () => {
+describe('mcpServerProjectConfiguration', () => {
   const directories: string[] = []
   afterEach(() => {
     for (const directory of directories.splice(0))
       rmSync(directory, { recursive: true, force: true })
   })
 
-  function writeReceipt(receipt: { initializeCapabilities: Record<string, unknown> | null, tools: string[] }): string {
-    const receiptLog = join(scratchDirectory(directories, 'mcp-loaded-'), 'receipt.json')
-    writeFileSync(receiptLog, JSON.stringify({
-      initializeCapabilities: receipt.initializeCapabilities,
-      toolCatalogs: [{ id: 1, tools: receipt.tools.map(name => ({ name, inputSchema: { type: 'object' } })) }],
-      elicitationRequests: [],
-      elicitationReplies: [],
-      toolResults: [],
-      // The receipt runtime records the exchange of every server, so a real receipt always holds the field.
-      exchange: [],
-    }))
-    return receiptLog
-  }
-
-  it('accepts a server that answered initialize and listed the tool', async () => {
-    await expectMcpServerLoaded(writeReceipt({ initializeCapabilities: { tools: {} }, tools: ['echo'] }))
-    await expectMcpServerLoaded(writeReceipt({ initializeCapabilities: {}, tools: ['ask', 'probe'] }), 'probe')
+  it('makes the repository, writes the echo server, and passes its launch to the provider configuration', async () => {
+    const directory = scratchDirectory(directories, 'mcp-project-')
+    const servers: ProjectMcpServer[] = []
+    await mcpServerProjectConfiguration((dir, server) => {
+      expect(dir).toBe(directory)
+      servers.push(server)
+    }).prepare({ directory, marker: 'UNUSED' })
+    expect(calls.events).toEqual(['repository . before the file'])
+    expect(servers).toEqual([{ name: 'trust_probe', command: process.execPath, args: [expect.stringContaining(directory)] }])
+    expect(existsSync(servers[0]!.args[0]!)).toBe(true)
   })
 
-  it('refuses a server that listed no such tool', async () => {
-    await expect(expectMcpServerLoaded(writeReceipt({ initializeCapabilities: {}, tools: ['ask'] }))).rejects.toThrow('lists echo')
-  })
-
-  it('refuses a server that never answered initialize', async () => {
-    await expect(expectMcpServerLoaded(writeReceipt({ initializeCapabilities: null, tools: ['echo'] }))).rejects.toThrow()
-  })
-
-  it('refuses an absent receipt', async () => {
-    await expect(expectMcpServerLoaded(join(scratchDirectory(directories, 'mcp-loaded-'), 'absent.json'))).rejects.toThrow('lists echo')
-  })
-
-  it('refuses an empty tool name', async () => {
-    await expect(expectMcpServerLoaded(writeReceipt({ initializeCapabilities: {}, tools: ['echo'] }), '')).rejects.toThrow('name of a tool')
+  it('proves the configuration through one native turn and the echo tool that the server lists', async () => {
+    const directory = scratchDirectory(directories, 'mcp-project-')
+    await mcpServerProjectConfiguration(() => {}).prove(detachedContext(), { directory, marker: 'UNUSED', agentId: 'agent' })
+    expect(calls.events).toEqual([
+      'turn Return one native response from this scratch project.',
+      `listed echo in ${join(directory, 'workspace-mcp-receipt.json')}`,
+    ])
   })
 })
 
 describe('exerciseMissingWorkspaceTrustRoute', () => {
   const classify = () => null
 
-  it('applies the ask option before it prepares the default operation, and allows that operation under the route check', async () => {
+  it('applies the ask option, then proves the default operation of the workspace-trust purpose under the route check', async () => {
     await exerciseMissingWorkspaceTrustRoute(detachedContext(), { askOption: 'permissionMode-ask', classify })
-    expect(calls.events).toEqual([
-      'choose permissionMode-ask',
-      'idle',
-      'default operation native-workspace-trust-control.txt',
-      'unsupported workspace-trust',
-      'decision',
-      'default before',
-      'route check',
-      'default proof',
-    ])
-    expect(calls.decision).toMatchObject({ decision: 'allow', toolCall: { id: 'default-call' } })
-    expect(calls.decision).not.toHaveProperty('outputGate')
-    expect(calls.classify).toBe(classify)
+    expect(calls.events).toEqual(['choose permissionMode-ask', 'idle', 'unsupported workspace-trust'])
+    expect(calls.proof).toEqual({ purpose: 'workspace-trust', classify })
   })
 
-  it('prepares a stated operation after the ask option, and passes its output gate', async () => {
-    const outputGate = { gate: {}, shown: async () => {} } as unknown as NonNullable<NativePermissionOperationPlan['outputGate']>
+  it('prepares a stated operation after the ask option, and hands it to the proof', async () => {
+    const operation: NativePermissionOperationPlan = {
+      toolCall: { id: 'own-call', name: 'Bash', arguments: {} },
+      beforeDecision: () => {},
+      nativeProof: () => {},
+    }
     await exerciseMissingWorkspaceTrustRoute(detachedContext(), {
       askOption: 'permissionMode-ask',
       classify,
       operation: () => {
         calls.events.push('own operation')
-        return {
-          toolCall: { id: 'own-call', name: 'Bash', arguments: {} },
-          outputGate,
-          beforeDecision: () => {
-            calls.events.push('own before')
-          },
-          nativeProof: () => {
-            calls.events.push('own proof')
-          },
-        }
+        return operation
       },
     })
-    expect(calls.events).toEqual(['choose permissionMode-ask', 'idle', 'own operation', 'unsupported workspace-trust', 'decision', 'own before', 'route check', 'own proof'])
-    expect(calls.decision).toMatchObject({ decision: 'allow', toolCall: { id: 'own-call' } })
-    expect((calls.decision as { outputGate?: unknown }).outputGate).toBe(outputGate)
+    expect(calls.events).toEqual(['choose permissionMode-ask', 'idle', 'own operation', 'unsupported workspace-trust'])
+    expect(calls.proof).toEqual({ purpose: 'workspace-trust', classify, operation })
   })
 
   it('refuses an empty ask option before any browser step', async () => {
