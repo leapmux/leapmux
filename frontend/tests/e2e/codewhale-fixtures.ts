@@ -53,6 +53,13 @@ export const CODEWHALE_E2E_SKIP_REASON: string | null = CODEWHALE.path === null
  *
  * The routes exist from 0.10.0. An older runtime reports a job's end to the model
  * alone, so the worker cannot close the job's row until something else states it.
+ *
+ * The flag stays here, beside the skip reason, because both read the one
+ * `codewhale --version` run of this file. `codewhale/scenarios.ts` cannot hold
+ * it: this file imports that module, so an import of the version back forms a
+ * cycle. A module of its own in `codewhale/` needs the run too. It must either
+ * run `codewhale --version` a second time, or take the run out of this file,
+ * and with it the skip reason that each provider fixture file computes itself.
  */
 export const CODEWHALE_SERVES_JOB_ROUTES: boolean = INSTALL.version !== null && (INSTALL.version[0] > 0 || INSTALL.version[1] >= 10)
 
