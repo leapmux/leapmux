@@ -1,7 +1,8 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
+import type { NativeOutputRow } from '../helpers/nativeOutputReaderCases'
 import { describe, expect, it } from 'vitest'
-import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { COPILOT_EVENT, COPILOT_METHOD } from '../../../src/generated/contracts/copilot-protocol'
+import { nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
 import { COPILOT_USER_REJECTION, copilotToolCompletion } from './permissionRefusal'
 
 /** One stored session event notification, as the Worker keeps it. */
@@ -18,17 +19,13 @@ function eventFrame(type: string, data: Record<string, unknown>, overrides: { se
 
 const rejected = { toolCallId: 'denied-1', success: false, error: { message: 'The user rejected this tool call', code: 'rejected' } }
 
-function message(id: string, frame: unknown, overrides: { agentSessionId?: string, spanId?: string } = {}) {
-  return makeMessage({
-    id,
-    agentSessionId: overrides.agentSessionId ?? 'native-session',
-    spanId: overrides.spanId ?? 'denied-1',
-    content: rawContent(frame),
-  })
+/** One stored row of the native session. The row belongs to the span of the refused call. */
+function row(frame: unknown, overrides: { agentSessionId?: string } = {}): NativeOutputRow {
+  return { frame, spanId: 'denied-1', ...overrides }
 }
 
-function snapshot(...messages: ReturnType<typeof message>[]): NativeMessageSnapshot {
-  return { agentId: 'parent', agentSessionId: 'native-session', messages }
+function snapshot(...rows: NativeOutputRow[]): NativeMessageSnapshot {
+  return nativeOutputSnapshot(rows, { agentId: 'parent', agentSessionId: 'native-session' })
 }
 
 describe('COPILOT_USER_REJECTION', () => {
@@ -47,24 +44,24 @@ describe('COPILOT_USER_REJECTION', () => {
 
 describe('copilotToolCompletion', () => {
   it('reads the exact native completion of a rejected tool call', () => {
-    expect(copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, rejected))), 'denied-1')).toEqual({
+    expect(copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, rejected))), 'denied-1')).toEqual({
       success: false,
       error: { message: 'The user rejected this tool call', code: 'rejected' },
     })
   })
 
   it('skips the start event of the same call', () => {
-    const start = message('start', eventFrame(COPILOT_EVENT.ToolStarted, { toolCallId: 'denied-1', toolName: 'bash', arguments: {} }))
-    expect(copilotToolCompletion(snapshot(start, message('result', eventFrame(COPILOT_EVENT.ToolCompleted, rejected))), 'denied-1').success).toBe(false)
+    const start = row(eventFrame(COPILOT_EVENT.ToolStarted, { toolCallId: 'denied-1', toolName: 'bash', arguments: {} }))
+    expect(copilotToolCompletion(snapshot(start, row(eventFrame(COPILOT_EVENT.ToolCompleted, rejected))), 'denied-1').success).toBe(false)
   })
 
   it('reads a successful completion that has no error', () => {
-    expect(copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: true }))), 'denied-1')).toEqual({ success: true })
+    expect(copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: true }))), 'denied-1')).toEqual({ success: true })
   })
 
   it('ignores a completion of the same call ID in another native session', () => {
-    const foreign = message('foreign', eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: true }, { sessionId: 'other' }), { agentSessionId: 'other' })
-    expect(copilotToolCompletion(snapshot(foreign, message('result', eventFrame(COPILOT_EVENT.ToolCompleted, rejected))), 'denied-1').success).toBe(false)
+    const foreign = row(eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: true }, { sessionId: 'other' }), { agentSessionId: 'other' })
+    expect(copilotToolCompletion(snapshot(foreign, row(eventFrame(COPILOT_EVENT.ToolCompleted, rejected))), 'denied-1').success).toBe(false)
   })
 
   it('refuses an absent completion', () => {
@@ -73,20 +70,20 @@ describe('copilotToolCompletion', () => {
 
   it('refuses two completions for one call', () => {
     const frame = eventFrame(COPILOT_EVENT.ToolCompleted, rejected)
-    expect(() => copilotToolCompletion(snapshot(message('first', frame), message('second', frame)), 'denied-1')).toThrow('has 2 completions')
+    expect(() => copilotToolCompletion(snapshot(row(frame), row(frame)), 'denied-1')).toThrow('has 2 completions')
   })
 
   it('refuses a completion that identifies another call or session', () => {
-    expect(() => copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, { ...rejected, toolCallId: 'other' }))), 'denied-1')).toThrow('another session or call')
-    expect(() => copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, rejected, { sessionId: 'other' }))), 'denied-1')).toThrow('another session or call')
+    expect(() => copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, { ...rejected, toolCallId: 'other' }))), 'denied-1')).toThrow('another session or call')
+    expect(() => copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, rejected, { sessionId: 'other' }))), 'denied-1')).toThrow('another session or call')
   })
 
   it('refuses a completion of a subagent', () => {
-    expect(() => copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, rejected, { agentId: 'child-1' }))), 'denied-1')).toThrow('belongs to a subagent')
+    expect(() => copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, rejected, { agentId: 'child-1' }))), 'denied-1')).toThrow('belongs to a subagent')
   })
 
   it('refuses a completion without a boolean success value', () => {
-    expect(() => copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: 'false' }))), 'denied-1')).toThrow('no success value')
+    expect(() => copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: 'false' }))), 'denied-1')).toThrow('no success value')
   })
 
   it.each([
@@ -94,11 +91,11 @@ describe('copilotToolCompletion', () => {
     { label: 'an error without a message', error: { code: 'rejected' } },
     { label: 'an error with a numeric code', error: { message: 'The user rejected this tool call', code: 7 } },
   ])('refuses $label', ({ error }) => {
-    expect(() => copilotToolCompletion(snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: false, error }))), 'denied-1')).toThrow('malformed error')
+    expect(() => copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: false, error }))), 'denied-1')).toThrow('malformed error')
   })
 
   it('requires an exact call and a nonempty agent and session identity', () => {
-    const source = snapshot(message('result', eventFrame(COPILOT_EVENT.ToolCompleted, rejected)))
+    const source = snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, rejected)))
     expect(() => copilotToolCompletion(source, '')).toThrow('exact agent, session, and call ID')
     expect(() => copilotToolCompletion({ ...source, agentId: '' }, 'denied-1')).toThrow('exact agent, session, and call ID')
     expect(() => copilotToolCompletion({ ...source, agentSessionId: ' ' }, 'denied-1')).toThrow('exact agent, session, and call ID')
