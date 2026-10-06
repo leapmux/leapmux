@@ -54,12 +54,27 @@ describe('nativeCodeExecutionSchema', () => {
     expect(nativeCodeExecutionSchema({ protocol: 'google-generative-language', path: '/google', body }, tool.name, { source: 'string' })).toBe(schema)
   })
 
-  it.each([undefined, [], [{ function: { name: 'other', parameters: schema } }], [{ function: tool }, { function: tool }]])('rejects a missing or ambiguous actual descriptor: %j', (tools) => {
-    expect(() => nativeCodeExecutionSchema(request(tools), 'native_runner', { source: 'string' })).toThrow()
+  it.each([undefined, []])('rejects a missing catalog: %j', (tools) => {
+    expect(() => nativeCodeExecutionSchema(request(tools), 'native_runner', { source: 'string' })).toThrow('The native model request contains no nonempty tool catalog.')
   })
 
-  it.each([null, {}, { type: 'array', properties: {} }, { type: 'object', properties: {} }, { type: 'object', properties: { source: { type: 'number' } } }])('rejects an absent or changed source schema: %j', (parameters) => {
-    expect(() => nativeCodeExecutionSchema(request([{ function: { name: tool.name, parameters } }]), 'native_runner', { source: 'string' })).toThrow()
+  it.each([
+    { tools: [{ function: { name: 'other', parameters: schema } }], count: 0 },
+    { tools: [{ function: tool }, { function: tool }], count: 2 },
+  ])('rejects $count descriptors for the tool', ({ tools, count }) => {
+    expect(() => nativeCodeExecutionSchema(request(tools), 'native_runner', { source: 'string' })).toThrow(`The native catalog contains ${count} descriptors for native_runner.`)
+  })
+
+  it('rejects a catalog entry that is not an object', () => {
+    expect(() => nativeCodeExecutionSchema(request(['native_runner', { function: tool }]), 'native_runner', { source: 'string' })).toThrow('The native model tool catalog contains an invalid entry.')
+  })
+
+  it.each([null, {}, { type: 'array', properties: {} }])('rejects an absent or incomplete object schema: %j', (parameters) => {
+    expect(() => nativeCodeExecutionSchema(request([{ function: { name: tool.name, parameters } }]), 'native_runner', { source: 'string' })).toThrow('The native executor has no complete object argument schema.')
+  })
+
+  it.each([{ type: 'object', properties: {} }, { type: 'object', properties: { source: { type: 'number' } } }])('rejects a changed source field: %j', (parameters) => {
+    expect(() => nativeCodeExecutionSchema(request([{ function: { name: tool.name, parameters } }]), 'native_runner', { source: 'string' })).toThrow('The native executor argument source has no string schema.')
   })
 
   it('rejects a proof without a tool or argument fields', () => {

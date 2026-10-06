@@ -27,6 +27,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 // RELATIVE imports, not `~/...`. See the note in `../agentSettings.ts`.
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
+import { isObject } from '../../../src/lib/jsonPick'
 import { mockCredentialReceipt } from './mockCredentials'
 import { bufferModelOutput, createBufferedModelStream } from './modelStream'
 import { pauseUntilAborted } from './responsePause'
@@ -159,7 +160,7 @@ export interface AmpSeededThread {
 
 function isAmpSeededThread(value: unknown): value is AmpSeededThread {
   if (
-    !isRecord(value)
+    !isObject(value)
     || typeof value.id !== 'string'
     || value.id === ''
     || typeof value.title !== 'string'
@@ -172,7 +173,7 @@ function isAmpSeededThread(value: unknown): value is AmpSeededThread {
   if (value.updatedAt !== undefined && (typeof value.updatedAt !== 'number' || !Number.isFinite(value.updatedAt)))
     return false
   return Array.isArray(value.messages) && value.messages.every(message =>
-    isRecord(message) && (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
+    isObject(message) && (message.role === 'user' || message.role === 'assistant') && typeof message.text === 'string')
 }
 
 export interface AmpSurface {
@@ -274,8 +275,8 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     }
     if (url.pathname === '/api/thread-actors' && request.method === 'POST') {
       const body = await readJSON(request)
-      const requested = isRecord(body) && typeof body.threadId === 'string' ? body.threadId : ''
-      const thread = threadFor(requested || `T-${randomUUID()}`, isRecord(body) && typeof body.agentMode === 'string' ? body.agentMode : undefined)
+      const requested = isObject(body) && typeof body.threadId === 'string' ? body.threadId : ''
+      const thread = threadFor(requested || `T-${randomUUID()}`, isObject(body) && typeof body.agentMode === 'string' ? body.agentMode : undefined)
       const credential = mockCredentialReceipt(request.headers)
       thread.mockCredential = { kind: 'service', accepted: credential.accepted }
       writeJSON(response, 200, {
@@ -294,7 +295,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     if (url.pathname === '/api/internal') {
       const body = request.method === 'GET' ? {} : await readJSON(request).catch(() => ({}))
       const method = [...url.searchParams.keys()][0] ?? ''
-      const params = isRecord(body) && isRecord(body.params) ? body.params : {}
+      const params = isObject(body) && isObject(body.params) ? body.params : {}
       writeJSON(response, 200, internalCall(method, params))
       return
     }
@@ -393,13 +394,13 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       return
     }
     for (const message of Array.isArray(parsed) ? parsed : [parsed]) {
-      if (isRecord(message))
+      if (isObject(message))
         handleRequest(thread, member, message)
     }
   }
 
   function handleRequest(thread: ActorThread, member: ThreadSocket, message: Record<string, unknown>): void {
-    const params = isRecord(message.params) ? message.params : {}
+    const params = isObject(message.params) ? message.params : {}
     const reply = (result: unknown) => {
       if (message.id !== undefined)
         member.connection.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
@@ -411,9 +412,9 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         notify(thread, 'executor_connected', { executorId: params.clientId, registeredToolCount: 0, guidanceInventory: [], resumeBootstrap: false, executorSystemInfo: true })
         return
       case 'executor_environment_snapshot': {
-        const environment = isRecord(params.environment) ? params.environment : {}
+        const environment = isObject(params.environment) ? params.environment : {}
         const trees = Array.isArray(environment.trees) ? environment.trees : []
-        const first = trees.find(isRecord)
+        const first = trees.find(isObject)
         if (first && typeof first.uri === 'string')
           thread.tree = first.uri
         reply({ ok: true })
@@ -430,7 +431,7 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         reply({ replayMessageCount: 0, storedEventCount: 0, replayThroughSeq: thread.seq })
         return
       case 'client_append_user_msg': {
-        const content = Array.isArray(params.content) ? params.content.filter(isRecord) : []
+        const content = Array.isArray(params.content) ? params.content.filter(isObject) : []
         reply({ ok: true })
         if (thread.turn) {
           // A message during a turn waits for the turn's next interruption point, as
@@ -733,10 +734,6 @@ function usage(step: MockModelStep): Record<string, unknown> {
     timestamp: new Date().toISOString(),
     features: [],
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 async function readJSON(request: IncomingMessage): Promise<unknown> {

@@ -1,14 +1,10 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import type { NativeToolDescriptor } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
-
-export interface DroidNativeTool {
-  name: string
-  description: string
-  inputSchema: Record<string, unknown>
-}
+import { requestToolDescriptors, toolInputSchema } from '../helpers/modelRequestBody'
 
 export interface DroidCompleteToolCatalog {
-  current: DroidNativeTool[]
+  current: NativeToolDescriptor[]
   deferred: string[]
 }
 
@@ -25,13 +21,13 @@ function requestText(body: Record<string, unknown>): string[] {
 /** Read the current descriptors and the complete native hidden-tool reminder. */
 export function droidCompleteToolCatalog(request: MockModelRequestRecord): DroidCompleteToolCatalog {
   const body = isObject(request.body) ? request.body : undefined
-  if (!body || !Array.isArray(body.tools) || body.tools.length === 0)
+  const tools = requestToolDescriptors(request.protocol, body)
+  if (!body || !tools || tools.length === 0)
     throw new Error('The native Droid request contains no current tool inventory.')
   const seen = new Set<string>()
-  const current = body.tools.map((value: unknown): DroidNativeTool => {
-    const tool = isObject(value) && isObject(value.function) ? value.function : isObject(value) ? value : undefined
-    const schema = tool?.parameters ?? tool?.input_schema
-    if (typeof tool?.name !== 'string' || !tool.name.trim() || typeof tool.description !== 'string' || !isObject(schema) || schema.type !== 'object')
+  const current = tools.map((tool): NativeToolDescriptor => {
+    const schema = toolInputSchema(tool)
+    if (typeof tool.name !== 'string' || !tool.name.trim() || typeof tool.description !== 'string' || !isObject(schema) || schema.type !== 'object')
       throw new Error('The native Droid catalog contains an incomplete tool descriptor.')
     if (seen.has(tool.name))
       throw new Error('The native Droid catalog contains duplicate tool names.')
@@ -78,13 +74,13 @@ export function droidCompleteToolCatalog(request: MockModelRequestRecord): Droid
 export const DROID_SCRIPT_ARGUMENTS = { script: 'string', inputs: 'object' } as const
 
 /** Detect execution capability from native descriptions and argument schemas. */
-export function droidScriptExecutors(catalog: readonly DroidNativeTool[]): DroidNativeTool[] {
+export function droidScriptExecutors(catalog: readonly NativeToolDescriptor[]): NativeToolDescriptor[] {
   return catalog.filter(tool => /javascript|typescript|python|code|script|repl|interpreter/i.test(`${tool.name} ${tool.description}`)
     && Object.keys(isObject(tool.inputSchema.properties) ? tool.inputSchema.properties : {}).some(name => /^(?:code|source|script|expression|javascript|python|input)$/i.test(name)))
 }
 
 /** Require the exact loaded schema for each announced deferred tool. */
-export function droidLoadedToolSchemas(before: DroidCompleteToolCatalog, after: DroidCompleteToolCatalog, selected: readonly string[]): DroidNativeTool[] {
+export function droidLoadedToolSchemas(before: DroidCompleteToolCatalog, after: DroidCompleteToolCatalog, selected: readonly string[]): NativeToolDescriptor[] {
   if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(name => !before.deferred.includes(name)))
     throw new Error('The Droid schema receipt requires distinct announced deferred names.')
   return selected.map((name) => {

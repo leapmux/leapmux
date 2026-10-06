@@ -48,6 +48,10 @@ describe('droidCompleteToolCatalog', () => {
   ])('rejects an incomplete or ambiguous inventory: %j', ({ tools, content }) => {
     expect(() => droidCompleteToolCatalog(request(tools, content))).toThrow()
   })
+
+  it('rejects a tool entry that is not an object', () => {
+    expect(() => droidCompleteToolCatalog(request([descriptor('Execute'), 'Execute']))).toThrow('The native model tool catalog contains an invalid entry.')
+  })
 })
 
 describe('droidScriptExecutors', () => {

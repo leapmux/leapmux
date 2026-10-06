@@ -15,6 +15,7 @@ import {
   nativeModelConversationTurns,
   nativeModelInstructionText,
   nativeModelLastUserText,
+  nativeModelToolDescriptors,
   nativeModelToolNames,
   nativeOptionGroup,
   nativeOptionValue,
@@ -185,10 +186,36 @@ describe('nativeModelContextText', () => {
   })
 })
 
+describe('nativeModelToolDescriptors', () => {
+  it('reads each descriptor out of its envelope without a copy', () => {
+    const chat = { name: 'chat_tool', parameters: { type: 'object' } }
+    const anthropic = { name: 'anthropic_tool', input_schema: { type: 'object' } }
+    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { tools: [{ type: 'function', function: chat }, anthropic] } }
+    const descriptors = nativeModelToolDescriptors(request)
+    expect(descriptors).toEqual([chat, anthropic])
+    expect(descriptors[0]).toBe(chat)
+    expect(descriptors[1]).toBe(anthropic)
+  })
+
+  it('reads Google function declarations', () => {
+    const declaration = { name: 'run_shell_command', parametersJsonSchema: { type: 'object' } }
+    expect(nativeModelToolDescriptors({ protocol: 'google-generative-language', body: { tools: [{ functionDeclarations: [declaration] }] } })).toEqual([declaration])
+  })
+
+  it.each([
+    { protocol: 'anthropic-messages', body: {} },
+    { protocol: 'anthropic-messages', body: { tools: [] } },
+    { protocol: 'google-generative-language', body: { tools: [{ functionDeclarations: [] }] } },
+    { protocol: 'aws-event-stream', body: { tools: [{ name: 'service_tool' }] } },
+  ] as const)('rejects a missing or empty catalog: $protocol $body', (request) => {
+    expect(() => nativeModelToolDescriptors(request)).toThrow('The native model request contains no nonempty tool catalog.')
+  })
+})
+
 describe('nativeModelToolNames', () => {
   it('reads Google function declarations in native order without changing them', () => {
     const body = { tools: [{ functionDeclarations: [{ name: 'read_file' }, { name: 'run_shell_command' }] }, { functionDeclarations: [{ name: 'read_file' }] }] }
-    expect(nativeModelToolNames({ protocol: 'google-generative-language', path: '/v1beta/models/gemini-2.5-pro:generateContent', body })).toEqual(['read_file', 'run_shell_command', 'read_file'])
+    expect(nativeModelToolNames({ protocol: 'google-generative-language', body })).toEqual(['read_file', 'run_shell_command', 'read_file'])
     expect(body.tools[0]?.functionDeclarations[0]?.name).toBe('read_file')
   })
 
@@ -199,7 +226,7 @@ describe('nativeModelToolNames', () => {
       { name: 'view' },
     ]
     const before = JSON.stringify(tools)
-    expect(nativeModelToolNames({ protocol: 'openai-chat-completions', path: '/chat/completions', body: { tools } }))
+    expect(nativeModelToolNames({ protocol: 'openai-chat-completions', body: { tools } }))
       .toEqual(['bash', 'apply_patch', 'view'])
     expect(JSON.stringify(tools)).toBe(before)
   })
@@ -219,17 +246,17 @@ describe('nativeModelToolNames', () => {
     { name: false },
     { name: [] },
   ])('refuses an absent or malformed custom catalog object: %j', (custom) => {
-    expect(() => nativeModelToolNames({ protocol: 'openai-chat-completions', path: '/chat/completions', body: { tools: [{ type: 'custom', custom }] } }))
+    expect(() => nativeModelToolNames({ protocol: 'openai-chat-completions', body: { tools: [{ type: 'custom', custom }] } }))
       .toThrow(/invalid entry|without a name/)
   })
 
   it.each([undefined, null, '', 'function', 'namespace'])('refuses a custom-only object with another type: %j', (type) => {
-    expect(() => nativeModelToolNames({ protocol: 'openai-chat-completions', path: '/chat/completions', body: { tools: [{ type, custom: { name: 'apply_patch' } }] } }))
+    expect(() => nativeModelToolNames({ protocol: 'openai-chat-completions', body: { tools: [{ type, custom: { name: 'apply_patch' } }] } }))
       .toThrow('without a name')
   })
 
   it('preserves catalog order and duplicate native names across ordinary and custom tools', () => {
-    expect(nativeModelToolNames({ protocol: 'openai-chat-completions', path: '/chat/completions', body: { tools: [
+    expect(nativeModelToolNames({ protocol: 'openai-chat-completions', body: { tools: [
       { name: 'read' },
       { type: 'custom', custom: { name: 'apply_patch' } },
       { type: 'function', function: { name: 'read' } },
@@ -238,7 +265,7 @@ describe('nativeModelToolNames', () => {
   })
 
   it('keeps the existing direct-name precedence and ordinary duplicate behavior', () => {
-    expect(nativeModelToolNames({ protocol: 'openai-chat-completions', path: '/chat/completions', body: { tools: [
+    expect(nativeModelToolNames({ protocol: 'openai-chat-completions', body: { tools: [
       { name: 'direct', function: { name: 'nested' }, custom: { name: 'other' } },
       { type: 'function', function: { name: 'same' } },
       { name: 'same' },
@@ -253,11 +280,11 @@ describe('nativeModelToolNames', () => {
   })
 
   it.each([null, {}, { tools: null }, { tools: [] }, { tools: 'broken' }])('rejects a missing or empty catalog: %j', (body) => {
-    expect(() => nativeModelToolNames({ protocol: 'anthropic-messages', path: '/v1/messages', body })).toThrow('no nonempty tool catalog')
+    expect(() => nativeModelToolNames({ protocol: 'anthropic-messages', body })).toThrow('no nonempty tool catalog')
   })
 
   it.each([null, [], 'tool', 0, false, {}, { name: '' }, { name: 0 }, { function: { name: null } }])('rejects an invalid native catalog entry: %j', (tool) => {
-    expect(() => nativeModelToolNames({ protocol: 'openai-responses', path: '/responses', body: { tools: [tool] } })).toThrow(/invalid entry|without a name/)
+    expect(() => nativeModelToolNames({ protocol: 'openai-responses', body: { tools: [tool] } })).toThrow(/invalid entry|without a name/)
   })
 })
 

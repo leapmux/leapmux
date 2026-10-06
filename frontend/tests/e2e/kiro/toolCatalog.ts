@@ -1,11 +1,6 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import type { NativeToolDescriptor } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
-
-export interface KiroNativeTool {
-  name: string
-  description: string
-  inputSchema: Record<string, unknown>
-}
 
 function currentTools(request: MockModelRequestRecord): unknown[] {
   if (request.protocol !== 'aws-event-stream')
@@ -31,7 +26,7 @@ export function kiroNativeToolNames(request: MockModelRequestRecord): string[] {
 }
 
 /** Read every active descriptor when the native deferred paths are disabled. */
-export function kiroActiveToolCatalog(request: MockModelRequestRecord): KiroNativeTool[] {
+export function kiroActiveToolCatalog(request: MockModelRequestRecord): NativeToolDescriptor[] {
   const seen = new Set<string>()
   return currentTools(request).map((tool) => {
     const specification = isObject(tool) && isObject(tool.toolSpecification) ? tool.toolSpecification : undefined
@@ -50,7 +45,7 @@ export function kiroActiveToolCatalog(request: MockModelRequestRecord): KiroNati
 }
 
 /** Detect source-language execution from each complete native descriptor. */
-export function kiroScriptExecutors(catalog: readonly KiroNativeTool[]): KiroNativeTool[] {
+export function kiroScriptExecutors(catalog: readonly NativeToolDescriptor[]): NativeToolDescriptor[] {
   return catalog.filter(tool => /(?:run|execute|evaluate|interpret).*?(?:javascript|typescript|python|script|code)|repl|interpreter/i.test(tool.description)
     && Object.keys(isObject(tool.inputSchema.properties) ? tool.inputSchema.properties : {}).some(field => /^(?:source|script|code|expression|input)$/i.test(field)))
 }
@@ -83,7 +78,7 @@ const KIRO_ACTIVE_BUILTIN_FIELDS: ReadonlyMap<string, readonly string[]> = new M
 ])
 
 /** Require only source-audited native tools and the one controlled MCP descriptor. */
-export function assertKiroActiveCatalog(catalog: readonly KiroNativeTool[]): void {
+export function assertKiroActiveCatalog(catalog: readonly NativeToolDescriptor[]): void {
   if (catalog.length === 0)
     throw new Error('The native Kiro active inventory must not be empty.')
   const names = new Set<string>()

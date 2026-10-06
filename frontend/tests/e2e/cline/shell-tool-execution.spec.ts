@@ -1,7 +1,8 @@
 import { expect } from '@playwright/test'
+import { isObject } from '../../../src/lib/jsonPick'
 
 import { clineTest } from '../cline-fixtures'
-import { contentText, isRecord } from '../helpers/mockModelScript'
+import { contentText } from '../helpers/mockModelScript'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chatText, toolRows } from '../helpers/ui'
@@ -17,9 +18,9 @@ import { applyPermissionPreset, chatText, toolRows } from '../helpers/ui'
  * protocol.
  */
 function toolMessageText(body: unknown, callId: string): string {
-  const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : []
+  const messages = isObject(body) && Array.isArray(body.messages) ? body.messages : []
   return messages
-    .filter((message): message is Record<string, unknown> => isRecord(message) && message.role === 'tool' && message.tool_call_id === callId)
+    .filter((message): message is Record<string, unknown> => isObject(message) && message.role === 'tool' && message.tool_call_id === callId)
     .map(message => contentText(message.content))
     .join('\n')
 }

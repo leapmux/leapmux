@@ -24,11 +24,12 @@ import type { MockModelDeliveredError, MockModelStep, MockModelToolCall } from '
 import type { ModelStream } from './modelStream'
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
+import { isObject } from '../../../src/lib/jsonPick'
 import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStream'
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { holdOpen, readJSONBody, readMockBody, writeMockJSON } from './mockHttp'
-import { contentText, isRecord, selectScenarioID } from './mockModelScript'
+import { contentText, selectScenarioID } from './mockModelScript'
 import { createModelStream } from './modelStream'
 import { writeResponseHeaders } from './responseHeaders'
 
@@ -233,19 +234,19 @@ export function kiroModelCatalog() {
 
 /** The current message of one model turn: the user's text and its tool results. */
 function kiroCurrentMessage(body: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(body) || !isRecord(body.conversationState) || !isRecord(body.conversationState.currentMessage))
+  if (!isObject(body) || !isObject(body.conversationState) || !isObject(body.conversationState.currentMessage))
     return undefined
   const message = body.conversationState.currentMessage.userInputMessage
-  return isRecord(message) ? message : undefined
+  return isObject(message) ? message : undefined
 }
 
 /** Select from actual user prompts. Native system history and tool results cannot select a scenario. */
 function kiroScenarioID(body: unknown): string {
   const messages: Array<{ role: 'user', content: string }> = []
-  if (isRecord(body) && isRecord(body.conversationState) && Array.isArray(body.conversationState.history)) {
+  if (isObject(body) && isObject(body.conversationState) && Array.isArray(body.conversationState.history)) {
     // The first native history entry holds the system prompt, as kiroSystemText documents.
     for (const entry of body.conversationState.history.slice(1)) {
-      if (isRecord(entry) && isRecord(entry.userInputMessage) && typeof entry.userInputMessage.content === 'string')
+      if (isObject(entry) && isObject(entry.userInputMessage) && typeof entry.userInputMessage.content === 'string')
         messages.push({ role: 'user', content: entry.userInputMessage.content })
     }
   }
@@ -266,9 +267,9 @@ export function kiroUserText(body: unknown): string {
     return ''
   const parts = [typeof message.content === 'string' ? message.content : '']
   const context = message.userInputMessageContext
-  if (isRecord(context) && Array.isArray(context.toolResults)) {
+  if (isObject(context) && Array.isArray(context.toolResults)) {
     for (const result of context.toolResults) {
-      if (isRecord(result))
+      if (isObject(result))
         parts.push(contentText(result.content))
     }
   }
@@ -282,10 +283,10 @@ export function kiroUserText(body: unknown): string {
  * of the history, and the model's acknowledgement follows it.
  */
 export function kiroSystemText(body: unknown): string {
-  if (!isRecord(body) || !isRecord(body.conversationState) || !Array.isArray(body.conversationState.history))
+  if (!isObject(body) || !isObject(body.conversationState) || !Array.isArray(body.conversationState.history))
     return ''
   const first = body.conversationState.history[0]
-  return isRecord(first) && isRecord(first.userInputMessage) ? contentText(first.userInputMessage.content) : ''
+  return isObject(first) && isObject(first.userInputMessage) ? contentText(first.userInputMessage.content) : ''
 }
 
 /** What the scenario machinery answers for one model turn. */
@@ -352,7 +353,7 @@ async function serveKiro(request: IncomingMessage, response: ServerResponse, bod
 
 /** The conversation id one turn states, which the answer echoes in its headers. */
 function kiroConversationId(body: unknown): string {
-  if (isRecord(body) && isRecord(body.conversationState) && typeof body.conversationState.conversationId === 'string')
+  if (isObject(body) && isObject(body.conversationState) && typeof body.conversationState.conversationId === 'string')
     return body.conversationState.conversationId
   return randomUUID()
 }

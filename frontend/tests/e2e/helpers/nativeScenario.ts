@@ -7,8 +7,9 @@ import { expect } from '@playwright/test'
 import { AgentStatus, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
-import { googleFunctionDeclarations, googleLastUserText, googlePartsText } from './googleModelContent'
+import { googleLastUserText, googlePartsText } from './googleModelContent'
 import { jsonStringValues } from './jsonStringValues'
+import { requestRows, requestToolDescriptors } from './modelRequestBody'
 import { nativeToolResult } from './nativeToolResult'
 import { retryUntilPass } from './retryUntilPass'
 
@@ -201,28 +202,30 @@ export function nativeModelBodiesAfter(status: { requests: readonly Pick<MockMod
   return status.requests.filter(request => (request.stepIndex ?? -1) >= from).map(request => JSON.stringify(request.body)).join('\n')
 }
 
+/** One tool that a native model request offers: its name, its description, and its argument schema. */
+export interface NativeToolDescriptor {
+  name: string
+  description: string
+  inputSchema: Record<string, unknown>
+}
+
+/**
+ * Read the tool descriptors of a generic native model API, each out of its envelope, without accepting a missing or
+ * empty catalog. The descriptors stay raw, so a provider reader applies its own checks to each field.
+ */
+export function nativeModelToolDescriptors(request: Pick<MockModelRequestRecord, 'protocol' | 'body'>): Record<string, unknown>[] {
+  const tools = requestToolDescriptors(request.protocol, request.body)
+  if (!tools || tools.length === 0)
+    throw new Error('The native model request contains no nonempty tool catalog.')
+  return tools
+}
+
 /** Read the tool catalog of a generic native model API without accepting a missing catalog. */
-export function nativeModelToolNames(request: MockModelRequestRecord): string[] {
-  const body = request.body
-  if (typeof body !== 'object' || body === null || !('tools' in body) || !Array.isArray(body.tools) || body.tools.length === 0)
-    throw new Error('The native model request contains no nonempty tool catalog.')
-  const tools = request.protocol === 'google-generative-language' ? googleFunctionDeclarations(body.tools) : body.tools
-  if (tools.length === 0)
-    throw new Error('The native model request contains no nonempty tool catalog.')
-  return tools.map((tool: unknown) => {
-    if (typeof tool !== 'object' || tool === null || Array.isArray(tool))
-      throw new Error('The native model tool catalog contains an invalid entry.')
-    const direct = 'name' in tool ? tool.name : undefined
-    const nested = 'function' in tool && typeof tool.function === 'object' && tool.function !== null && 'name' in tool.function
-      ? tool.function.name
-      : undefined
-    const custom = 'type' in tool && tool.type === 'custom' && 'custom' in tool && isObject(tool.custom)
-      ? tool.custom.name
-      : undefined
-    const name = direct ?? nested ?? custom
-    if (typeof name !== 'string' || name === '')
+export function nativeModelToolNames(request: Pick<MockModelRequestRecord, 'protocol' | 'body'>): string[] {
+  return nativeModelToolDescriptors(request).map((tool) => {
+    if (typeof tool.name !== 'string' || tool.name === '')
       throw new Error('The native model tool catalog contains an entry without a name.')
-    return name
+    return tool.name
   })
 }
 
@@ -258,7 +261,7 @@ export function nativeModelLastUserText(request: MockModelRequestRecord): string
       throw new Error('The native model request contains no last user text.')
     return text
   }
-  const rows = request.protocol === 'openai-responses' ? body.input : body.messages
+  const rows = requestRows(request.protocol, body)
   let parts: string[]
   if (request.protocol === 'openai-responses' && typeof rows === 'string') {
     parts = [rows]
@@ -416,12 +419,12 @@ function messageConversationTurns(messages: unknown): NativeModelTurn[] {
 export function nativeModelConversationTurns(request: MockModelRequestRecord): NativeModelTurn[] {
   if (request.protocol === 'aws-event-stream')
     throw new Error('The native service must supply its own conversation turn reader.')
-  const body = request.body
-  if (!isObject(body))
+  if (!isObject(request.body))
     throw new Error('The native conversation request body must be an object.')
+  const rows = requestRows(request.protocol, request.body)
   if (request.protocol === 'google-generative-language')
-    return googleConversationTurns(body.contents)
+    return googleConversationTurns(rows)
   if (request.protocol === 'openai-responses')
-    return responsesConversationTurns(body.input)
-  return messageConversationTurns(body.messages)
+    return responsesConversationTurns(rows)
+  return messageConversationTurns(rows)
 }

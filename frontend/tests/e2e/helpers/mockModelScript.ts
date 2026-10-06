@@ -1,5 +1,7 @@
 import type { CursorRunRequestWitness } from './cursorRequestWire'
+import { isObject } from '../../../src/lib/jsonPick'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
+import { requestRows } from './modelRequestBody'
 
 /**
  * The vocabulary a test injects into the mock model server.
@@ -424,7 +426,7 @@ export function validateScenarioID(id: string): void {
  * later as a provider turn that answers nothing.
  */
 export function parseScenarioSpec(body: unknown): MockModelScenarioSpec {
-  if (!isRecord(body))
+  if (!isObject(body))
     throw new Error('A model scenario must be an object')
   const stepsValue = body.steps ?? []
   if (!Array.isArray(stepsValue))
@@ -447,7 +449,7 @@ export function parseScenarioSpec(body: unknown): MockModelScenarioSpec {
 }
 
 function parseRule(value: unknown, index: number): MockModelRule {
-  if (!isRecord(value))
+  if (!isObject(value))
     throw new Error(`Model rule ${index} must be an object`)
   if (typeof value.name !== 'string' || !value.name)
     throw new Error(`Model rule ${index} needs a name`)
@@ -467,7 +469,7 @@ function parseRule(value: unknown, index: number): MockModelRule {
 function parseMatcher(value: unknown, ruleName: string): MockModelMatcher {
   if (value === undefined)
     return {}
-  if (!isRecord(value))
+  if (!isObject(value))
     throw new Error(`Model rule ${ruleName} when must be an object`)
   const matcher: MockModelMatcher = {}
   if (value.protocol !== undefined) {
@@ -483,7 +485,7 @@ function parseMatcher(value: unknown, ruleName: string): MockModelMatcher {
   }
   if (value.lastMessage !== undefined) {
     const message = value.lastMessage
-    if (!isRecord(message) || Object.keys(message).length === 0 || Object.keys(message).some(key => key !== 'role' && key !== 'text'))
+    if (!isObject(message) || Object.keys(message).length === 0 || Object.keys(message).some(key => key !== 'role' && key !== 'text'))
       throw new Error(`Model rule ${ruleName} lastMessage must contain role or text criteria only`)
     const role = (['system', 'developer', 'user', 'assistant', 'tool'] as const).find(candidate => candidate === message.role)
     if (message.role !== undefined && role === undefined)
@@ -517,7 +519,7 @@ function parseModelPattern(value: unknown, label: string): MockModelPattern {
 }
 
 function parseStep(value: unknown, label: string): MockModelStep {
-  if (!isRecord(value))
+  if (!isObject(value))
     throw new Error(`Model ${label} must be an object`)
   if (value.text !== undefined && typeof value.text !== 'string')
     throw new Error(`Model ${label} text must be a string`)
@@ -595,7 +597,7 @@ export function validateGateName(value: unknown, label = 'Model gate'): asserts 
 function parseCaptures(value: unknown, label: string): Record<string, string> | undefined {
   if (value === undefined)
     return undefined
-  if (!isRecord(value) || Object.keys(value).length === 0)
+  if (!isObject(value) || Object.keys(value).length === 0)
     throw new Error(`Model ${label} captures must be an object with at least one entry`)
   const captures: Record<string, string> = {}
   for (const [name, source] of Object.entries(value)) {
@@ -686,7 +688,7 @@ function fillValue(value: unknown, fill: (text: string) => string): unknown {
     return fill(value)
   if (Array.isArray(value))
     return value.map(item => fillValue(item, fill))
-  if (isRecord(value))
+  if (isObject(value))
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fillValue(item, fill)]))
   return value
 }
@@ -694,7 +696,7 @@ function fillValue(value: unknown, fill: (text: string) => string): unknown {
 function parseTextStream(value: unknown, label: string): MockModelTextStream | undefined {
   if (value === undefined)
     return undefined
-  if (!isRecord(value))
+  if (!isObject(value))
     throw new Error(`Model ${label} stream must be an object`)
   if (!Number.isInteger(value.chunkChars) || Number(value.chunkChars) < 1)
     throw new Error(`Model ${label} stream chunkChars must be an integer of 1 or more`)
@@ -708,7 +710,7 @@ function parseTextStream(value: unknown, label: string): MockModelTextStream | u
   const names = new Set<string>()
   let previous = 0
   const gates = value.gates.map((gate: unknown) => {
-    if (!isRecord(gate) || !Number.isSafeInteger(gate.afterChunk) || Number(gate.afterChunk) <= previous)
+    if (!isObject(gate) || !Number.isSafeInteger(gate.afterChunk) || Number(gate.afterChunk) <= previous)
       throw new Error(`Model ${label} stream gate positions must be positive, strictly increasing safe integers`)
     validateGateName(gate.name, `Model ${label} stream gate`)
     if (names.has(gate.name))
@@ -740,7 +742,7 @@ function parseDelay(value: unknown, label: string): number | undefined {
 function parseUsage(value: unknown, label: string): MockModelUsage | undefined {
   if (value === undefined)
     return undefined
-  if (!isRecord(value))
+  if (!isObject(value))
     throw new Error(`Model ${label} usage must be an object`)
   const usage: MockModelUsage = {}
   for (const key of ['inputTokens', 'outputTokens', 'contextWindow'] as const) {
@@ -757,7 +759,7 @@ function parseUsage(value: unknown, label: string): MockModelUsage | undefined {
 function parseRateLimits(value: unknown, label: string): MockModelRateLimits | undefined {
   if (value === undefined)
     return undefined
-  if (!isRecord(value))
+  if (!isObject(value))
     throw new Error(`Model ${label} rateLimits must be an object`)
   const type = value.type
   const status = value.status
@@ -782,18 +784,18 @@ function parseRateLimits(value: unknown, label: string): MockModelRateLimits | u
 }
 
 function parseToolCall(value: unknown, label: string, toolIndex: number): MockModelToolCall {
-  if (!isRecord(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || !value.name)
+  if (!isObject(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || !value.name)
     throw new Error(`Model ${label} tool call ${toolIndex} needs id and name`)
   if (value.namespace !== undefined && (typeof value.namespace !== 'string' || !value.namespace))
     throw new Error(`Model ${label} tool call ${toolIndex} namespace must be a non-empty string`)
-  const hasArguments = isRecord(value.arguments)
+  const hasArguments = isObject(value.arguments)
   const hasInput = typeof value.input === 'string'
   if (hasArguments === hasInput)
     throw new Error(`Model ${label} tool call ${toolIndex} needs either object arguments or raw text input, not both`)
   const completionGate = parseGate(value.completionGate, `${label} tool call ${toolIndex} completion`)
   if (value.taskProgress !== undefined && (typeof value.taskProgress !== 'string' || value.taskProgress.length === 0))
     throw new Error(`Model ${label} tool call ${toolIndex} taskProgress must be a non-empty string`)
-  if (value.nativeExecution !== undefined && (!isRecord(value.nativeExecution) || typeof value.nativeExecution.modelId !== 'string' || value.nativeExecution.modelId.length === 0 || Object.keys(value.nativeExecution).some(key => key !== 'modelId')))
+  if (value.nativeExecution !== undefined && (!isObject(value.nativeExecution) || typeof value.nativeExecution.modelId !== 'string' || value.nativeExecution.modelId.length === 0 || Object.keys(value.nativeExecution).some(key => key !== 'modelId')))
     throw new Error(`Model ${label} tool call ${toolIndex} nativeExecution requires only a non-empty modelId`)
   return {
     id: value.id,
@@ -803,12 +805,12 @@ function parseToolCall(value: unknown, label: string, toolIndex: number): MockMo
     ...(typeof value.namespace === 'string' ? { namespace: value.namespace } : {}),
     ...(completionGate === undefined ? {} : { completionGate }),
     ...(typeof value.taskProgress === 'string' ? { taskProgress: value.taskProgress } : {}),
-    ...(isRecord(value.nativeExecution) && typeof value.nativeExecution.modelId === 'string' ? { nativeExecution: { modelId: value.nativeExecution.modelId } } : {}),
+    ...(isObject(value.nativeExecution) && typeof value.nativeExecution.modelId === 'string' ? { nativeExecution: { modelId: value.nativeExecution.modelId } } : {}),
   }
 }
 
 function parseModelError(value: unknown, label: string): MockModelError {
-  if (!isRecord(value) || !Number.isInteger(value.status) || Number(value.status) < 400 || Number(value.status) > 599 || typeof value.message !== 'string' || !value.message)
+  if (!isObject(value) || !Number.isInteger(value.status) || Number(value.status) < 400 || Number(value.status) > 599 || typeof value.message !== 'string' || !value.message)
     throw new Error(`Model ${label} error needs an HTTP status and message`)
   if (value.code !== undefined && typeof value.code !== 'string')
     throw new Error(`Model ${label} error code must be a string`)
@@ -853,24 +855,24 @@ function scenarioMarkers(text: string): string[] {
 function scenarioUserTexts(body: unknown): string[] {
   if (typeof body === 'string')
     return [body]
-  if (!isRecord(body))
+  if (!isObject(body))
     return []
   if (typeof body.input === 'string')
     return [body.input]
   if (Array.isArray(body.contents)) {
-    return body.contents.filter(isRecord).filter(message => message.role === 'user').map(message => googlePartsText(message.parts))
+    return body.contents.filter(isObject).filter(message => message.role === 'user').map(message => googlePartsText(message.parts))
   }
   const rows = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : []
   const prompts: string[] = []
   for (const message of rows) {
-    if (!isRecord(message) || message.role !== 'user')
+    if (!isObject(message) || message.role !== 'user')
       continue
     if (typeof message.content === 'string') {
       prompts.push(message.content)
     }
     else if (Array.isArray(message.content)) {
       for (const block of message.content) {
-        if (isRecord(block) && (block.type === 'text' || block.type === 'input_text') && typeof block.text === 'string')
+        if (isObject(block) && (block.type === 'text' || block.type === 'input_text') && typeof block.text === 'string')
           prompts.push(block.text)
       }
     }
@@ -893,11 +895,9 @@ export function matchesRequest(
   if (matcher.body !== undefined && !matchesPattern(matcher.body, JSON.stringify(request.body ?? null)))
     return false
   if (matcher.lastMessage !== undefined) {
-    if (request.protocol === 'aws-event-stream' || !isRecord(request.body))
-      return false
-    const rows = request.protocol === 'google-generative-language' ? request.body.contents : request.protocol === 'openai-responses' ? request.body.input : request.body.messages
+    const rows = requestRows(request.protocol, request.body)
     const message: unknown = Array.isArray(rows) ? rows.at(-1) : undefined
-    if (!isRecord(message) || (matcher.lastMessage.role !== undefined && matcher.lastMessage.role !== message.role))
+    if (!isObject(message) || (matcher.lastMessage.role !== undefined && matcher.lastMessage.role !== message.role))
       return false
     if (!matchesPattern(matcher.lastMessage.text, request.protocol === 'google-generative-language' ? googlePartsText(message.parts) : contentText(message.content)))
       return false
@@ -921,10 +921,10 @@ function matchesPattern(pattern: MockModelPattern | undefined, subject: string):
  * Anthropic uses a top-level `system` field.
  */
 export function systemText(body: unknown): string {
-  if (!isRecord(body))
+  if (!isObject(body))
     return ''
   const parts: string[] = []
-  if (isRecord(body.systemInstruction))
+  if (isObject(body.systemInstruction))
     parts.push(googlePartsText(body.systemInstruction.parts))
   if (body.system !== undefined)
     parts.push(contentText(body.system))
@@ -935,7 +935,7 @@ export function systemText(body: unknown): string {
     if (!Array.isArray(items))
       continue
     for (const item of items) {
-      if (isRecord(item) && (item.role === 'system' || item.role === 'developer'))
+      if (isObject(item) && (item.role === 'system' || item.role === 'developer'))
         parts.push(contentText(item.content))
     }
   }
@@ -944,7 +944,7 @@ export function systemText(body: unknown): string {
 
 /** Read the last user prompt across the supported model APIs. */
 export function lastUserText(body: unknown): string {
-  if (!isRecord(body))
+  if (!isObject(body))
     return ''
   if (Array.isArray(body.contents))
     return googleLastUserText(body.contents)
@@ -954,7 +954,7 @@ export function lastUserText(body: unknown): string {
       continue
     for (let index = items.length - 1; index >= 0; index--) {
       const item = items[index]
-      if (isRecord(item) && item.role === 'user')
+      if (isObject(item) && item.role === 'user')
         return contentText(item.content)
     }
   }
@@ -967,7 +967,7 @@ export function contentText(value: unknown): string {
     return value
   if (Array.isArray(value))
     return value.map(contentText).join('\n')
-  if (!isRecord(value))
+  if (!isObject(value))
     return ''
   if (typeof value.text === 'string')
     return value.text
@@ -985,12 +985,8 @@ function visitStrings(value: unknown, visit: (text: string) => void): void {
       visitStrings(item, visit)
     return
   }
-  if (isRecord(value)) {
+  if (isObject(value)) {
     for (const item of Object.values(value))
       visitStrings(item, visit)
   }
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

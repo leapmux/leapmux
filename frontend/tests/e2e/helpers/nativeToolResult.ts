@@ -1,5 +1,6 @@
 import type { MockModelRequestRecord } from './mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
+import { requestRows } from './modelRequestBody'
 
 function objectItems(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter(isObject) : []
@@ -10,21 +11,21 @@ export function nativeToolResultContent(request: MockModelRequestRecord | undefi
   if (!request)
     throw new Error(`No native model request exists for tool call ${callId}.`)
 
-  const body = isObject(request.body) ? request.body : null
+  const rows = objectItems(requestRows(request.protocol, request.body))
   let results: unknown[]
   switch (request.protocol) {
     case 'openai-chat-completions':
-      results = objectItems(body?.messages)
+      results = rows
         .filter(message => message.role === 'tool' && message.tool_call_id === callId)
         .map(message => message.content)
       break
     case 'openai-responses':
-      results = objectItems(body?.input)
+      results = rows
         .filter(item => (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') && item.call_id === callId)
         .map(item => item.output)
       break
     case 'google-generative-language':
-      results = objectItems(body?.contents)
+      results = rows
         .filter(message => message.role === 'user')
         .flatMap(message => objectItems(message.parts))
         .map(part => part.functionResponse)
@@ -33,7 +34,7 @@ export function nativeToolResultContent(request: MockModelRequestRecord | undefi
         .map(result => result.response)
       break
     case 'anthropic-messages':
-      results = objectItems(body?.messages)
+      results = rows
         .filter(message => message.role === 'user')
         .flatMap(message => objectItems(message.content))
         .filter(block => block.type === 'tool_result' && block.tool_use_id === callId)

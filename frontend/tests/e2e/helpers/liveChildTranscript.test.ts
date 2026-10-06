@@ -9,12 +9,12 @@ import { dirname, join, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { isObject } from '../../../src/lib/jsonPick'
 import { markdownToPlainText } from '../../../src/lib/markdownPlainText'
 import { deferred } from '../../../src/test-support/async'
 import { withCleanup } from './cleanup'
 import { completeLiveChildTranscript, exerciseLiveChildTranscript, expectChildToolOutputDeferred, LIVE_CHILD_SHELL_CALL_ID, writeChildMarkerFile } from './liveChildTranscript'
 import { MOCK_MODEL_IDS, MOCK_MODELS } from './mockAgentEnvironment'
-import { isRecord } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { bashToolCall, ohMyPiYieldToolCall, readToolCall } from './providerToolCalls'
@@ -292,19 +292,19 @@ interface NativeAgentOptions {
 /** Parse one Chat Completions answer of the actual mock model server. */
 function parseChatAnswer(text: string): ReceivedStep {
   const body: unknown = JSON.parse(text)
-  const choice: unknown = isRecord(body) && Array.isArray(body.choices) ? body.choices[0] : undefined
-  const message: unknown = isRecord(choice) ? choice.message : undefined
-  if (!isRecord(message) || message.role !== 'assistant' || (message.content !== null && typeof message.content !== 'string'))
+  const choice: unknown = isObject(body) && Array.isArray(body.choices) ? body.choices[0] : undefined
+  const message: unknown = isObject(choice) ? choice.message : undefined
+  if (!isObject(message) || message.role !== 'assistant' || (message.content !== null && typeof message.content !== 'string'))
     throw new Error(`The mock model answer holds no assistant message: ${text}`)
   const calls: unknown = message.tool_calls ?? []
   if (!Array.isArray(calls))
     throw new Error(`The mock model answer holds malformed tool calls: ${text}`)
   const toolCalls = calls.map((call: unknown): MockModelToolCall => {
-    const fn: unknown = isRecord(call) ? call.function : undefined
-    if (!isRecord(call) || typeof call.id !== 'string' || !isRecord(fn) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string')
+    const fn: unknown = isObject(call) ? call.function : undefined
+    if (!isObject(call) || typeof call.id !== 'string' || !isObject(fn) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string')
       throw new Error(`The mock model answer holds a malformed tool call: ${text}`)
     const args: unknown = JSON.parse(fn.arguments)
-    if (!isRecord(args))
+    if (!isObject(args))
       throw new Error(`The mock model tool call holds no argument object: ${text}`)
     return { id: call.id, name: fn.name, arguments: args }
   })
@@ -335,7 +335,7 @@ function assistantMessage(step: ReceivedStep): Record<string, unknown> {
 function findString(value: unknown, accept: (text: string) => boolean): string | undefined {
   if (typeof value === 'string')
     return accept(value) ? value : undefined
-  const children = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : []
+  const children = Array.isArray(value) ? value : isObject(value) ? Object.values(value) : []
   for (const child of children) {
     const found = findString(child, accept)
     if (found !== undefined)

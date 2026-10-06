@@ -1,5 +1,6 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
+import { toolDescriptor, toolInputSchema } from '../helpers/modelRequestBody'
 
 export interface ReasonixCapability {
   id: string
@@ -109,12 +110,11 @@ export function assertReasonixCoreCatalog(request: Pick<MockModelRequestRecord, 
     throw new Error('The native Reasonix model catalog differs from the complete installed core inventory.')
   const seen = new Set<string>()
   for (const item of body.tools) {
-    const envelope = completeRecord(item)
-    const tool = isObject(envelope.function) ? envelope.function : envelope
+    const tool = toolDescriptor(completeRecord(item))
     const name = requiredString(tool, 'name')
     requiredString(tool, 'description')
     const expected = coreFields[name]
-    const schema = tool.parameters ?? tool.input_schema
+    const schema = toolInputSchema(tool)
     if (!expected || seen.has(name) || !isObject(schema) || schema.type !== 'object' || !isObject(schema.properties)
       || JSON.stringify(Object.keys(schema.properties).sort()) !== JSON.stringify([...expected].sort())) {
       throw new Error(`The native Reasonix catalog contains an unaudited or incomplete descriptor: ${name}.`)

@@ -3,7 +3,8 @@ import type {
   MockModelScenarioStatus,
   MockModelStep,
 } from './mockModelScript'
-import { AMBIENT_SCENARIO_ID, isRecord, SCENARIO_MARKER, validateGateName, validateScenarioID } from './mockModelScript'
+import { isObject } from '../../../src/lib/jsonPick'
+import { AMBIENT_SCENARIO_ID, SCENARIO_MARKER, validateGateName, validateScenarioID } from './mockModelScript'
 
 /**
  * This client registers scripts for the mock model server.
@@ -222,7 +223,7 @@ export async function releaseMockModelGateIfHeld(serverURL: string, id: string, 
   if (response.status !== 200)
     throw new Error(`Could not clean up model gate ${gate}: ${response.status} ${await response.text()}`)
   const result: unknown = await response.json()
-  if (!isRecord(result) || typeof result.released !== 'boolean')
+  if (!isObject(result) || typeof result.released !== 'boolean')
     throw new Error(`The model gate ${gate} cleanup returned no boolean result.`)
   return result.released
 }

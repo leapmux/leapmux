@@ -7,9 +7,9 @@ import { join, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { isObject } from '../../../src/lib/jsonPick'
 import { withCleanup } from './cleanup'
 import { MOCK_MODEL_IDS, MOCK_MODELS } from './mockAgentEnvironment'
-import { isRecord } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { exerciseNativeGoalPauseAndResume } from './nativeGoalLifecycle'
@@ -236,15 +236,15 @@ class SimulatedGoalAgent {
       const body: unknown = await response.json()
       if (response.status !== 200)
         throw new Error(`The mock model refused the simulated request: ${response.status} ${JSON.stringify(body)}`)
-      const choice: unknown = isRecord(body) && Array.isArray(body.choices) ? body.choices[0] : undefined
-      const message: unknown = isRecord(choice) ? choice.message : undefined
-      const calls: unknown[] = isRecord(message) && Array.isArray(message.tool_calls) ? message.tool_calls : []
+      const choice: unknown = isObject(body) && Array.isArray(body.choices) ? body.choices[0] : undefined
+      const message: unknown = isObject(choice) ? choice.message : undefined
+      const calls: unknown[] = isObject(message) && Array.isArray(message.tool_calls) ? message.tool_calls : []
       const toolCalls = calls.map((call): MockModelToolCall => {
-        const fn: unknown = isRecord(call) ? call.function : undefined
-        if (!isRecord(call) || typeof call.id !== 'string' || !isRecord(fn) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string')
+        const fn: unknown = isObject(call) ? call.function : undefined
+        if (!isObject(call) || typeof call.id !== 'string' || !isObject(fn) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string')
           throw new Error(`The mock model answer holds a malformed tool call: ${JSON.stringify(call)}`)
         const args: unknown = JSON.parse(fn.arguments)
-        return { id: call.id, name: fn.name, arguments: isRecord(args) ? args : {} }
+        return { id: call.id, name: fn.name, arguments: isObject(args) ? args : {} }
       })
       this.receipts.push({ kind, outcome: 'answered', ...(toolCalls.length > 0 ? { toolCalls } : {}) })
       return toolCalls.length > 0 ? { toolCalls } : {}

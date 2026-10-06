@@ -17,6 +17,7 @@ import type {
 import type { ModelStream } from './modelStream'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
+import { isObject } from '../../../src/lib/jsonPick'
 import { AMP_ACTOR_PATH_PREFIX, ampScriptOptions, createAmpSurface, isAmpPath } from './ampSurface'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
@@ -29,7 +30,6 @@ import { MOCK_IDENTITY_TOKEN, MOCK_MODELS, MOCK_SESSION_TOKEN, MODEL_KEY } from 
 import { mockCredentialReceipt } from './mockCredentials'
 import { holdOpen, readJSONBody, writeMockJSON } from './mockHttp'
 import {
-  isRecord,
   lastUserText,
   matchesRequest,
   MAX_SCENARIO_REQUEST_RECORDS,
@@ -1087,7 +1087,7 @@ function writeMidStreamModelError(response: ServerResponse, protocol: MockModelP
 }
 
 function modelFrom(body: unknown): string {
-  return isRecord(body) && typeof body.model === 'string' ? body.model : 'mock-model'
+  return isObject(body) && typeof body.model === 'string' ? body.model : 'mock-model'
 }
 
 /**
@@ -1100,7 +1100,7 @@ function modelFrom(body: unknown): string {
  * A parse failure makes the child retry until its runtime stops.
  */
 function streamRequested(body: unknown): boolean {
-  return isRecord(body) && body.stream === true
+  return isObject(body) && body.stream === true
 }
 
 function usage(inputKey: string, outputKey: string, step?: MockModelStep): Record<string, number> {

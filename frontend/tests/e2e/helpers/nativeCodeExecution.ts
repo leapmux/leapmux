@@ -4,10 +4,10 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { googleFunctionDeclarations } from './googleModelContent'
+import { toolInputSchema } from './modelRequestBody'
 import { openNativeAgent } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
-import { nativeModelToolNames, nativeToolOutcome } from './nativeScenario'
+import { nativeModelToolDescriptors, nativeModelToolNames, nativeToolOutcome } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { codeExecutionToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
@@ -102,17 +102,10 @@ export async function exerciseNativeCodeExecution(
 export function nativeCodeExecutionSchema(request: MockModelRequestRecord, name: string, fields: Readonly<Record<string, string>>): Record<string, unknown> {
   if (!name.trim() || Object.keys(fields).length === 0)
     throw new Error('The native executor schema requires a tool and its argument fields.')
-  const body = isObject(request.body) ? request.body : undefined
-  if (!Array.isArray(body?.tools) || body.tools.length === 0)
-    throw new Error('The native executor request contains no tool catalog.')
-  const tools = request.protocol === 'google-generative-language'
-    ? googleFunctionDeclarations(body.tools)
-    : body.tools.filter(isObject).map(tool => isObject(tool.function) ? tool.function : tool)
-  const matches = tools.filter(tool => tool.name === name)
+  const matches = nativeModelToolDescriptors(request).filter(tool => tool.name === name)
   if (matches.length !== 1)
     throw new Error(`The native catalog contains ${matches.length} descriptors for ${name}.`)
-  const tool = matches[0]!
-  const schema = tool.parametersJsonSchema ?? tool.parameters ?? tool.input_schema
+  const schema = toolInputSchema(matches[0]!)
   if (!isObject(schema) || schema.type !== 'object' || !isObject(schema.properties))
     throw new Error('The native executor has no complete object argument schema.')
   for (const [field, type] of Object.entries(fields)) {
