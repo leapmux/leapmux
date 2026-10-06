@@ -7,19 +7,13 @@ import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
+import { pickQuestionOption } from '../helpers/nativeQuestion'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
-
-/** Click the displayed question option of the visible banner. Its control and label forward selection to the native input. */
-async function clickOption(page: Page, label: string) {
-  const option = controlBanner(page).getByTestId(`question-option-${label}`)
-  await expect(option).toBeVisible()
-  await option.click()
-}
 
 // The mock scripts the actual native question tool. The banner must show these exact options.
 
@@ -108,7 +102,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expect(banner.getByTestId('question-option-Green')).toBeVisible()
 
     // Click "Blue" option
-    await clickOption(page, 'Blue')
+    await pickQuestionOption(controlBanner(page), 'Blue')
 
     // Verify Stop and Submit buttons are visible
     await expect(controlButton(page, 'stop')).toBeVisible()
@@ -143,14 +137,14 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expect(pageButtons).toHaveCount(2)
 
     // Answer question 1 by clicking "Red" -- should auto-advance to page 2
-    await clickOption(page, 'Red')
+    await pickQuestionOption(controlBanner(page), 'Red')
 
     // Verify question 2 is now shown (scoped to banner)
     await expect(banner.getByText('Pick a size')).toBeVisible()
     await expect(banner.getByText('Pick a color')).not.toBeVisible()
 
     // Answer question 2 by clicking "Large"
-    await clickOption(page, 'Large')
+    await pickQuestionOption(controlBanner(page), 'Large')
 
     await submitAnswers(page)
 
@@ -166,13 +160,13 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expect(banner.getByText('Pick a color')).toBeVisible()
 
     // Click "Red" -- should auto-advance
-    await clickOption(page, 'Red')
+    await pickQuestionOption(controlBanner(page), 'Red')
 
     // Verify auto-advanced to page 2 (scoped to banner)
     await expect(banner.getByText('Pick a size')).toBeVisible()
 
     // Click "Large" on page 2 -- should stay on page 2 (last page)
-    await clickOption(page, 'Large')
+    await pickQuestionOption(controlBanner(page), 'Large')
     await expect(banner.getByText('Pick a size')).toBeVisible()
 
     await submitAnswers(page)
@@ -186,7 +180,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await waitForControlBanner(page)
 
     // Answer only question 1
-    await clickOption(page, 'Red')
+    await pickQuestionOption(controlBanner(page), 'Red')
 
     // YOLO stays available while the second question is unanswered.
     const yolo = controlButton(page, 'yolo')
@@ -240,9 +234,9 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     const banner = await waitForControlBanner(page)
     await expect(banner.getByText('Pick a color')).toBeVisible()
 
-    await clickOption(page, 'Red')
+    await pickQuestionOption(controlBanner(page), 'Red')
     await expect(banner.getByText('Pick a size')).toBeVisible()
-    await clickOption(page, 'Large')
+    await pickQuestionOption(controlBanner(page), 'Large')
 
     await submitAnswers(page)
 

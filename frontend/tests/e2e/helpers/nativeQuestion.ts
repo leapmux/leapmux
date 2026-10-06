@@ -83,14 +83,24 @@ export async function exerciseQuestionAnswer(context: NativeScenarioContext, opt
 }
 
 /**
- * Return a reply that picks the option `label` of the banner, then sends the answer through the visible Submit.
- * The pick looks only inside the banner, so an option of another surface cannot take the click.
+ * Pick the option `label` of the question that `banner` shows, and send nothing. The pick looks only inside the
+ * banner, so an option of another surface cannot take the click. A banner of several questions takes one pick for
+ * each question before its one Submit, so its flow picks through this function and submits by itself.
  */
+export async function pickQuestionOption(banner: Locator, label: string): Promise<void> {
+  if (!label)
+    throw new Error('A question option needs a label.')
+  const option = banner.getByTestId(`question-option-${label}`)
+  await expect(option).toBeVisible()
+  await option.click()
+}
+
+/** Return a reply that picks the option `label` of the banner, then sends the answer through the visible Submit. */
 export function chooseQuestionOption(label: string): (banner: Locator) => Promise<void> {
   if (!label)
     throw new Error('A question option needs a label.')
   return async (banner) => {
-    await banner.getByTestId(`question-option-${label}`).click()
+    await pickQuestionOption(banner, label)
     await controlButton(banner.page(), 'submit').click()
   }
 }

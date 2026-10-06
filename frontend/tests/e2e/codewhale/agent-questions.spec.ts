@@ -1,8 +1,8 @@
-import type { Locator } from '@playwright/test'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
 import { codewhaleTest } from '../codewhale-fixtures'
+import { pickQuestionOption } from '../helpers/nativeQuestion'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlButton, expectNoControlBanner, questionPagination, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
@@ -44,13 +44,6 @@ async function askQuestions(context: NativeScenarioContext, questions: QuestionR
   return start + 2
 }
 
-/** Pick the option `label` inside the banner. */
-async function clickOption(banner: Locator, label: string) {
-  const option = banner.getByTestId(`question-option-${label}`)
-  await expect(option).toBeVisible()
-  await option.click()
-}
-
 codewhaleTest.describe('Codewhale questions', () => {
   codewhaleTest('sends the chosen option as the answer', async ({ native }) => {
     const { page, modelScript } = native
@@ -58,7 +51,7 @@ codewhaleTest.describe('Codewhale questions', () => {
 
     const banner = await waitForControlBanner(page)
     await expect(banner.getByText('Do you prefer tea or coffee?')).toBeVisible()
-    await clickOption(banner, 'Tea')
+    await pickQuestionOption(banner, 'Tea')
     const submit = controlButton(page, 'submit')
     await expect(submit).toBeEnabled()
     await submit.click()
@@ -79,9 +72,9 @@ codewhaleTest.describe('Codewhale questions', () => {
     const banner = await waitForControlBanner(page)
     await expect(questionPagination(page).locator('button')).toHaveCount(2)
     await expect(banner.getByText('Do you prefer tea or coffee?')).toBeVisible()
-    await clickOption(banner, 'Coffee')
+    await pickQuestionOption(banner, 'Coffee')
     await expect(banner.getByText('Which cup size?')).toBeVisible()
-    await clickOption(banner, 'Large')
+    await pickQuestionOption(banner, 'Large')
     const submit = controlButton(page, 'submit')
     await expect(submit).toBeEnabled()
     await submit.click()

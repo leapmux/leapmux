@@ -5,7 +5,7 @@ import type { NativeScenarioContext } from './nativeScenario'
 import type { QuestionRequest } from './providerToolCalls'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { chooseQuestionOption, exerciseQuestionAnswer } from './nativeQuestion'
+import { chooseQuestionOption, exerciseQuestionAnswer, pickQuestionOption } from './nativeQuestion'
 import { askUserQuestionToolCall } from './providerToolCalls'
 
 /** The browser steps that the helper takes, in order. */
@@ -180,16 +180,38 @@ describe('exerciseQuestionAnswer', () => {
   })
 })
 
+/** A banner whose options record that they are visible and clicked. */
+function questionBanner() {
+  const getByTestId = vi.fn((testId: string) => ({
+    fake: testId,
+    click: vi.fn(async () => {
+      browser.events.push(`click:${testId}`)
+    }),
+  }))
+  return { banner: { getByTestId, page: () => ({}) } as unknown as Locator, getByTestId }
+}
+
+describe('pickQuestionOption', () => {
+  it('requires the option inside the banner to be visible, clicks it, and submits nothing', async () => {
+    const { banner, getByTestId } = questionBanner()
+    await pickQuestionOption(banner, 'Tea')
+    expect(getByTestId).toHaveBeenCalledExactlyOnceWith('question-option-Tea')
+    expect(browser.events).toEqual(['question-option-Tea visible', 'click:question-option-Tea'])
+  })
+
+  it('refuses an empty label before it reads the banner', async () => {
+    const { banner, getByTestId } = questionBanner()
+    await expect(pickQuestionOption(banner, '')).rejects.toThrow('needs a label')
+    expect(getByTestId).not.toHaveBeenCalled()
+  })
+})
+
 describe('chooseQuestionOption', () => {
   it('picks the option inside the banner, then sends the answer through the visible Submit', async () => {
-    const option = { click: vi.fn(async () => {
-      browser.events.push('click:option')
-    }) }
-    const getByTestId = vi.fn(() => option)
-    const banner = { getByTestId, page: () => ({}) } as unknown as Locator
+    const { banner, getByTestId } = questionBanner()
     await chooseQuestionOption('Green')(banner)
     expect(getByTestId).toHaveBeenCalledWith('question-option-Green')
-    expect(browser.events).toEqual(['click:option', 'click:submit'])
+    expect(browser.events).toEqual(['question-option-Green visible', 'click:question-option-Green', 'click:submit'])
   })
 
   it('refuses an empty label', () => {
