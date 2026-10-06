@@ -4,8 +4,9 @@ import { expandGoalsAndTodosSection, goalsAndTodosList, goalsAndTodosSection } f
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { junieAnswerToolCall, junieSubmitPlanToolCall } from '../helpers/providerToolCalls'
 import {
+  answerControl,
   chooseSettingsOption,
-  controlBanner,
+  expectNoControlBanner,
   expectSettingsChip,
   savedControlAnswer,
   sendMessage,
@@ -96,7 +97,7 @@ export async function exerciseNativePlanReview(
     { toolCalls: [junieAnswerToolCall(`${prefix}-after-plan`, 'The plan is ready to implement.')] },
   ])
   // Approve the plan and let Junie publish its delivery stages.
-  await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
+  await answerControl(page, 'allow')
   await modelScript.waitForSteps()
   await waitForAgentIdle(page)
   await expect(page.getByText('The plan is ready to implement.').filter({ visible: true }).first()).toBeVisible()
@@ -129,8 +130,8 @@ export async function exerciseNativePlanRevision(
 
   await modelScript.rule(JUNIE_PLAN_REPLY_RULE)
   const start = await sendPlanPrompt(context, { ...options, selectMode: false }, [submitPlanStep(options.callPrefix ?? 'junie')])
-  await page.getByTestId('control-deny-btn').filter({ visible: true }).click()
-  await expect(controlBanner(page)).toHaveCount(0)
+  await answerControl(page, 'deny')
+  await expectNoControlBanner(page)
   // The browser draws the saved answer from the Worker row alone, so the Worker took the answer.
   await expect(savedControlAnswer(page)).toHaveCount(1)
   await waitForAgentIdle(page)
