@@ -4,10 +4,13 @@ import { currentNativeAgent } from './nativeScenario'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
 import { openAgentInfoCard, waitForAgentIdle } from './ui'
 
-/** Inspect quota UI only after the provider callback proves its real native quota scenario. */
+/**
+ * Inspect quota UI only after the provider callback proves its real native quota scenario.
+ * The check ignores the result of the callback, so a callback can return the request that it read.
+ */
 export async function expectNoRateLimitState(
   context: ManagedNativeScenarioContext,
-  options: { relatedProof: () => Promise<void> },
+  options: { relatedProof: () => Promise<unknown> },
 ): Promise<void> {
   const agent = await currentNativeAgent(context)
   const after = await observeSettledReceipts(context.page)

@@ -1,8 +1,11 @@
 import type { Page } from '@playwright/test'
-import type { MockModelRateLimits } from './mockModelScript'
+import type { MockModelRateLimits, MockModelRequestRecord } from './mockModelScript'
+import type { NativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { rateLimitPopoverLabel } from '../../../src/lib/rateLimitUtils'
-import { openAgentInfoCard, visibleOnly } from './ui'
+import { nativeTextStep } from './nativeScenario'
+import { uniqueMarker } from './shellArguments'
+import { assistantBubbles, openAgentInfoCard, sendMessage, visibleOnly, waitForAgentIdle } from './ui'
 
 /**
  * Rate-limit state on screen.
@@ -12,6 +15,46 @@ import { openAgentInfoCard, visibleOnly } from './ui'
  * provider can answer a call with 429, whose reason the transcript states in
  * the provider's own words.
  */
+
+/** The utilization of a window near its limit, which a native client reports as a warning. */
+export const NEAR_LIMIT_UTILIZATION = 0.92
+
+/**
+ * A rate-limit window near its limit, which resets one hour from now.
+ * The warning status is the case where a provider that supports quota state shows a window, so a negative proof
+ * with this input is the strongest.
+ */
+export function nearLimitRateLimits(type = 'five_hour'): MockModelRateLimits {
+  if (type.trim() === '')
+    throw new Error('A rate-limit window needs a type.')
+  return { type, status: 'allowed_warning', utilization: NEAR_LIMIT_UTILIZATION, resetsAt: Math.floor(Date.now() / 1000) + 3600 }
+}
+
+/**
+ * Run one native turn whose model response carries `rateLimits`, and require the window on the agent info card.
+ * With `reload`, require the window again after a reload, which reads the stored state.
+ * Return the model request of the turn. The mock adds the response receipt when the response ends, so the function
+ * reads the record after the turn.
+ */
+export async function exerciseRateLimitWindow(
+  context: NativeScenarioContext,
+  rateLimits: MockModelRateLimits,
+  options: { reload?: boolean } = {},
+): Promise<MockModelRequestRecord> {
+  const answer = uniqueMarker('RATELIMITWINDOW')
+  const start = await context.modelScript.queue({ ...nativeTextStep(context, answer), rateLimits })
+  await sendMessage(context.page, context.modelScript.prompt('Reply once near the scripted rate limit.'))
+  await context.modelScript.waitForSteps(start + 1)
+  await waitForAgentIdle(context.page)
+  const request = await context.modelScript.requestAt(start)
+  await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+  await expectRateLimitWindow(context.page, rateLimits)
+  if (options.reload) {
+    await context.page.reload()
+    await expectRateLimitWindow(context.page, rateLimits)
+  }
+  return request
+}
 
 /**
  * The card's heading for one window type.

@@ -55,16 +55,17 @@ interface QuotaReceiptOptions {
   status?: number
   omitHeader?: string
   utilization?: string
+  rateStatus?: string
   wrongAnswer?: boolean
   earlierResponse?: boolean
 }
 
 /** Exercise the actual helper against an actual generic HTTP response and its observed receipt. */
-async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void> {
+async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<MockModelRequestRecord> {
   const model = await createMockModelServer({ models: MOCK_MODEL_IDS })
-  await withCleanup(async () => {
+  return withCleanup(async () => {
     const lifecycle = await startModelScript(model.url)
-    await withCleanup(async () => {
+    return withCleanup(async () => {
       const receipts = new Map<string, NonNullable<MockModelRequestRecord['response']>>()
       const answers: string[] = []
       const proxy = createServer((request, response) => {
@@ -80,6 +81,8 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void
             delete headers[options.omitHeader]
           if (options.utilization !== undefined)
             headers['x-leapmux-e2e-ratelimit-utilization'] = options.utilization
+          if (options.rateStatus !== undefined)
+            headers['x-leapmux-e2e-ratelimit-status'] = options.rateStatus
           const text = await upstream.text()
           delete headers['content-length']
           delete headers['transfer-encoding']
@@ -87,7 +90,7 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void
           response.end(options.wrongAnswer ? text.replace(/NATIVEQUOTAHEADERS[0-9a-f]+/, 'WRONG_ACTUAL_HTTP_ANSWER') : text)
         })().catch((error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))))
       })
-      await withCleanup(async () => {
+      return withCleanup(async () => {
         await new Promise<void>((resolve, reject) => {
           proxy.once('error', reject)
           proxy.listen(0, '127.0.0.1', () => {
@@ -143,7 +146,7 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void
           workspaceId: 'quota-unit-workspace',
           leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused-token', workerId: 'unused-worker' },
         }
-        await exerciseNativeQuotaHeaders(context)
+        const record = await exerciseNativeQuotaHeaders(context)
         const status = await lifecycle.script.status()
         expect(status.complete).toBe(true)
         expect(status.nextStep).toBe(options.earlierResponse ? 2 : 1)
@@ -155,8 +158,9 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void
           const delivered = [...receipts.values()].at(-1)
           expect(delivered?.status).toBe(200)
           expect(Object.keys(delivered?.headers ?? {}).some(key => key.startsWith('anthropic-'))).toBe(false)
-          expect(delivered?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-utilization', '0.73')
+          expect(delivered?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-utilization', '0.92')
         }
+        return record
       }, async () => {
         proxy.closeAllConnections()
         await new Promise<void>(resolve => proxy.close(() => resolve()))
@@ -168,6 +172,17 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<void
 describe('exerciseNativeQuotaHeaders', () => {
   it('accepts a real generic quota response without Anthropic headers', async () => {
     await runQuotaScenario()
+  })
+
+  it('returns the request of its own turn after an earlier turn, with the response receipt', async () => {
+    const record = await runQuotaScenario({ earlierResponse: true })
+    expect(record.stepIndex).toBe(1)
+    expect(record.response?.status).toBe(200)
+    expect(record.response?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-status', 'allowed_warning')
+  })
+
+  it.each(['allowed', 'rejected'])('rejects a window status other than the near-limit warning: %s', async (rateStatus) => {
+    await expect(runQuotaScenario({ keepAnthropic: true, rateStatus })).rejects.toThrow(/x-leapmux-e2e-ratelimit-status|allowed_warning/)
   })
 
   it('retains the existing combined response headers and ordered-step proof', async () => {
@@ -187,7 +202,7 @@ describe('exerciseNativeQuotaHeaders', () => {
     { label: 'empty', utilization: '' },
     { label: 'zero', utilization: '0' },
   ])('rejects a $label generic utilization receipt even when Anthropic headers exist', async (options) => {
-    await expect(runQuotaScenario({ keepAnthropic: true, ...options })).rejects.toThrow(/x-leapmux-e2e-ratelimit-utilization|0.73/)
+    await expect(runQuotaScenario({ keepAnthropic: true, ...options })).rejects.toThrow(/x-leapmux-e2e-ratelimit-utilization|0\.92/)
   })
 
   it('retains the exact final assistant-answer visibility check', async () => {

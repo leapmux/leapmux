@@ -3,17 +3,20 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { QueueAfterFailure } from './ui'
 import { expect } from '@playwright/test'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
+import { NEAR_LIMIT_UTILIZATION, nearLimitRateLimits } from './rateLimit'
 import { uniqueMarker } from './shellArguments'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
 import { assistantBubbles, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from './ui'
 
-/** Prove quota headers came from the actual emitted generic model response. */
-export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioContext): Promise<void> {
+/**
+ * Prove that the provider received quota headers from the actual generic model response that it consumed.
+ * The window is near its limit (`nearLimitRateLimits`), the input for which a supporting provider shows a window.
+ * The proof reads only the generic headers, because a native client route can drop the provider-owned families.
+ * Return the model request of the turn, so a caller can check the protocol of its provider.
+ */
+export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioContext): Promise<MockModelRequestRecord> {
   const answer = uniqueMarker('NATIVEQUOTAHEADERS')
-  const start = await context.modelScript.queue({
-    ...nativeTextStep(context, answer),
-    rateLimits: { type: 'five_hour', status: 'allowed', utilization: 0.73, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
-  })
+  const start = await context.modelScript.queue({ ...nativeTextStep(context, answer), rateLimits: nearLimitRateLimits() })
   await sendMessage(context.page, context.modelScript.prompt('Complete the native quota-header probe.'))
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)
@@ -21,9 +24,12 @@ export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioC
   const request = await context.modelScript.requestAt(start)
   expect(request.response?.status).toBe(200)
   expect(request.response?.headers).toHaveProperty('x-ratelimit-limit-requests', '1000')
-  expect(request.response?.headers).toHaveProperty('x-ratelimit-remaining-requests', '999')
-  expect(request.response?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-utilization', '0.73')
+  // The mock states no remaining request for a window that is not `allowed`.
+  expect(request.response?.headers).toHaveProperty('x-ratelimit-remaining-requests', '0')
+  expect(request.response?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-status', 'allowed_warning')
+  expect(request.response?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-utilization', String(NEAR_LIMIT_UTILIZATION))
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+  return request
 }
 
 /** Preserve native retry behavior while proving a service quota refusal and a usable later turn. */
