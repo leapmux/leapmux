@@ -10,7 +10,7 @@ import { nativeAgentById, nativeModelContextText } from '../helpers/nativeScenar
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { closeAgentViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { createGitRepo } from '../helpers/worktree'
 
 diracTest.describe('Dirac session resume', () => {
@@ -43,11 +43,11 @@ diracTest.describe('Dirac session resume', () => {
       diracGateHeld = true
       expect(JSON.stringify(stepRequest(held, progressStep + 1).body)).toContain(firstAnswer)
       sessionId = await retryUntilPass(async () => {
-        const stored = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, subjectId))?.agentSessionId ?? ''
+        const stored = (await nativeAgentById({ leapmuxServer }, subjectId))?.agentSessionId ?? ''
         expect(stored, 'the Worker stores the native session of the held turn').not.toBe('')
         return stored
       })
-      await closeAgentViaAPI(hubUrl, adminToken, workerId, subjectId)
+      await closeNativeAgentAndWait({ leapmuxServer }, subjectId)
     }
     finally {
       if (diracGateHeld && (await modelScript.status()).pendingGates.includes(diracGate))

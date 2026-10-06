@@ -29,7 +29,10 @@ const resume = vi.hoisted(() => ({
   send: vi.fn<(context: ManagedNativeScenarioContext, prompt: string, answer: string) => Promise<MockModelRequestRecord>>(),
   current: vi.fn<(context: ManagedNativeScenarioContext) => Promise<AgentInfo>>(),
   open: vi.fn<typeof import('./api').openAgentViaAPI>(),
-  close: vi.fn<() => Promise<{ failureMessage: string }>>(),
+  /** The close that waits for the Worker. The scenario must close the original agent through it. */
+  close: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string) => Promise<void>>(),
+  /** The bare close, which waits for nothing. The scenario must not call it. */
+  closeWithoutWait: vi.fn<() => Promise<{ failureMessage: string, failureDetail: string }>>(),
   directory: vi.fn<(prefix: string) => string>(),
   picker: vi.fn<(page: Page, options: { provider: AgentProvider, workingDir: string, sessionId: string }) => Promise<void>>(),
   countRows: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalAnswer'>) => Promise<number>>(),
@@ -69,7 +72,8 @@ vi.mock('./nativeStartupWorker', async importOriginal => ({
 }))
 vi.mock('./workerTabs', async importOriginal => ({
   ...await importOriginal<typeof import('./workerTabs')>(),
-  closeAgentViaAPI: resume.close,
+  closeAgentViaAPI: resume.closeWithoutWait,
+  closeNativeAgentAndWait: resume.close,
 }))
 
 function control(label: string): Locator {
@@ -229,9 +233,14 @@ function scenario(providerAgent: ProviderAgent = CODEX) {
     resume.events.push('keeper:create')
     return keeper.id
   })
-  resume.close.mockImplementation(async () => {
+  resume.close.mockImplementation(async (closeContext, agentId) => {
+    expect(closeContext).toBe(context)
+    expect(agentId).toBe(prior.id)
     resume.events.push('original:close')
-    return { failureMessage: '' }
+  })
+  resume.closeWithoutWait.mockImplementation(async () => {
+    resume.events.push('original:close-without-wait')
+    return { failureMessage: '', failureDetail: '' }
   })
   resume.directory.mockImplementation((prefix) => {
     resume.events.push('keeper:directory')
@@ -356,10 +365,22 @@ describe('exerciseSessionResume', () => {
     expect(resume.current).toHaveBeenCalledTimes(3)
     expect(resume.open).toHaveBeenCalledTimes(1)
     expect(resume.close).toHaveBeenCalledTimes(1)
+    expect(resume.closeWithoutWait).not.toHaveBeenCalled()
     expect(resume.countRows).toHaveBeenCalledTimes(1)
     expect(resume.picker).toHaveBeenCalledTimes(1)
     expect(resume.reopen).toHaveBeenCalledTimes(1)
     expect(resume.conversation).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails before the reopen when the Worker refuses the close of the original agent', async () => {
+    const { context } = scenario()
+    const refused = new Error('The Worker refused to close agent original-worker-agent: no message (database is locked)')
+    resume.close.mockRejectedValue(refused)
+    // The bare close states the refusal in its detail alone, which a check of the message misses.
+    resume.closeWithoutWait.mockResolvedValue({ failureMessage: '', failureDetail: 'database is locked' })
+    await expect(exerciseSessionResume(context, options())).rejects.toBe(refused)
+    expect(resume.picker).not.toHaveBeenCalled()
+    expect(resume.reopen).not.toHaveBeenCalled()
   })
 
   it('returns one set of marked texts with the actual resumed request', async () => {
@@ -566,7 +587,6 @@ describe('exerciseSessionResume', () => {
       if (original === undefined)
         throw new Error('The controlled original row is absent.')
       values.push(original)
-      return { failureMessage: '' }
     })
     const result = await exerciseSessionResume(context, options(async (evidence) => {
       observations.push(evidence.phase)

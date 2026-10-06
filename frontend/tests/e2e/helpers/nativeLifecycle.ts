@@ -26,7 +26,7 @@ import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { RELEASE_POLL_MS } from './toolOutputControl'
 import { assistantBubbles, composerEditor, controlButton, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
-import { closeAgentViaAPI, inspectLastTabCloseViaAPI } from './workerTabs'
+import { closeNativeAgentAndWait, inspectLastTabCloseViaAPI } from './workerTabs'
 
 interface LifecyclePreparation {
   prepare?: () => Promise<void>
@@ -312,8 +312,7 @@ export async function exerciseSessionResume(
     ...agentOpenOptions(context.provider),
     title: 'Native resume keeper',
   })
-  const closed = await closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, before.id)
-  expect(closed.failureMessage).toBe('')
+  await closeNativeAgentAndWait(context, before.id)
   await tabById(context.page, keeper).click()
   await currentNativeAgent(context)
   await reopenFromSessionPicker(context.page, { provider: context.provider, workingDir: before.workingDir, sessionId: before.agentSessionId })

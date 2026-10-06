@@ -13,7 +13,7 @@ import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativ
 import { nativeAgentById, nativeModelConversationTurns, nativeTextStep } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
-import { closeAgentViaAPI } from './workerTabs'
+import { closeNativeAgentAndWait } from './workerTabs'
 import { createGitRepo } from './worktree'
 
 /** The fixtures one picker resume spec already holds: the shared page, the scripted model and the running hub. */
@@ -108,7 +108,7 @@ export async function resumePickerScenario(
   // draw again: an answer tool can store the answer in rows that render no
   // bubble, so the page count is its own number, not the row count.
   const originalAnswerBubbles = await assistantBubbles(page).filter({ hasText: texts.originalAnswer }).count()
-  await closeAgentViaAPI(hubUrl, adminToken, workerId, subjectId)
+  await closeNativeAgentAndWait(context, subjectId)
 
   await reopenFromSessionPicker(page, { provider, workingDir: subjectDir, sessionId, ...(options.sessionList ? { list: options.sessionList } : {}) })
   const reopened = await expectReopenedNativeAgent(context, { agentProvider: provider, agentSessionId: sessionId }, [keeperId, subjectId])

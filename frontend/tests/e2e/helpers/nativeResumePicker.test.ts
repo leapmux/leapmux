@@ -32,6 +32,8 @@ const picker = vi.hoisted(() => ({
   /** The arguments of each picker reopen. */
   reopens: [] as { provider: AgentProvider, workingDir: string, sessionId: string, list?: StoredSessionList }[],
   conversation: [] as { agentId: string, originalAnswerRows: number, originalAnswerBubbles: number | undefined }[],
+  /** The refusal of the close that waits for the Worker, when a test states one. */
+  closeRefusal: undefined as Error | undefined,
 }))
 
 vi.mock('./api', () => ({
@@ -53,9 +55,15 @@ vi.mock('./worktree', () => ({
   },
 }))
 vi.mock('./workerTabs', () => ({
+  // The bare close waits for nothing, so the scenario must not call it.
   closeAgentViaAPI: async (_hubUrl: string, _token: string, _workerId: string, agentId: string) => {
+    picker.events.push(`close-without-wait:${agentId}`)
+    return { failureMessage: '', failureDetail: '' }
+  },
+  closeNativeAgentAndWait: async (_context: unknown, agentId: string) => {
     picker.events.push(`close:${agentId}`)
-    return { failureMessage: '' }
+    if (picker.closeRefusal)
+      throw picker.closeRefusal
   },
 }))
 
@@ -257,6 +265,7 @@ beforeEach(() => {
   picker.conversation.length = 0
   picker.reopens.length = 0
   picker.emptySessionReads = 0
+  picker.closeRefusal = undefined
 })
 
 describe('resumePickerScenario', () => {
@@ -292,6 +301,13 @@ describe('resumePickerScenario', () => {
       `conversation:${REOPENED_ID}`,
     ])
     expect(result.request.stepIndex).toBe(1)
+  })
+
+  it('fails before the reopen when the Worker refuses the close of the subject', async () => {
+    picker.closeRefusal = new Error('The Worker refused to close agent subject-agent: Failed to close agent (database is locked)')
+    await expect(run()).rejects.toBe(picker.closeRefusal)
+    expect(picker.events).toContain(`close:${SUBJECT_ID}`)
+    expect(picker.reopens).toEqual([])
   })
 
   it('returns the texts of the scenario with the settled resumed request', async () => {

@@ -11,7 +11,7 @@ import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
-import { closeAgentViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 import { allowReadIfAsked } from './readPermission'
@@ -251,7 +251,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       expect(stored, 'the Worker stores the native session of the root agent').not.toBe('')
       return stored
     })
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, rootID)
+    await closeNativeAgentAndWait({ leapmuxServer }, rootID)
 
     await reopenFromSessionPicker(page, { provider: PROVIDER, workingDir, sessionId: sessionID })
 

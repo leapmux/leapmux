@@ -8,7 +8,7 @@ import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSession
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, interruptButton, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
-import { closeAgentViaAPI, listAgentsViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait, listAgentsViaAPI } from '../helpers/workerTabs'
 import { createGitRepo } from '../helpers/worktree'
 import { restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
 import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from './workerRestart'
@@ -451,7 +451,7 @@ claudeTest.describe('Session picker in the New Agent dialog', () => {
     await firstDialog.getByRole('button', { name: 'Cancel' }).click()
 
     // Closing the tab releases the handle, and the picker offers it.
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, subject!.id)
+    await closeNativeAgentAndWait({ leapmuxServer }, subject!.id)
 
     const dialog = await openNewAgentFor(page, AgentProvider.CLAUDE_CODE, subjectDir)
     const trigger = sessionMenuTrigger(dialog)
