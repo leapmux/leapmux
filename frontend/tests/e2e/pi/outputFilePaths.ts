@@ -53,6 +53,9 @@ export function readPiNativeOutput(snapshot: NativeMessageSnapshot, proof: PiOut
  * The preview joins the codemode `details`, which list each nested call with its arguments. A nested call can take
  * the complete output as an argument, as the MCP case does, so the preview can hold the middle line. The proof thus
  * states no absent line, and only the excerpt of the codemode output must omit the middle line.
+ *
+ * `proveNativeOutputReceipt` cannot take this proof. Its receipt check (`checkNativeOutputReceipt`) refuses a preview
+ * that holds the absent line, and `argumentsHoldOutput` relaxes only the check of the result row.
  */
 export async function verifyPiOutputFilePaths(context: ManagedNativeScenarioContext, input: { callId: string, expectedText: string, omittedMarker: string }) {
   const agent = await currentNativeAgent(context)
