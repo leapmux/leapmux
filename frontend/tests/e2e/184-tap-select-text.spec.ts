@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import type { TouchPoint } from './helpers/touch'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { settleFrames } from './helpers/frames'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'

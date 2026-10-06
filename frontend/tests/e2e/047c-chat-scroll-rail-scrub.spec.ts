@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { PREVIEW, RAIL, RAIL_DOT, RAIL_FILLER_PREVIEW, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
 import { chatScrollContainer } from './helpers/ui'

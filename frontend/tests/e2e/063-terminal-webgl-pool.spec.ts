@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { activeXterm } from './helpers/terminal'
 import { openTerminalViaUI, terminalTabs } from './helpers/ui'
 

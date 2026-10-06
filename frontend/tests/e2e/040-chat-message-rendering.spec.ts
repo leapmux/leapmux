@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
 import { assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, userBubbles } from './helpers/ui'

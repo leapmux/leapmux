@@ -1,13 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import {
   OpenTerminalRequestSchema,
   OpenTerminalResponseSchema,
 } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { getTestChannel } from './helpers/api'
 import { agentTabs, chooseGitMode, fillWorkspaceTitle, loginViaToken, openNewWorkspaceDialogAt, openWorkspace, submitNewWorkspaceDialog, waitForWorkspaceReady } from './helpers/ui'
 import { closeAgentViaAPI, closeTerminalViaAPI, inspectLastTabCloseViaAPI, pushBranchViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'

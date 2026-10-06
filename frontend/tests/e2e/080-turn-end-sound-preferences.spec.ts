@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from './helpers/modelScriptFixture'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { nativeAgentById } from './helpers/nativeScenario'
 import { openPreferencesAs, preferenceScopeChip, setPreferenceScope } from './helpers/preferences'
 import { retryUntilPass } from './helpers/retryUntilPass'

@@ -1,5 +1,6 @@
 import type { Locator } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { RAIL, RAIL_FILLER_MESSAGE, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
 import { CHAT_SCROLL_CONTAINER, chatScrollContainer, readAttached, sendMessage, waitForAgentIdle } from './helpers/ui'

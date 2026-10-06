@@ -9,8 +9,9 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { expect } from '@playwright/test'
 import { CODEWHALE_AGENT, nativeContext } from './codewhale/scenarios'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'

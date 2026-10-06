@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { boxCenter, dragSidebarLeafTo } from './helpers/drag'
 import { tabbarLabels } from './helpers/tabLabels'

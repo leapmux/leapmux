@@ -3,7 +3,8 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { test as base, expect } from './fixtures'
+import { expect } from '@playwright/test'
+import { test as base } from './fixtures'
 import { GROK_AGENT, nativeContext } from './grok-build/scenarios'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'

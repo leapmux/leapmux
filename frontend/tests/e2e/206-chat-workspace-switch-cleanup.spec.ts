@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { chatScrollContainer, expandWorkspaceRow, loginViaToken, openWorkspace, sidebarLeaves, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 

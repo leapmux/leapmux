@@ -8,7 +8,7 @@ import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import process from 'node:process'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { findBinary, unusableBinaryReason } from './helpers/binaryOnPath'
 import { hubSpawnEnv } from './helpers/server'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -40,5 +40,3 @@ export const zcodeTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedZCodeWorkspace.workspaceId }))
   },
 })
-
-export { expect }

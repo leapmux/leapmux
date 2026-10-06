@@ -3,7 +3,7 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
@@ -20,5 +20,3 @@ export const reasonixTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasonixWorkspace.workspaceId }))
   },
 })
-
-export { expect }

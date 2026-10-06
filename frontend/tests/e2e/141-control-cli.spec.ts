@@ -24,7 +24,8 @@
  * op-stream fan-out reaches every subscriber, not just the originator.
  */
 
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { cliAgentOpen, mintCLITokenForAdmin } from './helpers/cli'
 import { withExtraClients } from './helpers/multiClient'
 import { expectAgentTabCount, loginViaToken, openWorkspace, tabById } from './helpers/ui'

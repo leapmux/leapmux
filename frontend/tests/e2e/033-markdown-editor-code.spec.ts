@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
 import { focusComposer, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
 

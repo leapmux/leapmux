@@ -7,8 +7,9 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { expect } from '@playwright/test'
 import { FAST_AGENT_AGENT, nativeContext } from './fast-agent/scenarios'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'

@@ -1,6 +1,7 @@
 import type { SoloServerFixtures } from './helpers/solo'
 import { connect } from 'node:net'
-import { test as base, expect } from './fixtures'
+import { expect } from '@playwright/test'
+import { test as base } from './fixtures'
 import { findFreePort } from './helpers/server'
 import { completeSoloPasswordSetup, signInToSoloViaUI, soloServerFixtures } from './helpers/solo'
 import { logoutViaUI, openAppAs, openSettingsAt } from './helpers/ui'

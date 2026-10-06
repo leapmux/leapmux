@@ -1,9 +1,10 @@
+import { expect } from '@playwright/test'
 import { getUserId } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { expectToastRecorded } from './helpers/toast'
 import { appMenuTrigger, composerEditor, PLATFORM_MOD, userBubbles, waitForEditorDraft, workspaceRowTitle } from './helpers/ui'
-import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { ensureWorkerOnline, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 // Each test stops the worker-scoped Worker. The cleanup brings it back after a
 // failure, so the delete of the test workspace and a later test of this

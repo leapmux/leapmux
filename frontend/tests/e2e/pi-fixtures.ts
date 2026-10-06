@@ -1,7 +1,7 @@
 /** Pi fixtures use the shared agent workspace lifetime. */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { nativeContext, PI_AGENT } from './pi/scenarios'
@@ -32,5 +32,3 @@ export const piTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId }))
   },
 })
-
-export { expect }

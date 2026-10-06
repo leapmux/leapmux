@@ -1,5 +1,6 @@
 import type { CDPSession, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { focusActiveTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI } from './helpers/ui'
 

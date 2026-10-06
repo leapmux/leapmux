@@ -1,7 +1,8 @@
 import type { Locator, Page } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { openPreferencesAs, pickThemeMode, setPreferenceScope, themeModeRadio } from './helpers/preferences'
 import { expectDialogStaysOpen, getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme, resolvedColor } from './helpers/ui'
 

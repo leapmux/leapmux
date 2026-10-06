@@ -1,5 +1,6 @@
 import type { SafeInsets } from './helpers/safeArea'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import {
   applySimulatedSafeArea,
   IPHONE_LANDSCAPE_NOTCH_RIGHT,

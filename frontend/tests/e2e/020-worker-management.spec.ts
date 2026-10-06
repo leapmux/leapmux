@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { expandSidebarSection, expectClipsLongText, expectClipsToOneLine, sidebarSectionHeader } from './helpers/ui'
 
 test.describe('Worker Management', () => {

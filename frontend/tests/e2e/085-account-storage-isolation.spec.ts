@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { accountStorageKeyPrefix, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ } from '../../src/lib/browserStorage'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { storageKeys } from './helpers/storage'
 import { openAppAs, openSettingsAt } from './helpers/ui'

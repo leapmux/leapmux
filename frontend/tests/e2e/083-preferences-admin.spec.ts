@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { freshAdminSessionViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import { openPreferencesAs } from './helpers/preferences'
 import { answerElevationPrompt, elevationPrompt, openSettingsAt } from './helpers/ui'

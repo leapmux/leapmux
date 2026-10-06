@@ -5,7 +5,7 @@ import type { ServerOutput } from './helpers/serverOutput'
 import type { AgentWorkspaceFixture } from './helpers/workspace'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { test as base, expect } from '@playwright/test'
+import { test as base } from '@playwright/test'
 import { agentDefaultsEnv } from './agentSettings'
 import {
   API_POLL_INTERVAL_MS,
@@ -277,5 +277,3 @@ export const processTest = base.extend<
     await use(workspace)
   },
 })
-
-export { expect }

@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { getRecordedToasts } from './helpers/toast'
 import {
   agentTabs,

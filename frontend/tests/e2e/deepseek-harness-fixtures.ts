@@ -2,7 +2,7 @@ import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { DEEPSEEK_HARNESS_MODE, DEEPSEEK_HARNESS_OPTION, DEEPSEEK_HARNESS_PERMISSION_PRESET } from '../../src/generated/contracts/deepseek-harness-protocol'
 import { DEEPSEEK_HARNESS_AGENT, nativeContext } from './deepseek-harness/scenarios'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'
@@ -27,5 +27,3 @@ export const deepseekHarnessTest = base.extend<CliSkipFixture & NativeFixture & 
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId }))
   },
 })
-
-export { expect }

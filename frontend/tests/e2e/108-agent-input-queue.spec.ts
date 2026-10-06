@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { getUserId } from './helpers/api'
 import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
@@ -6,7 +7,7 @@ import { withExtraClients } from './helpers/multiClient'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { composerEditor, focusComposer, loginViaToken, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
-import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
+import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
 
 /**
  * Pause the queue and wait for its confirmation button.

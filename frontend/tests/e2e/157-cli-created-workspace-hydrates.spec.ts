@@ -9,7 +9,8 @@
  * Only hydration replaces its generic Agent label with the assigned Agent <Name> label.
  */
 
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { cliAgentOpen, mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { tabById, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 

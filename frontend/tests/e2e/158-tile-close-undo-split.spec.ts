@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { tabbarLabels } from './helpers/tabLabels'
 import { agentTabs, expectAgentTabCount, tiles } from './helpers/ui'
 

@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { selectedAgentTab } from './helpers/nativeScenario'
 import { QUICK_BROWN_FOX, sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'

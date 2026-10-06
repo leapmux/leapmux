@@ -1,6 +1,7 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { test as base, expect } from './fixtures'
+import { expect } from '@playwright/test'
+import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { nativeContext, OH_MY_PI_AGENT } from './oh-my-pi/scenarios'

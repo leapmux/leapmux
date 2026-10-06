@@ -1,6 +1,7 @@
+import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { withCleanup } from './helpers/cleanup'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { sendActiveTerminalInput, typeInTerminal, waitForTerminalText } from './helpers/terminal'

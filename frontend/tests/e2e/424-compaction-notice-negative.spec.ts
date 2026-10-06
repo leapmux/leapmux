@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { COMPACTION_NOTICE_TEXT, compactionNoticeRow } from './helpers/compaction'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 

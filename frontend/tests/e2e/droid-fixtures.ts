@@ -18,11 +18,12 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { expect } from '@playwright/test'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
 import { DROID_TITLE_RULE } from './factory-droid/housekeeping'
 import { DROID_AGENT, nativeContext } from './factory-droid/scenarios'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'

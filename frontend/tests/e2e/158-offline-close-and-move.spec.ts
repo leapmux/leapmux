@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import { openAgentViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
@@ -7,7 +8,7 @@ import { tabbarLabels } from './helpers/tabLabels'
 import { clearRecordedToasts, expectToastRecorded } from './helpers/toast'
 import { expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabById, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
-import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { ensureWorkerOnline, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
  * Layout is the CRDT's business, not the Worker's.

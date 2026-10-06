@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { settleFrames } from './helpers/frames'
 import { QUICK_BROWN_FOX, sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'

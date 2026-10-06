@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
 import { composerEditor } from './helpers/ui'
 

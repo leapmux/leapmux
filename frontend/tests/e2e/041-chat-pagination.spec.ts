@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { chatScrollContainer, interruptButton, readAttached } from './helpers/ui'
 

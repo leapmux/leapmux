@@ -12,7 +12,8 @@
  * and what a heading actually reads.
  */
 
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { elevatedAdminSessionViaAPI } from './helpers/api'
 import { collectCspViolations } from './helpers/csp'
 import { authorizeURL, registerAppViaAPI } from './helpers/oauthApps'

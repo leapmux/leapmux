@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { openPreferencesAs, pickThemeMode, preferenceScopeChip, setPreferenceScope } from './helpers/preferences'
 import { getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme } from './helpers/ui'
 

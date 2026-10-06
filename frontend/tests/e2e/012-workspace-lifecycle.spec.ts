@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { createWorkspaceViaAPI } from './helpers/api'
 import { expectAnyVisible, loginViaToken, openAppAs, openWorkspace, sidebarSectionHeader, workspaceRow } from './helpers/ui'
 

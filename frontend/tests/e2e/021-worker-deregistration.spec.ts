@@ -1,13 +1,14 @@
 import type { Locator, Page } from '@playwright/test'
 import type { RegisteredWorker } from './helpers/nativeWorker'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../src/lib/regexp'
 import { deregisterWorkerViaAPI, listWorkersViaAPI } from './helpers/api'
 import { finishCleanup } from './helpers/cleanup'
 import { spawnRegisteredWorker } from './helpers/nativeWorker'
 import { stopProcess } from './helpers/process'
 import { expandSidebarSection, expectAnyVisible, openAppAs, sidebarSectionHeader } from './helpers/ui'
-import { expect, restartWorker, SEPARATE_WORKER_NAME, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { restartWorker, SEPARATE_WORKER_NAME, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /** The name of the temporary Worker that this file deregisters. */
 const TEMP_WORKER_NAME = 'deregister-test-worker'

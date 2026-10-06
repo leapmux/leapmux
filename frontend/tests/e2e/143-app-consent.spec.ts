@@ -9,9 +9,10 @@
  * browser that walks the whole round trip shows that.
  */
 
+import { expect } from '@playwright/test'
 import { AppClientType, AppVisibility } from '../../src/generated/proto/leapmux/v1/app_pb'
 import { Scope } from '../../src/generated/proto/leapmux/v1/scope_pb'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { elevatedAdminSessionViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import { authorizeURL, consentForm, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from './helpers/oauthApps'
 import { answerElevationPrompt, loginViaToken } from './helpers/ui'

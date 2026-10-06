@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { composerEditor, openAgentInfoCard, openAgentViaUI } from './helpers/ui'
 

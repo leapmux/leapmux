@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { signUpViaUI } from './helpers/ui'
 
 // SignupForm unit tests cover reserved names. SignupPage unit tests cover the login link.

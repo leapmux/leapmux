@@ -13,9 +13,10 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { expect } from '@playwright/test'
 import { CODEBUDDY_MODE } from '../../src/generated/contracts/codebuddy-protocol'
 import { CODEBUDDY_AGENT, nativeContext } from './codebuddy-code/scenarios'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { cliSkipFixture } from './provider-fixture-factory'

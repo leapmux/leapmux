@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { archiveWorkspaceViaUI, clickRowMenuItem, clickWorkspaceMenuItem, expandWorkspaceRow, openRowMenu, sidebarSectionHeader, workspaceRow } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'

@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { accountStorageKey, KEY_KEY_PINS } from '../../src/lib/browserStorage'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { readEntry, writeEntry } from './helpers/storage'
 import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
 

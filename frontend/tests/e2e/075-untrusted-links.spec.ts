@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { clickTerminalText, printTerminalHyperlink, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { openAboutDialog, openTerminalViaUI, userBubbles } from './helpers/ui'

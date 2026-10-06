@@ -3,8 +3,9 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { expect } from '@playwright/test'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_RESPONSES_MODEL } from './helpers/mockAgentEnvironment'
 import { authenticatedAgentWorkspace } from './helpers/workspace'

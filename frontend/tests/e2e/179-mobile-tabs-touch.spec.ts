@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import type { AgentServer } from './helpers/workspace'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { retryUntilPass } from './helpers/retryUntilPass'

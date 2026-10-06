@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { branchGroupRow, clickBranchMenuItem, loginViaToken, openNewAgentDialog, openNewTerminalDialog, openWorkspace, setWorkingDir, waitForWorker } from './helpers/ui'
 import { listAgentsViaAPI, listTerminalsViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'

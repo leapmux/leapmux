@@ -1,5 +1,6 @@
 import type { SoloServerFixtures } from './helpers/solo'
-import { test as base, expect } from './fixtures'
+import { expect } from '@playwright/test'
+import { test as base } from './fixtures'
 import { withCleanup } from './helpers/cleanup'
 import { startSoloServer, stopSoloServer } from './helpers/devServer'
 import { fillSoloPasswordSetup, signInToSoloViaUI, soloServerFixtures } from './helpers/solo'

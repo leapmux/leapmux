@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { dangerToasts } from './helpers/toast'
 import { deleteWorkspaceViaUI, openAppAs, openNewWorkspaceDialog, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'

@@ -1,7 +1,8 @@
+import { expect } from '@playwright/test'
 import { withCleanup } from './helpers/cleanup'
 import { getTerminalText, sendActiveTerminalInput, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, terminalTabs } from './helpers/ui'
-import { ensureWorkerOnline, expect, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { ensureWorkerOnline, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Terminal Disconnection', () => {
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page, authenticatedWorkspace }) => {

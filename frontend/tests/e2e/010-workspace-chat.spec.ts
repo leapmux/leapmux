@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { agentTabs, expectAgentTabCount, openAgentViaUI, renameTabViaUI, terminalTabs, visibleOnly, waitForAgentStarted, workspaceRow } from './helpers/ui'
 
 /** Wait for the fixture's native agent. A slow UI update must not create a second agent. */

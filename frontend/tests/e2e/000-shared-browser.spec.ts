@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { storageKeys, writeEntry } from './helpers/storage'
 import { openAppAs } from './helpers/ui'
 

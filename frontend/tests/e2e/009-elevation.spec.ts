@@ -14,7 +14,8 @@
  */
 
 import type { Locator } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { elevateSessionViaAPI, listMyAPITokensViaAPI, signUpViaAPI } from './helpers/api'
 import { openPreferencesAs } from './helpers/preferences'
 import { answerElevationPrompt, elevationPrompt, openAccountSettings, openAppAs } from './helpers/ui'

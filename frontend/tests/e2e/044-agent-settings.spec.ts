@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { waitForSettingsHydrated } from './helpers/ui'
 
 test.describe('Agent Settings', () => {

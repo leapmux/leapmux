@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { boxOf } from './helpers/ui'
 

@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { sidebarSectionHeader, treeRow } from './helpers/ui'
 
 test.describe('File Browser Navigation', () => {

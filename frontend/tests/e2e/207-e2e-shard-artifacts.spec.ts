@@ -2,8 +2,9 @@ import type { FixtureCase, FixtureRun } from './helpers/launcherFixtureProject'
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import process from 'node:process'
+import { expect } from '@playwright/test'
 import { isObject } from '../../src/lib/jsonPick'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { createLauncherFixtureProject, fixtureStringField, readFixtureRecord, readPlaywrightZipEntries, runLauncherFixtureProject } from './helpers/launcherFixtureProject'
 
 function caseAttachments(testCase: FixtureCase): Record<string, unknown>[] {

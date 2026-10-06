@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { codeBlockText, pasteText } from './helpers/composer'
 import { focusComposer, PLATFORM_MOD } from './helpers/ui'
 

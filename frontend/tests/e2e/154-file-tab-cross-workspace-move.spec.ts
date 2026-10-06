@@ -1,6 +1,7 @@
 import { Code } from '@connectrpc/connect'
+import { expect } from '@playwright/test'
 import { fileTabPayload } from '~/lib/tabPayload'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { getTestChannel } from './helpers/api'
 
 /**

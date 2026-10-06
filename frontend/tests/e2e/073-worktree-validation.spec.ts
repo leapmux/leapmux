@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { retryUntilPass } from './helpers/retryUntilPass'
 import { chooseGitMode, menuOptionTexts, openNewWorkspaceDialogAt, setWorkingDir } from './helpers/ui'
 import { createGitRepo } from './helpers/worktree'

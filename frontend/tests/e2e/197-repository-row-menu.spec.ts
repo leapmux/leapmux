@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem, sidebarLeaves, visibleOnly, workspaceChildren } from './helpers/ui'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 

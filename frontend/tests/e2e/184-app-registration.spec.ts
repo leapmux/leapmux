@@ -9,7 +9,8 @@
  * it needs two real accounts and a real browser.
  */
 
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import {
   callHub,
   elevatedAdminSessionViaAPI,

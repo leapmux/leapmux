@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_CLIENT_ID } from '../../src/lib/browserStorage'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { databaseStores, readEntry, webStorageKeys } from './helpers/storage'
 import { openAppAs } from './helpers/ui'

@@ -7,7 +7,7 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
-import { test as base, expect } from './fixtures'
+import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { KIMI_AGENT, nativeContext } from './kimi-code/scenarios'
@@ -33,5 +33,3 @@ export const kimiTest = base.extend<CliSkipFixture & NativeFixture & {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedKimiWorkspace.workspaceId }))
   },
 })
-
-export { expect }

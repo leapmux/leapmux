@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { cssAttributeValue } from './helpers/cssAttribute'
 import { boxCenter, dragSidebarLeafTo, mouseDragOnto } from './helpers/drag'
 import { selectedAgentTab } from './helpers/nativeScenario'

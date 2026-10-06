@@ -1,5 +1,6 @@
+import { expect } from '@playwright/test'
 import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import {
   answerElevationPrompt,

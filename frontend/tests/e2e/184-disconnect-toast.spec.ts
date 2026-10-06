@@ -1,8 +1,9 @@
 import type { Page } from '@playwright/test'
 import type { RecordedToast } from './helpers/toast'
+import { expect } from '@playwright/test'
 import { clearRecordedToasts, getRecordedToasts } from './helpers/toast'
 import { waitForWorkspaceReady } from './helpers/ui'
-import { expect, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
  * Record the `leapmux:watch-events-redial` dev events of the page from now on: one for the loss of a WatchEvents

@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { openPreferencesAs } from './helpers/preferences'
 import { resolvedColor } from './helpers/ui'
 

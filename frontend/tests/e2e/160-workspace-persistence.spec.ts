@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { activeWorkspaceId, loginViaToken, openAppAs, openWorkspace, reopenWorkspace, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'

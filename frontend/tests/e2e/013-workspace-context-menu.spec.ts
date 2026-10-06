@@ -1,5 +1,6 @@
 import type { Locator } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { createWorkspaceViaAPI } from './helpers/api'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
 import { clickWorkspaceMenuItem, deleteWorkspaceViaUI, loginViaToken, openWorkspace, openWorkspaceRowMenu, sidebarLeaves, workspaceRow } from './helpers/ui'

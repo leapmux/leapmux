@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { openPreferencesAs } from './helpers/preferences'
 import { expectDialogStaysOpen, openAppAs, openSettingsAt, PLATFORM_MOD } from './helpers/ui'
 

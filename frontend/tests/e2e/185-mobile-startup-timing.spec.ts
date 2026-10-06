@@ -5,7 +5,8 @@
  */
 import type { CDPSession } from '@playwright/test'
 import type { StartupReport } from './helpers/startupTiming'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { withCleanup } from './helpers/cleanup'
 import {
   attachResponseSizeListener,

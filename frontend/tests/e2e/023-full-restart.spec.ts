@@ -1,8 +1,9 @@
 import type { AgentServer } from './helpers/workspace'
+import { expect } from '@playwright/test'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
-import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
+import { restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Wait for the Worker to store the title before its process stops. */
 async function waitForSavedTerminalTitle(server: AgentServer, workspaceId: string, title: string): Promise<void> {
