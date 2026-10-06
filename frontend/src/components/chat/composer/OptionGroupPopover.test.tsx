@@ -2,7 +2,14 @@ import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { resolvedCurrent } from '~/components/chat/settingsGroups'
 import { OptionGroupPopover } from './OptionGroupPopover'
+
+// A spy that passes each call through, so a case can count how often the popover resolves its current value.
+vi.mock('~/components/chat/settingsGroups', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/chat/settingsGroups')>()
+  return { ...actual, resolvedCurrent: vi.fn(actual.resolvedCurrent) }
+})
 
 function group(overrides: Partial<Omit<AvailableOptionGroup, 'options'>> & { options: { id: string, name?: string }[] }): AvailableOptionGroup {
   return {
@@ -332,6 +339,33 @@ describe('OptionGroupPopover', () => {
     await Promise.resolve()
 
     expect(screen.getByTestId('model-sonnet')).toBeInTheDocument()
+  })
+
+  // Kilo offers about 400 models. Each row reads the current value to mark itself selected, so a resolution per read
+  // scanned the whole catalog once for each row: a stall of seconds on each status push.
+  it('resolves the current value once per change, not once per option row', async () => {
+    const options = Array.from({ length: 400 }, (_, index) => ({ id: `model-${index}`, name: `Model ${index}` }))
+    const [values, setValues] = createSignal<Record<string, string>>({ model: 'model-0' })
+    render(() => (
+      <OptionGroupPopover
+        groupId="model"
+        optionGroups={[group({ options, currentValue: 'model-0' })]}
+        optionValues={values()}
+        trigger={(triggerProps, view) => (
+          <button data-testid="trigger" {...triggerProps}>{view.currentLabel}</button>
+        )}
+      />
+    ))
+    await fireEvent.click(screen.getByTestId('trigger'))
+    expect(screen.getAllByRole('option', { hidden: true })).toHaveLength(400)
+
+    vi.mocked(resolvedCurrent).mockClear()
+    setValues({ model: 'model-399' })
+    await Promise.resolve()
+
+    expect(screen.getByTestId('trigger')).toHaveTextContent('Model 399')
+    expect(screen.getByTestId('model-model-399')).toHaveAttribute('aria-selected', 'true')
+    expect(vi.mocked(resolvedCurrent).mock.calls.length).toBeLessThanOrEqual(1)
   })
 
   it('keeps the trigger label live while the list is frozen', async () => {

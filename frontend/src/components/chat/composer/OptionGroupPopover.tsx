@@ -154,7 +154,11 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
     props.onChange?.({ sets: { [props.groupId]: value } })
   }
 
-  const current = () => resolvedCurrent(props.optionGroups, props.optionValues, props.groupId)
+  // A memo, not a thunk: each option row reads it to mark itself selected, and a resolution scans the whole option
+  // list. As a thunk, one status push of a catalog of about 400 models (Kilo) cost one scan for each read of each row,
+  // which blocked the page for seconds. The memo resolves once per change, and its `===` keeps a push that leaves the
+  // value alone from touching any row.
+  const current = createMemo(() => resolvedCurrent(props.optionGroups, props.optionValues, props.groupId))
 
   // A group the agent controls, or a composer that accepts no input at all,
   // both render the options read-only, and the reasons differ, so the tooltip does.
