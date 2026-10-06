@@ -17,19 +17,19 @@
  * - The executor identifier for shell_command is async_shell_command.
  *   Other local tools retain their model identifiers.
  */
+import type { Buffer } from 'node:buffer'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 import type { MockModelScriptHost, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelCredential, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { WebSocketConnection } from './webSocketServer'
-import { Buffer } from 'node:buffer'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 // RELATIVE imports, not `~/...`. See the note in `../agentSettings.ts`.
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { mockCredentialReceipt } from './mockCredentials'
-import { waitUnlessDisconnected } from './mockHttp'
+import { readMockBody, waitUnlessDisconnected, writeMockJSON } from './mockHttp'
 import { bufferModelOutput, createBufferedModelStream } from './modelStream'
 import { acceptWebSocket } from './webSocketServer'
 
@@ -253,9 +253,9 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
   async function handleHttp(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (url.pathname === AMP_E2E_THREADS_PATH) {
       if (request.method === 'POST') {
-        const seeded = await readJSON(request)
+        const seeded = await readAmpJSON(request)
         if (!isAmpSeededThread(seeded)) {
-          writeJSON(response, 400, { error: 'The seeded Amp thread is invalid.' })
+          writeMockJSON(response, 400, { error: 'The seeded Amp thread is invalid.' })
           return
         }
         const thread = threadFor(seeded.id)
@@ -269,19 +269,19 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         thread.seq = thread.messages.length
         thread.archived = seeded.archived === true
         thread.updatedAt = seeded.updatedAt ?? Date.now()
-        writeJSON(response, 201, viewOf(thread))
+        writeMockJSON(response, 201, viewOf(thread))
         return
       }
-      writeJSON(response, 200, [...threads.values()].map(viewOf))
+      writeMockJSON(response, 200, [...threads.values()].map(viewOf))
       return
     }
     if (url.pathname === '/api/thread-actors' && request.method === 'POST') {
-      const body = await readJSON(request)
+      const body = await readAmpJSON(request)
       const requested = isObject(body) && typeof body.threadId === 'string' ? body.threadId : ''
       const thread = threadFor(requested || `T-${randomUUID()}`, isObject(body) && typeof body.agentMode === 'string' ? body.agentMode : undefined)
       const credential = mockCredentialReceipt(request.headers)
       thread.mockCredential = { kind: 'service', accepted: credential.accepted }
-      writeJSON(response, 200, {
+      writeMockJSON(response, 200, {
         threadId: thread.id,
         wsToken: 'leapmux-e2e-ws-token',
         ownerUserId: MOCK_USER.id,
@@ -295,17 +295,25 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       return
     }
     if (url.pathname === '/api/internal') {
-      const body = request.method === 'GET' ? {} : await readJSON(request).catch(() => ({}))
+      // An internal call answers a body that is not JSON with its default answer. Only
+      // the parse failure gets that answer: a body over the size limit still fails.
+      const body = request.method === 'GET'
+        ? {}
+        : await readAmpJSON(request).catch((error: unknown) => {
+            if (error instanceof SyntaxError)
+              return {}
+            throw error
+          })
       const method = [...url.searchParams.keys()][0] ?? ''
       const params = isObject(body) && isObject(body.params) ? body.params : {}
-      writeJSON(response, 200, internalCall(method, params))
+      writeMockJSON(response, 200, internalCall(method, params))
       return
     }
     if (url.pathname === '/api/telemetry') {
-      writeJSON(response, 200, { ok: true })
+      writeMockJSON(response, 200, { ok: true })
       return
     }
-    writeJSON(response, 404, { error: `The Amp mock has no route for ${request.method ?? 'UNKNOWN'} ${url.pathname}` })
+    writeMockJSON(response, 404, { error: `The Amp mock has no route for ${request.method ?? 'UNKNOWN'} ${url.pathname}` })
   }
 
   function internalCall(method: string, params: Record<string, unknown>): unknown {
@@ -738,14 +746,14 @@ function usage(step: MockModelStep): Record<string, unknown> {
   }
 }
 
-async function readJSON(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = []
-  for await (const chunk of request)
-    chunks.push(Buffer.from(chunk))
-  const text = Buffer.concat(chunks).toString('utf8')
-  return text ? JSON.parse(text) : {}
-}
-
-function writeJSON(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value))
+/**
+ * Read an Amp request body as JSON, under the shared size limit.
+ *
+ * An empty body reads as `{}`, because an Amp route without a body takes no
+ * parameters. `readJSONBody` fails on an empty body, so the Amp routes keep this
+ * rule. A body that is not JSON fails with the parser's SyntaxError.
+ */
+async function readAmpJSON(request: IncomingMessage): Promise<unknown> {
+  const body = await readMockBody(request)
+  return body.byteLength === 0 ? {} : JSON.parse(body.toString('utf8'))
 }

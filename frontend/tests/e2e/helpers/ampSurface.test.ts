@@ -4,13 +4,26 @@ import type { AmpInference, AmpSurface, AmpSurfaceOptions } from './ampSurface'
 import type { DisconnectSignals } from './mockHttp'
 import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelStep } from './mockModelScript'
-import { createServer } from 'node:http'
+import { Buffer } from 'node:buffer'
+import { createServer, IncomingMessage, ServerResponse } from 'node:http'
+import { Socket } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AMP_E2E_THREADS_PATH, ampInferenceOf, ampMessageID, ampScriptOptions, ampToolUseID, createAmpSurface, isAmpPath } from './ampSurface'
 import { MODEL_KEY } from './mockAgentEnvironment'
+import { MAX_MOCK_REQUEST_BYTES } from './mockHttp'
 import { createBufferedModelStream } from './modelStream'
 
 const ID_PATTERN = { message: /^M-[0-9A-Z]{22}$/i, toolUse: /^TU-[0-9A-Z]{22}$/i }
+
+/** A request with a complete body, for a call that goes to the surface with no server. */
+function bodyRequest(method: string, chunks: readonly Buffer[]): IncomingMessage {
+  const message = new IncomingMessage(new Socket())
+  message.method = method
+  for (const chunk of chunks)
+    message.push(chunk)
+  message.push(null)
+  return message
+}
 
 /** An answer that the test holds open, and settles when it chooses. */
 function heldAnswer() {
@@ -236,6 +249,50 @@ describe('the Amp REST surface', () => {
     mock = await startMock([])
     const tail = await mock.post('/api/internal?getThreadTail', { params: { thread: 'T-tail' } })
     expect(tail).toMatchObject({ ok: true, result: { thread: { data: { id: 'T-tail' } }, messages: [] } })
+  })
+
+  it('reads an empty body as a request with no parameters', async () => {
+    mock = await startMock([])
+    const created = await fetch(`${mock.origin}/api/thread-actors`, { method: 'POST' })
+    expect(created.status).toBe(200)
+    expect(created.headers.get('content-type')).toBe('application/json')
+    const thread = await created.json() as Record<string, unknown>
+    expect(String(thread.threadId)).toMatch(/^T-[0-9a-f-]{36}$/)
+    expect(thread.agentMode).toBe('medium')
+    expect(await (await fetch(`${mock.origin}/api/internal?loadPlugins`, { method: 'POST' })).json()).toEqual({ ok: true, result: [] })
+  })
+
+  it('gives an internal call whose body is not JSON its default answer, and fails any other route', async () => {
+    mock = await startMock([])
+    const internal = await fetch(`${mock.origin}/api/internal?loadPlugins`, { method: 'POST', body: '{broken' })
+    expect(internal.status).toBe(200)
+    expect(await internal.json()).toEqual({ ok: true, result: [] })
+    const surface = createAmpSurface({ answer: async () => undefined })
+    try {
+      const response = new ServerResponse(bodyRequest('POST', [Buffer.from('{broken')]))
+      await expect(surface.handleHttp(bodyRequest('POST', [Buffer.from('{broken')]), response, new URL('http://127.0.0.1/api/thread-actors')))
+        .rejects
+        .toBeInstanceOf(SyntaxError)
+      expect(response.headersSent).toBe(false)
+    }
+    finally {
+      surface.close()
+    }
+  })
+
+  it.each(['/api/thread-actors', '/api/internal?loadPlugins', AMP_E2E_THREADS_PATH])('fails a body over the size limit on %s, and writes no answer', async (path) => {
+    const surface = createAmpSurface({ answer: async () => undefined })
+    try {
+      const exact = Buffer.alloc(MAX_MOCK_REQUEST_BYTES, 32)
+      const response = new ServerResponse(bodyRequest('POST', []))
+      await expect(surface.handleHttp(bodyRequest('POST', [exact, Buffer.from(' ')]), response, new URL(path, 'http://127.0.0.1')))
+        .rejects
+        .toThrow(`The request body exceeds ${MAX_MOCK_REQUEST_BYTES} bytes.`)
+      expect(response.headersSent).toBe(false)
+    }
+    finally {
+      surface.close()
+    }
   })
 })
 
