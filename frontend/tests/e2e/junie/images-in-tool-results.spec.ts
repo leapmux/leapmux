@@ -1,38 +1,37 @@
-import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { getTestChannel } from '../helpers/api'
 import { writeJunieMcpConfig } from '../helpers/junieMcp'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
-import { junieAnswerToolCall, mcpToolCall } from '../helpers/providerToolCalls'
-import { writeToolImage } from '../helpers/toolImages'
-import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { readAllAgentMessages } from '../helpers/nativeMessages'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
+import { mcpToolCall } from '../helpers/providerToolCalls'
+import { expectPngInRequest, writeToolImage } from '../helpers/toolImages'
+import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
+import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie images in tool results', () => {
   junieTest('receives no image bytes in the ACP tool row after the model sees the PNG', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     let imageName = ''
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
+    await openProviderAgent(leapmuxServer, context.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
       imageName = writeToolImage(workingDir, 'junie-mcp')
       const server = writeMcpImageServer(workingDir, imageName)
       writeJunieMcpConfig(workingDir, 'image_probe', server.command, server.args)
     } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await openWorkspace(page, context.workspaceId)
     await modelScript.rule(
       { name: 'junie-image-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },
     )
-    await modelScript.queue(
-      { toolCalls: [mcpToolCall(AgentProvider.JUNIE, 'junie-mcp-image', { server: 'image_probe', tool: 'show', input: {} })] },
-      { toolCalls: [junieAnswerToolCall('junie-image-answer', 'The MCP image is ready.')] },
-    )
-    await sendMessage(page, modelScript.prompt('Call the image_probe show tool once.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    junieExpect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain('iVBORw0KGgo')
-    const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    const transcript = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId, limit: 200 })
-    const rows = transcript.messages.map(message => ({
+    const { resultRequest } = await runNativeToolTurn(context, {
+      toolCalls: [mcpToolCall(context.provider, 'junie-mcp-image', { server: 'image_probe', tool: 'show', input: {} })],
+      prompt: 'Call the image_probe show tool once.',
+      answer: 'The MCP image is ready.',
+    })
+    expectPngInRequest(resultRequest)
+    const messages = await readAllAgentMessages(context, await selectedAgentTabId(page))
+    const rows = messages.map(message => ({
       spanType: message.spanType,
       content: decompressContentToString(message.content, message.contentCompression),
     }))
@@ -53,6 +52,6 @@ junieTest.describe('Junie images in tool results', () => {
       && row._meta?.is_mcp_tool_call === true)
     junieExpect(completed).toBeDefined()
     junieExpect(completed?.content).toEqual([])
-    await junieExpect(page.locator('[data-chat-scroll-container="true"]:visible button[aria-label="Open image"]')).toHaveCount(0)
+    await junieExpect(chatScrollContainer(page).locator('button[aria-label="Open image"]')).toHaveCount(0)
   })
 })

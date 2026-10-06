@@ -1,10 +1,14 @@
 import type { Locator, Page } from '@playwright/test'
+import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
+import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { FINISHED_TOOL_STATUSES } from '../../../src/components/chat/model/toolCallStatus'
-import { readAttached, toolRows } from './ui'
+import { nativeTextStep } from './nativeScenario'
+import { runNativeToolTurn } from './nativeToolExecution'
+import { answerControl, readAttached, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /**
  * Image-in-tool-result fixtures and assertions.
@@ -31,6 +35,76 @@ export function writeToolImage(workingDir: string, marker: string): string {
   const name = `tool-image-${marker}.png`
   writeFileSync(join(workingDir, name), Buffer.from(TOOL_IMAGE_PNG_BASE64, 'base64'))
   return name
+}
+
+/**
+ * The base64 text that starts every PNG. Its 11 characters hold 66 bits: the 64 bits of the PNG signature, and
+ * the first 2 bits of the IHDR length that follows the signature, which are zero in every PNG.
+ * A request that holds it carries PNG bytes in base64. It does not identify one PNG.
+ */
+export const PNG_BASE64_PREFIX = TOOL_IMAGE_PNG_BASE64.slice(0, 11)
+
+/**
+ * Require the PNG bytes of a tool result, in base64, in the model request that follows the tool step.
+ * `data-uri` also requires the `data:image/png;base64,` form of an image part.
+ * The assertion receives a boolean, so the large request body stays out of the failure message.
+ */
+export function expectPngInRequest(request: Pick<MockModelRequestRecord, 'body' | 'protocol'>, form: 'base64' | 'data-uri' = 'base64'): void {
+  const text = form === 'data-uri' ? `data:image/png;base64,${PNG_BASE64_PREFIX}` : PNG_BASE64_PREFIX
+  expect(JSON.stringify(request.body).includes(text), `the ${request.protocol} model request carries the tool image as ${text}`).toBe(true)
+}
+
+/** A PNG that `writeToolImage` wrote: its file name, and its path in the working directory. */
+export interface ToolImage {
+  fileName: string
+  path: string
+}
+
+/** One native turn whose tool reads a PNG. */
+export interface ToolImageTurn {
+  /** The directory that receives the PNG. The native agent must be able to read it. */
+  workingDir: string
+  /** The marker in the file name of the PNG. A tool row that shows the file name can only come from this turn. */
+  marker: string
+  /** Build the native tool call that reads the PNG. A provider passes the file name or the path, as its tool needs. */
+  toolCall: (image: ToolImage) => MockModelToolCall
+  /**
+   * Require the permission banner that shows the file name of the PNG, and allow it.
+   * Without it, the turn allows each native approval as `runNativeToolTurn` does, and checks no banner text.
+   */
+  approve?: boolean
+}
+
+/** The PNG of one {@link ToolImageTurn} and the model request that holds its tool result. */
+export interface ToolImageTurnResult extends ToolImage {
+  resultRequest: MockModelRequestRecord
+}
+
+/**
+ * Write a PNG, run one native turn whose tool reads it, and return the model request after the tool step.
+ * The answer goes through `nativeTextStep`, so a provider that answers through a tool keeps its own form.
+ * The caller checks what the provider draws: `expectToolRowImage` or `expectToolRowWithoutImage`.
+ */
+export async function runToolImageTurn(context: NativeScenarioContext, turn: ToolImageTurn): Promise<ToolImageTurnResult> {
+  if (!turn.workingDir)
+    throw new Error('The tool image turn needs the working directory of the native agent.')
+  const fileName = writeToolImage(turn.workingDir, turn.marker)
+  const image: ToolImage = { fileName, path: join(turn.workingDir, fileName) }
+  const call = turn.toolCall(image)
+  const prompt = `Read ${fileName} and describe it.`
+  const answer = `I inspected ${fileName}.`
+  if (!turn.approve) {
+    const { resultRequest } = await runNativeToolTurn(context, { toolCalls: [call], prompt, answer })
+    return { ...image, resultRequest }
+  }
+  const start = await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, answer))
+  await sendMessage(context.page, context.modelScript.prompt(prompt))
+  await context.modelScript.waitForSteps(start + 1)
+  await expect(await waitForControlBanner(context.page)).toContainText(fileName)
+  await answerControl(context.page, 'allow')
+  await context.modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(context.page)
+  return { ...image, resultRequest: await context.modelScript.requestAt(start + 1) }
 }
 
 /** Check the picture inside one correlated result bubble. */
@@ -274,9 +348,9 @@ export async function mcpResultImage(page: Page, fileName: string, callID: strin
  * Assert a tool call of `fileName` drew an inline image.
  *
  * Two row layouts exist. A provider that merges the call and its result into one
- * row draws the picture inside the row that names the file. A provider that keeps
- * a separate result row names the file in the request row. It draws the picture
- * in the result row, which drops its header -- and with it the
+ * row draws the picture inside the row that shows the file name. A provider that
+ * keeps a separate result row shows the file name in the request row. It draws the
+ * picture in the result row, which drops its header -- and with it the
  * `data-tool-message` hook. A text placeholder has no image element, so the file
  * name alone cannot satisfy this check.
  */
@@ -287,7 +361,7 @@ export async function expectToolRowImage(page: Page, fileName: string): Promise<
   await expectDecodedImage(await toolResultImageForName(page, fileName))
 }
 
-/** Assert a Model Context Protocol result names the PNG and draws it. */
+/** Assert that a Model Context Protocol result shows the file name of the PNG and draws the PNG. */
 export async function expectMcpToolImage(page: Page, fileName: string, callID: string): Promise<void> {
   await expect.poll(async () => (await mcpResultImage(page, fileName, callID)).count()).toBeGreaterThan(0)
   await expectDecodedImage(await mcpResultImage(page, fileName, callID))

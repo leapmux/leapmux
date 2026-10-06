@@ -1,29 +1,16 @@
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
-import { expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-const CLINE = AgentProvider.CLINE
+import { expectToolRowWithoutImage, runToolImageTurn } from '../helpers/toolImages'
 
 clineTest.describe('Cline images in tool results', () => {
-  clineTest('a Read of a PNG draws the name and no picture in the tool row', async ({ authenticatedClineWorkspace, page, modelScript }) => {
-    const workingDir = authenticatedClineWorkspace.workingDir
-    expect(workingDir, 'the agent workspace must expose a working directory').toBeTruthy()
-    const name = writeToolImage(workingDir!, 'cline-19')
-    const path = `${workingDir}/${name}`
-
-    await modelScript.queue(
-      { toolCalls: [readToolCall(CLINE, 'read-png', path)] },
-      { text: `I opened ${name}.` },
-    )
-    await sendMessage(page, modelScript.prompt(`Read the file ${name} and describe it.`))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
+  clineTest('a Read of a PNG draws the name and no picture in the tool row', async ({ native, authenticatedClineWorkspace }) => {
+    await runToolImageTurn(native, {
+      workingDir: authenticatedClineWorkspace.workingDir,
+      marker: 'cline-19',
+      toolCall: image => readToolCall(native.provider, 'read-png', image.path),
+    })
     // The name proves the tool ran. Cline builds tool results as text only, so
     // the row draws no picture (matrix note 3).
-    await expectToolRowWithoutImage(page, 'tool-image-cline-19')
+    await expectToolRowWithoutImage(native.page, 'tool-image-cline-19')
   })
 })

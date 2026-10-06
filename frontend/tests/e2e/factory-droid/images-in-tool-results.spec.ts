@@ -1,29 +1,20 @@
-import { join } from 'node:path'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { droidTest } from '../droid-fixtures'
 import { expect } from '../fixtures'
 import { readToolCall } from '../helpers/providerToolCalls'
-import { writeToolImage } from '../helpers/toolImages'
-import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { expectPngInRequest, expectToolRowImage, runToolImageTurn } from '../helpers/toolImages'
+import { messageContents } from '../helpers/ui'
 
 droidTest.describe('Factory Droid images in tool results', () => {
-  droidTest('renders an image returned by the native Read tool', async ({ authenticatedDroidWorkspace, page, modelScript }) => {
-    const fileName = writeToolImage(authenticatedDroidWorkspace.workingDir, 'droid-348')
-    const filePath = join(authenticatedDroidWorkspace.workingDir, fileName)
-    await modelScript.queue(
-      { toolCalls: [readToolCall(AgentProvider.DROID, 'read-droid-image', filePath)] },
-      { text: 'The image was read.' },
-    )
-    await sendMessage(page, modelScript.prompt('Read the local image file.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    const followUp = status.requests.find(request => request.stepIndex === 1)
-    expect(JSON.stringify(followUp?.body ?? {}).includes('iVBORw0KGgo')).toBe(true)
-    await expect(messageContents(page).filter({ hasText: fileName }).first()).toBeVisible()
-    await expect(messageContents(page).filter({ hasText: '"data":"iVBOR' })).toHaveCount(0)
-    const image = page.locator('button[aria-label="Open image"] img').first()
-    await expect(image).toBeVisible()
-    await expect.poll(() => image.evaluate(el => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  droidTest('renders an image returned by the native Read tool', async ({ native, authenticatedDroidWorkspace }) => {
+    const { fileName, resultRequest } = await runToolImageTurn(native, {
+      workingDir: authenticatedDroidWorkspace.workingDir,
+      marker: 'droid-348',
+      toolCall: image => readToolCall(native.provider, 'read-droid-image', image.path),
+    })
+    expectPngInRequest(resultRequest)
+    await expect(messageContents(native.page).filter({ hasText: fileName }).first()).toBeVisible()
+    // The row draws the decoded picture and never shows the base64 text of the image.
+    await expect(messageContents(native.page).filter({ hasText: '"data":"iVBOR' })).toHaveCount(0)
+    await expectToolRowImage(native.page, fileName)
   })
 })

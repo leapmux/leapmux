@@ -1,31 +1,26 @@
-import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { readToolCall } from '../helpers/providerToolCalls'
-import { expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
-import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { expectToolRowWithoutImage, runToolImageTurn } from '../helpers/toolImages'
+import { chatScrollContainer, openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
-
-const PROVIDER = AgentProvider.QWEN_CODE
+import { nativeContext } from './scenarios'
 
 qwenTest.describe('Qwen Code tool execution', () => {
   qwenTest('shows the native image overview without an inline image', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
-    const name = writeToolImage(workingDir, 'qwen-read')
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await modelScript.queue(
-      { toolCalls: [readToolCall(PROVIDER, 'read-image', join(workingDir, name))] },
-      { text: 'The image read finished.' },
-    )
-    await sendMessage(page, modelScript.prompt('Read the PNG file.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    const second = status.requests.find(request => request.stepIndex === 1)
-    expect(second?.protocol).toBe('openai-chat-completions')
-    expect(JSON.stringify(second?.body).includes('data:image/jpeg;base64,/9j/')).toBe(true)
-    await expectToolRowWithoutImage(page, name)
-    await expect(page.locator('[data-chat-scroll-container="true"]:visible').getByText(/Image overview: 64x64/).first()).toBeVisible()
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    await openWorkspace(page, context.workspaceId)
+    const { fileName, resultRequest } = await runToolImageTurn(context, {
+      workingDir,
+      marker: 'qwen-read',
+      toolCall: image => readToolCall(context.provider, 'read-image', image.path),
+    })
+    expect(resultRequest.protocol).toBe('openai-chat-completions')
+    // Qwen re-encodes the image as a JPEG before the model request.
+    expect(JSON.stringify(resultRequest.body).includes('data:image/jpeg;base64,/9j/')).toBe(true)
+    await expectToolRowWithoutImage(page, fileName)
+    await expect(chatScrollContainer(page).getByText(/Image overview: 64x64/).first()).toBeVisible()
   })
 })

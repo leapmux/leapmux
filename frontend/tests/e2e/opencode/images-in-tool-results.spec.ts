@@ -1,25 +1,14 @@
-import { join } from 'node:path'
-import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { readToolCall } from '../helpers/providerToolCalls'
-import { expectToolRowImage, writeToolImage } from '../helpers/toolImages'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { expectPngInRequest, expectToolRowImage, runToolImageTurn } from '../helpers/toolImages'
 import { opencodeTest } from '../opencode-fixtures'
 
-const OPENCODE = AgentProvider.OPENCODE
-
-opencodeTest('a Read of a PNG draws the picture in the tool row', async ({ authenticatedOpencodeWorkspace, page, modelScript }) => {
-  const workingDir = authenticatedOpencodeWorkspace.workingDir
-  expect(workingDir, 'the agent workspace must expose a working directory').toBeTruthy()
-  const name = writeToolImage(workingDir!, 'opencode-33')
-
-  await modelScript.queue(
-    { toolCalls: [readToolCall(OPENCODE, 'read-png', join(workingDir!, name))] },
-    { text: `I opened ${name}.` },
-  )
-  await sendMessage(page, modelScript.prompt(`Read the file ${name} and describe it.`))
-  await modelScript.waitForSteps()
-  await waitForAgentIdle(page)
-
-  await expectToolRowImage(page, 'tool-image-opencode-33')
+opencodeTest('a Read of a PNG draws the picture in the tool row', async ({ native, authenticatedOpencodeWorkspace }) => {
+  const { resultRequest } = await runToolImageTurn(native, {
+    workingDir: authenticatedOpencodeWorkspace.workingDir,
+    marker: 'opencode-33',
+    toolCall: image => readToolCall(native.provider, 'read-png', image.path),
+  })
+  // The mock model declares the image input modality, so the read tool gives the PNG to the next model request.
+  expectPngInRequest(resultRequest)
+  await expectToolRowImage(native.page, 'tool-image-opencode-33')
 })

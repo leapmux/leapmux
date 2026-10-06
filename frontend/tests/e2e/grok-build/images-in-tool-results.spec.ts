@@ -1,60 +1,53 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { createGrokWorkingDir, GROK_AGENT, grokTest } from '../grok-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
-import { expectMcpToolImage, expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
-import { expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { expectMcpToolImage, expectToolRowWithoutImage, runToolImageTurn, writeToolImage } from '../helpers/toolImages'
+import { answerControl, expectNoControlBanner, expectSettingsOptionChosen, openWorkspace, waitForControlBanner } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-
-const GROK = AgentProvider.GROK_BUILD
+import { nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build images in tool results', () => {
   // Always Approve lets the scripted calls run without permission requests. LeapMux owns this option because Grok does not report it.
   // Grok Build 1.0.41 returns "Cannot read binary file" for a valid PNG. Its native Read description promises image reads.
   // This case verifies that native Read limitation. The following MCP case verifies an actual image result and its rendering.
   grokTest('a Read of a PNG runs and draws no picture in the tool row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
-    const name = writeToolImage(workingDir, 'grok-21')
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    await openWorkspace(page, context.workspaceId)
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
-
-    await modelScript.queue(
-      { toolCalls: [readToolCall(GROK, 'read-png', join(workingDir, name))] },
-      { text: `I opened ${name}.` },
-    )
-    await sendMessage(page, modelScript.prompt(`Read the file ${name} and describe it.`))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
+    await runToolImageTurn(context, {
+      workingDir,
+      marker: 'grok-21',
+      toolCall: image => readToolCall(context.provider, 'read-png', image.path),
+    })
     await expectToolRowWithoutImage(page, 'tool-image-grok-21')
   })
 
   grokTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     const workingDir = createGrokWorkingDir()
     const imageName = writeToolImage(workingDir, 'grok-mcp')
     const server = writeMcpImageServer(workingDir, imageName)
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: server.command, args: server.args } } }))
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
+    await openWorkspace(page, context.workspaceId)
 
-    const banner = page.getByTestId('control-banner').filter({ visible: true })
-    await expect(banner).toContainText('Trust the workspace')
-    await page.getByTestId('control-allow-btn').filter({ visible: true }).click()
-    await expect(banner).toHaveCount(0)
+    await expect(await waitForControlBanner(page)).toContainText('Trust the workspace')
+    await answerControl(page, 'allow')
+    await expectNoControlBanner(page)
     await expect.poll(() => existsSync(server.ready)).toBe(true)
 
     const callID = 'show-grok-image'
-    await modelScript.queue(
-      { toolCalls: [mcpToolCall(GROK, callID, { server: 'image_probe', tool: 'show', input: {} })] },
-      { text: 'The MCP tool returned an image.' },
-    )
-    await sendMessage(page, modelScript.prompt('Call the image_probe show tool.'))
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    expect(JSON.stringify(status.requests.find(request => request.stepIndex === 1)?.body)).toContain(`MCP image ${imageName}`)
+    const { resultRequest } = await runNativeToolTurn(context, {
+      toolCalls: [mcpToolCall(context.provider, callID, { server: 'image_probe', tool: 'show', input: {} })],
+      prompt: 'Call the image_probe show tool.',
+      answer: 'The MCP tool returned an image.',
+    })
+    expect(JSON.stringify(resultRequest.body)).toContain(`MCP image ${imageName}`)
     await expectMcpToolImage(page, imageName, callID)
   })
 })

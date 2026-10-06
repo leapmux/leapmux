@@ -1,21 +1,20 @@
-import { join } from 'node:path'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { getTestChannel } from '../helpers/api'
+import { readAllAgentMessages } from '../helpers/nativeMessages'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { lettaViewImageToolCall } from '../helpers/providerToolCalls'
-import { writeToolImage } from '../helpers/toolImages'
-import { sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
+import { expectPngInRequest, PNG_BASE64_PREFIX, runToolImageTurn } from '../helpers/toolImages'
+import { chatScrollContainer, toolRows } from '../helpers/ui'
 import { expect as lettaExpect, lettaTest } from '../letta-fixtures'
+import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code images in tool results', () => {
   lettaTest('keeps the PNG in model input but receives text-only live and stored rows', async ({ authenticatedVisionLettaWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-    const workingDir = authenticatedVisionLettaWorkspace.workingDir
-    if (!workingDir)
-      throw new Error('the Letta workspace has no working directory')
-    const imageName = writeToolImage(workingDir, 'letta')
-    const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedVisionLettaWorkspace.workspaceId })
+    const agentId = await selectedAgentTabId(page)
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     const channelId = await channel.getOrOpenChannel(leapmuxServer.workerId)
     const request = create(WatchEventsRequestSchema, {
@@ -43,25 +42,24 @@ lettaTest.describe('Letta Code images in tool results', () => {
     })
     try {
       await lettaExpect.poll(() => subscribed).toBe(true)
-      await modelScript.queue(
-        { toolCalls: [lettaViewImageToolCall('letta-view-image', join(workingDir, imageName))] },
-        { text: 'I inspected the picture.' },
-      )
-      await sendMessage(page, modelScript.prompt(`Open ${imageName} with ViewImage.`))
-      const status = await modelScript.waitForSteps()
-      await waitForAgentIdle(page)
-      lettaExpect(JSON.stringify(status.requests.find(record => record.stepIndex === 1)?.body)).toContain('iVBORw0KGgo')
+      const { resultRequest } = await runToolImageTurn(context, {
+        workingDir: authenticatedVisionLettaWorkspace.workingDir,
+        marker: 'letta',
+        toolCall: image => lettaViewImageToolCall('letta-view-image', image.path),
+      })
+      expectPngInRequest(resultRequest)
 
-      const transcript = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId, limit: 200 })
-      const storedRows = transcript.messages.map(message => decompressContentToString(message.content, message.contentCompression)).filter((content): content is string => !!content && content.includes('tool_return_message'))
+      const storedRows = (await readAllAgentMessages(context, agentId))
+        .map(message => decompressContentToString(message.content, message.contentCompression))
+        .filter((content): content is string => !!content && content.includes('tool_return_message'))
       await testInfo.attach('letta-live-tool-results', { body: JSON.stringify(liveRows, null, 2), contentType: 'application/json' })
       await testInfo.attach('letta-stored-tool-results', { body: JSON.stringify(storedRows, null, 2), contentType: 'application/json' })
       lettaExpect(liveRows.length).toBeGreaterThan(0)
       lettaExpect(storedRows.length).toBeGreaterThan(0)
-      lettaExpect(liveRows.some(row => row.includes('iVBORw0KGgo'))).toBe(false)
-      lettaExpect(storedRows.some(row => row.includes('iVBORw0KGgo'))).toBe(false)
+      lettaExpect(liveRows.some(row => row.includes(PNG_BASE64_PREFIX))).toBe(false)
+      lettaExpect(storedRows.some(row => row.includes(PNG_BASE64_PREFIX))).toBe(false)
       await lettaExpect(toolRows(page).filter({ hasText: 'ViewImage' }).first()).toBeVisible()
-      await lettaExpect(page.locator('[data-chat-scroll-container="true"]:visible button[aria-label="Open image"]')).toHaveCount(0)
+      await lettaExpect(chatScrollContainer(page).locator('button[aria-label="Open image"]')).toHaveCount(0)
     }
     finally {
       watch.cancel()
