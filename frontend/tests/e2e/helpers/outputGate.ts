@@ -68,6 +68,9 @@ export function createOutputGate(directory: string): OutputGate {
     hold: (command) => {
       if (!command.trim())
         throw new Error('The output gate requires a command to hold.')
+      // The wait runs in the shell of the command, not in a Node script such as the release loop of
+      // `./toolOutputControl.ts`: only the EXIT trap of that shell keeps it alive after the command ends, also
+      // after an `exit`. A process of its own could not hold the shell.
       // A function holds the wait, so the trap needs no second level of quotation marks around the path.
       return `${HOLD_FUNCTION}() { while [ ! -e ${quotePosixShellArgument(releasePath)} ]; do sleep ${POLL_SECONDS}; done; }; trap ${HOLD_FUNCTION} EXIT; ${command}`
     },

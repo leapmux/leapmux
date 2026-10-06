@@ -20,13 +20,14 @@ import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
 import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
+import { approveNativeToolsUntil } from './nativeToolExecution'
 import { isAlive, listProcesses } from './processTree'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { RELEASE_POLL_MS } from './toolOutputControl'
-import { assistantBubbles, composerEditor, controlButton, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeNativeAgentAndWait, inspectLastTabCloseViaAPI } from './workerTabs'
 
 interface LifecyclePreparation {
@@ -56,6 +57,13 @@ export interface NativeResumeResult extends NativeResumeTexts {
  * splits a command at whitespace and refuses it when one word that holds a `/`
  * is longer than 255 bytes (ExecuteCommandTool.validateCommands), and one word
  * with two absolute paths is longer than that.
+ *
+ * The held command cannot be a one-segment `createToolOutputControl`
+ * (`./toolOutputControl.ts`), although both poll the same way. The control
+ * passes its script as one base64 word, which can hold a `/` and is longer than
+ * 255 bytes, so Dirac refuses it. The control also runs a file whose path the
+ * command shows, while the interrupt scenario finds the tool row by the started
+ * file path that this command shows.
  */
 export function heldToolScript(paths: { startedFile: string, releaseFile: string }): string {
   const startedFile = JSON.stringify(paths.startedFile)
@@ -154,12 +162,9 @@ export async function exerciseInterruptTurn(
     context.modelScript.allowUnconsumed('The native interruption ends the held turn before its answer completes.')
     await sendMessage(context.page, context.modelScript.prompt(options.prompt ?? 'Run the held native interruption probe.'))
     if (options.kind === 'tool') {
-      const allow = controlButton(context.page, 'allow').first()
       await context.modelScript.waitForSteps(stepIndex + 1)
-      await expect.poll(async () => existsSync(toolStarted) || await allow.isVisible()).toBe(true)
-      if (!existsSync(toolStarted))
-        await allow.click()
-      await expect.poll(() => existsSync(toolStarted)).toBe(true)
+      // A provider that asks before a tool runs shows an Allow button. The wait allows each actual request.
+      await approveNativeToolsUntil(context.page, async () => existsSync(toolStarted))
       await expect(messageBubbles(context.page).filter({ hasText: toolStarted }).first()).toBeVisible()
     }
     else {
@@ -220,6 +225,8 @@ export async function exerciseCloseAgent(
     throw new Error('The native close scenario requires a working directory.')
   const marker = uniqueMarker()
   const pidFile = join(agent.workingDir, `native-close-${marker}.pid`)
+  // The probe needs no release file: the close of the agent must end it, and the scenario proves that it did. The
+  // timer only limits a process that a failed close leaves behind, and the cleanup below ends that process as well.
   const script = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>{},600000)`
   const stepIndex = await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] })
   // Some native runtimes request a cancellation continuation before their process exits.
@@ -228,11 +235,7 @@ export async function exerciseCloseAgent(
   let toolPid = 0
   try {
     await context.modelScript.waitForSteps(stepIndex + 1)
-    const allow = controlButton(context.page, 'allow').first()
-    await expect.poll(async () => existsSync(pidFile) || await allow.isVisible()).toBe(true)
-    if (!existsSync(pidFile))
-      await allow.click()
-    await expect.poll(() => existsSync(pidFile)).toBe(true)
+    await approveNativeToolsUntil(context.page, async () => existsSync(pidFile))
     toolPid = Number(readFileSync(pidFile, 'utf8'))
     expect(Number.isInteger(toolPid) && toolPid > 0).toBe(true)
     const rows = listProcesses()
