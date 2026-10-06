@@ -4,6 +4,9 @@ import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 
+/** The text of Dirac's native color question. */
+export const DIRAC_COLOR_QUESTION = 'Which color should I use?'
+
 /**
  * Ask Dirac's native color question, let `reply` answer its form, and return the native result that the model read.
  *
@@ -16,7 +19,7 @@ export async function exerciseQuestionReply(
 ): Promise<string> {
   const { result } = await exerciseQuestionAnswer(context, {
     questions: [{
-      question: 'Which color should I use?',
+      question: DIRAC_COLOR_QUESTION,
       header: 'Color',
       options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Red', description: 'Use red.' }],
     }],

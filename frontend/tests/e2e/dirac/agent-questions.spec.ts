@@ -3,7 +3,8 @@ import { diracTest, expect } from '../dirac-fixtures'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { controlButton, waitForSettingsHydrated } from '../helpers/ui'
-import { exerciseQuestionReply } from './questionScenarios'
+import { diracQuestionControl } from './questionControl'
+import { DIRAC_COLOR_QUESTION, exerciseQuestionReply } from './questionScenarios'
 import { nativeContext } from './scenarios'
 
 /** The controls that a watch saw, as the body of an attachment. A failed watch gives its failure instead. */
@@ -34,9 +35,9 @@ diracTest.describe('dirac agent questions', () => {
       })
       expect(answer).toContain('Red')
       expect(answer).not.toContain('Blue')
-      // The read throws the failure of the watch: an invalid control, or a
-      // stream that ended before the answer.
-      watch.controls()
+      // The question reached the browser as the one native elicitation request of Dirac. The read of the controls also
+      // throws the failure of the watch: an invalid control, or a stream that ended before the answer.
+      diracQuestionControl(watch.controls(), DIRAC_COLOR_QUESTION)
     }
     finally {
       // Read before the cancel, because the end of the stream fails the watch.
