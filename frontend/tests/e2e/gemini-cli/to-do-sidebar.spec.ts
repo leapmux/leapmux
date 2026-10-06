@@ -3,11 +3,11 @@ import { TodoStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { geminiTest } from '../gemini-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
-import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { geminiTodoSnapshotToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo, expectRelatedTodoSurvivesReload } from '../helpers/relatedTodoProof'
-import { applyPermissionPreset, sendMessage } from '../helpers/ui'
+import { applyPermissionPreset } from '../helpers/ui'
 
 // Gemini CLI asks for approval of write_todos in its default mode: the tool is not
 // in the allow list of its read-only policy (bundle/policies/read-only.toml). The
@@ -23,7 +23,7 @@ geminiTest('stores an exact native task snapshot and preserves it after reload',
 })
 
 geminiTest('preserves all native task statuses and replaces and clears the saved snapshot', async ({ native }) => {
-  const { page, modelScript } = native
+  const { page } = native
   const statuses = ['pending', 'in_progress', 'completed', 'cancelled', 'blocked'] as const
   const nativeTodos = statuses.map(status => ({ description: `GEMINI_NATIVE_TASK_${status}`, status }))
   const canonicalStatuses = {
@@ -37,10 +37,12 @@ geminiTest('preserves all native task statuses and replaces and clears the saved
   const snapshots = [nativeTodos, replacement, []] as const
   for (const [index, todos] of snapshots.entries()) {
     const callId = `gemini-native-todo-snapshot-${index}`
-    const start = await modelScript.queue({ toolCalls: [geminiTodoSnapshotToolCall(callId, todos)] }, { text: 'The native task snapshot completed.' })
-    await sendMessage(page, modelScript.prompt('Replace the native task list with the scripted snapshot.'))
-    await waitForNativeToolSteps(native, start + 2)
-    const returned = nativeToolResult(await modelScript.requestAt(start + 1), callId)
+    const turn = await runNativeToolTurn(native, {
+      toolCalls: [geminiTodoSnapshotToolCall(callId, todos)],
+      prompt: 'Replace the native task list with the scripted snapshot.',
+      answer: 'The native task snapshot completed.',
+    })
+    const returned = nativeToolResult(turn.resultRequest, callId)
     expect(returned).toContain(todos.length === 0 ? 'Successfully cleared the todo list.' : 'Successfully updated the todo list.')
     for (const todo of todos)
       expect(returned).toContain(`[${todo.status}] ${todo.description}`)

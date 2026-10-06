@@ -1,11 +1,11 @@
 import { isObject } from '../../../src/lib/jsonPick'
 import { cssAttributeValue } from '../helpers/cssAttribute'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { exerciseShellToolExecution, runNativeToolTurn, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { currentNativeAgent } from '../helpers/nativeScenario'
+import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, railedRows, sendMessage, toolCallRow } from '../helpers/ui'
+import { assistantBubbles, railedRows, toolCallRow } from '../helpers/ui'
 import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('qoder CLI tool execution', () => {
@@ -25,18 +25,20 @@ qoderTest('runs successful and failed native commands with their actual output',
 })
 
 qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ native }) => {
-  const { page, modelScript } = native
+  const { page } = native
   const proofs = [
     { call: bashToolCall(native.provider, 'native-qoder-first-command', 'node -e "process.stdout.write(\'QODERFIRST\' + (40 + 2))"'), output: 'QODERFIRST42' },
     { call: bashToolCall(native.provider, 'native-qoder-second-command', 'node -e "process.stdout.write(\'QODERSECOND\' + (70 + 7))"'), output: 'QODERSECOND77' },
   ]
   const calls = proofs.map(proof => proof.call)
   const initial = await currentNativeAgent(native)
-  const start = await modelScript.queue({ toolCalls: calls }, nativeTextStep(native, 'Both native commands finished.'))
-  await sendMessage(page, modelScript.prompt('Run both native Bash calls in one model response.'))
-  await waitForNativeToolSteps(native, start + 2)
-  // requestAt fails when the two calls produced no next model request.
-  const request = await modelScript.requestAt(start + 1)
+  // The turn reads the request that follows the tool step, and that read fails
+  // when the two calls produced no next model request.
+  const { resultRequest: request } = await runNativeToolTurn(native, {
+    toolCalls: calls,
+    prompt: 'Run both native Bash calls in one model response.',
+    answer: 'Both native commands finished.',
+  })
   expect(request.mockCredential?.accepted).toBe(true)
   const current = await currentNativeAgent(native)
   expect(current.id).toBe(initial.id)
