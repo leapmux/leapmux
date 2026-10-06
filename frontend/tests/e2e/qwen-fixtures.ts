@@ -1,63 +1,24 @@
 /**
  * Qwen Code e2e test fixtures.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
-import { createTestDirectory } from './helpers/runDirectory'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const qwenConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.QWEN_CODE,
-  cliBinary: 'qwen',
-  skipMessage: 'Qwen Code E2E requires a qwen CLI on PATH',
-  workspacePrefix: 'qwen-e2e',
-}
+export const QWEN_E2E_SKIP_REASON: string | null = missingBinaryReason('qwen', 'Qwen Code E2E requires a qwen CLI on PATH')
 
-export const QWEN_E2E_SKIP_REASON = detectACPSkipReason(qwenConfig)
+/** How a Qwen Code agent opens. */
+export const QWEN_AGENT: ProviderAgent = { provider: AgentProvider.QWEN_CODE, prefix: 'qwen-e2e' }
 
 export const qwenTest = base.extend<CliSkipFixture & {
-  qwenWorkspace: WorkspaceFixture
-  authenticatedQwenWorkspace: WorkspaceFixture
+  authenticatedQwenWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(QWEN_E2E_SKIP_REASON),
-  qwenWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, qwenConfig, use)
-  },
-
-  authenticatedQwenWorkspace: async ({ page, qwenWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, qwenWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedQwenWorkspace: authenticatedAgentWorkspace(QWEN_AGENT),
 })
 
 export { expect }
-
-interface QwenAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/**
- * Open a Qwen agent in a directory the test knows, with the pinned model and
- * effort and the option values the test states over them.
- *
- * A spec that gives file paths in its tool calls needs the directory, which the
- * shared fixture keeps to itself.
- */
-export async function openQwenAgent(
-  server: QwenAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-): Promise<{ agentId: string, workingDir: string }> {
-  const workingDir = createTestDirectory('qwen-e2e-wd-')
-  const settings = agentOpenOptions(agentSettings(AgentProvider.QWEN_CODE))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.QWEN_CODE,
-    ...settings,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}

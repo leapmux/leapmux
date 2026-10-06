@@ -3,7 +3,7 @@
 // `~` mapping for an importer outside `include` -- see that file's own comment.
 // This module is not a `.test.ts`, so `~/components/chat/settingsGroups` fails
 // to resolve here although a sibling spec may use it.
-import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
+import { OPTION_ID_EFFORT, OPTION_ID_MODEL } from '../../src/components/chat/settingsGroups'
 import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { DEEPSEEK_HARNESS_MODEL_ID } from './helpers/deepseekHarnessEnvironment'
@@ -73,19 +73,50 @@ export function agentSettings(provider: AgentProvider): AgentE2ESettings {
   return settings
 }
 
+/** What a test changes in the pinned settings of the agent that it opens. */
+export interface AgentOpenOverrides {
+  /** The model. The default is the pinned model of the provider. */
+  model?: string
+  /**
+   * Option values over the pinned values. A value of the same option ID replaces the pinned one.
+   * A model here throws: give it as `model`, the one place a model comes from.
+   */
+  optionValues?: Record<string, string>
+}
+
+/** The provider, the model, and the option values of one agent open request. */
+export interface AgentOpenOptions {
+  agentProvider: AgentProvider
+  model: string
+  optionValues: Record<string, string>
+}
+
 /**
- * Builds the initial option map for one agent test fixture.
+ * Build the open request of one agent: the pinned settings of the provider, merged with the test's overrides.
+ *
+ * This is the one merge rule of the E2E suite. The model comes only from `overrides.model`, and the pinned model is
+ * the default. The option values start from the pinned effort, and each override replaces the value of its own ID.
+ * A spread of pinned settings followed by a second `optionValues` dropped the pinned effort, and a model given as an
+ * option value lost to the pinned model, because the open request writes the model last. This function makes
+ * both mistakes impossible.
  *
  * The effort travels under the well-known `effort` id whatever the provider's
  * own axis is called: the worker maps it onto that axis at startup (see
  * `applyStartupOptions` and `startupEffortConfigID` in the Go worker).
  */
-export function agentOpenOptions(settings: AgentE2ESettings) {
+export function agentOpenOptions(provider: AgentProvider, overrides: AgentOpenOverrides = {}): AgentOpenOptions {
+  if (overrides.optionValues && Object.hasOwn(overrides.optionValues, OPTION_ID_MODEL))
+    throw new Error('agentOpenOptions: give the model as `model`, not as an option value.')
+  if (overrides.model !== undefined && overrides.model.trim() === '')
+    throw new Error('agentOpenOptions: a model override needs a model ID.')
+  const pinned = agentSettings(provider)
   return {
-    model: settings.model,
-    ...(settings.effort
-      ? { optionValues: { [OPTION_ID_EFFORT]: settings.effort } }
-      : {}),
+    agentProvider: provider,
+    model: overrides.model ?? pinned.model,
+    optionValues: {
+      ...(pinned.effort ? { [OPTION_ID_EFFORT]: pinned.effort } : {}),
+      ...overrides.optionValues,
+    },
   }
 }
 

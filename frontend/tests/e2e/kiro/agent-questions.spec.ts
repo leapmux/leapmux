@@ -6,7 +6,8 @@ import { kiroUserText } from '../helpers/kiroSurface'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const PROVIDER = AgentProvider.KIRO
 
@@ -15,7 +16,7 @@ kiroTest.describe('Kiro control requests', () => {
   // classifies the prompt, which the housekeeping rules answer. The test chooses
   // the SECOND option, so an answer that Kiro never read cannot pass as the first.
   kiroTest('answers a question with a chosen option', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'spec' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'spec' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Spec')
 

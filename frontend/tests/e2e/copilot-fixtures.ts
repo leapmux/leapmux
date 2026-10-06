@@ -1,39 +1,32 @@
 /**
  * Copilot-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGroups'
 import { COPILOT_PERMISSION_MODE } from '../../src/generated/contracts/copilot-protocol'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, detectACPSkipReason } from './acp-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
-import { withAgentWorkspace } from './helpers/workspace'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { attachCopilotNativeLogs } from './helpers/copilotNativeLogs'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const copilotConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.GITHUB_COPILOT,
-  cliBinary: 'copilot',
-  skipMessage: 'Copilot E2E requires a copilot CLI on PATH',
-  workspacePrefix: 'copilot-e2e',
-}
+export const COPILOT_E2E_SKIP_REASON: string | null = missingBinaryReason('copilot', 'Copilot E2E requires a copilot CLI on PATH')
 
-export const COPILOT_E2E_SKIP_REASON = detectACPSkipReason(copilotConfig)
+/** How a Copilot agent opens. */
+export const COPILOT_AGENT: ProviderAgent = { provider: AgentProvider.GITHUB_COPILOT, prefix: 'copilot-e2e' }
 
 export const copilotTest = base.extend<CliSkipFixture & {
-  copilotWorkspace: WorkspaceFixture
-  authenticatedCopilotWorkspace: WorkspaceFixture
+  authenticatedCopilotWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(COPILOT_E2E_SKIP_REASON),
-  copilotWorkspace: async ({ leapmuxServer }, use) => {
-    await withAgentWorkspace(leapmuxServer, {
-      provider: copilotConfig.agentProvider,
-      prefix: copilotConfig.workspacePrefix,
-      openOptions: { optionValues: { [OPTION_ID_PERMISSION_MODE]: COPILOT_PERMISSION_MODE.Manual } },
-    }, use)
-  },
-
-  authenticatedCopilotWorkspace: async ({ page, copilotWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, copilotWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedCopilotWorkspace: authenticatedAgentWorkspace({
+    ...COPILOT_AGENT,
+    openOptions: { optionValues: { [OPTION_ID_PERMISSION_MODE]: COPILOT_PERMISSION_MODE.Manual } },
+    // Every failed Copilot test keeps the native event and process logs of the isolated runtime.
+    onFailure: (testInfo, server) => attachCopilotNativeLogs(server.agentEnv.COPILOT_HOME, testInfo),
+  }),
 })
 
 export { expect }

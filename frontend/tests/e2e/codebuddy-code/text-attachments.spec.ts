@@ -4,8 +4,8 @@ import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachme
 import { waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
-  codebuddyTest('the model receives a text attachment', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('the model receives a text attachment', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'Attachment received.' })
     const sourcePath = await expectAttachmentOutcome(page, 'text', { supported: true, fileName: 'notes.txt', readyGroup: 'permissionMode' })
     await sendWithAttachment(page, modelScript.prompt('Read this.'))

@@ -5,8 +5,8 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('qoder CLI to-do sidebar', () => {
-  qoderTest('shows native WriteTodos state and restores it after reload', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('shows native WriteTodos state and restores it after reload', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     await modelScript.queue(
       { toolCalls: [updateTodosToolCall(AgentProvider.QODER, 'qoder-todos-first', [
         { step: 'Inspect the repository', status: 'completed' },

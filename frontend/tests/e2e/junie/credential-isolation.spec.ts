@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { CREDENTIAL_STORE_SHIM_LOG, MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
@@ -23,10 +23,7 @@ junieTest.describe('native credential isolation', () => {
     const before = count()
 
     const workingDir = createTestDirectory('junie-credential-stub-')
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.JUNIE,
-      ...agentOpenOptions(agentSettings(AgentProvider.JUNIE)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.JUNIE))
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(

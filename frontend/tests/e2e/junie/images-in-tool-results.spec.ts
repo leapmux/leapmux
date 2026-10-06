@@ -6,16 +6,17 @@ import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { junieAnswerToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { writeToolImage } from '../helpers/toolImages'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect as junieExpect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie images in tool results', () => {
   junieTest('receives no image bytes in the ACP tool row after the model sees the PNG', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
     let imageName = ''
-    await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { brave_mode: 'on' }, (workingDir) => {
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
       imageName = writeToolImage(workingDir, 'junie-mcp')
       const server = writeMcpImageServer(workingDir, imageName)
       writeJunieMcpConfig(workingDir, 'image_probe', server.command, server.args)
-    })
+    } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(
       { name: 'junie-image-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },

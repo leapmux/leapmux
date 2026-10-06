@@ -4,8 +4,8 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
-qoderTest('applies the completion sound policy to the native answer turn', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('applies the completion sound policy to the native answer turn', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseTurnEndSound(context, { toolActivity: false })
 })
 
@@ -16,8 +16,8 @@ qoderTest('applies the completion sound policy to the native answer turn', async
 // `mode.accept_edits.ineligible.keep_ask`.
 const SOUND_COMMAND = 'echo SOUND42'
 
-qoderTest('plays one sound for a completed native tool turn', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('plays one sound for a completed native tool turn', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseTurnEndSound(context, {
     toolActivity: true,
     sound: 'ding-dong',
@@ -29,8 +29,8 @@ qoderTest('plays one sound for a completed native tool turn', async ({ qoderWork
   })
 })
 
-qoderTest('keeps a completed native tool turn quiet when sound is disabled', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('keeps a completed native tool turn quiet when sound is disabled', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseTurnEndSound(context, {
     toolActivity: true,
     sound: 'none',

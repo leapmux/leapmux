@@ -16,9 +16,9 @@ qoderTest.describe('native workflow grouping', () => {
 
   const FILE_MARKER = 'QODER_WORKFLOW_FILE_MARKER'
 
-  qoderTest('groups a native Workflow run with two saved child transcripts', async ({ qoderWorkspace, page, modelScript }) => {
+  qoderTest('groups a native Workflow run with two saved child transcripts', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
     const file = 'qoder-workflow-note.txt'
-    writeFileSync(join(qoderWorkspace.workingDir, file), FILE_MARKER)
+    writeFileSync(join(authenticatedQoderWorkspace.workingDir, file), FILE_MARKER)
     const firstPrompt = modelScript.prompt(`Read ${file} and report its marker.`)
     const secondPrompt = modelScript.prompt(`Reply with ${SECOND_ANSWER}.`)
     const script = [

@@ -9,9 +9,9 @@ import { expect, qoderTest } from '../qoder-fixtures'
 import { readQoderNativeOutput } from './outputFilePaths'
 import { nativeContext } from './scenarios'
 
-qoderTest('keeps the native shell output path and exact preview after reload', async ({ qoderWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
+qoderTest('keeps the native shell output path and exact preview after reload', async ({ authenticatedQoderWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   await captureNativeToolOutput(native, testInfo, {
     output,

@@ -8,7 +8,8 @@ import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 
@@ -16,7 +17,7 @@ qwenTest.describe('Qwen Code control requests', () => {
   // Qwen's `default` mode asks before a shell command. The reply contains one of the offered options.
   // The native reply has no reason field. The reader's reason follows in a separate message.
   qwenTest('approves one command and rejects the next with a reason', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Default')
     const approved = join(workingDir, 'approved.txt')

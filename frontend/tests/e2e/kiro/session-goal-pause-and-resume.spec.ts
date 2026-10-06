@@ -19,7 +19,8 @@ import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { kiroGoalCancellation, kiroGoalExecutionId, kiroGoalSessionId, readKiroGoalMessages } from './goalReceipt'
 
 /** The word of the reason that Kiro states when a goal reaches its round limit. */
@@ -52,7 +53,7 @@ kiroTest.describe('Kiro session goal', () => {
     const objective = modelScript.prompt('Keep inspecting the repository.')
     const staleAnswer = 'Still working on the objective.'
     await withCleanup(async () => {
-      const { agentId, workingDir } = await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' })
+      const { agentId, workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await waitForSettingsHydrated(page)
       const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIRO }

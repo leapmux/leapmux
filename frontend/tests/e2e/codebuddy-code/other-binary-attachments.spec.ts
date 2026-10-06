@@ -3,8 +3,8 @@ import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachme
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code binary attachments', () => {
-  codebuddyTest('carries the bytes of a binary attachment to the model', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('carries the bytes of a binary attachment to the model', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'The binary file reached the model.' })
     await expectAttachmentOutcome(page, 'binary', { supported: true, fileName: 'codebuddy-blob.bin', readyGroup: 'permissionMode' })
     await sendWithAttachment(page, modelScript.prompt('Inspect the attached binary file.'))

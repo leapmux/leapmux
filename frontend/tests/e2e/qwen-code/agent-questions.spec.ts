@@ -4,13 +4,14 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 
 qwenTest.describe('Qwen Code control requests', () => {
   qwenTest('answers a question through its own reply field', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     await modelScript.queue(

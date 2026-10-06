@@ -9,8 +9,8 @@ import { deepseekHarnessEscalatedBashToolCall } from '../helpers/providerToolCal
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('allows or denies real native escalation before the command changes a file', async ({ defaultDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: defaultDeepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('allows or denies real native escalation before the command changes a file', async ({ askingDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDeepseekHarnessWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   for (const decision of ['deny', 'allow'] as const) {
     const path = join(agent.workingDir, `native-escalation-${decision}.txt`)

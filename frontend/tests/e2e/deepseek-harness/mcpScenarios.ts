@@ -3,7 +3,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import process from 'node:process'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { createDeepseekHarnessEnvironment } from '../helpers/deepseekHarnessEnvironment'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
@@ -44,11 +44,9 @@ export async function withDeepseekHarnessMcp(
   })
   await withNativeWorker(context.leapmuxServer, { dataDirPrefix: 'deepseek-mcp-worker', workerName: 'DeepSeek MCP worker', env }, async (worker) => {
     const privateContext = { ...context, leapmuxServer: worker.server }
-    const id = await openAgentViaAPI(worker.server.hubUrl, worker.server.adminToken, worker.workerId, context.workspaceId, server.workingDir, {
-      agentProvider: AgentProvider.DEEPSEEK_HARNESS,
-      ...agentOpenOptions(agentSettings(AgentProvider.DEEPSEEK_HARNESS)),
+    const id = await openAgentViaAPI(worker.server.hubUrl, worker.server.adminToken, worker.workerId, context.workspaceId, server.workingDir, agentOpenOptions(AgentProvider.DEEPSEEK_HARNESS, {
       optionValues: { permissionMode: 'act', permissions: 'danger-full-access' },
-    })
+    }))
     await tabById(context.page, id).click()
     await currentNativeAgent(privateContext)
     await use(privateContext)

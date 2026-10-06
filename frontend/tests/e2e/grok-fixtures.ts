@@ -1,14 +1,15 @@
 /**
  * Grok Build e2e test fixtures.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
+import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 /**
  * A working directory that is the root of a git repository of its own.
@@ -26,56 +27,16 @@ export function createGrokWorkingDir(): string {
   return createGitRepo(createTestDirectory('grok-e2e-wd-'), 'repo')
 }
 
-const grokConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.GROK_BUILD,
-  cliBinary: 'grok',
-  skipMessage: 'Grok Build E2E requires a grok CLI on PATH',
-  workspacePrefix: 'grok-e2e',
-  workingDir: createGrokWorkingDir,
-}
+export const GROK_E2E_SKIP_REASON: string | null = missingBinaryReason('grok', 'Grok Build E2E requires a grok CLI on PATH')
 
-export const GROK_E2E_SKIP_REASON = detectACPSkipReason(grokConfig)
+/** How a Grok Build agent opens. */
+export const GROK_AGENT: ProviderAgent = { provider: AgentProvider.GROK_BUILD, prefix: 'grok-e2e', workingDir: createGrokWorkingDir }
 
 export const grokTest = base.extend<CliSkipFixture & {
-  grokWorkspace: WorkspaceFixture
-  authenticatedGrokWorkspace: WorkspaceFixture
+  authenticatedGrokWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(GROK_E2E_SKIP_REASON),
-  grokWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, grokConfig, use)
-  },
-
-  authenticatedGrokWorkspace: async ({ page, grokWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, grokWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedGrokWorkspace: authenticatedAgentWorkspace(GROK_AGENT),
 })
 
 export { expect }
-
-interface GrokAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/**
- * Open a Grok agent in a directory the test knows, with the pinned model and
- * effort and the option values the test states over them.
- *
- * A spec that gives file paths in its tool calls needs the directory, which the
- * shared fixture keeps to itself.
- */
-export async function openGrokAgent(
-  server: GrokAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-): Promise<{ agentId: string, workingDir: string }> {
-  const workingDir = createGrokWorkingDir()
-  const settings = agentOpenOptions(agentSettings(AgentProvider.GROK_BUILD))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.GROK_BUILD,
-    ...settings,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}

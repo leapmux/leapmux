@@ -15,19 +15,16 @@
  * with the developer's own HOME, and Droid writes into `~/.factory` on every
  * start. See `helpers/binaryOnPath.ts`.
  */
-import type { Page } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
 import type { MockModelRule } from './helpers/mockModelScript'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid', 'Factory Droid E2E requires the droid CLI on PATH (https://docs.factory.ai/)')
 
@@ -54,10 +51,8 @@ export const DROID_TITLE_RULE: MockModelRule = {
   respond: { text: 'LeapMux E2E' },
 }
 
-/** One Factory Droid agent's workspace, and the directory the agent works in. */
-export interface DroidWorkspaceFixture extends WorkspaceFixture {
-  workingDir: string
-}
+/** How a Factory Droid agent opens. */
+export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefix: 'droid-e2e' }
 
 /**
  * The agent opens in Auto (High), which answers every tool call at once.
@@ -70,36 +65,18 @@ export interface DroidWorkspaceFixture extends WorkspaceFixture {
 const AUTO_HIGH = { optionValues: { permissionMode: DROID_MODE.AutoHigh } }
 const REASONING_AUTO_HIGH = { optionValues: { ...AUTO_HIGH.optionValues, [OPTION_ID_EFFORT]: DROID_EFFORT.High } }
 
-interface DroidAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/** Open one agent in a fresh directory, log in, and show its workspace. */
-function droidWorkspace(prefix: string, openOptions?: { optionValues: Record<string, string> }) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: DroidAgentServer }, use: (fixture: DroidWorkspaceFixture) => Promise<void>) => {
-    const workingDir = createTestDirectory('droid-e2e-wd-')
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.DROID, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use({ ...workspace, workingDir })
-    })
-  }
-}
-
 export const droidTest = base.extend<CliSkipFixture & {
   /** An agent in Auto (High), which raises no banner for a tool call. */
-  authenticatedDroidWorkspace: DroidWorkspaceFixture
+  authenticatedDroidWorkspace: AgentWorkspace
   /** A custom-model agent with high reasoning effort. */
-  authenticatedReasoningDroidWorkspace: DroidWorkspaceFixture
+  authenticatedReasoningDroidWorkspace: AgentWorkspace
   /** An agent in LeapMux's default Default mode, which asks before a change. */
-  askingDroidWorkspace: DroidWorkspaceFixture
+  askingDroidWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(DROID_E2E_SKIP_REASON),
-  authenticatedDroidWorkspace: droidWorkspace('droid-e2e', AUTO_HIGH),
-  authenticatedReasoningDroidWorkspace: droidWorkspace('droid-e2e-reasoning', REASONING_AUTO_HIGH),
-  askingDroidWorkspace: droidWorkspace('droid-e2e-ask'),
+  authenticatedDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, openOptions: AUTO_HIGH }),
+  authenticatedReasoningDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, prefix: 'droid-e2e-reasoning', openOptions: REASONING_AUTO_HIGH }),
+  askingDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, prefix: 'droid-e2e-ask' }),
 })
 
 export { expect }

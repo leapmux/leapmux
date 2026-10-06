@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -95,7 +95,7 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
 
 zcodeTest('restricts the native Node executor to browser and computer use', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.ZCODE }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-zcode-code-limit-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-zcode-code-limit-'), agentOpenOptions(context.provider))
   await openWorkspace(page, context.workspaceId)
   const request = await sendNativeAnswer(context, 'Reply once while the restricted native executor catalog remains available.', 'The native restricted executor catalog turn completed.')
   const body = isObject(request.body) ? request.body : undefined

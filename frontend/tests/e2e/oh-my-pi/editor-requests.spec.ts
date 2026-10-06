@@ -1,12 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { ohMyPiTest } from '../ohmypi-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { OH_MY_PI_AGENT, ohMyPiTest } from '../ohmypi-fixtures'
 
 const PREFILL = 'Initial line\nSecond line'
 const EDITOR_CASES = [
@@ -39,8 +37,7 @@ export default function(pi) {
 }
 `)
     const server = leapmuxServer
-    const options = { agentProvider: AgentProvider.OH_MY_PI, ...agentOpenOptions(agentSettings(AgentProvider.OH_MY_PI)) }
-    const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, options)
+    const { agentId } = await openProviderAgent(server, authenticatedEmptyWorkspace.workspaceId, OH_MY_PI_AGENT, { workingDir })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await sendMessage(page, '/e2e-editor')
@@ -57,7 +54,7 @@ export default function(pi) {
       await expect(editor).toHaveValue(scenario.value)
     }
     if ('remount' in scenario) {
-      const keeperId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('omp-editor-keeper-'), options)
+      const { agentId: keeperId } = await openProviderAgent(server, authenticatedEmptyWorkspace.workspaceId, OH_MY_PI_AGENT, { workingDir: createTestDirectory('omp-editor-keeper-') })
       await tabById(page, keeperId).click()
       await tabById(page, agentId).click()
       await expect(editor).toHaveValue('')

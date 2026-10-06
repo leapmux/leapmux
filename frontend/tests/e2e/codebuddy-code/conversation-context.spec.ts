@@ -3,13 +3,13 @@ import { exerciseConversationContext } from '../helpers/nativeConversation'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
-codebuddyTest('carries the earlier user prompt and assistant answer into the next native request', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+codebuddyTest('carries the earlier user prompt and assistant answer into the next native request', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
   await exerciseConversationContext(context)
 })
 
-codebuddyTest('keeps the conversation from one turn to the next', async ({ codebuddyWorkspace, page, modelScript }) => {
-  void codebuddyWorkspace
+codebuddyTest('keeps the conversation from one turn to the next', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+  void authenticatedCodebuddyWorkspace
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()

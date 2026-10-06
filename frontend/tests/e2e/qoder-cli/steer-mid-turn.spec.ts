@@ -5,8 +5,8 @@ import { qoderTest } from '../qoder-fixtures'
 qoderTest.describe('Qoder CLI live child transcript', () => {
   const QODER = AgentProvider.QODER
 
-  qoderTest('sends a queued message into the active turn', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('sends a queued message into the active turn', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     await exerciseProviderSteer(page, modelScript, QODER)
   })
 })

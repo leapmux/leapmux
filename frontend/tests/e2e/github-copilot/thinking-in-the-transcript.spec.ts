@@ -2,7 +2,6 @@ import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { copilotTest } from '../copilot-fixtures'
-import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { bandRows, chooseSettingsOption, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
@@ -34,14 +33,8 @@ async function proveThinkingRows(page: Page, modelScript: ModelScript, order: 'b
   await assertRows()
 }
 
-copilotTest('keeps a thought before its answer after reload', async ({ authenticatedCopilotWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
+copilotTest('keeps a thought before its answer after reload', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
   void authenticatedCopilotWorkspace
   await chooseSettingsOption(page, `model-${MOCK_MODELS.gooseReasoning}`)
-  try {
-    await proveThinkingRows(page, modelScript)
-  }
-  catch (error) {
-    await attachCopilotNativeLogs(leapmuxServer.agentEnv.COPILOT_HOME, testInfo)
-    throw error
-  }
+  await proveThinkingRows(page, modelScript)
 })

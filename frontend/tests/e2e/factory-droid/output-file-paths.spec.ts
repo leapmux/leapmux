@@ -1,6 +1,4 @@
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { droidTest, expect } from '../droid-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { DROID_AGENT, droidTest, expect } from '../droid-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -11,6 +9,7 @@ import { droidExecuteToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { readDroidNativeOutput } from './outputFilePaths'
 import { nativeContext } from './scenarios'
 import { nativeDroidCallId } from './toolResult'
@@ -18,7 +17,7 @@ import { nativeDroidCallId } from './toolResult'
 droidTest('keeps the native filesystem path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-output-path-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)) })
+  await openProviderAgent(leapmuxServer, native.workspaceId, DROID_AGENT, { workingDir: createTestDirectory('native-output-path-') })
   await openWorkspace(page, native.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   await captureNativeToolOutput(native, testInfo, {

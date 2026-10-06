@@ -6,8 +6,8 @@ import { selectRunningChildTask } from '../helpers/runningChildProof'
 import { waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { nativeContext, registerChildReports } from './scenarios'
 
-deepseekHarnessTest('shows a real child file result while its native model reply remains open', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('shows a real child file result while its native model reply remains open', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const childTask = 'DEEPSEEKLIVECHILD read the supplied live file.'
   const parent = await currentNativeAgent(context)
   let childId = ''
@@ -18,7 +18,7 @@ deepseekHarnessTest('shows a real child file result while its native model reply
     parentTask: 'Create the scripted live native child.',
     background: true,
     // The native Read result starts with three header rows: `<path>`, `<type>`, and `<content>`. A result view shows only its first three rows until the reader expands it.
-    toolProof: { workingDir: deepseekHarnessWorkspace.workingDir, expandResult: true },
+    toolProof: { workingDir: authenticatedDeepseekHarnessWorkspace.workingDir, expandResult: true },
     beforeRelease: async () => {
       await registerChildReports(context)
       const snapshot = await readNativeSidebarSnapshot(context, parent.id)

@@ -2,11 +2,12 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 
@@ -16,7 +17,7 @@ grokTest.describe('Grok Build tool execution', () => {
   // requests. The approval mode is LeapMux's own option, because Grok never
   // reports it.
   grokTest('runs a command, an edit with its diff, a read and a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     const note = join(createNativeToolDirectory(workingDir), 'note.txt')
     writeFileSync(note, 'grok-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

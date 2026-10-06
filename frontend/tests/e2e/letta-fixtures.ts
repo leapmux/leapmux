@@ -16,19 +16,16 @@
  * `helpers/mockAgentEnvironment.ts` puts the real install directory first on
  * PATH. See `helpers/binaryOnPath.ts`.
  */
-import type { Page } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
 import type { MockModelRule } from './helpers/mockModelScript'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { LETTA_MODE } from '../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from './helpers/mockAgentEnvironment'
-import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 export const LETTA_E2E_SKIP_REASON: string | null = missingBinaryReason('letta', 'Letta Code E2E requires the letta CLI on PATH (https://docs.letta.com/letta-code)')
 
@@ -42,10 +39,8 @@ export const LETTA_TITLE_RULE: MockModelRule = {
   respond: { text: 'LeapMux E2E' },
 }
 
-/** One Letta Code agent's workspace, and the directory the agent works in. */
-export interface LettaWorkspaceFixture extends WorkspaceFixture {
-  workingDir: string
-}
+/** How a Letta Code agent opens. */
+export const LETTA_AGENT: ProviderAgent = { provider: AgentProvider.LETTA, prefix: 'letta-e2e' }
 
 /**
  * The agent opens in Unrestricted, which answers every tool call at once.
@@ -59,39 +54,21 @@ const UNRESTRICTED = { optionValues: { permissionMode: LETTA_MODE.Unrestricted }
 const VISION_UNRESTRICTED = { model: LETTA_VISION_MODEL_ID, optionValues: UNRESTRICTED.optionValues }
 const REASONING_UNRESTRICTED = { model: LETTA_REASONING_MODEL_ID, optionValues: UNRESTRICTED.optionValues }
 
-interface LettaAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/** Open one agent in a fresh directory, log in, and show its workspace. */
-function lettaWorkspace(prefix: string, openOptions?: { model?: string, optionValues: Record<string, string> }) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: LettaAgentServer }, use: (fixture: LettaWorkspaceFixture) => Promise<void>) => {
-    const workingDir = createTestDirectory('letta-e2e-wd-')
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.LETTA, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use({ ...workspace, workingDir })
-    })
-  }
-}
-
 export const lettaTest = base.extend<CliSkipFixture & {
   /** An agent in Unrestricted, which raises no banner for a tool call. */
-  authenticatedLettaWorkspace: LettaWorkspaceFixture
+  authenticatedLettaWorkspace: AgentWorkspace
   /** A built-in vision model routed through a local provider record. */
-  authenticatedVisionLettaWorkspace: LettaWorkspaceFixture
+  authenticatedVisionLettaWorkspace: AgentWorkspace
   /** A built-in reasoning model routed through a local provider record. */
-  authenticatedReasoningLettaWorkspace: LettaWorkspaceFixture
+  authenticatedReasoningLettaWorkspace: AgentWorkspace
   /** An agent in LeapMux's default Standard mode, which asks before an approval tool. */
-  askingLettaWorkspace: LettaWorkspaceFixture
+  askingLettaWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(LETTA_E2E_SKIP_REASON),
-  authenticatedLettaWorkspace: lettaWorkspace('letta-e2e', UNRESTRICTED),
-  authenticatedVisionLettaWorkspace: lettaWorkspace('letta-e2e-vision', VISION_UNRESTRICTED),
-  authenticatedReasoningLettaWorkspace: lettaWorkspace('letta-e2e-reasoning', REASONING_UNRESTRICTED),
-  askingLettaWorkspace: lettaWorkspace('letta-e2e-ask'),
+  authenticatedLettaWorkspace: authenticatedAgentWorkspace({ ...LETTA_AGENT, openOptions: UNRESTRICTED }),
+  authenticatedVisionLettaWorkspace: authenticatedAgentWorkspace({ ...LETTA_AGENT, prefix: 'letta-e2e-vision', openOptions: VISION_UNRESTRICTED }),
+  authenticatedReasoningLettaWorkspace: authenticatedAgentWorkspace({ ...LETTA_AGENT, prefix: 'letta-e2e-reasoning', openOptions: REASONING_UNRESTRICTED }),
+  askingLettaWorkspace: authenticatedAgentWorkspace({ ...LETTA_AGENT, prefix: 'letta-e2e-ask' }),
 })
 
 export { expect }

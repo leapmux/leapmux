@@ -3,13 +3,14 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { openGeminiAgent } from '../gemini-fixtures'
+import { GEMINI_AGENT } from '../gemini-fixtures'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { closeAgentViaAPI } from '../helpers/worktree'
 
 /** Reload the actual MCP settings in a new native agent and restore their exact bytes. */
@@ -25,7 +26,7 @@ export async function withGeminiMcp(context: ManagedNativeScenarioContext, serve
   const content = JSON.stringify({ ...settings, mcpServers: { ...existing, [server.name]: { command: server.command, args: server.args } } })
   const keeper = await currentNativeAgent(context)
   await withNativeConfigurationFile({ path, content, runDir: getGlobalState().tmpDir }, async () => {
-    const opened = await openGeminiAgent(context.leapmuxServer, context.workspaceId, { permissionMode: 'yolo' })
+    const opened = await openProviderAgent(context.leapmuxServer, context.workspaceId, GEMINI_AGENT, { optionValues: { permissionMode: 'yolo' } })
     await tabById(context.page, opened.agentId).click()
     try {
       await currentNativeAgent(context)

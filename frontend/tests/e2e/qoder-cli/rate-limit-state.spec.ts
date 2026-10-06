@@ -3,8 +3,8 @@ import { assistantBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } fr
 import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI compaction and rate limits', () => {
-  qoderTest('does not show a rate-limit window from BYOK model headers', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('does not show a rate-limit window from BYOK model headers', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     const rateLimits = {
       type: 'five_hour',
       status: 'allowed_warning',

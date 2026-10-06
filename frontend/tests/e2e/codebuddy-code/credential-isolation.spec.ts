@@ -4,8 +4,8 @@ import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { nativeContext } from './scenarios'
 
-codebuddyTest('runs the actual native turn with private configuration and mock credentials', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+codebuddyTest('runs the actual native turn with private configuration and mock credentials', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
   const environment = leapmuxServer.agentEnv
   const home = environment.CODEBUDDY_CONFIG_DIR
   if (!home)

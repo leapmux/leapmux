@@ -5,8 +5,8 @@ import { chooseSettingsOption, closeComposerMenus, openSettingsMenu, sendMessage
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest('switches the model for the next native request', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    void codebuddyWorkspace
+  codebuddyTest('switches the model for the next native request', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    void authenticatedCodebuddyWorkspace
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, `model-${CODEBUDDY_ALT_MODEL_ID}`)
     await waitForSettingsIdle(page)
@@ -20,7 +20,7 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
       throw new Error('the CodeBuddy model request must state its model')
     expect(body.model).toBe(CODEBUDDY_ALT_MODEL_WIRE_ID)
 
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
     await exerciseRestoredNativeOption(context, {
       groupId: 'model',
       value: CODEBUDDY_ALT_MODEL_ID,

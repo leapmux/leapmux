@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { readMcpCallArguments } from '../helpers/mcpRequestReceipt'
 import { writeMcpResultServer } from '../helpers/mcpResultServer'
@@ -23,7 +23,7 @@ kiloTest('runs native code and retains computed output and script errors after r
   const content = opencodeMcpServerConfiguration(original, 'result_probe', [process.execPath, script])
   await withNativeWorker(leapmuxServer, { dataDirPrefix: 'native-code-worker', workerName: 'Native code executor', env: { KILO_EXPERIMENTAL_CODE_MODE: 'true', KILO_CONFIG_CONTENT: content } }, async ({ server }) => {
     const context = { page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KILO }
-    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, directory, { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
     await openWorkspace(page, context.workspaceId)
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {

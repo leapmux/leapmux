@@ -3,8 +3,8 @@ import { expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, e
 import { sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code session goal', () => {
-  codebuddyTest('sets and clears a goal through native commands', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('sets and clears a goal through native commands', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')
     await modelScript.rule({
       name: 'native goal command turn',

@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
@@ -106,10 +106,7 @@ export const mcpDiracTest = diracTest.extend<{ configuredMcpDiracWorkspace: Conf
       }, async ({ server }) => {
         await withTestWorkspace(server, 'dirac-mcp-private', async (workspace) => {
           const workingDir = createTestDirectory('dirac-mcp-native-wd-')
-          const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, {
-            agentProvider: AgentProvider.DIRAC,
-            ...agentOpenOptions(agentSettings(AgentProvider.DIRAC)),
-          })
+          const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC))
           await loginViaToken(page, server.adminToken)
           await openWorkspace(page, workspace.workspaceId)
           const active = await currentNativeAgent({ page, leapmuxServer: server })

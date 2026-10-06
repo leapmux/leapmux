@@ -1,32 +1,24 @@
 /**
  * OpenCode-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const opencodeConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.OPENCODE,
-  cliBinary: 'opencode',
-  skipMessage: 'OpenCode E2E requires opencode CLI on PATH',
-  workspacePrefix: 'opencode-e2e',
-}
+export const OPENCODE_E2E_SKIP_REASON: string | null = missingBinaryReason('opencode', 'OpenCode E2E requires opencode CLI on PATH')
 
-export const OPENCODE_E2E_SKIP_REASON = detectACPSkipReason(opencodeConfig)
+/** How an OpenCode agent opens. */
+export const OPENCODE_AGENT: ProviderAgent = { provider: AgentProvider.OPENCODE, prefix: 'opencode-e2e' }
 
 export const opencodeTest = base.extend<CliSkipFixture & {
-  opencodeWorkspace: WorkspaceFixture
-  authenticatedOpencodeWorkspace: WorkspaceFixture
+  authenticatedOpencodeWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(OPENCODE_E2E_SKIP_REASON),
-  opencodeWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, opencodeConfig, use)
-  },
-
-  authenticatedOpencodeWorkspace: async ({ page, opencodeWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, opencodeWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedOpencodeWorkspace: authenticatedAgentWorkspace(OPENCODE_AGENT),
 })
 
 export { expect }

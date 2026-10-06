@@ -2,11 +2,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { ampTest } from '../amp-fixtures'
+import { AMP_AGENT, AMP_ALLOW_ALL, ampTest } from '../amp-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -32,12 +30,7 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
       workerName: 'Amp credential profile',
       env: { XDG_CONFIG_HOME: configHome, AMP_SETTINGS_FILE: configuration },
     }, async ({ server, dataDir }) => {
-      const defaults = agentOpenOptions(agentSettings(AgentProvider.AMP))
-      await withAgentWorkspace(server, {
-        provider: AgentProvider.AMP,
-        prefix: 'amp-private-credential',
-        openOptions: { ...defaults, optionValues: { ...defaults.optionValues, permissionMode: AMP_PERMISSION_MODE.AllowAll } },
-      }, async ({ workspaceId }) => {
+      await withAgentWorkspace(server, { ...AMP_AGENT, prefix: 'amp-private-credential', openOptions: AMP_ALLOW_ALL }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
         const context = { page, modelScript, leapmuxServer: server, workspaceId, provider: AgentProvider.AMP }
         const environment = server.agentEnv

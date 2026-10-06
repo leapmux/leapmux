@@ -7,9 +7,9 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI images in tool results', () => {
-  qoderTest('renders an image returned by the native Read tool', async ({ qoderWorkspace, page, modelScript }) => {
-    const fileName = writeToolImage(qoderWorkspace.workingDir, 'qoder-348')
-    const filePath = join(qoderWorkspace.workingDir, fileName)
+  qoderTest('renders an image returned by the native Read tool', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    const fileName = writeToolImage(authenticatedQoderWorkspace.workingDir, 'qoder-348')
+    const filePath = join(authenticatedQoderWorkspace.workingDir, fileName)
     await modelScript.queue(
       { toolCalls: [readToolCall(AgentProvider.QODER, 'read-qoder-image', filePath)] },
       { text: 'The image was read.' },

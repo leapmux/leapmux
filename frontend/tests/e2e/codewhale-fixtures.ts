@@ -8,14 +8,14 @@
  * the wrapper otherwise, so the wrapper on PATH is what the skip check asks for.
  */
 import type { Page } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
-import { closeComposerMenus, loginViaToken, openSettingsMenu, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { closeComposerMenus, openSettingsMenu } from './helpers/ui'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 /** What `codewhale --version` states: whether the CLI runs, and its version. */
 interface CodewhaleInstall {
@@ -70,21 +70,14 @@ export async function expectCodewhalePosture(page: Page, posture: string): Promi
   await closeComposerMenus(page)
 }
 
+/** How a Codewhale agent opens. */
+export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-e2e' }
+
 export const codewhaleTest = base.extend<CliSkipFixture & {
-  codewhaleWorkspace: WorkspaceFixture
-  authenticatedCodewhaleWorkspace: WorkspaceFixture
+  authenticatedCodewhaleWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(CODEWHALE_E2E_SKIP_REASON),
-  codewhaleWorkspace: async ({ leapmuxServer }, use) => {
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-e2e' }, use)
-  },
-
-  authenticatedCodewhaleWorkspace: async ({ page, codewhaleWorkspace, leapmuxServer }, use) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await openWorkspace(page, codewhaleWorkspace.workspaceId)
-
-    await use(codewhaleWorkspace)
-  },
+  authenticatedCodewhaleWorkspace: authenticatedAgentWorkspace(CODEWHALE_AGENT),
 })
 
 export { expect }

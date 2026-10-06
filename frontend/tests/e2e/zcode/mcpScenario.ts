@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -31,10 +31,7 @@ export async function exerciseZCodeMcpInputLimit(context: ManagedNativeScenarioC
   mkdirSync(join(directory, '.zcode'))
   writeFileSync(join(directory, '.zcode', 'config.json'), JSON.stringify({ mcp: { servers: { form_probe: { type: 'stdio', command: process.execPath, args: [script], env: {} } } } }))
   const server = context.leapmuxServer
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, directory, {
-    agentProvider: context.provider,
-    ...agentOpenOptions(agentSettings(context.provider)),
-  })
+  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
   await openWorkspace(context.page, context.workspaceId)
   const agent = await currentNativeAgent(context)
   const channel = await getTestChannel(server.hubUrl, server.adminToken)

@@ -5,8 +5,8 @@ import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrat
 import { qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
-qoderTest('adds actual native planning instructions and preserves the selected mode after reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('adds actual native planning instructions and preserves the selected mode after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await waitForSettingsHydrated(page)
   await chooseSettingsOption(page, 'permissionMode-default')
   await waitForSettingsIdle(page)

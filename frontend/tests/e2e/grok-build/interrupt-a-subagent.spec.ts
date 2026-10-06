@@ -1,7 +1,8 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { exerciseChildInterrupt, expectNoRegistryRows, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 /**
  * The child tab interrupts only its actual native child. The parent must remain operational.
@@ -26,7 +27,7 @@ grokTest.describe('Grok Build subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await exerciseChildInterrupt(page, modelScript, {

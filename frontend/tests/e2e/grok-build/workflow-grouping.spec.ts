@@ -1,13 +1,14 @@
 import { expect } from '@playwright/test'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { grokWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
+import { openProviderAgent } from '../helpers/workspace'
 
 grokTest.describe('Grok Build workflow grouping', () => {
   grokTest('groups a native Rhai workflow with its child', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     const name = 'leapmux-probe'

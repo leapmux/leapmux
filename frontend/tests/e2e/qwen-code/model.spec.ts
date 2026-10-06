@@ -3,11 +3,12 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseSettingsOption, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code settings and goal', () => {
   qwenTest('switches the model for the next native request', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, `model-${QWEN_ALT_MODEL_ID}`)

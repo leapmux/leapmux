@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
 import { expectNoNativeStartupControl } from './nativeControlObservation'
 import { nativeAgentById } from './nativeScenario'
@@ -84,13 +84,9 @@ export async function exerciseNativeWorkspaceTrustLimit(
       testId: 'control-banner',
       additionalTestIds: ['dialog-editor'],
       start: async () => {
-        const defaults = agentOpenOptions(agentSettings(privateContext.provider))
         const server = privateContext.leapmuxServer
-        agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, privateContext.workspaceId, project.directory, {
-          agentProvider: privateContext.provider,
-          ...defaults,
-          optionValues: { ...defaults.optionValues, ...options.optionValues },
-        })
+        const overrides = options.optionValues ? { optionValues: options.optionValues } : {}
+        agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, privateContext.workspaceId, project.directory, agentOpenOptions(privateContext.provider, overrides))
         if (wrapper) {
           await wrapper.entry
           await wrapper.release()

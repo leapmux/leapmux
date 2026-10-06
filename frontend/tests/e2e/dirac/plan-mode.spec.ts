@@ -1,10 +1,11 @@
-import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { closeAgentViaAPI } from '../helpers/worktree'
 import { withDiracPlanReadiness } from './planReadiness'
 
@@ -16,7 +17,7 @@ diracTest.describe('Dirac plan mode', () => {
     if (!home || !nodePath)
       throw new Error('The Dirac plan test requires a private home and Node executable.')
     await withDiracPlanReadiness({ home, nodePath, runDir: getGlobalState().tmpDir }, async (readiness) => {
-      const { agentId } = await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { permissionMode: 'plan' })
+      const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, { optionValues: { permissionMode: 'plan' } })
       await withCleanup(async () => {
         await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
         await waitForSettingsHydrated(page)

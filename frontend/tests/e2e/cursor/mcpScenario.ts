@@ -7,7 +7,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -63,10 +63,7 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
     encoding: 'utf8',
   })
   expect(tools).toContain('ask')
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, workingDir, {
-    agentProvider: AgentProvider.CURSOR,
-    ...agentOpenOptions(agentSettings(AgentProvider.CURSOR)),
-  })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, workingDir, agentOpenOptions(AgentProvider.CURSOR))
   await loginViaToken(page, leapmuxServer.adminToken)
   await openWorkspace(page, context.workspaceId)
 

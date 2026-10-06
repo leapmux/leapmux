@@ -2,7 +2,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie subagents and background tasks', () => {
   const PROVIDER = AgentProvider.JUNIE
@@ -20,7 +21,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
   }
 
   junieTest('routes the child task and report into a tab opened from the registry row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { agentId } = await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const childPrompt = modelScript.prompt(CHILD_TASK)
 

@@ -8,7 +8,7 @@ import { expect } from '@playwright/test'
 import { extractItem } from '../../../src/components/chat/providers/codex/extractors/item'
 import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { nativeAgentById } from '../helpers/nativeScenario'
@@ -105,10 +105,7 @@ codexTest.describe('codex subagent lifecycle', () => {
 codexTest.describe('provider tool rendering', () => {
   codexTest('reveals messages after an empty Codex wait result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const provider = AgentProvider.CODEX
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-empty-codex-wait-'), {
-      agentProvider: provider,
-      ...agentOpenOptions(agentSettings(provider)),
-    })
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-empty-codex-wait-'), agentOpenOptions(provider))
     // The native wait emits a completed agent item with no receivers or states.
     // Its model result reports the timeout. The empty agent item must reveal later rows.
     const callId = 'empty-wait'

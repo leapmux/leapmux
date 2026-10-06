@@ -2,7 +2,7 @@ import type { QoderWorkflowLaunch } from './codeExecution'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -22,7 +22,7 @@ import { qoderWorkflowDiagnosticJson, qoderWorkflowLaunch, qoderWorkflowModelOut
 
 qoderTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QODER }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-workflow-code-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-workflow-code-'), agentOpenOptions(context.provider))
   await openWorkspace(page, context.workspaceId)
   const catalogRequest = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')

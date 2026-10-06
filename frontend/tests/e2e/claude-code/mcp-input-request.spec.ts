@@ -2,25 +2,19 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { claudeTest } from '../claude-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { CLAUDE_AGENT, claudeTest } from '../claude-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 claudeTest.describe('Claude Code MCP input form', () => {
   claudeTest('sends zero and false form values back to the native MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const directory = createTestDirectory('claude-mcp-form-')
     const script = writeMcpFormServer(directory, 'form-server.mjs')
     writeFileSync(join(directory, '.mcp.json'), JSON.stringify({ mcpServers: { form_probe: { command: process.execPath, args: [script] } } }))
-    const settings = agentOpenOptions(agentSettings(AgentProvider.CLAUDE_CODE))
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      ...settings,
-      optionValues: { ...settings.optionValues, permissionMode: 'bypassPermissions' },
-    })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CLAUDE_AGENT, { workingDir: directory, optionValues: { permissionMode: 'bypassPermissions' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     await modelScript.queue(

@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { AgentGoalStatus, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalStatus, goalAction, goalsAndTodosSection, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
@@ -33,10 +33,7 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     await modelScript.queue({ text: 'The first native goal turn ended.', gate: firstGate }, { text: 'The resumed native goal turn ended.', gate: secondGate })
 
     const provider = AgentProvider.PI
-    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-goal-'), {
-      agentProvider: provider,
-      ...agentOpenOptions(agentSettings(provider)),
-    })
+    const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('renderer-pi-goal-'), agentOpenOptions(provider))
     await page.reload()
     await openWorkspace(page, context.workspaceId)
     const tab = visibleOnly(tabById(page, agentId)).first()

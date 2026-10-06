@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { ampTest } from '../amp-fixtures'
 import { ampToolResultReader } from '../helpers/ampToolResult'
 import { openAgentViaAPI } from '../helpers/api'
@@ -25,10 +25,7 @@ ampTest('returns the actual native MCP unsupported-method reply without a browse
   const script = writeMcpFormServer(workingDir, 'native-form-server.mjs', { receiptLog })
   const config = join(environment.XDG_CONFIG_HOME!, 'amp', 'settings.json')
   await withNativeConfigurationFile({ path: config, content: JSON.stringify({ ...(existsSync(config) ? JSON.parse(readFileSync(config, 'utf8')) : {}), 'amp.mcpServers': { form_probe: { command: process.execPath, args: [script] } } }), runDir: getGlobalState().tmpDir }, async () => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.AMP,
-      ...agentOpenOptions(agentSettings(AgentProvider.AMP)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.AMP))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await applyPermissionPreset(page, 'bypass')
     const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.AMP }

@@ -1,12 +1,13 @@
-import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac settings apply', () => {
   diracTest('switches the mode and the effort, and keeps them after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Act')
@@ -30,7 +31,7 @@ diracTest.describe('Dirac settings apply', () => {
   })
 
   diracTest('sends the selected effort in the next native request', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Act')

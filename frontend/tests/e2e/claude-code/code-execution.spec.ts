@@ -2,7 +2,7 @@ import type { ClaudeWorkflowLaunch } from './codeExecution'
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { claudeTest, expect } from '../claude-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
@@ -22,7 +22,7 @@ import { claudeWorkflowLaunch, claudeWorkflowModelOutcome, claudeWorkflowOutput,
 
 claudeTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CLAUDE_CODE }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-workflow-code-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-workflow-code-'), agentOpenOptions(context.provider))
   await openWorkspace(page, context.workspaceId)
   const catalogRequest = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')

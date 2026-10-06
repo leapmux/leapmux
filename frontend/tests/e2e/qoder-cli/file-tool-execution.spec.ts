@@ -7,10 +7,10 @@ import { nativeContext } from './scenarios'
 qoderTest.describe('Qoder CLI file tool execution', () => {
   const PROVIDER = AgentProvider.QODER
 
-  qoderTest('seeds, reads and edits a file, and draws the edit diff', async ({ qoderWorkspace, page, modelScript }) => {
+  qoderTest('seeds, reads and edits a file, and draws the edit diff', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
     const fileName = 'qoder-file-probe.txt'
     await exerciseFileEditSequence({ page, modelScript, provider: PROVIDER }, {
-      workingDir: qoderWorkspace.workingDir,
+      workingDir: authenticatedQoderWorkspace.workingDir,
       fileName,
       approveSeed: async (firstStepCount) => {
         await modelScript.waitForSteps(firstStepCount)
@@ -21,15 +21,15 @@ qoderTest.describe('Qoder CLI file tool execution', () => {
     })
   })
 
-  qoderTest('writes a new file and lands its content on disk', async ({ qoderWorkspace, page, modelScript }) => {
+  qoderTest('writes a new file and lands its content on disk', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
     await exerciseFileWriteSequence({ page, modelScript, provider: PROVIDER }, {
-      workingDir: qoderWorkspace.workingDir,
+      workingDir: authenticatedQoderWorkspace.workingDir,
       fileName: 'qoder-written-probe.txt',
     })
   })
 })
 
-qoderTest('reads and changes native files and keeps the applied diff after reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('reads and changes native files and keeps the applied diff after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseFileToolExecution(context)
 })

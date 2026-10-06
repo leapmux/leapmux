@@ -7,7 +7,8 @@ import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsA
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 
@@ -15,7 +16,7 @@ qwenTest.describe('Qwen Code tool execution', () => {
   // YOLO, so no permission request stands between the scripted calls and the
   // rows this test reads. `qwen-code/permissions.spec.ts` covers the requests.
   qwenTest('runs a command, an edit with its diff, a read and a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'yolo' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     const note = join(createNativeToolDirectory(workingDir), 'note.txt')
     writeFileSync(note, 'qwen-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

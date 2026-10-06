@@ -4,8 +4,8 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendM
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code basic chat', () => {
-  codebuddyTest('draws the answer and ends the turn', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('draws the answer and ends the turn', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
@@ -20,7 +20,7 @@ codebuddyTest.describe('CodeBuddy Code basic chat', () => {
   })
 })
 
-codebuddyTest('ends the actual native turn and keeps its answer after reload', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+codebuddyTest('ends the actual native turn and keeps its answer after reload', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
   await exerciseBasicChat(context)
 })

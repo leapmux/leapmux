@@ -3,13 +3,11 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { createGrokWorkingDir } from '../grok-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { createGrokWorkingDir, GROK_AGENT } from '../grok-fixtures'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { expectNoControlBanner, openWorkspace, waitForControlBanner } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 /** Open an actual project MCP server through Grok's native trust decision. */
 export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext, decision: 'allow' | 'deny'): Promise<{ workingDir: string, receiptLog: string }> {
@@ -18,11 +16,7 @@ export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext
   const script = writeMcpEchoServer(workingDir, { receiptLog })
   writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({ mcpServers: { echo_probe: { command: process.execPath, args: [script] } } }))
   const server = context.leapmuxServer
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, workingDir, {
-    agentProvider: AgentProvider.GROK_BUILD,
-    ...agentOpenOptions(agentSettings(AgentProvider.GROK_BUILD)),
-    optionValues: { ...agentOpenOptions(agentSettings(AgentProvider.GROK_BUILD)).optionValues, approvalMode: 'always-approve' },
-  })
+  await openProviderAgent(server, context.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
   await openWorkspace(context.page, context.workspaceId)
   const banner = await waitForControlBanner(context.page)
   await expect(banner).toContainText('Trust the workspace')

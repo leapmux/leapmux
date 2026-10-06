@@ -1,12 +1,13 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect as diracExpect, diracTest, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, expect as diracExpect, diracTest } from '../dirac-fixtures'
 import { bashToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
 import { expectSteeredReply, steerQueuedInput } from '../helpers/steer'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 diracTest.describe('Dirac model and steering', () => {
   diracTest('puts a native whisper into the active turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const gate = 'dirac-whisper-gate'
     const steering = 'Include STEEREDWORD in the answer.'

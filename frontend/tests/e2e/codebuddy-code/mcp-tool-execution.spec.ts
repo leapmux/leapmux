@@ -1,12 +1,12 @@
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
-import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codebuddyTest, createCodebuddyWorkingDir, expect, openCodebuddyAgent } from '../codebuddy-fixtures'
+import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, createCodebuddyWorkingDir, expect } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
   function installUserMcpServer(configDir: string, script: string): () => void {
@@ -26,7 +26,7 @@ codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
       throw new Error('the CodeBuddy E2E environment needs an isolated config directory')
     const removeUserMcpServer = installUserMcpServer(configDir, script)
     try {
-      await openCodebuddyAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { permissionMode: CODEBUDDY_MODE.BypassPermissions }, workingDir)
+      await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEBUDDY_AGENT, { ...CODEBUDDY_BYPASS, workingDir })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await modelScript.queue(
         { toolCalls: [codebuddyWaitForMcpServersToolCall('wait-for-echo', ['form_probe'])] },

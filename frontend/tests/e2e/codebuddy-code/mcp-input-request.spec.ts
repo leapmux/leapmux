@@ -2,10 +2,9 @@ import { Buffer } from 'node:buffer'
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
-import { CODEBUDDY_MODE } from '../../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { codebuddyTest, createCodebuddyWorkingDir, expect, openCodebuddyAgent } from '../codebuddy-fixtures'
+import { CODEBUDDY_AGENT, CODEBUDDY_BYPASS, codebuddyTest, createCodebuddyWorkingDir, expect } from '../codebuddy-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerReceipt'
 import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -13,6 +12,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codebuddyWaitForMcpServersToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
   function installUserMcpServer(configDir: string, script: string): () => void {
@@ -32,7 +32,7 @@ codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
       throw new Error('The CodeBuddy end-to-end environment requires an isolated config directory.')
     const removeUserMcpServer = installUserMcpServer(configDir, script)
     try {
-      await openCodebuddyAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { permissionMode: CODEBUDDY_MODE.BypassPermissions }, workingDir)
+      await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEBUDDY_AGENT, { ...CODEBUDDY_BYPASS, workingDir })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
       const step = (await modelScript.status()).stepCount

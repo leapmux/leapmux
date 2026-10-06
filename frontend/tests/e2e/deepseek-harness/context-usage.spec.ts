@@ -9,13 +9,13 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('shows actual native nonzero context use', async ({ deepseekHarnessWorkspace, page, modelScript }) => {
-  void deepseekHarnessWorkspace
+deepseekHarnessTest('shows actual native nonzero context use', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript }) => {
+  void authenticatedDeepseekHarnessWorkspace
   await exerciseContextUsage(page, modelScript)
 })
 
-deepseekHarnessTest('preserves explicit zero native usage in the Context row after reload', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('preserves explicit zero native usage in the Context row after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   await modelScript.queue({ text: 'The actual native zero-count turn completed.', usage: { inputTokens: 0, outputTokens: 0 } })
   await sendMessage(page, modelScript.prompt('Complete the exact native zero-count turn.'))

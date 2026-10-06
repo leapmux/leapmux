@@ -5,8 +5,8 @@ import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI settings', () => {
-  qoderTest('switches the model used by the next request', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-    void qoderWorkspace
+  qoderTest('switches the model used by the next request', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+    void authenticatedQoderWorkspace
     await waitForSettingsHydrated(page, 'model')
     await chooseSettingsOption(page, `model-${QODER_ALTERNATE_MODEL_ID}`)
     await waitForSettingsIdle(page)
@@ -19,7 +19,7 @@ qoderTest.describe('Qoder CLI settings', () => {
 
     const request = status.requests.find(record => record.stepIndex === 0)
     expect(request?.body).toMatchObject({ model: MOCK_MODELS.qoder })
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
     await exerciseRestoredNativeOption(context, {
       groupId: 'model',
       value: QODER_ALTERNATE_MODEL_ID,

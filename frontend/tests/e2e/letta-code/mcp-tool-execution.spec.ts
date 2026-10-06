@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
@@ -26,10 +26,7 @@ lettaTest.describe('native mcp tool execution', () => {
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({
       mcpServers: { image_probe: { command: server.command, args: server.args } },
     }))
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.LETTA,
-      ...agentOpenOptions(agentSettings(AgentProvider.LETTA)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.LETTA))
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(LETTA_TITLE_RULE)

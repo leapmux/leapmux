@@ -6,8 +6,8 @@ import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI effort and session goal', () => {
-  qoderTest('uses the selected reasoning effort in the next native model request', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-    void qoderWorkspace
+  qoderTest('uses the selected reasoning effort in the next native model request', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+    void authenticatedQoderWorkspace
     await waitForSettingsHydrated(page)
     await modelScript.queue({ text: 'PRIOR_QODER_EFFORT_CONTEXT' })
     await sendMessage(page, modelScript.prompt('Remember the effort context marker.'))
@@ -28,7 +28,7 @@ qoderTest.describe('Qoder CLI effort and session goal', () => {
     expect(request?.body).toMatchObject({ reasoning_effort: 'low' })
     expect(body.includes('PRIOR_QODER_EFFORT_CONTEXT')).toBe(true)
 
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
     await exerciseRestoredNativeOption(context, {
       groupId: 'effort',
       value: 'low',
@@ -45,8 +45,8 @@ qoderTest.describe('Qoder CLI model switch', () => {
   // and in the Worker row, and it must restart nothing. The alternate mock model declares no reasoning, so
   // Qoder sends no effort for it. The native proof is the model, and the kept setting comes from the helper.
   // The native session takes the flag after its first turn, as the effort test above does.
-  qoderTest('keeps the chosen effort after a model switch and a reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+  qoderTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
     await exerciseModelSwitchKeepsOption(context, {
       prepare: async () => {
         await sendNativeAnswer(context, 'Reply once before the effort changes.', 'The first turn answered.')

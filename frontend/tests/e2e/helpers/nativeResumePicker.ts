@@ -7,7 +7,7 @@ import type { NativeResumeResult } from './nativeLifecycle'
 import type { NativeResumeTexts } from './nativeResume'
 import type { NativeModelTurn } from './nativeScenario'
 import { expect } from '@playwright/test'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts } from './nativeResume'
 import { nativeAgentById, nativeModelConversationTurns } from './nativeScenario'
@@ -87,11 +87,8 @@ export async function resumePickerScenario(
   const subjectDir = createGitRepo(dataDir, `resume-subject-${crypto.randomUUID()}`)
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `${options.label} resume ${crypto.randomUUID()}`)
   const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
-  const initialSettings = agentOpenOptions(agentSettings(provider))
   const subjectId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, {
-    agentProvider: provider,
-    ...initialSettings,
-    ...(options.subjectOptionValues ? { optionValues: { ...initialSettings.optionValues, ...options.subjectOptionValues } } : {}),
+    ...agentOpenOptions(provider, options.subjectOptionValues ? { optionValues: options.subjectOptionValues } : {}),
     title: 'Subject',
   })
   await loginViaToken(page, adminToken)

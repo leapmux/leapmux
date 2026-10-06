@@ -4,8 +4,8 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('consumes a native request with quota headers without publishing an unsupported quota window', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('consumes a native request with quota headers without publishing an unsupported quota window', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await expectNoRateLimitState(context, { relatedProof: async () => {
     const start = (await modelScript.status()).stepCount
     await modelScript.queue({ text: 'The native quota header turn completed.', rateLimits: { type: 'five_hour', status: 'allowed_warning', utilization: 0.92, resetsAt: Math.floor(Date.now() / 1000) + 3600 } })

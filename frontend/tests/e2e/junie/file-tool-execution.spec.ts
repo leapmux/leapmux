@@ -4,14 +4,15 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, junieAnswerToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie tool execution', () => {
   const PROVIDER = AgentProvider.JUNIE
 
   junieTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     const note = join(workingDir, 'note.txt')
     writeFileSync(note, 'junie-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

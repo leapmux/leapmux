@@ -12,7 +12,8 @@ import { computedNativeToolOutput, copyNativeToolOutputPreview } from '../helper
 import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { openWorkspace } from '../helpers/ui'
-import { expect, kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { readKiroNativeOutput } from './outputFilePaths'
 import { readKiroToolSupplement } from './toolRecord'
 
@@ -29,7 +30,7 @@ function nativeKiroResult(snapshot: NativeMessageSnapshot, callId: string) {
 kiroTest('keeps native shell output inline without an output file path', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIRO }
-  await openKiroAgent(leapmuxServer, native.workspaceId, { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll })
+  await openProviderAgent(leapmuxServer, native.workspaceId, KIRO_AGENT, { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll } })
   await openWorkspace(page, native.workspaceId)
   await captureNativeToolOutput(native, testInfo, {
     output: computedNativeToolOutput({ lineCount: 200, padding: 20 }),
@@ -60,7 +61,7 @@ kiroTest('keeps native shell output inline without an output file path', async (
 kiroTest('keeps the offloaded native shell path and exact preview after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIRO }
-  await openKiroAgent(leapmuxServer, native.workspaceId, { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll })
+  await openProviderAgent(leapmuxServer, native.workspaceId, KIRO_AGENT, { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll } })
   await openWorkspace(page, native.workspaceId)
   const home = leapmuxServer.agentEnv.HOME
   if (!home)

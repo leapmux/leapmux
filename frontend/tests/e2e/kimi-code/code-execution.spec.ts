@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeStartupShellEnvironment } from '../helpers/nativeStartupWorker'
@@ -19,7 +19,7 @@ kimiTest('confirms the native code executor is absent from the actual model cata
   const environment = nativeStartupShellEnvironment(createTestDirectory('kimi-native-catalog-shell-'), capture.directory, hubSpawnEnv(leapmuxServer.agentEnv))
   await withNativeWorker(leapmuxServer, { dataDirPrefix: 'kimi-native-catalog-worker', workerName: 'Kimi native catalog test', env: environment }, async ({ server, dataDir }) => {
     const context = { page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIMI_CODE }
-    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-limit-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-limit-'), agentOpenOptions(context.provider))
     await openWorkspace(page, context.workspaceId)
     await sendNativeAnswer(context, 'Reply once while the native tool registry remains available.', 'The actual native registry turn completed.')
     // The owned native route returns every registry entry, including inactive tools that the model cannot see.

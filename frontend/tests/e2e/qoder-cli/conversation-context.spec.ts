@@ -3,13 +3,13 @@ import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, sendM
 import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
-qoderTest('carries the earlier user prompt and assistant answer into the next native request', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('carries the earlier user prompt and assistant answer into the next native request', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseConversationContext(context)
 })
 
-qoderTest('keeps the conversation from one turn to the next', async ({ qoderWorkspace, page, modelScript }) => {
-  void qoderWorkspace
+qoderTest('keeps the conversation from one turn to the next', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+  void authenticatedQoderWorkspace
   await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
   await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
   await modelScript.waitForSteps()

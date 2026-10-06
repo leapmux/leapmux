@@ -1,17 +1,18 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
 import { exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent tool execution', () => {
   const PROVIDER = AgentProvider.FAST_AGENT
 
   fastAgentTest('runs a command, a read and an edit with its diff', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const note = join(workingDir, 'note.txt')
     writeFileSync(note, 'fast-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

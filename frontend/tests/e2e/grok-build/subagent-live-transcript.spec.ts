@@ -1,7 +1,8 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.
@@ -21,7 +22,7 @@ const GROK_SUBAGENT_SYSTEM = 'You are a Grok Build subagent\\b'
 
 grokTest.describe('Grok Build subagent registry', () => {
   grokTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await exerciseLiveChildTranscript(page, modelScript, {
       provider: AgentProvider.GROK_BUILD,

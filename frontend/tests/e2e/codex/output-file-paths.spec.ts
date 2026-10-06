@@ -1,8 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { codexTest } from '../codex-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { CODEX_AGENT, codexTest } from '../codex-fixtures'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -11,12 +9,13 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexExecToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { codexNativeOutputExcerpt } from './nativeToolOutput'
 
 codexTest('preserves the native exec output limit and copies only its retained excerpt after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEX }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('codex-native-output-limit-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)) })
+  await openProviderAgent(leapmuxServer, native.workspaceId, CODEX_AGENT, { workingDir: createTestDirectory('codex-native-output-limit-') })
   await openWorkspace(page, native.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   const callId = 'native-exec-native-output-limit'

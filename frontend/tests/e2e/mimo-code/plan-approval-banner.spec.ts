@@ -3,12 +3,11 @@ import type { WorkspaceFixture } from '../helpers/workspace'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { expectSettingsChip, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { mimoTest } from '../mimo-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { MIMO_AGENT, mimoTest } from '../mimo-fixtures'
 
 /**
  * Open a MiMo agent on its plan agent.
@@ -18,12 +17,7 @@ import { mimoTest } from '../mimo-fixtures'
  * the plan agent: on any other agent it answers that plan mode is not active.
  */
 async function openPlanAgent(page: Page, server: { hubUrl: string, adminToken: string, workerId: string }, workspace: WorkspaceFixture): Promise<void> {
-  const settings = agentOpenOptions(agentSettings(AgentProvider.MIMO_CODE))
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, createTestDirectory('mimo-plan-'), {
-    agentProvider: AgentProvider.MIMO_CODE,
-    ...settings,
-    optionValues: { ...settings.optionValues, [OPTION_ID_PERMISSION_MODE]: 'plan' },
-  })
+  await openProviderAgent(server, workspace.workspaceId, MIMO_AGENT, { workingDir: createTestDirectory('mimo-plan-'), optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
   await openWorkspace(page, workspace.workspaceId)
   await expectSettingsChip(page, 'Plan')
 }

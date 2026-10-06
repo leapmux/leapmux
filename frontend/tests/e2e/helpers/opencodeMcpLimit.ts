@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { join } from 'node:path'
 import process from 'node:process'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
 import { writeMcpFormServer } from './mcpFormServer'
 import { withNativeStartupWorker } from './nativeStartupWorker'
@@ -51,7 +51,7 @@ export async function exerciseOpencodeMcpInputLimit(
   }, async (workerId, wrapper) => {
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
     const server = privateContext.leapmuxServer
-    await openAgentViaAPI(server.hubUrl, server.adminToken, workerId, context.workspaceId, directory, { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+    await openAgentViaAPI(server.hubUrl, server.adminToken, workerId, context.workspaceId, directory, agentOpenOptions(context.provider))
     await wrapper.entry
     await wrapper.release()
     await openWorkspace(context.page, context.workspaceId)

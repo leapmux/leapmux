@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { gooseTest } from '../goose-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
@@ -16,7 +16,7 @@ gooseTest('runs native code and retains computed output and script errors after 
   const content = readFileSync(config, 'utf8').replace('extensions:\n', 'extensions:\n  code_execution:\n    enabled: true\n    type: platform\n    name: code_execution\n')
   await withNativeConfigurationFile({ path: config, content, runDir: getGlobalState().tmpDir }, async () => {
     const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.GOOSE }
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(context.provider))
     await openWorkspace(page, context.workspaceId)
     await exerciseNativeCodeExecution(context, {
       catalogProof: (request) => {

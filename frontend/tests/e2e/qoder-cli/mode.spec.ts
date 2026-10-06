@@ -8,8 +8,8 @@ import { chooseSettingsOption, closeComposerMenus, openPlusMenu, openSettingsMen
 import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI settings', () => {
-  qoderTest('the mode menu lists the five modes, and a switch survives a reload', async ({ qoderWorkspace, page }) => {
-    void qoderWorkspace
+  qoderTest('the mode menu lists the five modes, and a switch survives a reload', async ({ authenticatedQoderWorkspace, page }) => {
+    void authenticatedQoderWorkspace
     await waitForSettingsHydrated(page)
 
     const group = await openSettingsMenu(page, 'permissionMode')

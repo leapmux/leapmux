@@ -1,11 +1,12 @@
 import { expect } from '@playwright/test'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 grokTest.describe('Grok Build session goal', () => {
   grokTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     // Every call Grok makes for the goal quotes the objective, which carries

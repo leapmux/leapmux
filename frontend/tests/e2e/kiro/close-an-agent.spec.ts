@@ -3,7 +3,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { listProcesses, withDescendants } from '../helpers/processTree'
 import { openWorkspace } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { kiroEngineProcesses, kiroRunProcesses } from './processOwnership'
 
 kiroTest.describe('kiro process lifetime', () => {
@@ -12,7 +13,7 @@ kiroTest.describe('kiro process lifetime', () => {
     if (!dataDir)
       throw new Error('The Kiro close case requires its private data directory.')
     const beforePids = new Set(listProcesses().map(row => row.pid))
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     let workerPid = 0
 

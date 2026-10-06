@@ -7,8 +7,8 @@ import { userBubbles } from '../helpers/ui'
 import { waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { nativeContext, runningChild } from './scenarios'
 
-deepseekHarnessTest('sends a new prompt to the same continuable native child with its prior context', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('sends a new prompt to the same continuable native child with its prior context', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const child = await runningChild(context)
   await child.finish()
   expect(await openChildTabFromRow(page, child.row)).toBe(child.childId)

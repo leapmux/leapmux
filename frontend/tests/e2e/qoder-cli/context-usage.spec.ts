@@ -7,14 +7,14 @@ import { listAgentsViaAPI } from '../helpers/worktree'
 import { expect, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI attachments and context usage', () => {
-  qoderTest('the agent info card follows the native context percentage after reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
+  qoderTest('the agent info card follows the native context percentage after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
     const usage = { inputTokens: 12000, outputTokens: 40 }
     await modelScript.queue({ text: 'Usage recorded.', usage })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    const agents = await listAgentsViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, qoderWorkspace.workspaceId)
+    const agents = await listAgentsViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedQoderWorkspace.workspaceId)
     expect(agents).toHaveLength(1)
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     const transcript = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, {

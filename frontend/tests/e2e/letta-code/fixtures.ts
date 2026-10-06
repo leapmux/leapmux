@@ -7,7 +7,7 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
@@ -38,11 +38,8 @@ export function openMcpLettaAgent(
   workingDir: string,
   agentSessionId?: string,
 ): Promise<string> {
-  const defaults = agentOpenOptions(agentSettings(AgentProvider.LETTA))
   return openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.LETTA,
-    ...defaults,
-    optionValues: { ...defaults.optionValues, [OPTION_ID_PERMISSION_MODE]: LETTA_MODE.Unrestricted },
+    ...agentOpenOptions(AgentProvider.LETTA, { optionValues: { [OPTION_ID_PERMISSION_MODE]: LETTA_MODE.Unrestricted } }),
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
   })
 }

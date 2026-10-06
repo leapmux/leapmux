@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { droidTest } from '../droid-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
@@ -27,10 +27,7 @@ droidTest('starts with a real project configuration and no native workspace trus
     testId: 'control-banner',
     additionalTestIds: ['dialog-editor'],
     start: async () => {
-      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-        agentProvider: AgentProvider.DROID,
-        ...agentOpenOptions(agentSettings(AgentProvider.DROID)),
-      })
+      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.DROID))
       await tabById(page, agentId).click()
     },
     relatedProof: async () => {

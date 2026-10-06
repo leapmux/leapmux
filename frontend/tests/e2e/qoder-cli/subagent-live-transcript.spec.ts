@@ -14,9 +14,9 @@ qoderTest.describe('Qoder CLI live child transcript', () => {
 
   const CHILD_MARKER = 'QODER_CHILD_TOOL_MARKER'
 
-  qoderTest('shows the child tool result before its final answer', async ({ qoderWorkspace, page, modelScript }) => {
+  qoderTest('shows the child tool result before its final answer', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
     const filename = 'qoder-child-note.txt'
-    writeFileSync(join(qoderWorkspace.workingDir, filename), CHILD_MARKER)
+    writeFileSync(join(authenticatedQoderWorkspace.workingDir, filename), CHILD_MARKER)
     const childTask = modelScript.prompt(`Read ${filename} and report its marker.`)
     const gate = 'qoder-child-final'
 

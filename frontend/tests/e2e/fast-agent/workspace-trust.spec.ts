@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { fastAgentTest } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
@@ -25,10 +25,7 @@ fastAgentTest('starts with a real project configuration and no native workspace 
     testId: 'control-banner',
     additionalTestIds: ['dialog-editor'],
     start: async () => {
-      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-        agentProvider: AgentProvider.FAST_AGENT,
-        ...agentOpenOptions(agentSettings(AgentProvider.FAST_AGENT)),
-      })
+      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.FAST_AGENT))
       await tabById(page, agentId).click()
     },
     relatedProof: async () => {

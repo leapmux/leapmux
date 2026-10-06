@@ -2,11 +2,10 @@ import { expect } from '@playwright/test'
 import { COPILOT_MODE, COPILOT_OPTION } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { copilotTest } from '../copilot-fixtures'
-import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, expectNoControlBanner, expectSettingsChip, messageBubbles, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
-copilotTest('uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
+copilotTest('uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
   void authenticatedCopilotWorkspace
   await chooseSettingsOption(page, `${COPILOT_OPTION.SessionMode}-${COPILOT_MODE.Plan}`)
   await waitForSettingsIdle(page)
@@ -24,7 +23,6 @@ copilotTest('uses the native exit tool and resumes after plan approval', async (
   )
   await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
   await modelScript.waitForSteps(2)
-  await attachCopilotNativeLogs(leapmuxServer.agentEnv.COPILOT_HOME, testInfo)
 
   const banner = await waitForControlBanner(page)
   await expect(banner).toContainText('Proposed Plan')

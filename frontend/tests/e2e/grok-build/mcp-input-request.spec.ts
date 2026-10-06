@@ -3,12 +3,11 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { grokTest } from '../grok-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 
 /**
@@ -63,11 +62,7 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     const server = join(repository, 'form-server.mjs')
     writeFileSync(server, FORM_SERVER)
     writeFileSync(join(repository, '.mcp.json'), JSON.stringify({ mcpServers: { form_probe: { command: process.execPath, args: [server] } } }))
-    const settings = agentOpenOptions(agentSettings(AgentProvider.GROK_BUILD))
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, repository, {
-      agentProvider: AgentProvider.GROK_BUILD,
-      ...settings,
-    })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { workingDir: repository })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     const banner = page.getByTestId('control-banner').filter({ visible: true })

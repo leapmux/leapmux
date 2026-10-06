@@ -2,8 +2,8 @@ import { exerciseModelError, nativeErrorMarker } from '../helpers/nativeModelErr
 import { qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
-qoderTest('shows the native model error and runs a later valid turn', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('shows the native model error and runs a later valid turn', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseModelError(context, {
     queueAfterFailure: 'running',
     // qodercli 1.1.65 replaces the message of an HTTP status error with its own

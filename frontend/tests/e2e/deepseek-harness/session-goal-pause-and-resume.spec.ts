@@ -7,8 +7,8 @@ import { captureDeepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from 
 import { deepseekHarnessModelContextText } from './modelContextText'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('pauses the native goal driver and resumes its own second model round after reload', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('pauses the native goal driver and resumes its own second model round after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const owner = await captureDeepseekHarnessGoalOwner(context)
   const marker = uniqueMarker('DEEPSEEKGOAL')
   const firstGate = 'deepseek-goal-first'

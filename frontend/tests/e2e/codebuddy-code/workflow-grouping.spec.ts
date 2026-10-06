@@ -8,8 +8,8 @@ import { assistantBubbles, sendMessage, tabById, userBubbles } from '../helpers/
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
 
 codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
-  codebuddyTest('groups a native Workflow run with its child agent', async ({ codebuddyWorkspace, leapmuxServer, page, modelScript }) => {
-    const markerPath = join(codebuddyWorkspace.workingDir, 'workflow-child-marker.txt')
+  codebuddyTest('groups a native Workflow run with its child agent', async ({ authenticatedCodebuddyWorkspace, leapmuxServer, page, modelScript }) => {
+    const markerPath = join(authenticatedCodebuddyWorkspace.workingDir, 'workflow-child-marker.txt')
     writeFileSync(markerPath, 'WORKFLOW_CHILD_FILE_MARKER\n')
     const childPrompt = modelScript.prompt(`Read ${markerPath}, then reply with WORKFLOW_CHILD.`)
     const script = [

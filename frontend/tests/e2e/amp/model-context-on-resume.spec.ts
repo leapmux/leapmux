@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
@@ -56,8 +56,7 @@ ampTest('offers the workspace\'s Amp threads and resumes the one picked', async 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Amp Picker ${crypto.randomUUID()}`)
   const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
-    agentProvider: AgentProvider.AMP,
-    ...agentOpenOptions(agentSettings(AgentProvider.AMP)),
+    ...agentOpenOptions(AgentProvider.AMP),
     title: 'Keeper',
   })
   await loginViaToken(page, adminToken)

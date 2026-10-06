@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { codewhaleExtractControl } from '../../../src/components/chat/providers/codewhale/extractControl'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
@@ -96,10 +96,7 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
               expect(nativeModelContextText(project)).not.toContain(baselinePrompt)
             }
             rmSync(config)
-            const nextId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, directory, {
-              agentProvider: AgentProvider.CODEWHALE,
-              ...agentOpenOptions(agentSettings(AgentProvider.CODEWHALE)),
-            })
+            const nextId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, directory, agentOpenOptions(AgentProvider.CODEWHALE))
             await tabById(page, nextId).click()
             const restoredAgent = await currentNativeAgent(privateContext)
             expect(restoredAgent.id).toBe(nextId)

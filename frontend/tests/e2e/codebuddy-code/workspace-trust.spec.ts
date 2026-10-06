@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { expectNoNativeStartupControl } from '../helpers/nativeControlObservation'
@@ -26,10 +26,7 @@ codebuddyTest('starts with a real project configuration and no native workspace 
     testId: 'control-banner',
     additionalTestIds: ['dialog-editor'],
     start: async () => {
-      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-        agentProvider: AgentProvider.CODEBUDDY,
-        ...agentOpenOptions(agentSettings(AgentProvider.CODEBUDDY)),
-      })
+      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.CODEBUDDY))
       await tabById(page, agentId).click()
     },
     relatedProof: async () => {

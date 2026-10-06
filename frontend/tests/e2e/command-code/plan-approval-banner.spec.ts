@@ -6,8 +6,8 @@ import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
-commandCodeTest('returns a native read-only plan without a plan approval dialog', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
+commandCodeTest('returns a native read-only plan without a plan approval dialog', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   await expectNoNativeControl(context, { testId: 'control-banner', additionalTestIds: ['plan-approve-btn', 'plan-reject-btn'], relatedProof: async () => {
     await exerciseNativeReadOnlyPlan(context, {
       preparePlan: async () => {

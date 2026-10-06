@@ -3,8 +3,8 @@ import { expectContextUsage } from '../helpers/contextUsage'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
-  codebuddyTest('the agent info grid follows the usage the model reports', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('the agent info grid follows the usage the model reports', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     const usage = { inputTokens: 12000, outputTokens: 40 }
     await modelScript.queue({ text: 'Usage recorded.', usage })
     await sendMessage(page, modelScript.prompt('Reply once.'))

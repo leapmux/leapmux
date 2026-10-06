@@ -3,8 +3,8 @@ import { applyPermissionPreset, closeComposerMenus, openPlusMenu, openSettingsMe
 import { expect, expectQoderModeChip, qoderTest } from '../qoder-fixtures'
 
 qoderTest.describe('Qoder CLI settings', () => {
-  qoderTest('the Smart shortcut selects Auto mode', async ({ qoderWorkspace, page }) => {
-    void qoderWorkspace
+  qoderTest('the Smart shortcut selects Auto mode', async ({ authenticatedQoderWorkspace, page }) => {
+    void authenticatedQoderWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')
     const menu = await openPlusMenu(page)
     await expect(menu.getByTestId('composer-smart-permissions')).toBeVisible()

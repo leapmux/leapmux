@@ -5,8 +5,8 @@ import { expectNativeResumeContext } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { nativeContext } from './scenarios'
 
-commandCodeTest('uses previous conversation context after the native session reopens', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
+commandCodeTest('uses previous conversation context after the native session reopens', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const resumed = await exerciseSessionResume(context)
   const body = JSON.stringify(resumed.request.body)
   expect(body).toMatch(/RESUMEPROMPT[a-f0-9]+/)

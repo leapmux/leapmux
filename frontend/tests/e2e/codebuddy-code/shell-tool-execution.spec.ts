@@ -6,8 +6,8 @@ import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code tool execution', () => {
-  codebuddyTest('runs a Bash tool and draws its span', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('runs a Bash tool and draws its span', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     const call = bashToolCall(AgentProvider.CODEBUDDY, 'call-1', 'echo hi')
     await modelScript.queue({
       toolCalls: [call],
@@ -22,7 +22,7 @@ codebuddyTest.describe('CodeBuddy Code tool execution', () => {
   })
 })
 
-codebuddyTest('runs successful and failed native commands with their actual output', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+codebuddyTest('runs successful and failed native commands with their actual output', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
   await exerciseShellToolExecution(context)
 })

@@ -1,8 +1,9 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 diracTest.describe('Dirac subagent transcript', () => {
   const PROVIDER = AgentProvider.DIRAC
@@ -10,7 +11,7 @@ diracTest.describe('Dirac subagent transcript', () => {
   const CHILD_TASK = 'Count the files and report one number.'
 
   diracTest('opens each child transcript in its own tab', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const childPrompt = modelScript.prompt(CHILD_TASK)
     const childAnswer = modelScript.prompt('DIRAC_CHILD_DONE')
@@ -57,7 +58,7 @@ diracTest.describe('Dirac subagent transcript', () => {
   })
 
   diracTest('opens a new child tab when a cleared session reuses the native call id', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { agentId } = await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const runs = [
       { task: 'FIRSTCHILDTASK count the first set.', description: 'First child count', archive: 'DIRACFIRSTARCHIVE', report: 'DIRACFIRSTREPORT', root: 'DIRACFIRSTROOT' },

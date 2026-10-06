@@ -10,8 +10,8 @@ codebuddyTest.describe('CodeBuddy Code plan approval', () => {
     return `# Dummy plan ${testId}\n\nNever execute this plan.`
   }
 
-  codebuddyTest('raises review again after rejection and resumes in Default after approval', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('raises review again after rejection and resumes in Default after approval', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await waitForSettingsHydrated(page)
     // Plan mode can start additional model turns.
     // Each plan decision can start another turn.

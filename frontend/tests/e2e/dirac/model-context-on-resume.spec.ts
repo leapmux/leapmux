@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { expect } from '../fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
@@ -21,8 +21,7 @@ diracTest.describe('Dirac session resume', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `${label} resume ${crypto.randomUUID()}`)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
     const subjectId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, subjectDir, {
-      agentProvider: provider,
-      ...agentOpenOptions(agentSettings(provider)),
+      ...agentOpenOptions(provider),
       title: 'Subject',
     })
     await loginViaToken(page, adminToken)

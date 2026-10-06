@@ -1,12 +1,13 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
-import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, openSettingsMenu, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 diracTest.describe('Dirac settings', () => {
   diracTest('the mode menu lists Plan and Act', async ({ page, authenticatedEmptyWorkspace, leapmuxServer }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
 
@@ -28,7 +29,7 @@ diracTest.describe('Dirac settings apply', () => {
   }
 
   diracTest('sends plan and act modes in successive native requests', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
 

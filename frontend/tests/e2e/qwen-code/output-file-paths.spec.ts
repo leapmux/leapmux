@@ -10,8 +10,6 @@ import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settings
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { parseMessageContent } from '../../../src/lib/messageParser'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -25,7 +23,8 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, readAttachedWithArgument, sendMessage } from '../helpers/ui'
-import { expect, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 import { qwenModelOutputPath, qwenOutputPathCommand, qwenOutputPathReceipt } from './outputFilePaths'
 
 function messageProof(message: AgentChatMessage) {
@@ -119,7 +118,7 @@ for (const exitCode of [0, 7]) {
   qwenTest(exitCode === 0 ? 'keeps native root output paths and the original inline preview after removal and reload' : 'keeps native failed output paths and the original failure preview after removal and reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-output-path-qwen-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)) })
+    await openProviderAgent(leapmuxServer, native.workspaceId, QWEN_AGENT, { workingDir: createTestDirectory('native-output-path-qwen-') })
     await openWorkspace(page, native.workspaceId)
     const owner = await currentNativeAgent(native)
     const generated = qwenOutputPathCommand(uniqueMarker('NATIVEOUTPUTPATH'), exitCode)
@@ -152,7 +151,7 @@ for (const background of [false, true]) {
   qwenTest(background ? 'keeps native background child paths and the original preview after removal and reload' : 'keeps native foreground child paths and the original preview after removal and reload', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-output-path-qwen-child-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)), optionValues: { ...agentOpenOptions(agentSettings(native.provider)).optionValues, [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    await openProviderAgent(leapmuxServer, native.workspaceId, QWEN_AGENT, { workingDir: createTestDirectory('native-output-path-qwen-child-'), optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     await openWorkspace(page, native.workspaceId)
     const initialRoot = await currentNativeAgent(native)
     const generated = qwenOutputPathCommand(uniqueMarker('NATIVEOUTPUTPATH'))

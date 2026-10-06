@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { copilotTest } from '../copilot-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { expectNativeCodeExecutionAbsent } from '../helpers/nativeCodeExecution'
@@ -12,7 +12,7 @@ import { readCopilotBuiltinCatalog } from './toolCatalog'
 
 copilotTest('confirms the native code executor is absent from the actual model catalog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.GITHUB_COPILOT }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-limit-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)), optionValues: { ...agentOpenOptions(agentSettings(context.provider)).optionValues, permissionMode: COPILOT_PERMISSION_MODE.Manual } })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-limit-'), agentOpenOptions(context.provider, { optionValues: { permissionMode: COPILOT_PERMISSION_MODE.Manual } }))
   await openWorkspace(page, context.workspaceId)
   const request = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
   const complete = await readCopilotBuiltinCatalog(context)

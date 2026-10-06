@@ -14,8 +14,8 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  * Oh My Pi sends an `extension_ui_request` select dialog before execution. Approve and Deny become the shared Allow and Deny controls.
  */
 ohMyPiTest.describe('Oh My Pi control requests', () => {
-  ohMyPiTest('runs a command after the reader allows it', async ({ approvingOhMyPiWorkspace, page, modelScript }) => {
-    void approvingOhMyPiWorkspace
+  ohMyPiTest('runs a command after the reader allows it', async ({ askingOhMyPiWorkspace, page, modelScript }) => {
+    void askingOhMyPiWorkspace
     await modelScript.queue(
       { toolCalls: [bashToolCall(AgentProvider.OH_MY_PI, 'approve-call', 'echo "omp-$((40 + 2))"')] },
       { text: 'The command ran.' },
@@ -36,8 +36,8 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     await expect.poll(() => chatText(page)).toContain('omp-42')
   })
 
-  ohMyPiTest('refuses a command that the reader denies', async ({ approvingOhMyPiWorkspace, page, modelScript }) => {
-    void approvingOhMyPiWorkspace
+  ohMyPiTest('refuses a command that the reader denies', async ({ askingOhMyPiWorkspace, page, modelScript }) => {
+    void askingOhMyPiWorkspace
     await modelScript.queue(
       { toolCalls: [bashToolCall(AgentProvider.OH_MY_PI, 'deny-call', 'echo "omp-$((50 + 5))"')] },
       { text: 'The command was refused.' },

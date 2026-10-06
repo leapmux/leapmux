@@ -13,13 +13,14 @@ import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../h
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 
 qwenTest.describe('Qwen Code control requests', () => {
   qwenTest('approves a plan and leaves plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'plan' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
@@ -46,7 +47,7 @@ qwenTest.describe('Qwen Code control requests', () => {
   // The old turn waits for plan approval. Clear answers that request and cancels the old turn before the new session opens.
   // The approved plan runs in the new session. No old-session output reaches the reader after that replacement.
   qwenTest('approves a plan with a fresh context and runs it in the new session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'plan' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
@@ -89,7 +90,7 @@ qwenTest.describe('Qwen Code control requests', () => {
   // its history for the next prompt and stays in plan mode (Session.ts,
   // stopAfterPermissionCancel). So this script queues the tool call alone.
   qwenTest('rejects a plan, ends the turn without a model request, and stays in plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'plan' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
     const agent = await currentNativeAgent({ page, leapmuxServer })

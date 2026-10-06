@@ -10,8 +10,8 @@ import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('qoder CLI tool execution', () => {
-  qoderTest('runs a Bash tool and draws its span', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('runs a Bash tool and draws its span', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     const call = bashToolCall(AgentProvider.QODER, 'call-1', 'echo hi')
     await modelScript.queue({
       toolCalls: [call],
@@ -26,13 +26,13 @@ qoderTest.describe('qoder CLI tool execution', () => {
   })
 })
 
-qoderTest('runs successful and failed native commands with their actual output', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('runs successful and failed native commands with their actual output', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseShellToolExecution(context)
 })
 
-qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   const proofs = [
     { call: bashToolCall(AgentProvider.QODER, 'native-qoder-first-command', 'node -e "process.stdout.write(\'QODERFIRST\' + (40 + 2))"'), output: 'QODERFIRST42' },
     { call: bashToolCall(AgentProvider.QODER, 'native-qoder-second-command', 'node -e "process.stdout.write(\'QODERSECOND\' + (70 + 7))"'), output: 'QODERSECOND77' },

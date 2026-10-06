@@ -11,7 +11,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentInputState, AgentStatus, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from './api'
 import { sendNativeAnswer } from './nativeConversation'
 import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
@@ -274,8 +274,7 @@ export async function exerciseSessionResume(
   const originalAnswerBubbles = await assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }).count()
   const server = context.leapmuxServer
   const keeper = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-resume-keeper-'), {
-    agentProvider: context.provider,
-    ...agentOpenOptions(agentSettings(context.provider)),
+    ...agentOpenOptions(context.provider),
     title: 'Native resume keeper',
   })
   const closed = await closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, before.id)
@@ -336,8 +335,7 @@ export async function exerciseAgentStartup(
     const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
     const server = privateContext.leapmuxServer
     const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, workerId, context.workspaceId, options.workingDir ?? createTestDirectory('native-startup-workspace-'), {
-      agentProvider: context.provider,
-      ...agentOpenOptions(agentSettings(context.provider)),
+      ...agentOpenOptions(context.provider),
       title: 'Controlled native startup',
     })
     await tabById(context.page, agentId).click()

@@ -2,13 +2,14 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie questions', () => {
   const PROVIDER = AgentProvider.JUNIE
 
   junieTest('ask_user raises a permission-shaped choice', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
 

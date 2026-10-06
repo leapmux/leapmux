@@ -7,7 +7,8 @@ import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const KIRO = AgentProvider.KIRO
 
@@ -16,7 +17,7 @@ kiroTest.describe('Kiro images in tool results', () => {
   // Kiro's native Read returns image metadata without image bytes. The call identifies the file.
   // This case verifies that native Read limitation. The following MCP case verifies an actual image result and its rendering.
   kiroTest('a Read of a PNG runs and draws no picture in the tool row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     const name = writeToolImage(workingDir, 'kiro-58')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'policyPreset-allow-all')
@@ -35,14 +36,14 @@ kiroTest.describe('Kiro images in tool results', () => {
   kiroTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     let imageName = ''
     let ready = ''
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' }, (workingDir) => {
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' }, prepare: (workingDir) => {
       imageName = writeToolImage(workingDir, 'kiro-mcp')
       const server = writeMcpImageServer(workingDir, imageName)
       ready = server.ready
       const settings = join(workingDir, '.kiro', 'settings')
       mkdirSync(settings, { recursive: true })
       writeFileSync(join(settings, 'mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: process.execPath, args: server.args } } }))
-    })
+    } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expect.poll(() => existsSync(ready)).toBe(true)
 

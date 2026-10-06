@@ -34,15 +34,56 @@ describe('real-agent end-to-end settings', () => {
     expect(() => agentSettings(AgentProvider.UNSPECIFIED)).toThrow(/no pinned model/)
   })
 
-  it('maps an effort into the worker option vocabulary', () => {
-    expect(agentOpenOptions({ model: 'a-model', effort: 'high' })).toEqual({
-      model: 'a-model',
-      optionValues: { effort: 'high' },
+  it('builds the pinned model and maps the pinned effort into the worker option vocabulary', () => {
+    const pinned = AGENT_E2E_SETTINGS[AgentProvider.PI]
+    expect(agentOpenOptions(AgentProvider.PI)).toEqual({
+      agentProvider: AgentProvider.PI,
+      model: pinned.model,
+      optionValues: { effort: pinned.effort },
     })
   })
 
-  it('omits the effort option for a model without that setting', () => {
-    expect(agentOpenOptions({ model: 'a-model' })).toEqual({ model: 'a-model' })
+  it('states no effort option for a provider whose pinned model has no effort', () => {
+    expect(agentOpenOptions(AgentProvider.GOOSE)).toEqual({
+      agentProvider: AgentProvider.GOOSE,
+      model: AGENT_E2E_SETTINGS[AgentProvider.GOOSE].model,
+      optionValues: {},
+    })
+  })
+
+  // A spread of pinned settings and a second `optionValues` dropped the pinned effort. The merge keeps it.
+  it('keeps the pinned effort under the option values of the test', () => {
+    expect(agentOpenOptions(AgentProvider.OH_MY_PI, { optionValues: { permissionMode: 'yolo' } }).optionValues).toEqual({
+      effort: AGENT_E2E_SETTINGS[AgentProvider.OH_MY_PI].effort,
+      permissionMode: 'yolo',
+    })
+  })
+
+  it('lets an option value of the test replace the pinned value of the same ID', () => {
+    expect(agentOpenOptions(AgentProvider.DROID, { optionValues: { effort: 'high' } }).optionValues).toEqual({ effort: 'high' })
+  })
+
+  it('takes the model of the test and keeps the pinned effort', () => {
+    expect(agentOpenOptions(AgentProvider.QWEN_CODE, { model: 'another-model' })).toEqual({
+      agentProvider: AgentProvider.QWEN_CODE,
+      model: 'another-model',
+      optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.QWEN_CODE].effort },
+    })
+  })
+
+  // The open request writes the model last, so a model given as an option value lost to the pinned model with no message.
+  it('refuses a model given as an option value', () => {
+    expect(() => agentOpenOptions(AgentProvider.FAST_AGENT, { optionValues: { model: 'another-model' } })).toThrow('give the model as `model`')
+  })
+
+  it.each(['', ' '])('refuses an empty model override: %j', (model) => {
+    expect(() => agentOpenOptions(AgentProvider.FAST_AGENT, { model })).toThrow('needs a model ID')
+  })
+
+  it('does not change the option values that the test passes', () => {
+    const optionValues = { permissionMode: 'plan' }
+    agentOpenOptions(AgentProvider.PI, { optionValues })
+    expect(optionValues).toEqual({ permissionMode: 'plan' })
   })
 
   it('builds the spawn environment from the catalog', () => {

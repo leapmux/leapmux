@@ -9,18 +9,18 @@
  * a Qoder account, a real model, or the developer's own Qoder configuration.
  */
 import type { Page, TestInfo } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 export const QODER_E2E_SKIP_REASON: string | null = missingBinaryReason('qodercli', 'Qoder E2E requires the qodercli CLI on PATH (https://qoder.com)')
 
@@ -29,18 +29,8 @@ export function createQoderWorkingDir(): string {
   return createGitRepo(createTestDirectory('qoder-e2e-wd-'), 'repo')
 }
 
-/** One Qoder agent's workspace, and the directory the agent works in. */
-export interface QoderWorkspaceFixture {
-  workspaceId: string
-  workingDir: string
-}
-
-interface QoderAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-  agentEnv: Record<string, string>
-}
+/** How a Qoder agent opens. */
+export const QODER_AGENT: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: createQoderWorkingDir }
 
 /**
  * The agent opens in Accept Edits, which answers every edit at once.
@@ -48,23 +38,6 @@ interface QoderAgentServer {
  * The control-request spec opens its own workspace in Default.
  */
 const ACCEPT_EDITS = { optionValues: { permissionMode: QODER_MODE.AcceptEdits } }
-
-function qoderWorkspace(prefix: string, openOptions?: { optionValues: Record<string, string> }) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: QoderAgentServer }, use: (fixture: QoderWorkspaceFixture) => Promise<void>, testInfo: TestInfo) => {
-    const workingDir = createQoderWorkingDir()
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.QODER, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      try {
-        await use({ ...workspace, workingDir })
-      }
-      finally {
-        if (testInfo.status !== testInfo.expectedStatus)
-          await attachQoderNativeLog(leapmuxServer.agentEnv, testInfo)
-      }
-    })
-  }
-}
 
 /** Keep the native endpoint trace when a Qoder browser test fails. */
 async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: TestInfo): Promise<void> {
@@ -83,13 +56,21 @@ async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: 
     await testInfo.attach('qoder-native-log', { path, contentType: 'text/plain' })
 }
 
-export const qoderTest = base.extend<CliSkipFixture & { qoderWorkspace: QoderWorkspaceFixture, askingQoderWorkspace: QoderWorkspaceFixture }>({
+const QODER_DIAGNOSTICS = { onFailure: (testInfo: TestInfo, server: { agentEnv: Record<string, string> }) => attachQoderNativeLog(server.agentEnv, testInfo) }
+
+export const qoderTest = base.extend<CliSkipFixture & {
+  /** An agent in Accept Edits, which answers every edit at once. */
+  authenticatedQoderWorkspace: AgentWorkspace
+  /**
+   * An agent in Default mode, which raises a banner for each tool call. The
+   * control-request spec needs the banner; the accept-edits workspace answers
+   * every edit at once and would never raise one.
+   */
+  askingQoderWorkspace: AgentWorkspace
+}>({
   cliSkip: cliSkipFixture(QODER_E2E_SKIP_REASON),
-  qoderWorkspace: qoderWorkspace('qoder-e2e', ACCEPT_EDITS),
-  // An agent in Default mode, which raises a banner for each tool call. The
-  // control-request spec needs the banner; the accept-edits workspace answers
-  // every edit at once and would never raise one.
-  askingQoderWorkspace: qoderWorkspace('qoder-e2e-ask'),
+  authenticatedQoderWorkspace: authenticatedAgentWorkspace({ ...QODER_AGENT, openOptions: ACCEPT_EDITS, ...QODER_DIAGNOSTICS }),
+  askingQoderWorkspace: authenticatedAgentWorkspace({ ...QODER_AGENT, prefix: 'qoder-e2e-ask', ...QODER_DIAGNOSTICS }),
 })
 
 export { expect }

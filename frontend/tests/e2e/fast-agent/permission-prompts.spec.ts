@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
 import { writeMcpPermissionServer } from '../helpers/mcpPermissionServer'
 import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall, mcpToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, messageContents, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 fastAgentTest.describe('Fast Agent control requests', () => {
   const PROVIDER = AgentProvider.FAST_AGENT
@@ -31,7 +32,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
   })
 
   fastAgentTest('denies a local write and leaves no file', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const written = join(workingDir, 'fa-local.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
@@ -78,7 +79,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
   })
 
   fastAgentTest('denies a shell command before it writes a file', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const written = join(workingDir, 'fa-shell-denied.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
@@ -100,7 +101,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
   })
 
   fastAgentTest('writes a local file after the reader allows it', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const written = join(workingDir, 'fa-local-allowed.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
@@ -122,7 +123,7 @@ fastAgentTest.describe('Fast Agent control requests', () => {
   })
 
   fastAgentTest('denies an MCP tool before the server receives it', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const server = writeMcpPermissionServer(workingDir)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await sendMessage(page, `/mcp connect --name permission_probe ${JSON.stringify(server.command)} ${JSON.stringify(server.script)}`)

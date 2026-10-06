@@ -3,14 +3,13 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { copilotTest } from '../copilot-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { COPILOT_AGENT, copilotTest } from '../copilot-fixtures'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { fillMcpProbeForm, waitForMcpProbeFormDraft } from '../helpers/mcpProbeForm'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 copilotTest('mcp-tool-execution: submits zero and false through a native MCP form after reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }) => {
   const directory = createTestDirectory('copilot-mcp-form-')
@@ -25,12 +24,7 @@ copilotTest('mcp-tool-execution: submits zero and false through a native MCP for
     mcpServers: { form_probe: { type: 'local', command: process.execPath, args: [script], tools: ['*'] } },
   }))
   try {
-    const settings = agentOpenOptions(agentSettings(AgentProvider.GITHUB_COPILOT))
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
-      agentProvider: AgentProvider.GITHUB_COPILOT,
-      ...settings,
-      optionValues: { ...settings.optionValues, permissionMode: COPILOT_PERMISSION_MODE.AllowAll },
-    })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, COPILOT_AGENT, { workingDir: directory, optionValues: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     await modelScript.queue({ text: 'The Copilot MCP server is ready.' })

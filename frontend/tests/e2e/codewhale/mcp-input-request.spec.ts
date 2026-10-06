@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -38,10 +38,7 @@ codewhaleTest('times out an MCP input request that the native client never answe
   const config = join(environment.CODEWHALE_HOME!, 'mcp.json')
   const servers = { form_probe: { command: process.execPath, args: [script], execute_timeout: MCP_EXECUTE_TIMEOUT_SECONDS } }
   await withNativeConfigurationFile({ path: config, content: JSON.stringify({ servers }), runDir: getGlobalState().tmpDir }, async () => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.CODEWHALE,
-      ...agentOpenOptions(agentSettings(AgentProvider.CODEWHALE)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.CODEWHALE))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await applyPermissionPreset(page, 'bypass')
     const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }

@@ -6,7 +6,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { backgroundBashToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
-import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 import { nativeContext, runningChild } from './scenarios'
 
 junieTest.describe('Junie subagents and background tasks', () => {
@@ -41,7 +42,7 @@ finish()
   }
 
   junieTest('runs a native background command without a false shell registry row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { brave_mode: 'off' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
     const release = join(workingDir, 'junie-background-release.signal')
     const done = join(workingDir, 'junie-background-done.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

@@ -6,7 +6,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageBubbles, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -44,7 +45,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'yolo' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await answerTheChild(modelScript)
@@ -70,7 +71,7 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'yolo' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await answerTheChild(modelScript)

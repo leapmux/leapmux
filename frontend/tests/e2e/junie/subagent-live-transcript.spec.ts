@@ -4,7 +4,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { junieAnswerToolCall, junieSubagentSubmitToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { expect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie subagents and background tasks', () => {
   const PROVIDER = AgentProvider.JUNIE
@@ -24,7 +25,7 @@ junieTest.describe('Junie subagents and background tasks', () => {
   }
 
   junieTest('streams a custom child read result into its tab before the final answer', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { agentId, workingDir } = await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { agentId, workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     const note = join(workingDir, 'junie-child-note.txt')
     writeFileSync(note, `${CUSTOM_READ_MARKER}\n`)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

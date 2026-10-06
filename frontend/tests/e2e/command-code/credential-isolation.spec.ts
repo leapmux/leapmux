@@ -4,8 +4,8 @@ import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolation'
 import { nativeContext } from './scenarios'
 
-commandCodeTest('uses private native configuration and exact mock credentials', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
+commandCodeTest('uses private native configuration and exact mock credentials', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const home = leapmuxServer.agentEnv.HOME
   if (!home)
     throw new Error('The private native HOME is absent.')

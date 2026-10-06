@@ -5,8 +5,8 @@ import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { deepseekHarnessToolResultText } from './nativeToolResultText'
 
-deepseekHarnessTest('returns the exact chosen native answer and keeps the saved answer after reload', async ({ deepseekHarnessWorkspace, page, modelScript }) => {
-  void deepseekHarnessWorkspace
+deepseekHarnessTest('returns the exact chosen native answer and keeps the saved answer after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript }) => {
+  void authenticatedDeepseekHarnessWorkspace
   const callId = 'native-route-question'
   await modelScript.queue(
     { toolCalls: [askUserQuestionToolCall(AgentProvider.DEEPSEEK_HARNESS, callId, [{ question: 'Choose a route', header: 'Route', options: [{ label: 'First', description: 'Use the first route.' }, { label: 'Second', description: 'Use the second route.' }] }])] },

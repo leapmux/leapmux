@@ -1,20 +1,16 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { zcodeTest } from '../zcode-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { ZCODE_AGENT, zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('renders ZCode native question descriptions and selects an answer', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   await page.setViewportSize({ width: 600, height: 900 })
   const provider = AgentProvider.ZCODE
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-zcode-question-'), {
-    agentProvider: provider,
-    ...agentOpenOptions(agentSettings(provider)),
-  })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: createTestDirectory('renderer-zcode-question-') })
   const diagram = '┌────────┐\n│ sample │\n└────────┘'
   // No `value` on an option: ZCode's own schema refuses it with
   // `InputValidationError: An unexpected parameter \`value\` was provided`,

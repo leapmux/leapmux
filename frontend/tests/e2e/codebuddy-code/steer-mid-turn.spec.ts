@@ -9,8 +9,8 @@ import { getRecordedToasts } from '../helpers/toast'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code steering', () => {
-  codebuddyTest('steers queued text into the active native turn', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('steers queued text into the active native turn', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     const gate = 'codebuddy-text-steer'
     await modelScript.queue(
       { gate, toolCalls: [bashToolCall(AgentProvider.CODEBUDDY, 'steer-shell', 'printf codebuddy-steer-ready')] },
@@ -41,8 +41,8 @@ codebuddyTest.describe('CodeBuddy Code steering', () => {
     await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
   })
 
-  codebuddyTest('does not send a queued image through native text-only steering', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('does not send a queued image through native text-only steering', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     const gate = 'codebuddy-image-steer'
     await modelScript.queue(
       { gate, toolCalls: [bashToolCall(AgentProvider.CODEBUDDY, 'image-steer-shell', 'printf codebuddy-steer-ready')] },

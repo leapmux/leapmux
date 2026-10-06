@@ -3,7 +3,7 @@ import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { expectNoNativeEditorRequest } from '../helpers/unsupportedEditor'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('completes a native tool without a multiline editor control', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('completes a native tool without a multiline editor control', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await expectNoNativeEditorRequest(context, { relatedProof: () => exerciseShellToolExecution(context, { includeFailure: false }) })
 })

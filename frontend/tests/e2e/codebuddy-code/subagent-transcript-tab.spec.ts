@@ -7,8 +7,8 @@ import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 codebuddyTest.describe('CodeBuddy Code subagent registry', () => {
   const PROVIDER = AgentProvider.CODEBUDDY
 
-  codebuddyTest('follows one subagent from its spawn to its report, with its own transcript', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    void codebuddyWorkspace
+  codebuddyTest('follows one subagent from its spawn to its report, with its own transcript', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    void authenticatedCodebuddyWorkspace
     await expectNoRegistryRows(page, leapmuxServer)
 
     await modelScript.rule({

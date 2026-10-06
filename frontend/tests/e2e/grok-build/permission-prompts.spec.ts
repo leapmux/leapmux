@@ -3,9 +3,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 
@@ -14,7 +15,7 @@ grokTest.describe('Grok Build control requests', () => {
   // An empty rejection ends the turn. A rejection with a reason puts that reason in native `followup_message`.
   // The same turn then continues.
   grokTest('approves one command and rejects the next with a reason the turn reads', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'approvalMode-ask')
     const approved = join(workingDir, 'approved.txt')

@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -13,7 +11,8 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { expect, junieTest } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
 import { waitForJunieOutputFilePaths } from './outputFilePathReadiness'
 import { junieNativeNoticePath, readJunieNativeOutputPaths } from './outputFilePaths'
 import { nativeContext } from './scenarios'
@@ -23,7 +22,7 @@ junieTest('keeps the exact native command preview and pointer-only file path aft
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const workingDirectory = createTestDirectory('native-path-junie-')
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, workingDirectory, { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)), optionValues: { brave_mode: 'on' } })
+  await openProviderAgent(leapmuxServer, native.workspaceId, JUNIE_AGENT, { workingDir: workingDirectory, optionValues: { brave_mode: 'on' } })
   await openWorkspace(page, native.workspaceId)
   const gate = `junie-native-path-final-${randomUUID()}`
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })

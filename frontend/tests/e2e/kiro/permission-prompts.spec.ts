@@ -6,7 +6,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const PROVIDER = AgentProvider.KIRO
 
@@ -31,7 +32,7 @@ kiroTest.describe('Kiro control requests', () => {
   // carries a reason puts it in Kiro's own `_meta.kiro.rejectionReason`, and Kiro
   // hands the reason to the model inside the same turn.
   kiroTest('approves one command and rejects the next with a reason the turn reads', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const approved = join(workingDir, 'approved.txt')
     const rejected = join(workingDir, 'rejected.txt')
@@ -69,7 +70,7 @@ kiroTest.describe('Kiro control requests', () => {
   // The same command then runs without another request. Kiro keeps session rules in memory.
   // It writes workspace rules to the workspace rule file, which proves the selected scope.
   kiroTest('keeps an always-allow for the workspace', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const marker = join(workingDir, 'always.txt')
     const command = `printf always >> ${marker}`

@@ -1,12 +1,13 @@
-import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
 import { closeComposerMenus, openPlusMenu, openWorkspace, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { expectMissingOptionGroup } from '../helpers/unsupportedConfiguration'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent settings apply', () => {
   fastAgentTest('omits a model setting while the launch model answers a turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page, 'permissionMode')
     await openPlusMenu(page)

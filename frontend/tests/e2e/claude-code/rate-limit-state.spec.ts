@@ -1,32 +1,20 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { claudeTest } from '../claude-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { CLAUDE_AGENT, claudeTest } from '../claude-fixtures'
 import { withClaudeSubscriberWorker } from '../helpers/claudeSubscriberWorker'
 import { expectRateLimitWindow, rateLimitWindowLabel } from '../helpers/rateLimit'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openAgentInfoCard, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { withTestWorkspace } from '../helpers/workspace'
+import { openProviderAgent, withTestWorkspace } from '../helpers/workspace'
 
 claudeTest.describe('Claude Code rate-limit state', () => {
   claudeTest('a subscriber sees the model warning after a reload', async ({ page, leapmuxServer, modelScript }) => {
     const { hubUrl, adminToken } = leapmuxServer
     await withClaudeSubscriberWorker(leapmuxServer, async (workerId) => {
       await withTestWorkspace(leapmuxServer, 'claude-rate-limit', async ({ workspaceId }) => {
-        const defaults = agentOpenOptions(agentSettings(AgentProvider.CLAUDE_CODE))
-        await openAgentViaAPI(
-          hubUrl,
-          adminToken,
-          workerId,
-          workspaceId,
-          createTestDirectory('claude-subscriber-wd-'),
-          {
-            agentProvider: AgentProvider.CLAUDE_CODE,
-            ...defaults,
-            optionValues: { ...defaults.optionValues, permissionMode: 'default' },
-          },
-        )
+        await openProviderAgent({ hubUrl, adminToken, workerId }, workspaceId, CLAUDE_AGENT, {
+          workingDir: createTestDirectory('claude-subscriber-wd-'),
+          optionValues: { permissionMode: 'default' },
+        })
         await loginViaToken(page, adminToken)
         await openWorkspace(page, workspaceId)
 

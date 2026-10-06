@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { GROK_METHOD, GROK_MODE, GROK_PLAN_OUTCOME, GROK_REPLY_FIELD } from '../../../src/generated/contracts/grok-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -11,6 +11,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 
@@ -18,7 +19,7 @@ grokTest.describe('Grok Build control requests', () => {
   // Grok's plan approval is a request of its own. Approve takes the shared plan
   // surface, and Grok leaves plan mode itself, which the chip then follows.
   grokTest('approves a plan and leaves plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'plan' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
@@ -44,7 +45,7 @@ grokTest.describe('Grok Build control requests', () => {
   // The mock writes no plan file, so Grok's text is its no-plan refusal. Grok stays in
   // plan mode and sends no mode change.
   grokTest('rejects a plan, returns the refusal to the model, and stays in plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'plan' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
     const agent = await currentNativeAgent({ page, leapmuxServer })

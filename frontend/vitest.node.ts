@@ -220,7 +220,6 @@ export const NODE_TEST_FILES = [
   'src/test-support/tsconfigPathMapping.test.ts',
   'src/test-support/visibleChatLocators.test.ts',
   'src/utils/controlResponse.test.ts',
-  'tests/e2e/acp-fixture-factory.test.ts',
   'tests/e2e/agentSettings.test.ts',
   'tests/e2e/global-setup.test.ts',
   'tests/e2e/global-teardown.test.ts',
@@ -272,5 +271,6 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/workspace.test.ts',
   'tests/e2e/kimi-install.test.ts',
   'tests/e2e/process-control-fixtures.test.ts',
+  'tests/e2e/provider-fixture-factory.test.ts',
   'tests/e2e/zcode-install.test.ts',
 ]

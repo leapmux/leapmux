@@ -5,16 +5,14 @@
  * `helpers/mockAgentEnvironment.ts` writes to `KIMI_CODE_HOME`, never a Kimi
  * account.
  */
-import type { CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
-import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { computeKimiE2ESkipReason, KIMI_MISSING_REASON } from './kimi-install'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 // The check finds the file first without running it, which also refuses a mise
 // shim (see `helpers/binaryOnPath.ts`). Only then does it run that file's
@@ -49,31 +47,14 @@ export function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1
 }
 
-/** A workspace with one Kimi Code agent, and the directory that agent works in. */
-export interface KimiWorkspaceFixture extends WorkspaceFixture {
-  /** The agent's working directory, where its tool commands run. */
-  workingDir: string
-}
+/** How a Kimi Code agent opens. */
+export const KIMI_AGENT: ProviderAgent = { provider: AgentProvider.KIMI_CODE, prefix: 'kimi-e2e' }
 
 export const kimiTest = base.extend<CliSkipFixture & {
-  kimiWorkspace: KimiWorkspaceFixture
-  authenticatedKimiWorkspace: KimiWorkspaceFixture
+  authenticatedKimiWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(KIMI_E2E_SKIP_REASON),
-  kimiWorkspace: async ({ leapmuxServer }, use) => {
-    const workingDir = createTestDirectory('kimi-e2e-wd-')
-    await withAgentWorkspace(
-      leapmuxServer,
-      { provider: AgentProvider.KIMI_CODE, prefix: 'kimi-e2e', workingDir: () => workingDir },
-      workspace => use({ ...workspace, workingDir }),
-    )
-  },
-
-  authenticatedKimiWorkspace: async ({ page, kimiWorkspace, leapmuxServer }, use) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await openWorkspace(page, kimiWorkspace.workspaceId)
-    await use(kimiWorkspace)
-  },
+  authenticatedKimiWorkspace: authenticatedAgentWorkspace(KIMI_AGENT),
 })
 
 export { expect }

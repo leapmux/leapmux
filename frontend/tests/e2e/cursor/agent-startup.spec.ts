@@ -1,4 +1,4 @@
-import { AgentProvider } from '../acp-fixture-factory'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cursorTest } from '../cursor-fixtures'
 import { findBinary } from '../helpers/binaryOnPath'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'

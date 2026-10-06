@@ -11,18 +11,16 @@
  * with the developer's own HOME, and Cline writes into its data directory on every
  * start. See `helpers/binaryOnPath.ts`.
  */
-import type { Page } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { CLINE_PERMISSION_MODE } from '../../src/generated/contracts/cline-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 export const CLINE_E2E_SKIP_REASON: string | null = missingBinaryReason('cline', 'Cline E2E requires the cline CLI on PATH (https://cline.bot/cli)')
 
@@ -38,10 +36,8 @@ export function createClineWorkingDir(): string {
   return createGitRepo(createTestDirectory('cline-e2e-wd-'), 'repo')
 }
 
-/** One Cline agent's workspace, and the directory the agent works in. */
-export interface ClineWorkspaceFixture extends WorkspaceFixture {
-  workingDir: string
-}
+/** How a Cline agent opens. */
+export const CLINE_AGENT: ProviderAgent = { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir: createClineWorkingDir }
 
 /**
  * The agent opens in Auto-approve, which answers every tool call at once.
@@ -52,36 +48,18 @@ export interface ClineWorkspaceFixture extends WorkspaceFixture {
  */
 const AUTO_APPROVE = { optionValues: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove } }
 
-interface ClineAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/** Open one agent in a fresh repository, log in, and show its workspace. */
-function clineWorkspace(prefix: string, openOptions?: { optionValues: Record<string, string> }) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: ClineAgentServer }, use: (fixture: ClineWorkspaceFixture) => Promise<void>) => {
-    const workingDir = createClineWorkingDir()
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.CLINE, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use({ ...workspace, workingDir })
-    })
-  }
-}
-
 export const clineTest = base.extend<CliSkipFixture & {
   /** An agent in Auto-approve, which raises no banner for a tool call. */
-  authenticatedClineWorkspace: ClineWorkspaceFixture
+  authenticatedClineWorkspace: AgentWorkspace
   /** An agent in LeapMux's default Act mode, which asks before each edit and command. */
-  askingClineWorkspace: ClineWorkspaceFixture
+  askingClineWorkspace: AgentWorkspace
   /** An agent in Plan mode, which offers the plan tool. */
-  planningClineWorkspace: ClineWorkspaceFixture
+  planningClineWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(CLINE_E2E_SKIP_REASON),
-  authenticatedClineWorkspace: clineWorkspace('cline-e2e', AUTO_APPROVE),
-  askingClineWorkspace: clineWorkspace('cline-e2e-act'),
-  planningClineWorkspace: clineWorkspace('cline-e2e-plan', { optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan } }),
+  authenticatedClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, openOptions: AUTO_APPROVE }),
+  askingClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, prefix: 'cline-e2e-act' }),
+  planningClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, prefix: 'cline-e2e-plan', openOptions: { optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan } } }),
 })
 
 export { expect }

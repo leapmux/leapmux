@@ -6,7 +6,6 @@ import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesRespons
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { copilotTest } from '../copilot-fixtures'
 import { getTestChannel } from '../helpers/api'
-import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowImage, writeToolImage } from '../helpers/toolImages'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -37,7 +36,6 @@ copilotTest('shows the picture returned by View', async ({ authenticatedCopilotW
     await proveToolImage(page, modelScript, AgentProvider.GITHUB_COPILOT, workingDir, true)
   }
   catch (error) {
-    await attachCopilotNativeLogs(leapmuxServer.agentEnv.COPILOT_HOME, testInfo)
     try {
       const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
       const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)

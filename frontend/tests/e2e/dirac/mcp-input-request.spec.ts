@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -21,10 +21,7 @@ diracTest('offers no project MCP input route in the actual native tool catalog',
   const receiptLog = join(workingDir, 'project-form-receipt.json')
   const script = writeMcpFormServer(workingDir, 'project-form.mjs', { receiptLog })
   writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({ mcpServers: { form_probe: { command: process.execPath, args: [script] } } }))
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-    agentProvider: AgentProvider.DIRAC,
-    ...agentOpenOptions(agentSettings(AgentProvider.DIRAC)),
-  })
+  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC))
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await tabById(page, agentId).click()
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })

@@ -5,13 +5,14 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { readToolCall } from '../helpers/providerToolCalls'
 import { expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 const PROVIDER = AgentProvider.QWEN_CODE
 
 qwenTest.describe('Qwen Code tool execution', () => {
   qwenTest('shows the native image overview without an inline image', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { [OPTION_ID_PERMISSION_MODE]: 'yolo' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
     const name = writeToolImage(workingDir, 'qwen-read')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.queue(

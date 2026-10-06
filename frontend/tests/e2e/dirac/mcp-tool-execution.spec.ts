@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { diracTest, expect } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
@@ -21,10 +21,7 @@ diracTest.describe('native mcp tool execution', () => {
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({
       mcpServers: { image_probe: { command: server.command, args: server.args } },
     }))
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.DIRAC,
-      ...agentOpenOptions(agentSettings(AgentProvider.DIRAC)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.DIRAC))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-mcp-answer', 'complete', 'The native turn ended.')] })
     await sendMessage(page, modelScript.prompt('Reply once.'))

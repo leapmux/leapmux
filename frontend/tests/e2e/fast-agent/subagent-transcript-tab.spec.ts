@@ -1,13 +1,14 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
+import { agentOpenOptions } from '../agentSettings'
+import { expect, FAST_AGENT_AGENT, fastAgentTest } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 
 fastAgentTest.describe('Fast Agent subagent transcript', () => {
@@ -16,7 +17,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
   const CHILD_TASK = 'Count the files and report one number.'
 
   fastAgentTest('opens a new child tab when a cleared session reuses the native call id', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { agentId } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const runs = [
       { task: 'FIRSTFASTCHILDTASK count the first set.', description: 'First Fast child', archive: 'FASTFIRSTARCHIVE', root: 'FASTFIRSTROOT' },
@@ -70,7 +71,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
   })
 
   fastAgentTest('keeps identical child prompts separate in one session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { agentId } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const childPrompt = modelScript.prompt(CHILD_TASK)
     const rows = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').filter({ hasText: 'Count files' })
@@ -138,7 +139,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
   })
 
   fastAgentTest('opens the child transcript in its own tab', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openFastAgentAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const note = join(workingDir, 'child-note.txt')
     writeFileSync(note, 'FAST_CHILD_READ_MARKER\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
@@ -212,8 +213,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     const workingDir = createGitRepo(dataDir, `fast-child-resume-${crypto.randomUUID()}`)
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, keeperDir, { title: 'Keeper' })
     const rootID = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, workingDir, {
-      agentProvider: PROVIDER,
-      ...agentOpenOptions(agentSettings(PROVIDER)),
+      ...agentOpenOptions(PROVIDER),
       title: 'Subject',
     })
     const note = join(workingDir, 'child-note.txt')

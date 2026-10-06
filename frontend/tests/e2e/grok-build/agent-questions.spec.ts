@@ -1,9 +1,10 @@
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, controlBanner, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 const PROVIDER = AgentProvider.GROK_BUILD
 
@@ -11,7 +12,7 @@ grokTest.describe('Grok Build control requests', () => {
   // Grok uses each question's text as its answer key.
   // The reply carries the reader's words beside the selected option. A note does not replace that option.
   grokTest('answers a question with a choice and a note', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     await modelScript.queue(

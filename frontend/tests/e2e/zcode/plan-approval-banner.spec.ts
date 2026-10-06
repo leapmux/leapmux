@@ -6,8 +6,6 @@ import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD, ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -16,18 +14,14 @@ import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../h
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { assistantBubbles, controlBanner, expectSettingsChip, openWorkspace, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { zcodeTest } from '../zcode-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { ZCODE_AGENT, zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as feedback', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.setViewportSize({ width: 780, height: 1000 })
-  const settings = agentOpenOptions(agentSettings(AgentProvider.ZCODE))
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('zcode-feedback-'), {
-    agentProvider: AgentProvider.ZCODE,
-    ...settings,
-    optionValues: { ...settings.optionValues, [OPTION_ID_PERMISSION_MODE]: 'plan' },
-  })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: createTestDirectory('zcode-feedback-'), optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await expectSettingsChip(page, 'Plan')
   // Two turns: the plan request, then the answer to the rejection feedback. The
@@ -105,13 +99,8 @@ function zcodePlanFileStem(sessionId: string): string {
 // ZCode keeps plan mode as a flag beside its mode, and LeapMux stores Build as the
 // mode that the approval leaves plan mode for.
 zcodeTest('approves a native ZCode plan and runs the native exit in the same turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  const settings = agentOpenOptions(agentSettings(AgentProvider.ZCODE))
   const directory = createTestDirectory('zcode-approval-')
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
-    agentProvider: AgentProvider.ZCODE,
-    ...settings,
-    optionValues: { ...settings.optionValues, [OPTION_ID_PERMISSION_MODE]: 'plan' },
-  })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: directory, optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const agent = await currentNativeAgent({ page, leapmuxServer })
   expect(agent.id).toBe(agentId)
@@ -170,13 +159,8 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
 // executes: an early setMode would have failed the exit and ended the turn
 // without the approved continuation.
 zcodeTest('approves a native ZCode plan into a chosen mode applied after the native exit', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  const settings = agentOpenOptions(agentSettings(AgentProvider.ZCODE))
   const directory = createTestDirectory('zcode-approval-yolo-')
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
-    agentProvider: AgentProvider.ZCODE,
-    ...settings,
-    optionValues: { ...settings.optionValues, [OPTION_ID_PERMISSION_MODE]: 'plan' },
-  })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: directory, optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const agent = await currentNativeAgent({ page, leapmuxServer })
   expect(agent.id).toBe(agentId)

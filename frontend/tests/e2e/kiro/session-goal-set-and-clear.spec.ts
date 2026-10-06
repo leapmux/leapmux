@@ -3,7 +3,8 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectGoalObjective, expectGoalStatus, submitGoal } from '../helpers/goalsAndTodos'
 import { blockGoalToolCall } from '../helpers/providerToolCalls'
 import { messageBubbles, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const KIRO = AgentProvider.KIRO
 
@@ -18,7 +19,7 @@ kiroTest.describe('Kiro session goal', () => {
   // the step, not Kiro's generic reason for the failed node, and the words also
   // reach the parent transcript.
   kiroTest('leaves the goal blocked when a step reports an error', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await modelScript.rule({

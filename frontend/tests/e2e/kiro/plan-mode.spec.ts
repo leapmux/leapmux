@@ -1,14 +1,15 @@
 import { expect } from '@playwright/test'
 import { kiroSwitchToExecutionToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro settings', () => {
   // Kiro's Plan mode ends through `switch_to_execution`, which raises no approval.
   // The native tool result acknowledges the switch. Kiro then sends the plan to Default mode in the same turn.
   // No mode update separates those answers. The mode chip follows, and each answer appears in a separate message.
   kiroTest('leaves plan mode through the plan switch', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { permissionMode: 'plan' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { permissionMode: 'plan' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Plan')

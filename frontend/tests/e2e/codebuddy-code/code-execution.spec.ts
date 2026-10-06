@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { expect } from '../fixtures'
 import { openAgentViaAPI } from '../helpers/api'
@@ -21,7 +21,7 @@ codebuddyTest('runs native code and retains computed output and script errors af
   await withNativeStartupWorker(initial, launch, {}, async (workerId, wrapper) => {
     const server = { ...leapmuxServer, workerId }
     const context = { page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEBUDDY }
-    const opening = openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+    const opening = openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(context.provider))
     const entered = await Promise.race([wrapper.entry, opening.then(() => wrapper.entry)])
     expect(entered.argv).toContain('--input-format')
     await wrapper.release()

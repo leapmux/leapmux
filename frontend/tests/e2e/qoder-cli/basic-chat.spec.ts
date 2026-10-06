@@ -4,8 +4,8 @@ import { expect, qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI basic chat', () => {
-  qoderTest('draws the answer and ends the turn', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('draws the answer and ends the turn', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
     await modelScript.waitForSteps()
@@ -22,7 +22,7 @@ qoderTest.describe('Qoder CLI basic chat', () => {
   })
 })
 
-qoderTest('ends the actual native turn and keeps its answer after reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('ends the actual native turn and keeps its answer after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseBasicChat(context)
 })

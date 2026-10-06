@@ -1,39 +1,34 @@
 /**
  * Dirac e2e test fixtures.
+ *
+ * A Dirac turn ends only when the model calls `respond` with `operation: "complete"`,
+ * so every scripted turn must queue a tool call, not text.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
-import { createTestDirectory } from './helpers/runDirectory'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const diracConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.DIRAC,
-  cliBinary: 'dirac',
-  skipMessage: 'Dirac E2E requires a dirac CLI on PATH',
-  workspacePrefix: 'dirac-e2e',
-}
+export const DIRAC_E2E_SKIP_REASON: string | null = missingBinaryReason('dirac', 'Dirac E2E requires a dirac CLI on PATH')
 
-export const DIRAC_E2E_SKIP_REASON = detectACPSkipReason(diracConfig)
+/** How a Dirac agent opens. */
+export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefix: 'dirac-e2e' }
+
+/** The asking workspace opens its agent only after the isolated Dirac home turns automatic approval off. */
+const askingDiracWorkspace = authenticatedAgentWorkspace({ ...DIRAC_AGENT, prefix: 'dirac-e2e-ask' })
 
 export const diracTest = base.extend<CliSkipFixture & {
-  diracWorkspace: WorkspaceFixture
-  authenticatedDiracWorkspace: WorkspaceFixture
+  authenticatedDiracWorkspace: AgentWorkspace
   approvalDisabledDiracHome: string
-  askingDiracWorkspace: WorkspaceFixture
+  askingDiracWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(DIRAC_E2E_SKIP_REASON),
-  diracWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, diracConfig, use)
-  },
-
-  authenticatedDiracWorkspace: async ({ page, diracWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, diracWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedDiracWorkspace: authenticatedAgentWorkspace(DIRAC_AGENT),
 
   approvalDisabledDiracHome: async ({ leapmuxServer }, use) => {
     const home = leapmuxServer.agentEnv.DIRAC_DIR
@@ -53,40 +48,10 @@ export const diracTest = base.extend<CliSkipFixture & {
     }
   },
 
-  askingDiracWorkspace: async ({ page, leapmuxServer, approvalDisabledDiracHome }, use) => {
+  askingDiracWorkspace: async ({ page, leapmuxServer, approvalDisabledDiracHome }, use, testInfo) => {
     void approvalDisabledDiracHome
-    await createACPWorkspace(leapmuxServer, diracConfig, async (workspace) => {
-      await authenticateACPWorkspace(page, workspace, leapmuxServer.adminToken, use)
-    })
+    await askingDiracWorkspace({ page, leapmuxServer }, use, testInfo)
   },
 })
 
 export { expect }
-
-interface DiracAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/**
- * Open a Dirac agent in a directory the test knows, with the pinned model and
- * the option values the test states over them.
- *
- * A turn ends only when the model calls `respond` with `operation: "complete"`,
- * so every scripted turn must queue a tool call, not text.
- */
-export async function openDiracAgent(
-  server: DiracAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-): Promise<{ agentId: string, workingDir: string }> {
-  const workingDir = createTestDirectory('dirac-e2e-wd-')
-  const settings = agentOpenOptions(agentSettings(AgentProvider.DIRAC))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.DIRAC,
-    ...settings,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}

@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { expect } from '@playwright/test'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
@@ -18,7 +18,7 @@ import { nativeContext } from './scenarios'
 
 diracTest('executes native scripts with computed, failed, and empty output after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('dirac-native-script-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('dirac-native-script-'), agentOpenOptions(context.provider))
   await openWorkspace(page, context.workspaceId)
   const catalog = await sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
   nativeCodeExecutionSchema(catalog, 'execute_command', { script: 'string', language: 'string' })

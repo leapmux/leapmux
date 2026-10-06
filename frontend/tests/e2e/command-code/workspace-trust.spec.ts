@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { commandCodeTest, createCommandCodeWorkingDir, expect, openCommandCodeAgent } from '../command-code-fixtures'
+import { COMMAND_CODE_AGENT, commandCodeTest, createCommandCodeWorkingDir, expect } from '../command-code-fixtures'
 import { expectNoNativeStartupControl } from '../helpers/nativeControlObservation'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { tabById } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('keeps the actual untrusted project mod unloaded without a native trust dialog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -17,7 +18,7 @@ commandCodeTest('keeps the actual untrusted project mod unloaded without a nativ
     testId: 'control-banner',
     additionalTestIds: ['dialog-editor'],
     start: async () => {
-      const agent = await openCommandCodeAgent(leapmuxServer, context.workspaceId, {}, workingDir)
+      const agent = await openProviderAgent(leapmuxServer, context.workspaceId, COMMAND_CODE_AGENT, { workingDir })
       await tabById(page, agent.agentId).click()
     },
     relatedProof: async () => {

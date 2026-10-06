@@ -7,8 +7,8 @@ import { expect, qoderTest } from '../qoder-fixtures'
 qoderTest.describe('Qoder CLI control answers', () => {
   const PROVIDER = AgentProvider.QODER
 
-  qoderTest('returns a selected answer from its native question tool', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('returns a selected answer from its native question tool', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     await modelScript.queue(
       { toolCalls: [askUserQuestionToolCall(PROVIDER, 'qoder-question', [{
         question: 'Which color should I use?',

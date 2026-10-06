@@ -6,8 +6,8 @@ import { commandCodeTaskCreateToolCall, commandCodeTaskUpdateToolCall } from '..
 import { sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
-commandCodeTest('creates and completes the actual native task and preserves its sidebar status', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
+commandCodeTest('creates and completes the actual native task and preserves its sidebar status', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const start = (await modelScript.status()).stepCount
   await modelScript.queue({ toolCalls: [commandCodeTaskCreateToolCall('native-task-create', 'Inspect the native checklist', 'Read the actual source and report its state.')] }, { text: 'The native task creation completed.' })
   await sendMessage(page, modelScript.prompt('Create the supplied native task.'))

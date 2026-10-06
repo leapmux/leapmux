@@ -5,8 +5,8 @@ import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest('the mode menu lists the four advertised modes', async ({ codebuddyWorkspace, page }) => {
-    void codebuddyWorkspace
+  codebuddyTest('the mode menu lists the four advertised modes', async ({ authenticatedCodebuddyWorkspace, page }) => {
+    void authenticatedCodebuddyWorkspace
     await waitForSettingsHydrated(page)
 
     const group = await openSettingsMenu(page, 'permissionMode')
@@ -23,8 +23,8 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     await closeComposerMenus(page)
   })
 
-  codebuddyTest('keeps selected Plan mode for the next native turn', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('keeps selected Plan mode for the next native turn', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'The first mode probe answered.' })
     await sendMessage(page, modelScript.prompt('Reply before I change mode.'))
     await modelScript.waitForSteps()

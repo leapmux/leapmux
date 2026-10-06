@@ -9,8 +9,8 @@ import { sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 import { commandCodeLoadedToolNames, commandCodeToolCatalog } from './toolCatalog'
 
-commandCodeTest('confirms the native question tool is withheld and no question form opens', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
+commandCodeTest('confirms the native question tool is withheld and no question form opens', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
   const request = await sendNativeAnswer(context, 'Return the actual native tool catalog.', 'The native catalog turn completed.')
   expect(commandCodeToolCatalog(request)).not.toContain('ask_user_question')
   await expectNoNativeControl(context, { testId: 'control-banner', additionalTestIds: ['elicitation-form'], relatedProof: async () => {

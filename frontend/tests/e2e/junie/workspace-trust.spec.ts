@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeJunieMcpConfig } from '../helpers/junieMcp'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
@@ -26,10 +26,7 @@ junieTest('starts with a real project configuration and no native workspace trus
     testId: 'control-banner',
     additionalTestIds: ['dialog-editor'],
     start: async () => {
-      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-        agentProvider: AgentProvider.JUNIE,
-        ...agentOpenOptions(agentSettings(AgentProvider.JUNIE)),
-      })
+      const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.JUNIE))
       await tabById(page, agentId).click()
     },
     relatedProof: async () => {

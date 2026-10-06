@@ -5,7 +5,7 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { bashToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
@@ -29,10 +29,7 @@ interface Server {
 async function openAgentWithFile(page: Page, server: Server, workspace: WorkspaceFixture, prefix: string): Promise<string> {
   const directory = createTestDirectory(prefix)
   writeFileSync(join(directory, 'doomed.txt'), 'delete me\n')
-  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, directory, {
-    agentProvider: AgentProvider.MIMO_CODE,
-    ...agentOpenOptions(agentSettings(AgentProvider.MIMO_CODE)),
-  })
+  await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, directory, agentOpenOptions(AgentProvider.MIMO_CODE))
   await openWorkspace(page, workspace.workspaceId)
   return join(directory, 'doomed.txt')
 }
@@ -128,10 +125,7 @@ mimoTest.describe('MiMo Code permission requests', () => {
       }
     })()
     expect(outsideProbe).toBeNull()
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.MIMO_CODE,
-      ...agentOpenOptions(agentSettings(AgentProvider.MIMO_CODE)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.MIMO_CODE))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     try {
       writeFileSync(join(outside, 'first.txt'), 'FIRST_OUTSIDE_FILE\n')

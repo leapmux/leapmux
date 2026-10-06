@@ -4,8 +4,6 @@ import { Buffer } from 'node:buffer'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -16,7 +14,8 @@ import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
-import { expect, mimoTest } from '../mimo-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, MIMO_AGENT, mimoTest } from '../mimo-fixtures'
 import { controlledMiMoOutputFileProducer } from './controlledOutputProducer'
 import { readMiMoNativeOutput } from './outputFilePaths'
 
@@ -24,7 +23,7 @@ import { readMiMoNativeOutput } from './outputFilePaths'
 async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo: TestInfo, mode: 'quick-exit' | 'observed-size') {
   const { page, leapmuxServer } = context
   const workingDir = createTestDirectory('native-output-path-mimo-')
-  const openedAgentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, workingDir, { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+  const { agentId: openedAgentId } = await openProviderAgent(leapmuxServer, context.workspaceId, MIMO_AGENT, { workingDir })
   await openWorkspace(page, context.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   const nativeHome = leapmuxServer.agentEnv?.MIMOCODE_HOME

@@ -1,91 +1,38 @@
 /**
  * Junie e2e test fixtures.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
+import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
+import { missingBinaryReason } from './helpers/binaryOnPath'
 import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_RESPONSES_MODEL } from './helpers/mockAgentEnvironment'
-import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const junieConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.JUNIE,
-  cliBinary: 'junie',
-  skipMessage: 'Junie E2E requires a junie CLI on PATH',
-  workspacePrefix: 'junie-e2e',
-}
+export const JUNIE_E2E_SKIP_REASON: string | null = missingBinaryReason('junie', 'Junie E2E requires a junie CLI on PATH')
 
-export const JUNIE_E2E_SKIP_REASON = detectACPSkipReason(junieConfig)
+/** How a Junie agent opens. */
+export const JUNIE_AGENT: ProviderAgent = { provider: AgentProvider.JUNIE, prefix: 'junie-e2e' }
 
 export const junieTest = base.extend<CliSkipFixture & {
-  junieWorkspace: WorkspaceFixture
-  authenticatedJunieWorkspace: WorkspaceFixture
-  authenticatedResponsesJunieWorkspace: WorkspaceFixture
-  authenticatedNativeEffortJunieWorkspace: WorkspaceFixture
+  authenticatedJunieWorkspace: AgentWorkspace
+  authenticatedResponsesJunieWorkspace: AgentWorkspace
+  authenticatedNativeEffortJunieWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(JUNIE_E2E_SKIP_REASON),
-  junieWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, junieConfig, use)
-  },
-
-  authenticatedJunieWorkspace: async ({ page, junieWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, junieWorkspace, leapmuxServer.adminToken, use)
-  },
-
-  authenticatedResponsesJunieWorkspace: async ({ page, leapmuxServer }, use) => {
-    await withAgentWorkspace(leapmuxServer, {
-      provider: AgentProvider.JUNIE,
-      prefix: 'junie-e2e-responses',
-      openOptions: { model: JUNIE_RESPONSES_MODEL },
-    }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use(workspace)
-    })
-  },
-
-  authenticatedNativeEffortJunieWorkspace: async ({ page, leapmuxServer }, use) => {
-    await withAgentWorkspace(leapmuxServer, {
-      provider: AgentProvider.JUNIE,
-      prefix: 'junie-e2e-native-effort',
-      openOptions: agentOpenOptions({ model: JUNIE_NATIVE_EFFORT_MODEL, effort: 'high' }),
-    }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use(workspace)
-    })
-  },
+  authenticatedJunieWorkspace: authenticatedAgentWorkspace(JUNIE_AGENT),
+  authenticatedResponsesJunieWorkspace: authenticatedAgentWorkspace({
+    ...JUNIE_AGENT,
+    prefix: 'junie-e2e-responses',
+    openOptions: { model: JUNIE_RESPONSES_MODEL },
+  }),
+  authenticatedNativeEffortJunieWorkspace: authenticatedAgentWorkspace({
+    ...JUNIE_AGENT,
+    prefix: 'junie-e2e-native-effort',
+    openOptions: { model: JUNIE_NATIVE_EFFORT_MODEL, optionValues: { [OPTION_ID_EFFORT]: 'high' } },
+  }),
 })
 
 export { expect }
-
-interface JunieAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/**
- * Open a Junie agent in a directory the test knows, with the pinned model and
- * the option values the test states over them.
- */
-export async function openJunieAgent(
-  server: JunieAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-  prepareWorkingDir?: (workingDir: string) => void,
-): Promise<{ agentId: string, workingDir: string }> {
-  const workingDir = createTestDirectory('junie-e2e-wd-')
-  prepareWorkingDir?.(workingDir)
-  const settings = agentOpenOptions(agentSettings(AgentProvider.JUNIE))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.JUNIE,
-    ...settings,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}

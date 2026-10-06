@@ -22,8 +22,8 @@ qoderTest.describe('Qoder CLI plan approval', () => {
     ]
   }
 
-  qoderTest('reviews the plan, retains it on reject, and applies the selected mode on approve', async ({ qoderWorkspace, page, modelScript }) => {
-    void qoderWorkspace
+  qoderTest('reviews the plan, retains it on reject, and applies the selected mode on approve', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
+    void authenticatedQoderWorkspace
     await waitForSettingsHydrated(page)
     // Plan mode can start additional model turns.
     // Each plan decision can start another turn.

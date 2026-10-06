@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
@@ -11,7 +11,7 @@ import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codewhaleTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), { agentProvider: context.provider, ...agentOpenOptions(agentSettings(context.provider)) })
+  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(context.provider))
   await openWorkspace(page, context.workspaceId)
   await modelScript.queue({ toolCalls: [codewhaleToolSearchToolCall('discover-native-executor', 'execute_tools')] }, { text: 'The native executor schema is loaded.' })
   await sendMessage(page, modelScript.prompt('Discover the native execute_tools schema.'))

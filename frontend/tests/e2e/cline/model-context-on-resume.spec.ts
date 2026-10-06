@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { clineTest } from '../cline-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { expectNativeResumeContext, expectReopenedNativeAgent, expectResumedAnswerUnmerged, nativeResumeTexts } from '../helpers/nativeResume'
@@ -59,8 +59,7 @@ clineTest('offers a Cline session of the working directory and resumes the one p
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Cline Picker ${crypto.randomUUID()}`)
   const keeperId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, otherDir, {
-    agentProvider: AgentProvider.CLINE,
-    ...agentOpenOptions(agentSettings(AgentProvider.CLINE)),
+    ...agentOpenOptions(AgentProvider.CLINE),
     title: 'Keeper',
   })
   await loginViaToken(page, adminToken)

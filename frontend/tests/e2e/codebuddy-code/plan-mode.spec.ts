@@ -6,8 +6,8 @@ import { chooseSettingsOption, expectSettingsOptionChosen, waitForSettingsHydrat
 import { codebuddyPlanOptionSnapshot } from './planMode'
 import { nativeContext } from './scenarios'
 
-codebuddyTest('adds actual native planning instructions and preserves the selected mode after reload', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+codebuddyTest('adds actual native planning instructions and preserves the selected mode after reload', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
   await waitForSettingsHydrated(page)
   await chooseSettingsOption(page, 'permissionMode-default')
   await waitForSettingsIdle(page)

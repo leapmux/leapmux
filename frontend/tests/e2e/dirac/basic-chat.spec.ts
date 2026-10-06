@@ -1,7 +1,8 @@
-import { diracTest, expect, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, diracTest, expect } from '../dirac-fixtures'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac Basic Chat', () => {
@@ -16,7 +17,7 @@ diracTest.describe('Dirac Basic Chat', () => {
 
 diracTest.describe('Dirac settings', () => {
   diracTest('a turn completes through the respond tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-respond', 'complete', 'Turn complete.')] })

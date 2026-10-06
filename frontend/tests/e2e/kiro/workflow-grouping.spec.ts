@@ -5,7 +5,8 @@ import { completeGoalToolCall } from '../helpers/providerToolCalls'
 import { expectRegistryRow } from '../helpers/subagentRegistry'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const KIRO = AgentProvider.KIRO
 
@@ -17,7 +18,7 @@ const GOAL_STEP_PROMPT = 'original_user_request'
 
 kiroTest.describe('Kiro session goal', () => {
   kiroTest('sets a goal that a step completes, with the workflow in the registry', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     // The first step reports success. Its session then ends its turn with words.

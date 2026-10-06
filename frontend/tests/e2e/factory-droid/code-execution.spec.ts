@@ -1,7 +1,7 @@
 import { cpSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { droidTest, expect } from '../droid-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpers/nativeCodeExecution'
@@ -34,7 +34,7 @@ droidTest('runs native code and retains computed output and script errors after 
     env: { FACTORY_HOME_OVERRIDE: home, FACTORY_FEATURE_FLAGS_SNAPSHOT_PATH: snapshot },
   }, async ({ server }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), { agentProvider: AgentProvider.DROID, ...agentOpenOptions(agentSettings(AgentProvider.DROID)) })
+    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, context.workspaceId, createTestDirectory('native-code-execution-'), agentOpenOptions(AgentProvider.DROID))
     await openWorkspace(page, context.workspaceId)
     const request = await sendNativeAnswer(context, 'Reply once while the native Script catalog remains available.', 'The actual native Script catalog turn completed.')
     expect(request.mockCredential?.accepted).toBe(true)

@@ -1,6 +1,4 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
@@ -8,13 +6,14 @@ import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFileP
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace } from '../helpers/ui'
-import { expect, ohMyPiTest } from '../ohmypi-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, OH_MY_PI_AGENT, OH_MY_PI_YOLO, ohMyPiTest } from '../ohmypi-fixtures'
 import { ohMyPiNativeOutput } from './nativeToolOutput'
 
 ohMyPiTest('keeps the native Bash preview and opaque ID without deriving an output file path after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-preview-omp-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)), optionValues: { permissionMode: 'yolo' } })
+  await openProviderAgent(leapmuxServer, native.workspaceId, OH_MY_PI_AGENT, { workingDir: createTestDirectory('native-preview-omp-'), ...OH_MY_PI_YOLO })
   await openWorkspace(page, native.workspaceId)
   await captureNativeToolOutput(native, testInfo, {
     output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),

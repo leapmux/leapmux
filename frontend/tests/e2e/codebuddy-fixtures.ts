@@ -11,19 +11,16 @@
  * The mock MUST stream SSE: CodeBuddy always sends `stream:true`, and a plain
  * JSON completion is dropped with `error_during_execution`.
  */
-import type { Page } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { CODEBUDDY_MODE } from '../../src/generated/contracts/codebuddy-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 export const CODEBUDDY_E2E_SKIP_REASON: string | null = missingBinaryReason('codebuddy', 'CodeBuddy E2E requires the codebuddy CLI on PATH (https://cnb.cool/codebuddy/codebuddy-code)')
 
@@ -32,62 +29,29 @@ export function createCodebuddyWorkingDir(): string {
   return createGitRepo(createTestDirectory('codebuddy-e2e-wd-'), 'repo')
 }
 
-/** One CodeBuddy agent's workspace, and the directory the agent works in. */
-export interface CodebuddyWorkspaceFixture {
-  workspaceId: string
-  workingDir: string
-}
-
-interface CodebuddyAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
+/** How a CodeBuddy agent opens. */
+export const CODEBUDDY_AGENT: ProviderAgent = { provider: AgentProvider.CODEBUDDY, prefix: 'codebuddy-e2e', workingDir: createCodebuddyWorkingDir }
 
 /**
  * The agent opens in Bypass Permissions, which answers every tool call at once.
  *
  * The control-request spec opens its own workspace in Default.
  */
-const BYPASS = { optionValues: { permissionMode: CODEBUDDY_MODE.BypassPermissions } }
+export const CODEBUDDY_BYPASS = { optionValues: { permissionMode: CODEBUDDY_MODE.BypassPermissions } }
 
-function codebuddyWorkspace(prefix: string, openOptions?: { optionValues: Record<string, string> }) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: CodebuddyAgentServer }, use: (fixture: CodebuddyWorkspaceFixture) => Promise<void>) => {
-    const workingDir = createCodebuddyWorkingDir()
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.CODEBUDDY, prefix, ...(openOptions ? { openOptions } : {}), workingDir: () => workingDir }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use({ ...workspace, workingDir })
-    })
-  }
-}
-
-export const codebuddyTest = base.extend<CliSkipFixture & { codebuddyWorkspace: CodebuddyWorkspaceFixture, askingCodebuddyWorkspace: CodebuddyWorkspaceFixture }>({
+export const codebuddyTest = base.extend<CliSkipFixture & {
+  /** An agent in Bypass Permissions, which raises no banner for a tool call. */
+  authenticatedCodebuddyWorkspace: AgentWorkspace
+  /**
+   * An agent in Default mode, which raises a banner for each tool call. The
+   * control-request spec needs the banner; the bypass workspace answers every
+   * call at once and would never raise one.
+   */
+  askingCodebuddyWorkspace: AgentWorkspace
+}>({
   cliSkip: cliSkipFixture(CODEBUDDY_E2E_SKIP_REASON),
-  codebuddyWorkspace: codebuddyWorkspace('codebuddy-e2e', BYPASS),
-  // An agent in Default mode, which raises a banner for each tool call. The
-  // control-request spec needs the banner; the bypass workspace answers every
-  // call at once and would never raise one.
-  askingCodebuddyWorkspace: codebuddyWorkspace('codebuddy-e2e-ask'),
+  authenticatedCodebuddyWorkspace: authenticatedAgentWorkspace({ ...CODEBUDDY_AGENT, openOptions: CODEBUDDY_BYPASS }),
+  askingCodebuddyWorkspace: authenticatedAgentWorkspace({ ...CODEBUDDY_AGENT, prefix: 'codebuddy-e2e-ask' }),
 })
-
-/**
- * Open a CodeBuddy agent in a directory the test knows, with the pinned model and
- * the option values the test states over it.
- */
-export async function openCodebuddyAgent(
-  server: CodebuddyAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-  workingDir: string = createCodebuddyWorkingDir(),
-): Promise<{ agentId: string, workingDir: string }> {
-  const settings = agentOpenOptions(agentSettings(AgentProvider.CODEBUDDY))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.CODEBUDDY,
-    ...settings,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}
 
 export { expect }

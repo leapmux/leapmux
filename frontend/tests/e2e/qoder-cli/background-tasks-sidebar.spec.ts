@@ -3,8 +3,8 @@ import { withCleanup } from '../helpers/cleanup'
 import { qoderTest } from '../qoder-fixtures'
 import { nativeContext, runningChild } from './scenarios'
 
-qoderTest('follows a native child from running to completed in the Background tasks sidebar', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('follows a native child from running to completed in the Background tasks sidebar', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   const child = await runningChild(context)
   await withCleanup(async () => {
     await expect(child.row).toContainText('Native held child')

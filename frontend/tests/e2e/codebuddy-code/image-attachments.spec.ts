@@ -4,8 +4,8 @@ import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachme
 import { waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
-  codebuddyTest('the model receives an image attachment', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('the model receives an image attachment', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'Image received.' })
     const sourcePath = await expectAttachmentOutcome(page, 'image', { supported: true, fileName: 'shot.png', readyGroup: 'permissionMode' })
     await sendWithAttachment(page, modelScript.prompt('Describe this.'))

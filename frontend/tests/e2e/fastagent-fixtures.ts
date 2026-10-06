@@ -1,64 +1,28 @@
 /**
  * Fast Agent e2e test fixtures.
+ *
+ * fast-agent fixes its model at session creation: `set_config_option` raises
+ * `method_not_found`, so there is no per-session model switch. A spec that needs
+ * another model opens its own agent with a `model` override.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { agentOpenOptions, agentSettings } from './agentSettings'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
-import { createTestDirectory } from './helpers/runDirectory'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const fastAgentConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.FAST_AGENT,
-  cliBinary: 'fast-agent',
-  skipMessage: 'Fast Agent E2E requires a fast-agent CLI on PATH',
-  workspacePrefix: 'fastagent-e2e',
-}
+export const FAST_AGENT_E2E_SKIP_REASON: string | null = missingBinaryReason('fast-agent', 'Fast Agent E2E requires a fast-agent CLI on PATH')
 
-export const FAST_AGENT_E2E_SKIP_REASON = detectACPSkipReason(fastAgentConfig)
+/** How a Fast Agent agent opens. */
+export const FAST_AGENT_AGENT: ProviderAgent = { provider: AgentProvider.FAST_AGENT, prefix: 'fastagent-e2e' }
 
 export const fastAgentTest = base.extend<CliSkipFixture & {
-  fastAgentWorkspace: WorkspaceFixture
-  authenticatedFastAgentWorkspace: WorkspaceFixture
+  authenticatedFastAgentWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(FAST_AGENT_E2E_SKIP_REASON),
-  fastAgentWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, fastAgentConfig, use)
-  },
-
-  authenticatedFastAgentWorkspace: async ({ page, fastAgentWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, fastAgentWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedFastAgentWorkspace: authenticatedAgentWorkspace(FAST_AGENT_AGENT),
 })
 
 export { expect }
-
-interface FastAgentAgentServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
-
-/**
- * Open a Fast Agent agent in a directory the test knows, with the pinned model
- * and the option values the test states over them.
- *
- * fast-agent fixes its model at session creation: `set_config_option` raises
- * `method_not_found`, so there is no per-session model switch.
- */
-export async function openFastAgentAgent(
-  server: FastAgentAgentServer,
-  workspaceId: string,
-  optionValues: Record<string, string> = {},
-): Promise<{ agentId: string, workingDir: string }> {
-  const workingDir = createTestDirectory('fastagent-e2e-wd-')
-  const settings = agentOpenOptions(agentSettings(AgentProvider.FAST_AGENT))
-  const agentId = await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, workingDir, {
-    agentProvider: AgentProvider.FAST_AGENT,
-    ...settings,
-    model: optionValues.model ?? settings.model,
-    optionValues: { ...settings.optionValues, ...optionValues },
-  })
-  return { agentId, workingDir }
-}

@@ -3,18 +3,17 @@
  * The skip check requires a launcher or bundled script and a usable provider configuration.
  * These checks match the worker's launch requirements.
  */
-import type { CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import process from 'node:process'
-import { AgentProvider, cliSkipFixture } from './acp-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
 import { findBinary, unusableBinaryReason } from './helpers/binaryOnPath'
 import { hubSpawnEnv } from './helpers/server'
-
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 import { computeZCodeE2ESkipReason } from './zcode-install'
 
 // The launcher is found without running it, so the check runs nothing in the
@@ -32,21 +31,14 @@ export const ZCODE_E2E_SKIP_REASON: string | null = computeZCodeE2ESkipReason({
   readConfig: path => (existsSync(path) ? readFileSync(path, 'utf-8') : null),
 })
 
+/** How a ZCode agent opens. */
+export const ZCODE_AGENT: ProviderAgent = { provider: AgentProvider.ZCODE, prefix: 'zcode-e2e' }
+
 export const zcodeTest = base.extend<CliSkipFixture & {
-  zcodeWorkspace: WorkspaceFixture
-  authenticatedZCodeWorkspace: WorkspaceFixture
+  authenticatedZCodeWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(ZCODE_E2E_SKIP_REASON),
-  zcodeWorkspace: async ({ leapmuxServer }, use) => {
-    await withAgentWorkspace(leapmuxServer, { provider: AgentProvider.ZCODE, prefix: 'zcode-e2e' }, use)
-  },
-
-  authenticatedZCodeWorkspace: async ({ page, zcodeWorkspace, leapmuxServer }, use) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await openWorkspace(page, zcodeWorkspace.workspaceId)
-
-    await use(zcodeWorkspace)
-  },
+  authenticatedZCodeWorkspace: authenticatedAgentWorkspace(ZCODE_AGENT),
 })
 
 export { expect }

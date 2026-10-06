@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
@@ -11,10 +11,7 @@ import { reasonixTest } from '../reasonix-fixtures'
 reasonixTest('renders Reasonix read-only reports without interpreting quoted status text', async ({ page, context, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const provider = AgentProvider.REASONIX
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-readonly-agent-'), {
-    agentProvider: provider,
-    ...agentOpenOptions(agentSettings(provider)),
-  })
+  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-readonly-agent-'), agentOpenOptions(provider))
   void agentId
   // The quoted status is the POINT: a report that merely talks about a failed
   // outcome must not be read as one. The child really completes, and its

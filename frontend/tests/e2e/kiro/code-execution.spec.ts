@@ -13,7 +13,8 @@ import { withNativeWorker } from '../helpers/nativeWorker'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { expect, KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 import { kiroCatalogEnvironment } from './catalogEnvironment'
 import { assertKiroActiveCatalog, kiroActiveToolCatalog, kiroScriptExecutors } from './toolCatalog'
 
@@ -31,13 +32,13 @@ kiroTest('proves the complete active native catalog and actual shell output', as
   }, async ({ server }) => {
     const context = { page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.KIRO }
     let receiptLog = ''
-    await openKiroAgent(server, context.workspaceId, { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll }, (workingDir) => {
+    await openProviderAgent(server, context.workspaceId, KIRO_AGENT, { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll }, prepare: (workingDir) => {
       receiptLog = join(workingDir, 'native-catalog-echo.jsonl')
       const script = writeMcpEchoServer(workingDir, { receiptLog })
       const project = join(workingDir, '.kiro', 'settings')
       mkdirSync(project, { recursive: true })
       writeFileSync(join(project, 'mcp.json'), JSON.stringify({ mcpServers: { echo_probe: { command: process.execPath, args: [script] } } }))
-    })
+    } })
     await openWorkspace(page, context.workspaceId)
     await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'echo'))).toBe(true)
     const first = await sendNativeAnswer(context, 'Reply once while the complete native active registry remains available.', 'The native active catalog receipt completed.')

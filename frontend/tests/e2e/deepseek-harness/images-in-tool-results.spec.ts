@@ -9,8 +9,8 @@ import { expectDecodedImageInBubble, writeToolImage } from '../helpers/toolImage
 import { sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('recovers the real native image bytes and keeps the decoded image after reload', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('recovers the real native image bytes and keeps the decoded image after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const agent = await currentNativeAgent(context)
   const name = writeToolImage(agent.workingDir, 'deepseek-native')
   const callId = 'native-image-read'

@@ -5,7 +5,8 @@ import { KIRO_MOCK_MODELS } from '../helpers/kiroSurface'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeLastStepBody } from '../helpers/nativeScenario'
 import { chooseSettingsOption, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const [EFFORT_MODEL, PLAIN_MODEL] = KIRO_MOCK_MODELS
 
@@ -17,7 +18,7 @@ function requestModel(body: Record<string, unknown>): unknown {
 
 kiroTest.describe('Kiro settings', () => {
   kiroTest('switches the effort, the mode and the model for the next prompt, and keeps them after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Default')

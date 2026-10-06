@@ -1,20 +1,16 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { openAgentViaAPI } from '../helpers/api'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { piTest } from '../pi-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { PI_AGENT, piTest } from '../pi-fixtures'
 
 for (const answerKind of ['custom', 'selected']) {
   piTest(`delivers a ${answerKind} answer to the real Pi question extension`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const provider = AgentProvider.PI
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-custom-'), {
-      agentProvider: provider,
-      ...agentOpenOptions(agentSettings(provider)),
-    })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, PI_AGENT, { workingDir: createTestDirectory('renderer-pi-custom-') })
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     // The EXTENSION is real -- it is what turns the tool call into a control

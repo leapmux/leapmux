@@ -1,32 +1,24 @@
 /**
  * Reasonix (DeepSeek) e2e test fixtures.
  */
-import type { ACPFixtureConfig, CliSkipFixture } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, cliSkipFixture, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base, expect } from './fixtures'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const reasonixConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.REASONIX,
-  cliBinary: 'reasonix',
-  skipMessage: 'Reasonix E2E requires a reasonix CLI on PATH',
-  workspacePrefix: 'reasonix-e2e',
-}
+export const REASONIX_E2E_SKIP_REASON: string | null = missingBinaryReason('reasonix', 'Reasonix E2E requires a reasonix CLI on PATH')
 
-export const REASONIX_E2E_SKIP_REASON = detectACPSkipReason(reasonixConfig)
+/** How a Reasonix agent opens. */
+export const REASONIX_AGENT: ProviderAgent = { provider: AgentProvider.REASONIX, prefix: 'reasonix-e2e' }
 
 export const reasonixTest = base.extend<CliSkipFixture & {
-  reasonixWorkspace: WorkspaceFixture
-  authenticatedReasonixWorkspace: WorkspaceFixture
+  authenticatedReasonixWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(REASONIX_E2E_SKIP_REASON),
-  reasonixWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, reasonixConfig, use)
-  },
-
-  authenticatedReasonixWorkspace: async ({ page, reasonixWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, reasonixWorkspace, leapmuxServer.adminToken, use)
-  },
+  authenticatedReasonixWorkspace: authenticatedAgentWorkspace(REASONIX_AGENT),
 })
 
 export { expect }

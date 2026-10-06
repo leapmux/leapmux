@@ -1,7 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { codebuddyTest, expect } from '../codebuddy-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { CODEBUDDY_AGENT, codebuddyTest, expect } from '../codebuddy-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -11,12 +9,13 @@ import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { readCodeBuddyNativeOutput } from './outputFilePaths'
 
 codebuddyTest('keeps the native filesystem path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEBUDDY }
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, native.workspaceId, createTestDirectory('native-output-path-'), { agentProvider: native.provider, ...agentOpenOptions(agentSettings(native.provider)) })
+  await openProviderAgent(leapmuxServer, native.workspaceId, CODEBUDDY_AGENT, { workingDir: createTestDirectory('native-output-path-') })
   await openWorkspace(page, native.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   await captureNativeToolOutput(native, testInfo, {

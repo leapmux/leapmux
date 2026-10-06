@@ -8,8 +8,8 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 codebuddyTest.describe('CodeBuddy Code file tool execution', () => {
   const PROVIDER = AgentProvider.CODEBUDDY
 
-  codebuddyTest('shows the native Read placeholder without an inline image', async ({ codebuddyWorkspace, page, modelScript }) => {
-    const { workingDir } = codebuddyWorkspace
+  codebuddyTest('shows the native Read placeholder without an inline image', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    const { workingDir } = authenticatedCodebuddyWorkspace
     const name = writeToolImage(workingDir, 'codebuddy-read')
     await modelScript.queue(
       { toolCalls: [readToolCall(PROVIDER, 'read-image', join(workingDir, name))] },

@@ -5,7 +5,6 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { copilotTest } from '../copilot-fixtures'
 import { withCleanup } from '../helpers/cleanup'
-import { attachCopilotNativeLogs } from '../helpers/copilotNativeLogs'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
@@ -13,7 +12,7 @@ import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../h
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, chooseSettingsOption, controlBanner, expectNoControlBanner, expectSettingsChip, expectSettingsOptionChosen, messageBubbles, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
-copilotTest('plan-approval-banner: uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
+copilotTest('plan-approval-banner: uses the native exit tool and resumes after plan approval', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
   void authenticatedCopilotWorkspace
   await chooseSettingsOption(page, `${COPILOT_OPTION.SessionMode}-${COPILOT_MODE.Plan}`)
   await waitForSettingsIdle(page)
@@ -31,7 +30,6 @@ copilotTest('plan-approval-banner: uses the native exit tool and resumes after p
   )
   await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
   await modelScript.waitForSteps(2)
-  await attachCopilotNativeLogs(leapmuxServer.agentEnv.COPILOT_HOME, testInfo)
 
   const banner = await waitForControlBanner(page)
   await expect(banner).toContainText('Proposed Plan')
@@ -77,7 +75,7 @@ function copilotRootEvents(snapshot: NativeMessageSnapshot): CopilotRootEvent[] 
 // session stays in plan mode. A Copilot session log of runtime 1.0.83 records this
 // sequence, and runtime 1.0.87 holds the same result text. Feedback is different:
 // it gives the model a successful result, and the turn goes on.
-copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, and stays in plan mode', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
+copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, and stays in plan mode', async ({ authenticatedCopilotWorkspace, leapmuxServer, page, modelScript }) => {
   void authenticatedCopilotWorkspace
   await chooseSettingsOption(page, `${COPILOT_OPTION.SessionMode}-${COPILOT_MODE.Plan}`)
   await waitForSettingsIdle(page)
@@ -90,7 +88,6 @@ copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, 
     })
     await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
     await modelScript.waitForSteps(1)
-    await attachCopilotNativeLogs(leapmuxServer.agentEnv.COPILOT_HOME, testInfo)
     const banner = controlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
     await expect(banner).toContainText('Keep the Copilot plan unapproved.')

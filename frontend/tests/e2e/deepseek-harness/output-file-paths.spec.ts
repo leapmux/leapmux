@@ -17,9 +17,9 @@ import { proveDeepseekHarnessMixedMcpOutput } from './mcpToolResult'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('keeps native output paths and the exact inline preview after reload', async ({ deepseekHarnessWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
+deepseekHarnessTest('keeps native output paths and the exact inline preview after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+  const native = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await captureNativeToolOutput(native, testInfo, {
     output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),
     callId: 'native-output-file-paths',

@@ -4,8 +4,8 @@ import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachme
 import { waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
-  codebuddyTest('the model receives a PDF attachment', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('the model receives a PDF attachment', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'Document received.' })
     const sourcePath = await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: 'codebuddy-doc.pdf', readyGroup: 'permissionMode' })
     await sendWithAttachment(page, modelScript.prompt('Read this document.'))

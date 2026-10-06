@@ -2,8 +2,8 @@ import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { assistantBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code rate-limit state', () => {
-  codebuddyTest('shows no rate-limit window from model response headers', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('shows no rate-limit window from model response headers', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({
       text: 'The turn finished near the model limit.',
       rateLimits: {

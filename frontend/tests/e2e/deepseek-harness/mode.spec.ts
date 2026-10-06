@@ -4,8 +4,8 @@ import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('preserves the selected native plan mode before and after reload', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('preserves the selected native plan mode before and after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   await exerciseNativeOption(context, {
     groupId: 'permissionMode',
     value: 'plan',

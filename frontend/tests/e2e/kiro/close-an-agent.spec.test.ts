@@ -10,8 +10,11 @@ const calls = vi.hoisted(() => ({
   ended: new Set<number>(),
 }))
 
+vi.mock('../helpers/workspace', () => ({
+  openProviderAgent: vi.fn(async () => ({ agentId: 'selected-agent', workingDir: '/private/shard-1/project' })),
+}))
 vi.mock('../kiro-fixtures', () => ({
-  openKiroAgent: vi.fn(async () => ({ agentId: 'selected-agent', workingDir: '/private/shard-1/project' })),
+  KIRO_AGENT: { provider: 0, prefix: 'kiro-e2e' },
   kiroTest: Object.assign((title: string, body: unknown) => calls.registered.set(title, body), {
     describe: (_title: string, body: () => void) => body(),
   }),

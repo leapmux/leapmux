@@ -5,11 +5,12 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { expectSteeredReply, steerQueuedInput } from '../helpers/steer'
 import { createToolOutputControl } from '../helpers/toolOutputControl'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro interrupt, steering and process lifetime', () => {
   kiroTest('steers a running turn with a queued message', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openKiroAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { policyPreset: 'allow-all' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const control = createToolOutputControl(workingDir)
     try {

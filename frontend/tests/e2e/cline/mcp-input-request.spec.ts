@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { clineTest } from '../cline-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -39,10 +39,7 @@ clineTest('times out an MCP input request that the native client never answers, 
   const config = join(environment.CLINE_DATA_DIR!, 'settings', 'cline_mcp_settings.json')
   const servers = { form_probe: { transport: { type: 'stdio', command: process.execPath, args: [script] }, timeout: MCP_TIMEOUT_SECONDS } }
   await withNativeConfigurationFile({ path: config, content: JSON.stringify({ mcpServers: servers }), runDir: getGlobalState().tmpDir }, async () => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.CLINE,
-      ...agentOpenOptions(agentSettings(AgentProvider.CLINE)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.CLINE))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await applyPermissionPreset(page, 'bypass')
     await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'ask'))).toBe(true)

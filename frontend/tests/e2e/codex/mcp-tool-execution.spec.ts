@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
@@ -28,10 +28,7 @@ codexTest('executes the native MCP echo tool and preserves its argument refusal'
   const expectedEchoArguments = { query: 'NATIVE_CODEX_QUERY', limit: 0, tail: 'NATIVE_CODEX_TAIL' }
   await withCleanup(async () => {
     writeMcpFormServer(codexHome, 'form-server.mjs', { receiptLog, expectedEchoArguments })
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, {
-      agentProvider: AgentProvider.CODEX,
-      ...agentOpenOptions(agentSettings(AgentProvider.CODEX)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, directory, agentOpenOptions(AgentProvider.CODEX))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = { page, modelScript, provider: AgentProvider.CODEX }
     for (const valid of [true, false]) {

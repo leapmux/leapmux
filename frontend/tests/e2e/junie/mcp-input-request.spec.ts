@@ -7,16 +7,17 @@ import { nativeMcpRefusal, readMcpServerReceipt } from '../helpers/mcpServerRece
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { junieAnswerToolCall, mcpToolCall } from '../helpers/providerToolCalls'
 import { openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect as junieExpect, junieTest, openJunieAgent } from '../junie-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { JUNIE_AGENT, expect as junieExpect, junieTest } from '../junie-fixtures'
 
 junieTest.describe('Junie MCP input form', () => {
   junieTest('declines a local MCP form request without opening a browser form', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
     let receiptLog = ''
-    await openJunieAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { brave_mode: 'on' }, (workingDir) => {
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
       receiptLog = join(workingDir, 'form-receipt.json')
       const script = writeMcpFormServer(workingDir, 'form-server.mjs', { receiptLog })
       writeJunieMcpConfig(workingDir, 'form_probe', process.execPath, [script])
-    })
+    } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await modelScript.rule(
       { name: 'junie-mcp-capability', when: { system: 'capability filter agent' }, respond: { text: '1' } },

@@ -6,8 +6,8 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 codebuddyTest.describe('CodeBuddy Code control answers', () => {
   const PROVIDER = AgentProvider.CODEBUDDY
 
-  codebuddyTest('shows the native refusal when AskUserQuestion is unavailable', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('shows the native refusal when AskUserQuestion is unavailable', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ toolCalls: [askUserQuestionToolCall(PROVIDER, 'question-call', [{
       question: 'Choose a color.',
       header: 'Color',

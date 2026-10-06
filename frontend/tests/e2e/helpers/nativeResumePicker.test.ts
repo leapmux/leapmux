@@ -7,6 +7,7 @@ import type { NativeModelTurn } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AGENT_E2E_SETTINGS } from '../agentSettings'
 import { stepRequest } from './mockModelScript'
 import { resumePickerScenario } from './nativeResumePicker'
 
@@ -32,11 +33,6 @@ const picker = vi.hoisted(() => ({
   newestIsStored: true,
   openOptions: [] as unknown[],
   conversation: [] as { agentId: string, originalAnswerRows: number, originalAnswerBubbles: number | undefined }[],
-}))
-
-vi.mock('../agentSettings', async importOriginal => ({
-  ...await importOriginal<typeof import('../agentSettings')>(),
-  agentSettings: () => ({ model: 'unit-model', effort: 'unit-effort' }),
 }))
 
 vi.mock('./api', () => ({
@@ -507,7 +503,8 @@ describe('resumePickerScenario', () => {
       const [keeper, subject] = picker.openOptions
       expect(keeper).toMatchObject({ title: 'Keeper' })
       expect(keeper).not.toHaveProperty('agentProvider')
-      expect(subject).toMatchObject({ title: 'Subject', agentProvider: AgentProvider.CODEX, model: 'unit-model', optionValues: { effort: 'unit-effort' } })
+      const pinned = AGENT_E2E_SETTINGS[AgentProvider.CODEX]
+      expect(subject).toMatchObject({ title: 'Subject', agentProvider: AgentProvider.CODEX, model: pinned.model, optionValues: { effort: pinned.effort } })
     })
 
     it('uses separate working directories for the keeper and the subject', async () => {
@@ -525,7 +522,7 @@ describe('resumePickerScenario', () => {
 
     it('keeps the provider option values when the spec gives none', async () => {
       await run({ subjectOptionValues: {} })
-      expect(picker.openOptions[1]).toMatchObject({ optionValues: { effort: 'unit-effort' } })
+      expect(picker.openOptions[1]).toMatchObject({ optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.CODEX].effort } })
     })
   })
 })

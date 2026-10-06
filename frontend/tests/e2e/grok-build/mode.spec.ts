@@ -2,16 +2,17 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { grokTest, openGrokAgent } from '../grok-fixtures'
+import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
   // Grok reports its session mode and never its approval mode, so the approval
   // presets land on LeapMux's own approval option, and both survive a reload.
   grokTest('sends the effort and session mode into native turns, and keeps the presets after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Default')

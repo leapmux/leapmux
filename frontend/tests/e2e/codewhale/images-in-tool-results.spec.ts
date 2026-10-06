@@ -7,9 +7,8 @@ import { CODEWHALE_EVENT } from '../../../src/generated/contracts/codewhale-prot
 import { AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { parseMessageContent } from '../../../src/lib/messageParser'
-import { agentOpenOptions } from '../agentSettings'
-import { codewhaleTest } from '../codewhale-fixtures'
-import { getTestChannel, openAgentViaAPI } from '../helpers/api'
+import { CODEWHALE_AGENT, codewhaleTest } from '../codewhale-fixtures'
+import { getTestChannel } from '../helpers/api'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { CODEWHALE_VISION_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
@@ -22,6 +21,7 @@ import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { expectMcpToolImage, expectToolRowImage, mcpResultImage, writeToolImage } from '../helpers/toolImages'
 import { applyPermissionPreset, openWorkspace, sendMessage, tabById, waitForSettingsHydrated } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 /** Prove that the actual image bytes reside in the completed Worker's stored row. */
 async function expectSavedImage(context: ManagedNativeScenarioContext, callId: string, uri: string): Promise<void> {
@@ -65,7 +65,7 @@ codewhaleTest('draws the actual native MCP image before and after reload', async
   const server = writeMcpImageServer(workingDir, imageName)
   const config = join(leapmuxServer.agentEnv.CODEWHALE_HOME!, 'mcp.json')
   await withNativeConfigurationFile({ path: config, content: JSON.stringify({ servers: { image_probe: { command: server.command, args: server.args } } }), runDir: getGlobalState().tmpDir }, async () => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, { agentProvider: AgentProvider.CODEWHALE, ...agentOpenOptions({ model: CODEWHALE_VISION_MODEL_ID }) })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEWHALE_AGENT, { workingDir, model: CODEWHALE_VISION_MODEL_ID })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await applyPermissionPreset(page, 'bypass')
     const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }
@@ -100,7 +100,7 @@ codewhaleTest('draws the actual native MCP image before and after reload', async
 codewhaleTest('draws a native ReadMedia image and preserves its stored bytes after reload', async ({ page, modelScript, leapmuxServer, authenticatedEmptyWorkspace }) => {
   const workingDir = createTestDirectory('codewhale-native-read-media-')
   const imageName = writeToolImage(workingDir, 'codewhale-native-read')
-  await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, { agentProvider: AgentProvider.CODEWHALE, ...agentOpenOptions({ model: CODEWHALE_VISION_MODEL_ID }) })
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEWHALE_AGENT, { workingDir, model: CODEWHALE_VISION_MODEL_ID })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await applyPermissionPreset(page, 'bypass')
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }

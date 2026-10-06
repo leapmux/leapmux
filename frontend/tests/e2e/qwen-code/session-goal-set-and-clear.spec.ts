@@ -1,13 +1,14 @@
 import { expect } from '@playwright/test'
 import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
 import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
-import { openQwenAgent, qwenTest } from '../qwen-fixtures'
+import { openProviderAgent } from '../helpers/workspace'
+import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
 
 qwenTest.describe('Qwen Code settings and goal', () => {
   // The goal card changes the goal through Qwen's goal control. Qwen starts the goal turns.
   // Each turn carries the objective marker and reaches this script. A turn without progress counts toward the automatic pause.
   qwenTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openQwenAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await modelScript.rule({

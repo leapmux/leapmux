@@ -4,8 +4,8 @@ import { qoderTest } from '../qoder-fixtures'
 import { exerciseCompletedManualCompaction } from './compactionScenarios'
 import { nativeContext } from './scenarios'
 
-qoderTest('keeps the completed native compaction status after reload', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('keeps the completed native compaction status after reload', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   await exerciseCompletedManualCompaction(context)
   await expect(compactionNoticeRow(page)).toBeVisible()
   await page.reload()

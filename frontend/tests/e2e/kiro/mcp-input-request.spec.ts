@@ -1,13 +1,15 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import type { AgentServer } from '../helpers/workspace'
 
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { mcpToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, controlBanner, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-import { kiroTest, openKiroAgent } from '../kiro-fixtures'
+import { assistantBubbles, controlBanner, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
+import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
 
 const PROVIDER = AgentProvider.KIRO
 
@@ -87,12 +89,12 @@ kiroTest.describe('Kiro control requests', () => {
  * policy runs the MCP tool without a permission request, so the form is the only
  * request the call raises.
  */
-async function openKiroAgentWithServer(server: Parameters<typeof openKiroAgent>[0], workspaceId: string): Promise<{ workingDir: string }> {
-  return openKiroAgent(server, workspaceId, { policyPreset: 'allow-all' }, (workingDir) => {
+async function openKiroAgentWithServer(server: AgentServer, workspaceId: string): Promise<{ workingDir: string }> {
+  return openProviderAgent(server, workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' }, prepare: (workingDir) => {
     const script = join(workingDir, 'form-server.mjs')
     writeFileSync(script, FORM_SERVER)
     const settings = join(workingDir, '.kiro', 'settings')
     mkdirSync(settings, { recursive: true })
     writeFileSync(join(settings, 'mcp.json'), JSON.stringify({ mcpServers: { probe: { command: process.execPath, args: [script] } } }))
-  })
+  } })
 }

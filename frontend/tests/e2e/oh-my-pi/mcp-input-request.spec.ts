@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { readMcpServerReceipt } from '../helpers/mcpServerReceipt'
@@ -22,10 +22,7 @@ ohMyPiTest('returns the actual native MCP unsupported-method reply without a bro
   const script = writeMcpFormServer(workingDir, 'native-form-server.mjs', { receiptLog })
   const config = join(environment.HOME!, '.omp', 'profiles', environment.OMP_PROFILE!, 'agent', 'mcp.json')
   await withNativeConfigurationFile({ path: config, content: JSON.stringify({ mcpServers: { form_probe: { type: 'stdio', command: process.execPath, args: [script] } } }), runDir: getGlobalState().tmpDir }, async () => {
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: AgentProvider.OH_MY_PI,
-      ...agentOpenOptions(agentSettings(AgentProvider.OH_MY_PI)),
-    })
+    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, agentOpenOptions(AgentProvider.OH_MY_PI))
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await applyPermissionPreset(page, 'bypass')
     await expect.poll(() => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(tool => tool.name === 'ask'))).toBe(true)

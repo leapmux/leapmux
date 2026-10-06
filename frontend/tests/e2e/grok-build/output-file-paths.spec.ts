@@ -1,5 +1,5 @@
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, grokTest, openGrokAgent } from '../grok-fixtures'
+import { expect, GROK_AGENT, grokTest } from '../grok-fixtures'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
@@ -9,11 +9,12 @@ import { proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFileP
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { readGrokNativeOutput } from './outputFilePaths'
 
 grokTest('keeps the native filesystem path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, context, modelScript, leapmuxServer }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const opened = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+  const opened = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const native = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }
   expect((await currentNativeAgent(native)).id).toBe(opened.agentId)

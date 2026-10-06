@@ -4,8 +4,8 @@ import { codebuddyTaskCreateToolCall, codebuddyTaskUpdateToolCall } from '../hel
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code to-do sidebar', () => {
-  codebuddyTest('keeps native task updates after reload and clears the completed list', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('keeps native task updates after reload and clears the completed list', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue(
       { toolCalls: [codebuddyTaskCreateToolCall('create-inspect', 'Inspect the repository', 'Inspect the files.')] },
       { toolCalls: [codebuddyTaskCreateToolCall('create-report', 'Report the result', 'Report the findings.')] },

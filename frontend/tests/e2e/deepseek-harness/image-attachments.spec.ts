@@ -4,8 +4,8 @@ import { expectNativeAttachmentProof } from '../helpers/attachmentModelProbe'
 import { expectAttachmentOutcome, sendWithAttachment } from '../helpers/attachments'
 import { assistantBubbles, expectUserMessage, waitForAgentIdle } from '../helpers/ui'
 
-deepseekHarnessTest('sends the actual image pixels through native image admission and keeps its attachment', async ({ deepseekHarnessWorkspace, page, modelScript }) => {
-  void deepseekHarnessWorkspace
+deepseekHarnessTest('sends the actual image pixels through native image admission and keeps its attachment', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript }) => {
+  void authenticatedDeepseekHarnessWorkspace
   const sourcePath = await expectAttachmentOutcome(page, 'image', { supported: true, fileName: 'native-colors.png' })
   await modelScript.queue({ text: 'The native image attachment reached the model.' })
   await sendWithAttachment(page, modelScript.prompt('Inspect the actual image pixels.'))

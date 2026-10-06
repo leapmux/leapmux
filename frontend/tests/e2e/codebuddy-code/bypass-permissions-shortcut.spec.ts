@@ -5,8 +5,8 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusMenu, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest('offers Bypass but no Smart shortcut and runs a native tool after Bypass', async ({ codebuddyWorkspace, page, modelScript }) => {
-    void codebuddyWorkspace
+  codebuddyTest('offers Bypass but no Smart shortcut and runs a native tool after Bypass', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
+    void authenticatedCodebuddyWorkspace
     await waitForSettingsHydrated(page, 'permissionMode')
     await chooseSettingsOption(page, `permissionMode-${CODEBUDDY_MODE.Default}`)
     await waitForSettingsIdle(page)

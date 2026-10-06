@@ -10,8 +10,8 @@ import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { workflowGroupHeading, workflowRowsShareGroup } from '../helpers/workflowGrouping'
 import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('groups two actual one-shot children under their native workflow run and keeps that group after reload', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
+deepseekHarnessTest('groups two actual one-shot children under their native workflow run and keeps that group after reload', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
   const parent = await currentNativeAgent(context)
   const firstGate = 'native-workflow-first'
   const secondGate = 'native-workflow-second'

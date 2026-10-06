@@ -4,8 +4,8 @@ import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolatio
 import { qoderTest } from '../qoder-fixtures'
 import { nativeContext } from './scenarios'
 
-qoderTest('runs the actual native turn with private configuration and mock credentials', async ({ qoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: qoderWorkspace.workspaceId })
+qoderTest('runs the actual native turn with private configuration and mock credentials', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
   const environment = leapmuxServer.agentEnv
   const home = environment.HOME
   if (!home)

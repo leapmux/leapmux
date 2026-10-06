@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION, PI_PLAN_DIALOG } from '../../../src/generated/contracts/pi-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickString } from '../../../src/lib/jsonPick'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -17,10 +17,7 @@ import { piTest } from '../pi-fixtures'
 
 piTest('plan-approval-banner: tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const provider = AgentProvider.PI
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-fresh-plan-'), {
-    agentProvider: provider,
-    ...agentOpenOptions(agentSettings(provider)),
-  })
+  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-fresh-plan-'), agentOpenOptions(provider))
   const readSession = async () => (await nativeAgentById({ leapmuxServer }, agentId))?.agentSessionId ?? ''
   await expect.poll(readSession).not.toBe('')
   const originalSession = await readSession()
@@ -60,10 +57,7 @@ piTest('plan-approval-banner: tracks a fresh Pi implementation session after pla
 // with the plan-mode contract and without the Normal-mode contract that an exit adds.
 piTest('rejects the native Pi plan review and keeps planning in the same session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const provider = AgentProvider.PI
-  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-plan-stay-'), {
-    agentProvider: provider,
-    ...agentOpenOptions(agentSettings(provider)),
-  })
+  const agentId = await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, createTestDirectory('renderer-pi-plan-stay-'), agentOpenOptions(provider))
   const context = { page, modelScript, provider, leapmuxServer }
   await expect.poll(async () => (await nativeAgentById(context, agentId))?.agentSessionId ?? '').not.toBe('')
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)

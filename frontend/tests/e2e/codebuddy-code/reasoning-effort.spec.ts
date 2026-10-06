@@ -7,8 +7,8 @@ import { chooseSettingsOption, closeComposerMenus, expectSettingsChip, openPlusM
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
-  codebuddyTest('switches the effort and the mode, and keeps them after a reload', async ({ codebuddyWorkspace, page }) => {
-    void codebuddyWorkspace
+  codebuddyTest('switches the effort and the mode, and keeps them after a reload', async ({ authenticatedCodebuddyWorkspace, page }) => {
+    void authenticatedCodebuddyWorkspace
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Bypass Permissions')
     // The account and local model catalog determine the model choices.
@@ -36,8 +36,8 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     await closeComposerMenus(page)
   })
 
-  codebuddyTest('sends a selected effort in the next native request', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    void codebuddyWorkspace
+  codebuddyTest('sends a selected effort in the next native request', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'The first effort probe answered.' })
     await sendMessage(page, modelScript.prompt('Reply before I change effort.'))
     await modelScript.waitForSteps()
@@ -56,7 +56,7 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
       throw new Error('the CodeBuddy model request must state its selected effort')
     expect(next.body.reasoning_effort).toBe('low')
     expect(JSON.stringify(next.body).includes('The first effort probe answered.')).toBe(true)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
     await exerciseRestoredNativeOption(context, {
       groupId: 'effort',
       value: CODEBUDDY_EFFORT_LEVEL.Low,
@@ -72,8 +72,8 @@ codebuddyTest.describe('CodeBuddy Code model switch', () => {
   // screen and in the Worker row, and it must restart nothing. The alternate mock model declares no
   // reasoning, so CodeBuddy sends no effort for it. The native proof is the model, and the kept setting
   // comes from the helper. The native session takes the argument after its first turn, as the test above does.
-  codebuddyTest('keeps the chosen effort after a model switch and a reload', async ({ codebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: codebuddyWorkspace.workspaceId })
+  codebuddyTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodebuddyWorkspace.workspaceId })
     await exerciseModelSwitchKeepsOption(context, {
       prepare: async () => {
         await sendNativeAnswer(context, 'Reply once before the effort changes.', 'The first turn answered.')

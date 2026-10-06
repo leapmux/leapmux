@@ -4,11 +4,12 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
-import { openCommandCodeAgent } from '../command-code-fixtures'
+import { COMMAND_CODE_AGENT } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { closeAgentViaAPI } from '../helpers/worktree'
 
 /** Install one native MCP server before its real provider session starts. */
@@ -27,7 +28,7 @@ export async function withCommandCodeMcp(context: ManagedNativeScenarioContext, 
   let agentID: string | undefined
   await withCleanup(async () => {
     writeFileSync(path, JSON.stringify({ ...config, mcpServers: { ...servers, [options.name]: { command: process.execPath, args: [options.script] } } }), { mode: 0o600 })
-    const agent = await openCommandCodeAgent(context.leapmuxServer, context.workspaceId, { permissionMode: 'bypass' }, options.workingDir)
+    const agent = await openProviderAgent(context.leapmuxServer, context.workspaceId, COMMAND_CODE_AGENT, { optionValues: { permissionMode: 'bypass' }, workingDir: options.workingDir })
     agentID = agent.agentId
     await openWorkspace(context.page, context.workspaceId)
     await run()

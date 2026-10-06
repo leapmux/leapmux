@@ -1,49 +1,38 @@
-import type { Page } from '@playwright/test'
-import type { CliSkipFixture } from './acp-fixture-factory'
+import type { AgentWorkspace, ProviderAgent } from './helpers/workspace'
+import type { CliSkipFixture } from './provider-fixture-factory'
 import { DEEPSEEK_HARNESS_MODE, DEEPSEEK_HARNESS_OPTION, DEEPSEEK_HARNESS_PERMISSION_PRESET } from '../../src/generated/contracts/deepseek-harness-protocol'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './acp-fixture-factory'
-import { test as base } from './fixtures'
+import { test as base, expect } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createTestDirectory } from './helpers/runDirectory'
-import { loginViaToken, openWorkspace } from './helpers/ui'
-import { withAgentWorkspace } from './helpers/workspace'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+import { cliSkipFixture } from './provider-fixture-factory'
 
 export const DEEPSEEK_HARNESS_E2E_SKIP_REASON: string | null = missingBinaryReason('dsh', 'DeepSeek Harness E2E requires the native dsh executable.')
 
-export interface DeepseekHarnessWorkspaceFixture {
-  workspaceId: string
-  workingDir: string
+/** A working directory that is the root of a git repository of its own. */
+export function createDeepseekHarnessWorkingDir(): string {
+  return createGitRepo(createTestDirectory('deepseek-harness-e2e-wd-'), 'repo')
 }
 
-interface DeepseekHarnessServer {
-  hubUrl: string
-  adminToken: string
-  workerId: string
-}
+/** How a DeepSeek Harness agent opens. */
+export const DEEPSEEK_HARNESS_AGENT: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: createDeepseekHarnessWorkingDir }
 
-function deepseekHarnessWorkspace(permissions: string) {
-  return async ({ page, leapmuxServer }: { page: Page, leapmuxServer: DeepseekHarnessServer }, use: (fixture: DeepseekHarnessWorkspaceFixture) => Promise<void>) => {
-    const workingDir = createGitRepo(createTestDirectory('deepseek-harness-e2e-wd-'), 'repo')
-    await withAgentWorkspace(leapmuxServer, {
-      provider: AgentProvider.DEEPSEEK_HARNESS,
-      prefix: 'deepseek-harness-e2e',
-      workingDir: () => workingDir,
-      openOptions: { optionValues: { permissionMode: DEEPSEEK_HARNESS_MODE.Act, [DEEPSEEK_HARNESS_OPTION.Permissions]: permissions } },
-    }, async (workspace) => {
-      await loginViaToken(page, leapmuxServer.adminToken)
-      await openWorkspace(page, workspace.workspaceId)
-      await use({ ...workspace, workingDir })
-    })
-  }
+/** The option values of an Act agent with one permission preset. */
+function actWith(permissions: string) {
+  return { optionValues: { permissionMode: DEEPSEEK_HARNESS_MODE.Act, [DEEPSEEK_HARNESS_OPTION.Permissions]: permissions } }
 }
 
 export const deepseekHarnessTest = base.extend<CliSkipFixture & {
-  deepseekHarnessWorkspace: DeepseekHarnessWorkspaceFixture
-  defaultDeepseekHarnessWorkspace: DeepseekHarnessWorkspaceFixture
+  /** An Act agent with full access, which runs every tool call at once. */
+  authenticatedDeepseekHarnessWorkspace: AgentWorkspace
+  /** An Act agent with workspace write access, which asks before a command escalates out of its sandbox. */
+  askingDeepseekHarnessWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(DEEPSEEK_HARNESS_E2E_SKIP_REASON),
-  deepseekHarnessWorkspace: deepseekHarnessWorkspace(DEEPSEEK_HARNESS_PERMISSION_PRESET.DangerFullAccess),
-  defaultDeepseekHarnessWorkspace: deepseekHarnessWorkspace(DEEPSEEK_HARNESS_PERMISSION_PRESET.WorkspaceWrite),
+  authenticatedDeepseekHarnessWorkspace: authenticatedAgentWorkspace({ ...DEEPSEEK_HARNESS_AGENT, openOptions: actWith(DEEPSEEK_HARNESS_PERMISSION_PRESET.DangerFullAccess) }),
+  askingDeepseekHarnessWorkspace: authenticatedAgentWorkspace({ ...DEEPSEEK_HARNESS_AGENT, prefix: 'deepseek-harness-e2e-ask', openOptions: actWith(DEEPSEEK_HARNESS_PERMISSION_PRESET.WorkspaceWrite) }),
 })
+
+export { expect }

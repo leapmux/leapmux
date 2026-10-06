@@ -2,13 +2,12 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
-import { createGrokWorkingDir, grokTest, openGrokAgent } from '../grok-fixtures'
-import { openAgentViaAPI } from '../helpers/api'
+import { createGrokWorkingDir, GROK_AGENT, grokTest } from '../grok-fixtures'
 import { writeMcpImageServer } from '../helpers/mcpImageServer'
 import { mcpToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expectMcpToolImage, expectToolRowWithoutImage, writeToolImage } from '../helpers/toolImages'
 import { expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 
 const GROK = AgentProvider.GROK_BUILD
 
@@ -17,7 +16,7 @@ grokTest.describe('Grok Build images in tool results', () => {
   // Grok Build 1.0.41 returns "Cannot read binary file" for a valid PNG. Its native Read description promises image reads.
   // This case verifies that native Read limitation. The following MCP case verifies an actual image result and its rendering.
   grokTest('a Read of a PNG runs and draws no picture in the tool row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openGrokAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, { approvalMode: 'always-approve' })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
     const name = writeToolImage(workingDir, 'grok-21')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
@@ -38,12 +37,7 @@ grokTest.describe('Grok Build images in tool results', () => {
     const imageName = writeToolImage(workingDir, 'grok-mcp')
     const server = writeMcpImageServer(workingDir, imageName)
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({ mcpServers: { image_probe: { command: server.command, args: server.args } } }))
-    const settings = agentOpenOptions(agentSettings(GROK))
-    await openAgentViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, authenticatedEmptyWorkspace.workspaceId, workingDir, {
-      agentProvider: GROK,
-      ...settings,
-      optionValues: { ...settings.optionValues, approvalMode: 'always-approve' },
-    })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     const banner = page.getByTestId('control-banner').filter({ visible: true })

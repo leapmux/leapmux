@@ -1,12 +1,13 @@
-import { expect as diracExpect, diracTest, openDiracAgent } from '../dirac-fixtures'
+import { DIRAC_AGENT, expect as diracExpect, diracTest } from '../dirac-fixtures'
 import { exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsOptionChosen, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('Dirac model and steering', () => {
   diracTest('sends a selected model on the next request and keeps it after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openDiracAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId)
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await chooseSettingsOption(page, 'model-gpt-6-astra')
