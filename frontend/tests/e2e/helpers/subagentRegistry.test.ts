@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow } from './subagentRegistry'
+import { HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
 
 const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'utf-8')
 
@@ -181,13 +181,58 @@ vi.mock('@playwright/test', async (importOriginal) => {
     }
     return expect(value, message)
   }
+  // A fake poll reads once. A read that throws rejects the assertion with that error, as the last attempt of a real poll does.
   return { ...actual, expect: Object.assign(check, {
-    poll: (read: () => Promise<unknown>) => ({
-      toBe: async (expected: unknown) => expect(await read()).toBe(expected),
-      toMatch: async (expected: RegExp) => expect(await read()).toMatch(expected),
-      not: { toBe: async (expected: unknown) => expect(await read()).not.toBe(expected) },
+    poll: (read: () => Promise<unknown>, options?: { message?: string }) => ({
+      toBe: async (expected: unknown) => expect(await read(), options?.message).toBe(expected),
+      toMatch: async (expected: RegExp) => expect(await read(), options?.message).toMatch(expected),
+      not: { toBe: async (expected: unknown) => expect(await read(), options?.message).not.toBe(expected) },
     }),
   }) }
+})
+
+describe('requireRegistryRow', () => {
+  /** A page whose every locator is one probe row. The probe also stands for the open section header. */
+  function registry(isVisible: () => Promise<boolean>) {
+    const selectors: string[] = []
+    const row: Locator = Object.assign({} as Locator, {
+      first: () => row,
+      isVisible,
+      // `expandSidebarSection` reads the header. An open header needs no click.
+      evaluate: async () => true,
+    })
+    const page = Object.assign({} as Page, {
+      locator: (selector: string) => {
+        selectors.push(selector)
+        return row
+      },
+    })
+    return { page, row, selectors }
+  }
+
+  it('returns the first visible row of the requested kind', async () => {
+    const view = registry(async () => true)
+    expect(await requireRegistryRow(view.page, 'shell')).toBe(view.row)
+    expect(view.selectors).toContain('[data-testid="bg-task-row"]:visible[data-kind="shell"]')
+  })
+
+  it('states the missing subagent row in its failure', async () => {
+    const view = registry(async () => false)
+    await expect(requireRegistryRow(view.page)).rejects.toThrow('the scripted spawn produced no subagent row in the registry')
+  })
+
+  it('states the missing shell row in its failure', async () => {
+    const view = registry(async () => false)
+    await expect(requireRegistryRow(view.page, 'shell')).rejects.toThrow('the scripted command produced no shell row in the registry')
+  })
+
+  it('keeps the error of a failed row read instead of reporting a missing row', async () => {
+    const closed = new Error('Target page, context or browser has been closed')
+    const view = registry(async () => {
+      throw closed
+    })
+    await expect(requireRegistryRow(view.page)).rejects.toBe(closed)
+  })
 })
 
 describe('openChildTabFromRow', () => {

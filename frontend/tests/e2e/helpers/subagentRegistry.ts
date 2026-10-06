@@ -74,55 +74,29 @@ export interface RowFilter {
 }
 
 /**
- * Wait for the requested registry row and return it.
- * The thinking indicator stays visible while background tasks run.
- * A wait for agent idle would therefore block on the child that this helper needs to inspect.
- */
-export async function waitForRegistryRow(page: Page, kind: 'subagent' | 'shell' = 'subagent'): Promise<Locator> {
-  await expect.poll(async () => {
-    await expandBackgroundTasksSection(page)
-    return backgroundTasksSection(page).isVisible()
-  }).toBe(true)
-  const row = page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).first()
-  await expect(row).toBeVisible()
-  return row
-}
-
-/**
- * Return the registry row when it appears, or null when the wait fails.
- * requireRegistryRow converts that null into a clear assertion failure.
- * Every caller scripts the native spawn, so no caller may continue without the row.
- */
-async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shell' = 'subagent'): Promise<Locator | null> {
-  const row = page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).first()
-  try {
-    await expect.poll(async () => {
-      await expandBackgroundTasksSection(page)
-      return row.isVisible()
-    }).toBe(true)
-    return row
-  }
-  catch {
-    return null
-  }
-}
-
-/**
- * Wait for a registry row and fail the spec if none appears.
- * Every caller scripts the spawn against the mock.
- * A missing row therefore indicates a product or script defect.
- * A skip would conceal that defect.
- * The asserted non-null return lets the caller use the row directly.
+ * Wait for the first visible registry row of `kind` and return it. The spec fails when no row appears.
+ *
+ * Every caller scripts the spawn or the command against the mock, so a missing row is a product or script defect,
+ * and a skip would hide it. The poll expands the section on each attempt, because a section can collapse while it
+ * hydrates. A failed read, such as a closed page, keeps its own error in the poll's report.
+ *
+ * Do not wait for the agent to become idle before this call: the thinking indicator stays visible while a background
+ * task runs, so that wait blocks on the task that the caller wants to inspect.
  */
 export async function requireRegistryRow(
   page: Page,
   kind: 'subagent' | 'shell' = 'subagent',
 ): Promise<Locator> {
-  const row = await tryWaitForRegistryRow(page, kind)
-  expect(row, kind === 'shell'
-    ? 'the scripted command produced no shell row in the registry'
-    : 'the scripted spawn produced no subagent row in the registry').not.toBeNull()
-  return row!
+  const row = page.locator(`[data-testid="bg-task-row"]:visible[data-kind="${kind}"]`).first()
+  await expect.poll(async () => {
+    await expandBackgroundTasksSection(page)
+    return row.isVisible()
+  }, {
+    message: kind === 'shell'
+      ? 'the scripted command produced no shell row in the registry'
+      : 'the scripted spawn produced no subagent row in the registry',
+  }).toBe(true)
+  return row
 }
 
 /**

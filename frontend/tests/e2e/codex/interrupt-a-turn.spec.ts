@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { expectNoRegistryRows, waitForRegistryRow } from '../helpers/subagentRegistry'
+import { expectNoRegistryRows, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 const INTERRUPTION_MARKER = 'Text truncated by interruption.'
@@ -67,7 +67,7 @@ codexTest.describe('codex interrupt', () => {
     await sendMessage(page, modelScript.prompt('Spawn one child to inspect the package, then wait for it.'))
     await modelScript.waitForSteps(spawn + 1)
 
-    const row = await waitForRegistryRow(page)
+    const row = await requireRegistryRow(page)
     await expect(row).toHaveAttribute('data-status', 'running')
 
     const interruptBtn = page.locator('[data-testid="interrupt-button"]:visible')

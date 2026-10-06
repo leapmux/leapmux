@@ -15,7 +15,7 @@ import { nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexWaitAgentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { expectNoRegistryRows, openChildTabFromRow, waitForRegistryRow } from '../helpers/subagentRegistry'
+import { expectNoRegistryRows, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage } from '../helpers/ui'
 
 codexTest.describe('codex subagent lifecycle', () => {
@@ -68,7 +68,7 @@ codexTest.describe('codex subagent lifecycle', () => {
     const parentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
     const parentTabId = await parentTab.getAttribute('data-tab-id') ?? ''
     expect(parentTabId).not.toBe('')
-    const row = await waitForRegistryRow(page)
+    const row = await requireRegistryRow(page)
     await expect(row).toContainText(taskName)
 
     // 4. Wait for the row to link to a child transcript, then click -> child
