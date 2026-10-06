@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
-import { activeWorkspaceId, loginViaToken, openWorkspace, reopenWorkspace, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
+import { activeWorkspaceId, loginViaToken, openAppAs, openWorkspace, reopenWorkspace, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
@@ -16,14 +16,12 @@ test.describe('Workspace persistence across reloads', () => {
     const { workspaceId: ws1 } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Persist Alpha')
     const { workspaceId: ws2 } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Persist Beta')
 
-    await loginViaToken(page, leapmuxServer.adminToken)
-
     // Find out which workspace a cold start picks, then switch to the OTHER
     // one. Naming a workspace up front would make this vacuous: sidebar order
     // is section position, not creation order, so hard-coding the target can
     // silently pick the very workspace the no-saved-id fallback lands on --
     // and then a build that ignored the saved id entirely would still pass.
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     // Wait for THIS test's two rows, not for a global count. `leapmuxServer`
     // is worker-scoped: one dev instance serves every spec file the Playwright
     // worker runs, so a global `toHaveCount(2)` would also assert that no other

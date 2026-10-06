@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI } from './helpers/api'
-import { expectAnyVisible, loginViaToken, openWorkspace, sidebarSectionHeader, workspaceRow } from './helpers/ui'
+import { expectAnyVisible, loginViaToken, openAppAs, openWorkspace, sidebarSectionHeader, workspaceRow } from './helpers/ui'
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {
@@ -31,18 +31,15 @@ test.describe('Workspace Lifecycle', () => {
   })
 
   test('should show workspace list or empty state on app home', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
+    // Load the app home. The test creates no workspace.
+    await openAppAs(page, leapmuxServer.adminToken)
 
-    // Navigate to the app home without creating any workspaces in this test.
-    // Other tests may have created workspaces, so we check for either state.
-    await page.goto('/')
-
-    // Wait for the sidebar to load - it should show either an empty prompt
-    // or a section header (In progress / Archived) from the workspace list.
-    // Use data-testid selectors to avoid strict mode violations from
-    // text matches in context menus or other UI elements.
+    // The sidebar shows either an empty prompt or a section header (In
+    // progress / Archived) of the workspace list. Test IDs, not text, because a
+    // text match can also find a context menu item. The sidebar mounts twice
+    // (desktop and mobile), so each locator takes the visible copy.
     await expectAnyVisible(
-      page.locator('[data-testid="create-workspace-button"]'),
+      page.locator('[data-testid="create-workspace-button"]:visible').first(),
       sidebarSectionHeader(page, 'workspaces_in_progress'),
       sidebarSectionHeader(page, 'workspaces_archived'),
     )

@@ -1,19 +1,17 @@
 import { expect, test } from './fixtures'
 import { dangerToasts } from './helpers/toast'
-import { deleteWorkspaceViaUI, loginViaToken, openNewWorkspaceDialog, workspaceRow } from './helpers/ui'
+import { deleteWorkspaceViaUI, openAppAs, openNewWorkspaceDialog, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
 
 test.describe('workspace navigation', () => {
   test('activates the first workspace on a fresh app load', async ({ page, emptyWorkspace, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
     // Do not preselect the workspace. A stored selection would hide a broken initial selection.
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await expect(workspaceRow(page, emptyWorkspace.workspaceId)).toHaveAttribute('data-active', 'true')
   })
 
   test('opens the workspace dialog from the section header', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await openNewWorkspaceDialog(page)
     await page.keyboard.press('Escape')
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeHidden()

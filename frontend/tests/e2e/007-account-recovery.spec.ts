@@ -14,7 +14,7 @@ import {
 import { solveCaptchaViaUI } from './helpers/captcha'
 import { extractAccountRecoveryToken, withCaptureSmtp } from './helpers/mail'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, loginViaUI, logoutViaUI } from './helpers/ui'
+import { loginViaUI, logoutViaUI, openAppAs } from './helpers/ui'
 import {
   addPasskeyViaAPIInBrowser,
   enableVirtualAuthenticator,
@@ -33,8 +33,7 @@ test.describe('Account recovery', () => {
       const verifyToken = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
       await verifyEmailViaAPI(leapmuxServer.hubUrl, passkeyCookie, verifyToken)
       const verifiedCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
-      await loginViaToken(page, verifiedCookie)
-      await page.goto('/')
+      await openAppAs(page, verifiedCookie)
       await expect(page).toHaveURL(/\/$/)
       expect((await listPasskeysViaAPI(leapmuxServer.hubUrl, verifiedCookie)).length).toBeGreaterThan(0)
 

@@ -4,11 +4,11 @@ import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, fresh
 import {
   answerElevationPrompt,
   elevationPrompt,
-  loginViaToken,
   loginViaUI,
   loginWithPasskeyViaUI,
   logoutViaUI,
   openAccountSettings,
+  openAppAs,
   signUpWithPasskeyViaUI,
 } from './helpers/ui'
 import {
@@ -41,14 +41,12 @@ test.describe('Passkey authentication', () => {
     const username = `passkey-api-${Date.now()}`
     const email = `${username}@test.local`
     const cookie = await signUpWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username, email, 'Passkey API')
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     await logoutViaUI(page)
     const loginCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
-    await loginViaToken(page, loginCookie)
-    await page.goto('/')
+    await openAppAs(page, loginCookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
   })
 
@@ -65,8 +63,7 @@ test.describe('Passkey authentication', () => {
       `${username}@test.local`,
     )
 
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
@@ -90,8 +87,7 @@ test.describe('Passkey authentication', () => {
       `${username}@test.local`,
     )
 
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
 
     await logoutViaUI(page)
@@ -111,8 +107,7 @@ test.describe('Passkey authentication', () => {
       'Remove Passkey',
       `${username}@test.local`,
     )
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
 
     const before = await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)
@@ -136,8 +131,7 @@ test.describe('Passkey authentication', () => {
       'Unelevated',
       `${username}@test.local`,
     )
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
     const before = await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)
     expect(before.length).toBeGreaterThan(0)
@@ -183,8 +177,7 @@ test.describe('Passkey authentication', () => {
     // `freshAdminSessionViaAPI`. The shared cookie is elevated, so the prompt
     // under test would never show on it.
     const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     const prefs = await openAccountSettings(page)

@@ -11,9 +11,10 @@ import {
   waitForEmailEnabled,
 } from './helpers/api'
 import { withCaptureSmtp } from './helpers/mail'
+import { openPreferencesAs } from './helpers/preferences'
 import { retryUntilPass } from './helpers/retryUntilPass'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI, submitLoginForm } from './helpers/ui'
+import { readSessionCookie, signUpViaUI, submitLoginForm } from './helpers/ui'
 
 test.describe('Email verification', () => {
   test('signup with SMTP configured routes to verify-email and accepts the code', async ({ page, leapmuxServer }) => {
@@ -128,9 +129,7 @@ test.describe('the account panel on an unverified address', () => {
     )
 
     await withCaptureSmtp(leapmuxServer, async () => {
-      await loginViaToken(page, cookie)
-      await page.goto('/')
-      const prefs = await openAccountSettings(page)
+      const prefs = await openPreferencesAs(page, cookie, 'account')
 
       await expect(prefs.getByRole('link', { name: 'Enter the code' })).toBeVisible()
       await expect(prefs.getByRole('button', { name: 'Resend code' })).toBeVisible()
