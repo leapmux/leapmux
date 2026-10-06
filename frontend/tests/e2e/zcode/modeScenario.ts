@@ -3,11 +3,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
-import { currentNativeAgent, nativeOptionValue, nativeTextStep } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeOptionValue } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { applyPermissionPreset, chooseSettingsOption, expectNoControlBanner, expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 /** Prove the selected native ZCode mode through its actual mutation and permission path. */
 export async function exerciseZCodeMode(context: ManagedNativeScenarioContext, mode: 'plan' | 'yolo' | 'build'): Promise<void> {
@@ -34,14 +35,14 @@ export async function exerciseZCodeMode(context: ManagedNativeScenarioContext, m
     await expectNoControlBanner(context.page)
     return
   }
-  // Plan and Yolo modes raise no permission request, so the turn must end with no click. A banner would hold the
-  // turn, and the step wait would fail.
-  const start = await context.modelScript.queue({ toolCalls: [toolCall] }, nativeTextStep(context, `The ${mode} check ended.`))
-  await sendMessage(context.page, context.modelScript.prompt(`Try the scripted write in ${mode} mode.`))
-  await context.modelScript.waitForSteps(start + 2)
-  await waitForAgentIdle(context.page)
-  await expectNoControlBanner(context.page)
-  const result = nativeToolResult(await context.modelScript.requestAt(start + 1), callId)
+  // Plan and Yolo modes raise no permission request, so the turn must end with no click.
+  const { resultRequest } = await runNativeToolTurn(context, {
+    toolCalls: [toolCall],
+    prompt: `Try the scripted write in ${mode} mode.`,
+    answer: `The ${mode} check ended.`,
+    permissions: 'none',
+  })
+  const result = nativeToolResult(resultRequest, callId)
   if (mode === 'yolo') {
     expect(readFileSync(path, 'utf8')).toBe(`${mode} mutation\n`)
     expect(result).toContain(basename(path))
