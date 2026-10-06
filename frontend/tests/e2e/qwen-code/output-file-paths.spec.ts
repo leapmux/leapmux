@@ -1,4 +1,5 @@
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { QwenOutputPathReceipt } from './outputFilePaths'
 import { createHash } from 'node:crypto'
@@ -15,13 +16,12 @@ import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
-import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFilePaths'
+import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { openWorkspace, readAttachedWithArgument, sendMessage, toolCallRow } from '../helpers/ui'
+import { openWorkspace, sendMessage } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, qwenTest } from '../qwen-fixtures'
 import { qwenModelOutputPath, qwenOutputPathCommand, qwenOutputPathReceipt } from './outputFilePaths'
@@ -82,28 +82,26 @@ async function provePathsAndPreview(
   expect(expected.receipt.preview.includes(generated.omittedMarker)).toBe(false)
   // The native preview keeps the tail. The computed last line occurs only in returned output.
   expect(expected.receipt.preview.includes(generated.lastMarker)).toBe(true)
-  for (const reloaded of [false, true]) {
-    if (reloaded) {
-      for (const path of expected.receipt.paths)
-        unlinkSync(path)
-      await context.page.reload()
-      await openWorkspace(context.page, context.workspaceId)
-    }
-    const snapshot = await readNativeMessageSnapshot(context, ownerId)
+  // The shared proof reloads between its two passes and gives no step there, so the files go away before both
+  // passes. Each pass, live and after the reload, then proves that the row draws its paths and its preview from the
+  // Worker record alone.
+  for (const path of expected.receipt.paths)
+    unlinkSync(path)
+  const readRecord = (snapshot: NativeMessageSnapshot) => {
     const current = resultReceipt(snapshot.messages, expected.receipt.callId, sessionId)
-    expect(current.receipt).toEqual(expected.receipt)
-    expect(messageProof(current.message)).toEqual(messageProof(expected.message))
-    const result = toolCallRow(context.page, expected.receipt.callId)
-    await expect(result).toHaveCount(1)
-    await expect(result).toHaveAttribute('data-tool-status', expected.receipt.status)
-    const paths = result.getByTestId('tool-output-file-paths')
-    await expect(paths).toBeVisible()
-    expect(await paths.textContent()).toBe(expected.receipt.paths.map(path => `Output file:${path}`).join(''))
-    await expect(paths.getByRole('link')).toHaveCount(0)
-    await expandNativeResultView(result)
-    expect(await readAttachedWithArgument(result, 'native output property order', nativeOutputPathsPrecedePreview, [generated.lastMarker])).toBe(true)
-    await copyNativeToolOutputPreview(context.page, result, expected.receipt.preview)
+    return { receipt: current.receipt, message: messageProof(current.message) }
   }
+  await proveNativeToolOutputFilePaths({
+    context,
+    callId: expected.receipt.callId,
+    previewText: expected.receipt.preview,
+    previewMarkers: [generated.lastMarker],
+    absentMarkers: [generated.omittedMarker],
+    paths: expected.receipt.paths,
+    status: expected.receipt.status,
+    prepareView: expandNativeResultView,
+    workerProof: () => expectUnchangedNativeRecord(context, { id: ownerId, agentSessionId: sessionId }, readRecord, { receipt: expected.receipt, message: messageProof(expected.message) }),
+  })
 }
 
 for (const exitCode of [0, 7]) {
