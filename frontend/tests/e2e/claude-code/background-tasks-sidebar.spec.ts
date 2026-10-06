@@ -7,7 +7,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { backgroundBashToolCall } from '../helpers/providerToolCalls'
 import { backgroundTasksSection, expectNoRegistryRows, HELD_CHILD_TASK, openHeldChildTab, requireRegistryRow } from '../helpers/subagentRegistry'
 import { expectClipsLongText, expectClipsToOneLine, sendMessage, tabById } from '../helpers/ui'
-import { closeAgentViaAPI } from '../helpers/worktree'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { registerClaudeChildReportRules } from './childReportRule'
 
 /** Test native task rows, title clipping, and registry hydration. */

@@ -2,7 +2,7 @@ import { TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb
 import { expect, test } from './fixtures'
 import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
-import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
+import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
 
 /** The notice that the Worker writes after a shell exits with code 0, through its closing bracket. */
 const EXITED_NOTICE = '[Terminal process exited (0) - Press Enter to restart]'

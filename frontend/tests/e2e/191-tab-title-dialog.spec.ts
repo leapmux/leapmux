@@ -1,17 +1,8 @@
 import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
-import { branchGroupRow, clickBranchMenuItem, loginViaToken, openWorkspace } from './helpers/ui'
-import {
-  createGitRepo,
-  createWorkspaceWithWorktreeViaAPI,
-  listAgentsViaAPI,
-  listTerminalsViaAPI,
-  openNewAgentDialog,
-  openNewTerminalDialog,
-  setWorkingDir,
-  waitForWorker,
-  waitForWorkerTabTitle,
-} from './helpers/worktree'
+import { branchGroupRow, clickBranchMenuItem, loginViaToken, openNewAgentDialog, openNewTerminalDialog, openWorkspace, setWorkingDir, waitForWorker } from './helpers/ui'
+import { listAgentsViaAPI, listTerminalsViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
+import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 // The title checks below read the Worker-backed RPC, never the sidebar. The local
 // tab list is optimistic CRDT state, so a sidebar check would pass on what this

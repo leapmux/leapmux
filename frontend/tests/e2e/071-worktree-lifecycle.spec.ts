@@ -9,28 +9,10 @@ import {
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { getTestChannel } from './helpers/api'
-import { agentTabs, loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
+import { agentTabs, chooseGitMode, fillWorkspaceTitle, loginViaToken, openNewWorkspaceDialogAt, openWorkspace, submitNewWorkspaceDialog, waitForWorkspaceReady } from './helpers/ui'
+import { closeAgentViaAPI, closeTerminalViaAPI, inspectLastTabCloseViaAPI, pushBranchViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
-import {
-  addWorktree,
-  branchExists,
-  chooseGitMode,
-  closeAgentViaAPI,
-  closeTerminalViaAPI,
-  commitFile,
-  createGitRepo,
-  createGitRepoWithRemote,
-  createWorkspaceWithWorktreeViaAPI,
-  fillWorkspaceTitle,
-  inspectLastTabCloseViaAPI,
-  managedWorktreePath,
-  openNewWorkspaceDialogAt,
-  pushBranchViaAPI,
-  submitNewWorkspaceDialog,
-  waitForPathDeleted,
-  waitForPathExists,
-  waitForSoleAgentViaAPI,
-} from './helpers/worktree'
+import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, createWorkspaceWithWorktreeViaAPI, managedWorktreePath, waitForPathDeleted, waitForPathExists } from './helpers/worktree'
 
 test.describe('Worktree Lifecycle', () => {
   test('create workspace with worktree via UI', async ({

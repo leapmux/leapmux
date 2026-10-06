@@ -10,8 +10,8 @@ import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
-import { closeAgentViaAPI } from '../helpers/worktree'
 
 /** Reload the actual MCP settings in a new native agent and restore their exact bytes. */
 export async function withGeminiMcp(context: ManagedNativeScenarioContext, server: McpProbeServer, use: () => Promise<void>): Promise<void> {

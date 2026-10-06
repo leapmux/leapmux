@@ -2,8 +2,8 @@ import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { expect, test } from './fixtures'
 import { retryUntilPass } from './helpers/retryUntilPass'
-import { menuOptionTexts } from './helpers/ui'
-import { chooseGitMode, createGitRepo, openNewWorkspaceDialogAt, setWorkingDir } from './helpers/worktree'
+import { chooseGitMode, menuOptionTexts, openNewWorkspaceDialogAt, setWorkingDir } from './helpers/ui'
+import { createGitRepo } from './helpers/worktree'
 
 // NewWorkspaceDialog and GitOptions unit tests cover validation and mode selection.
 // These cases retain the real directory picker, repository discovery, and refresh path.

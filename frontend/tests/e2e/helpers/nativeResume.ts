@@ -9,8 +9,7 @@ import { nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMe
 import { nativeAgentById, selectedAgentTab } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
-import { assistantBubbles, openMenu, userBubbles } from './ui'
-import { openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
+import { assistantBubbles, openMenu, openNewAgentDialog, setWorkingDir, userBubbles, waitForWorker } from './ui'
 
 const RESUME_MARKER = /^[a-f0-9]{32}$/
 

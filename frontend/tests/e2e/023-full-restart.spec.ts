@@ -1,7 +1,7 @@
 import type { AgentServer } from './helpers/workspace'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'
-import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
+import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
 import { expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 /** Wait for the Worker to store the title before its process stops. */

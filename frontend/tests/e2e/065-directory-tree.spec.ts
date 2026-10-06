@@ -4,8 +4,8 @@ import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
 import { createTestDirectory } from './helpers/runDirectory'
 import { agentTabs, clickTreeContextItem, openTreeContextMenu, terminalTabs, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
+import { waitForAgentStartupViaAPI } from './helpers/workerTabs'
 import { showWorkspaceWithAgents } from './helpers/workspace'
-import { waitForAgentStartupViaAPI } from './helpers/worktree'
 
 const ABSOLUTE_PATH_RE = /^\//
 

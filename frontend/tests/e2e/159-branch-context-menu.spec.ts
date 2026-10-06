@@ -17,15 +17,9 @@ import {
   workspaceChildren,
   workspaceRow,
 } from './helpers/ui'
+import { listAgentsViaAPI, waitForAgentStartupViaAPI } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
-import {
-  branchExists,
-  createGitRepo,
-  createWorkspaceWithWorktreeViaAPI,
-  expectRepoBranch,
-  listAgentsViaAPI,
-  waitForAgentStartupViaAPI,
-} from './helpers/worktree'
+import { branchExists, createGitRepo, createWorkspaceWithWorktreeViaAPI, expectRepoBranch } from './helpers/worktree'
 
 /**
  * ConfirmButton arms on the first click and fires on the second.

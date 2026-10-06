@@ -25,7 +25,7 @@ import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { assistantBubbles, composerEditor, controlButton, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
-import { closeAgentViaAPI, inspectLastTabCloseViaAPI } from './worktree'
+import { closeAgentViaAPI, inspectLastTabCloseViaAPI } from './workerTabs'
 
 interface LifecyclePreparation {
   prepare?: () => Promise<void>

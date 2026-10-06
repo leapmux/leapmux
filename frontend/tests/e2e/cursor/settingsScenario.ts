@@ -6,7 +6,7 @@ import { getTestChannel } from '../helpers/api'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseNativeOption, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { waitForAgentStartupViaAPI } from '../helpers/worktree'
+import { waitForAgentStartupViaAPI } from '../helpers/workerTabs'
 
 /** Read selected settings only from the actual decoded native Run frame. */
 export function expectCursorNativeSettings(request: MockModelRequestRecord, options: { model?: boolean, plan?: boolean, effort?: 'low' | 'xhigh' }): void {

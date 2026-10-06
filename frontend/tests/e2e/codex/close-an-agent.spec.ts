@@ -6,7 +6,7 @@ import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, expectAgentTabCount, tabById, waitForAgentIdle } from '../helpers/ui'
-import { inspectLastTabCloseViaAPI } from '../helpers/worktree'
+import { inspectLastTabCloseViaAPI } from '../helpers/workerTabs'
 
 codexTest.describe('codex agent lifecycle', () => {
   codexTest('can close Codex agent tab', async ({ native, page, leapmuxServer }) => {

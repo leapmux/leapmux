@@ -56,8 +56,8 @@ vi.mock('./runDirectory', async importOriginal => ({
   ...await importOriginal<typeof import('./runDirectory')>(),
   createTestDirectory: resume.directory,
 }))
-vi.mock('./worktree', async importOriginal => ({
-  ...await importOriginal<typeof import('./worktree')>(),
+vi.mock('./workerTabs', async importOriginal => ({
+  ...await importOriginal<typeof import('./workerTabs')>(),
   closeAgentViaAPI: resume.close,
 }))
 

@@ -4,7 +4,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectNoControlBanner, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectNoPlanReview } from '../helpers/unsupportedPlanMode'
-import { closeAgentViaAPI } from '../helpers/worktree'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { nativeContext } from './scenarios'
 
 diracTest('publishes a native deferred plan without a dedicated approval banner', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {

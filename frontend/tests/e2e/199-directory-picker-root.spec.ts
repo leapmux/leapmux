@@ -1,6 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAppAs } from './helpers/ui'
-import { openNewWorkspaceDialog } from './helpers/worktree'
+import { openAppAs, openNewWorkspaceDialog } from './helpers/ui'
 
 /**
  * The directory picker is rooted at the FILESYSTEM ROOT, not the home

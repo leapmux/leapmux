@@ -5,29 +5,10 @@ import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, menuOptionTexts, openWorkspace, pickMenuOption, waitForActiveTabContext } from './helpers/ui'
+import { chooseGitMode, fillWorkspaceTitle, loginViaToken, menuOptionTexts, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, pickMenuOption, submitNewWorkspaceDialog, waitForActiveTabContext } from './helpers/ui'
+import { closeAgentViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
-import {
-  addWorktree,
-  branchExists,
-  chooseGitMode,
-  closeAgentViaAPI,
-  commitFile,
-  createGitRepo,
-  createWorkspaceWithWorktreeViaAPI,
-  expectRepoBranch,
-  fillWorkspaceTitle,
-  inspectLastTabCloseViaAPI,
-  managedWorktreePath,
-  openNewAgentDialog,
-  openNewTerminalDialog,
-  openNewWorkspaceDialogAt,
-  submitNewWorkspaceDialog,
-  waitForAgentStartupViaAPI,
-  waitForPathDeleted,
-  waitForPathExists,
-  waitForSoleAgentViaAPI,
-} from './helpers/worktree'
+import { addWorktree, branchExists, commitFile, createGitRepo, createWorkspaceWithWorktreeViaAPI, expectRepoBranch, managedWorktreePath, waitForPathDeleted, waitForPathExists } from './helpers/worktree'
 
 /** The commit that HEAD of `dir` points at. */
 function headCommit(dir: string): string {

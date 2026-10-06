@@ -44,13 +44,6 @@ const dialogState = vi.hoisted(() => ({
   clickChooses: undefined as string | undefined,
 }))
 
-vi.mock('./worktree', async importOriginal => ({
-  ...await importOriginal<typeof import('./worktree')>(),
-  openNewAgentDialog: async () => { dialogState.events.push('dialog') },
-  waitForWorker: async () => { dialogState.events.push('worker') },
-  setWorkingDir: async (_page: Page, path: string) => { dialogState.events.push(`working-dir:${path}`) },
-}))
-
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
   nativeAgentById: calls.agent,
@@ -76,6 +69,9 @@ vi.mock('./ui', async importOriginal => ({
   assistantBubbles: () => bubbles(() => calls.assistant),
   userBubbles: () => bubbles(() => calls.user),
   openMenu: async (_scope: unknown, base: string) => { dialogState.events.push(`menu:${base}`) },
+  openNewAgentDialog: async () => { dialogState.events.push('dialog') },
+  waitForWorker: async () => { dialogState.events.push('worker') },
+  setWorkingDir: async (_page: Page, path: string) => { dialogState.events.push(`working-dir:${path}`) },
 }))
 
 /** A control of the dialog that records its click. The Create button closes the dialog. */

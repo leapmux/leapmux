@@ -13,7 +13,8 @@ import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativ
 import { nativeAgentById, nativeModelConversationTurns, nativeTextStep } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
-import { closeAgentViaAPI, createGitRepo } from './worktree'
+import { closeAgentViaAPI } from './workerTabs'
+import { createGitRepo } from './worktree'
 
 /** The fixtures one picker resume spec already holds: the shared page, the scripted model and the running hub. */
 export interface ResumePickerFixtures {

@@ -7,8 +7,9 @@ import { expect, test } from './fixtures'
 import { retryUntilPass } from './helpers/retryUntilPass'
 import { clearRecordedToasts, getRecordedToasts } from './helpers/toast'
 import { agentTabs, expectAgentTabCount, loginViaToken, openWorkspace, treeRow } from './helpers/ui'
+import { inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/workerTabs'
 import { showWorkspaceWithAgents } from './helpers/workspace'
-import { commitFile, createGitRepo, createWorkspaceWithWorktreeViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
+import { commitFile, createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
  * Wait until the Worker finished the close of the file tab, and read the toasts that the close raised.

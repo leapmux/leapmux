@@ -11,7 +11,7 @@ import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { inspectLastTabCloseViaAPI } from '../helpers/worktree'
+import { inspectLastTabCloseViaAPI } from '../helpers/workerTabs'
 import { cleanupDeepseekHarnessGoal } from './goalCleanup'
 
 type GoalCleanupContext = Pick<ManagedNativeScenarioContext, 'leapmuxServer'> & {

@@ -10,8 +10,8 @@ import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
-import { closeAgentViaAPI } from '../helpers/worktree'
 
 /**
  * Run `run` in a real Command Code session that loads one native MCP server:

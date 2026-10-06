@@ -6,8 +6,8 @@ import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState } from '../helpers/server'
 import { expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { PLAN_REVIEW_BUTTON_TEST_IDS } from '../helpers/unsupportedPlanMode'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
-import { closeAgentViaAPI } from '../helpers/worktree'
 import { withDiracPlanReadiness } from './planReadiness'
 
 diracTest.describe('Dirac plan mode', () => {

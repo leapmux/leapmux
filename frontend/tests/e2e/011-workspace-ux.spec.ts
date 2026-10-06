@@ -1,8 +1,7 @@
 import { expect, test } from './fixtures'
 import { dangerToasts } from './helpers/toast'
-import { deleteWorkspaceViaUI, loginViaToken, workspaceRow } from './helpers/ui'
+import { deleteWorkspaceViaUI, loginViaToken, openNewWorkspaceDialog, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
-import { openNewWorkspaceDialog } from './helpers/worktree'
 
 test.describe('workspace navigation', () => {
   test('activates the first workspace on a fresh app load', async ({ page, emptyWorkspace, leapmuxServer }) => {

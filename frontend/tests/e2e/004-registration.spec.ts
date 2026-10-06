@@ -1,6 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAppAs } from './helpers/ui'
-import { openNewWorkspaceDialog } from './helpers/worktree'
+import { openAppAs, openNewWorkspaceDialog } from './helpers/ui'
 
 test.describe('Worker Registration', () => {
   // In dev mode, the worker is auto-registered with name "Local".

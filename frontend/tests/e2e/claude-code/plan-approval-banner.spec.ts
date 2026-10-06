@@ -3,7 +3,7 @@ import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
-import { listAgentsViaAPI } from '../helpers/worktree'
+import { listAgentsViaAPI } from '../helpers/workerTabs'
 
 claudeTest.describe('Control Request Draft Persistence', () => {
   claudeTest('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {

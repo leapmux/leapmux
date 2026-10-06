@@ -10,7 +10,8 @@ import { nativeAgentById, nativeModelContextText } from '../helpers/nativeScenar
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
-import { closeAgentViaAPI, createGitRepo } from '../helpers/worktree'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
+import { createGitRepo } from '../helpers/worktree'
 
 diracTest.describe('Dirac session resume', () => {
   const provider: AgentProvider = AgentProvider.DIRAC

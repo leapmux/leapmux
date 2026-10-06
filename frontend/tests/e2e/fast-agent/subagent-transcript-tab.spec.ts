@@ -10,8 +10,9 @@ import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, expectRowsInOrder, messageContents, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { closeAgentViaAPI } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
-import { closeAgentViaAPI, createGitRepo } from '../helpers/worktree'
+import { createGitRepo } from '../helpers/worktree'
 import { allowReadIfAsked } from './readPermission'
 
 fastAgentTest.describe('Fast Agent subagent transcript', () => {

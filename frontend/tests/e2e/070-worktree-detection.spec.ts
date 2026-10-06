@@ -3,19 +3,9 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
-import { branchGroupRow, openWorkspace, workspaceChildren } from './helpers/ui'
+import { branchGroupRow, chooseGitMode, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, setWorkingDir, waitForWorker, workspaceChildren } from './helpers/ui'
 import { showWorkspaceWithAgents } from './helpers/workspace'
-import {
-  addWorktree,
-  chooseGitMode,
-  createGitRepo,
-  createWorkspaceWithWorktreeViaAPI,
-  openNewAgentDialog,
-  openNewTerminalDialog,
-  openNewWorkspaceDialogAt,
-  setWorkingDir,
-  waitForWorker,
-} from './helpers/worktree'
+import { addWorktree, createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
  * Move the open dialog from a repository root to `dir`, and require that the git mode options hide.

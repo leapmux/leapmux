@@ -3,7 +3,7 @@ import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { listAgentsViaAPI } from '../helpers/worktree'
+import { listAgentsViaAPI } from '../helpers/workerTabs'
 import { expect, qoderTest } from '../qoder-fixtures'
 import { attachQoderWorkerFrames } from './workerFrames'
 

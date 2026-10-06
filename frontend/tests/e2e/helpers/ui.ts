@@ -2269,3 +2269,155 @@ export async function stableBox(element: Locator): Promise<ElementBox> {
     return box
   })
 }
+
+/**
+ * Wait for the app home to be ready (sidebar sections loaded).
+ * Unlike waitForWorkspaceReady, this works on non-workspace routes like /.
+ */
+export async function waitForAppPageReady(page: Page) {
+  await expect(sidebarSectionHeader(page, 'workspaces_in_progress')).toBeVisible()
+}
+
+/**
+ * Open the "New Workspace" dialog by whichever route is available.
+ *
+ * The In-progress section header carries a MENU now, and "New workspace..." is
+ * an item inside it -- so the availability probe has to read the TRIGGER, not
+ * the item. A closed `popover="auto"` is `display: none`, so probing the item
+ * would answer "not visible" every single time, send every caller down the
+ * empty-state fallback, and time out wherever that button does not exist.
+ *
+ * The left sidebar may still be collapsed (rail mode), which hides the section
+ * header entirely; the empty-state `create-workspace-button` is the fallback
+ * for that.
+ *
+ * Open-and-click is retried as one unit, following `clickRowMenuItem`: the
+ * sidebar re-renders on workspace, worker and todo changes, so the menu can
+ * vanish between opening it and clicking inside it.
+ */
+export async function openNewWorkspaceDialog(page: Page) {
+  const sectionMenu = page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]')
+  const createBtn = page.locator('[data-testid="create-workspace-button"]')
+  await expectAnyVisible(sectionMenu, createBtn)
+  if (await isMaybeVisible(sectionMenu)) {
+    const item = page.locator('[data-testid="sidebar-new-workspace"]:visible')
+    await expect(async () => {
+      // Idempotent open, the way `ensureExpanded` does it: a second click on an
+      // already-open trigger CLOSES the menu, which is exactly what a naive
+      // retry would do.
+      if (!await item.isVisible())
+        await sectionMenu.click()
+      await expect(item).toBeVisible()
+      await item.click()
+    }).toPass()
+  }
+  else {
+    await createBtn.click()
+  }
+  await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+}
+
+/**
+ * Open the "New Agent" dialog from within a workspace via the tab menu.
+ */
+export async function openNewAgentDialog(page: Page) {
+  await openTabMenuDialog(page, 'New agent...', 'New Agent')
+}
+
+/**
+ * Open the "New Terminal" dialog from within a workspace via the tab menu.
+ */
+export async function openNewTerminalDialog(page: Page) {
+  await openTabMenuDialog(page, 'New terminal...', 'New Terminal')
+}
+
+/** Click one item of the tab bar's `+` menu, and wait for the heading of the dialog that it opens. */
+async function openTabMenuDialog(page: Page, item: string, heading: string): Promise<void> {
+  await page.locator('[data-testid="tab-more-menu"]').first().click()
+  await page.getByRole('menuitem', { name: item }).click()
+  await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+}
+
+/**
+ * Sign in, open the app home, open the New Workspace dialog, wait for a Worker, and set the working directory to
+ * `dir`. The dialog then shows the git options of `dir`.
+ */
+export async function openNewWorkspaceDialogAt(page: Page, token: string, dir: string): Promise<void> {
+  await loginViaToken(page, token)
+  await page.goto('/')
+  await waitForAppPageReady(page)
+  await openNewWorkspaceDialog(page)
+  await waitForWorker(page)
+  await setWorkingDir(page, dir)
+}
+
+/**
+ * Replace the title that the New Workspace dialog generates with `title`.
+ * By ROLE and NAME, not by placeholder. The placeholder became "Type a name" when the dialog started to generate a
+ * title, so a lookup by the old placeholder matches nothing and waits out its whole timeout. `fill` replaces the
+ * generated name.
+ */
+export async function fillWorkspaceTitle(page: Page, title: string): Promise<void> {
+  await page.getByRole('dialog').getByRole('textbox', { name: 'Title' }).fill(title)
+}
+
+/**
+ * Select one git mode of the open dialog by its label, such as "Create new worktree".
+ * The options appear only after the Worker reports the git state of the working directory, so the label is awaited first.
+ */
+export async function chooseGitMode(page: Page, label: string): Promise<void> {
+  const option = page.getByRole('dialog').getByText(label, { exact: true })
+  await expect(option).toBeVisible()
+  await option.click()
+}
+
+/**
+ * Submit the New Workspace dialog with its Create button, and wait until the dialog closes and the workspace titled
+ * `title` is the active one. The dialog closes when the create RPC returns, and a new workspace activates in place,
+ * so no URL changes.
+ */
+export async function submitNewWorkspaceDialog(page: Page, title: string): Promise<void> {
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(activeWorkspaceRow(page)).toContainText(title)
+}
+
+/** Wait for a worker to be available (retry with backoff). */
+export async function waitForWorker(page: Page) {
+  const dialog = page.getByRole('dialog')
+  // The worker picker is a menu. Its TRIGGER shows only the selected worker,
+  // where the `<select>` this replaced held every option's text at once -- so
+  // this reads the trigger, which is the worker the dialog would actually use.
+  const workerSelect = dialog.getByTestId('worker-select-menu-trigger')
+  const refreshBtn = dialog.getByLabel('Refresh workers')
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await expect(workerSelect).toContainText('Local')
+      break
+    }
+    catch {
+      if (attempt === 5)
+        throw new Error('No online worker found')
+      await refreshBtn.click()
+    }
+  }
+}
+
+/**
+ * Set the working directory in a dialog by filling the path input and pressing Enter.
+ * SolidJS uses event delegation (document-level listeners keyed by `$$eventType`).
+ * Playwright's fill() sets el.value directly but may not trigger a bubbling InputEvent
+ * that SolidJS's delegation picks up. We dispatch a real InputEvent manually to ensure
+ * the SolidJS signal updates before pressing Enter.
+ */
+export async function setWorkingDir(page: Page, dirPath: string) {
+  const dialog = page.getByRole('dialog')
+  const pathInput = dialog.getByPlaceholder('Enter path...')
+  await pathInput.click()
+  await pathInput.evaluate((el: HTMLInputElement, value: string) => {
+    el.value = value
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  }, dirPath)
+  await pathInput.press('Enter')
+}

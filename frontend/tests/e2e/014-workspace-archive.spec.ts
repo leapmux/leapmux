@@ -18,7 +18,7 @@ import {
   workspaceMenuItem,
   workspaceRow,
 } from './helpers/ui'
-import { waitForAgentStatusViaAPI, waitForTerminalExitViaAPI } from './helpers/worktree'
+import { waitForAgentStatusViaAPI, waitForTerminalExitViaAPI } from './helpers/workerTabs'
 import { ensureWorkerOnline, processTest, restartWorker, stopWorker, waitForWorkerOffline } from './process-control-fixtures'
 
 /**

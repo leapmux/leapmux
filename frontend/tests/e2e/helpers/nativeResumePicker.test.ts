@@ -51,6 +51,8 @@ vi.mock('./worktree', () => ({
     picker.events.push(`repo:${name.split('-')[1]}`)
     return `${dataDir}/${name}`
   },
+}))
+vi.mock('./workerTabs', () => ({
   closeAgentViaAPI: async (_hubUrl: string, _token: string, _workerId: string, agentId: string) => {
     picker.events.push(`close:${agentId}`)
     return { failureMessage: '' }

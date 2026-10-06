@@ -24,7 +24,7 @@ vi.mock('../helpers/ui', () => ({
   sendMessage: vi.fn(async () => {}),
   waitForAgentIdle: vi.fn(async () => {}),
 }))
-vi.mock('../helpers/worktree', () => ({ closeAgentViaAPI: calls.close }))
+vi.mock('../helpers/workerTabs', () => ({ closeAgentViaAPI: calls.close }))
 vi.mock('../helpers/nativeLifecycle', () => ({ exerciseCloseAgent: calls.exercise }))
 vi.mock('../helpers/processTree', async original => ({
   ...await original<typeof import('../helpers/processTree')>(),
