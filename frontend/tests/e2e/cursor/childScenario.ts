@@ -2,10 +2,14 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { RunningNativeChild } from '../helpers/unsupportedSubagent'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { expect } from '@playwright/test'
+import { withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { assistantBubbles, sendMessage, subagentReportBubble, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
 export interface CursorRunningChild extends RunningNativeChild {
   prompt: string
@@ -54,4 +58,69 @@ export async function openCursorRunningChild(
     }],
   })
   return { ...child, prompt, marker, answer, filePath }
+}
+
+/**
+ * Delegate one word to the remote Task service of Cursor, and require a registry row without a control character,
+ * and the prompt and report of the child in its own tab. The transcript tab cell and the background task cell both
+ * run this scenario.
+ */
+export async function exerciseCursorTaskDelegation(context: ManagedNativeScenarioContext): Promise<void> {
+  const { page, modelScript } = context
+  await expectNoRegistryRows(page, context.leapmuxServer)
+
+  // The remote Task service supplies this report without starting a local child.
+  const start = await modelScript.queue({
+    toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-cursor', {
+      description: 'Ask the subagent for one word',
+      prompt: 'Reply with the single word PONG.',
+      report: 'PONG',
+    })],
+  })
+  await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
+  await modelScript.waitForSteps(start + 1)
+  await waitForAgentIdle(page)
+
+  const row = await requireRegistryRow(page)
+
+  // Regression guard: the row's testid/data attributes must never contain a
+  // control character (the embedded-newline toolCallId quirk is sanitized in
+  // the neutral layer before it reaches the DOM). Built without a control-char
+  // regex literal so no-control-regex stays satisfied.
+  const rowHtml = await row.evaluate(el => el.outerHTML)
+  const hasControlChar = Array.from(rowHtml).some(ch => (ch.codePointAt(0) ?? 0) < 0x20)
+  expect(hasControlChar).toBe(false)
+
+  await expectRowBecomesFinal(page, row)
+  await expectSectionPersists(page)
+  await openChildTabFromRow(page, row)
+  // The child's PROMPT opens its transcript, and its REPORT closes it.
+  //
+  // Cursor omits the report from ACP and reads it back from its own session
+  // store, and the mock writes that store over the KV channel -- see
+  // `cursorSetBlob`. This assertion proves that the transcript reaches disk
+  // and not only the screen.
+  await expect(userBubbles(page).filter({ hasText: 'Reply with the single word PONG' })).toBeVisible()
+  await expect(subagentReportBubble(page, /PONG/)).toBeVisible()
+}
+
+/**
+ * Hold an actual local child, then require its identity and prompt in its own tab while it runs, and its final reply
+ * after it completes and after a reload. The transcript tab cell and the background task cell both run this scenario.
+ */
+export async function exerciseCursorChildIdentity(context: ManagedNativeScenarioContext): Promise<void> {
+  const { page } = context
+  const child = await openCursorRunningChild(context)
+  await withCleanup(async () => {
+    await expect(child.row).toHaveAttribute('data-child-agent-id', child.childId)
+    await expect(child.row).toHaveAttribute('data-status', 'running')
+    expect(await openChildTabFromRow(page, child.row)).toBe(child.childId)
+    await expect(userBubbles(page).filter({ hasText: child.prompt }).first()).toBeVisible()
+  }, child.finish)
+  // `finish` requires a final row status.
+  await expectSectionPersists(page)
+  expect(await openChildTabFromRow(page, child.row)).toBe(child.childId)
+  await expect(assistantBubbles(page).filter({ hasText: child.answer }).first()).toBeVisible()
+  await page.reload()
+  await expect(assistantBubbles(page).filter({ hasText: child.answer }).first()).toBeVisible()
 }

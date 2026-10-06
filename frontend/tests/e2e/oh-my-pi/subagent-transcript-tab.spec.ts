@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { sendMessage, userBubbles } from '../helpers/ui'
+import { sendMessage, subagentReportBubble, userBubbles } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -58,8 +58,6 @@ ohMyPiTest.describe('Oh My Pi subagent registry', () => {
     await expect(userBubbles(page).filter({ hasText: /list three fruits/i })).toBeVisible()
     // The report states the subagent by its id, as its row does, and carries
     // what the subagent yielded.
-    await expect(page.locator('[data-testid="message-bubble"]:visible')
-      .filter({ hasText: 'run_the_fruit_task reported' })
-      .filter({ hasText: REPORT })).toBeVisible()
+    await expect(subagentReportBubble(page, REPORT, 'run_the_fruit_task')).toBeVisible()
   })
 })

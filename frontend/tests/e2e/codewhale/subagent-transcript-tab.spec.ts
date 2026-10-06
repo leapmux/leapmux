@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, userBubbles } from '../helpers/ui'
+import { assistantBubbles, sendMessage, subagentReportBubble, userBubbles } from '../helpers/ui'
 
 /**
  * An actual native child opens its own transcript tab from the registry row. The tab must show the child's prompt and report.
@@ -51,9 +51,7 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     await expectSectionPersists(page)
 
     // The child's summary reaches the parent transcript under the child's name.
-    await expect(page.locator('[data-testid="message-bubble"]:visible')
-      .filter({ hasText: 'ask_for_one_word reported' })
-      .filter({ hasText: /PONG/ })).toBeVisible()
+    await expect(subagentReportBubble(page, /PONG/, 'ask_for_one_word')).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' }).first()).toBeVisible()
 
     // The child transcript opens on the child's prompt, and then holds the

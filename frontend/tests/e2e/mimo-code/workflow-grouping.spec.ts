@@ -10,7 +10,7 @@ import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { mimoWorkflowToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, bandRows, messageBubbles, messageContents, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, bandRows, messageContents, sendMessage, subagentReportBubble, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { mimoTest } from '../mimo-fixtures'
 
@@ -94,7 +94,7 @@ mimoTest.describe('MiMo Code workflow', () => {
     // report, and never as an answer text of the parent's own. The workflow call's
     // result quotes both answers too, and it is a tool row, not a text row.
     for (const { label, word } of helpers) {
-      await expect(messageBubbles(page).filter({ hasText: `${label} reported` }).filter({ hasText: word })).toBeVisible()
+      await expect(subagentReportBubble(page, word, label)).toBeVisible()
       await expect(bandRows(page, 'text').filter({ hasText: word })).toHaveCount(0)
     }
 

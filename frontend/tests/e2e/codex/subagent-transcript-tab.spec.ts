@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 /**
- * 171 — Codex subagent lifecycle and transcript routing.
+ * Codex subagent lifecycle and transcript routing.
  *
  * Covers: the V2 activity-based registry row, its readable title, a child tab
  * with an isolated read-only transcript and exact completion.
