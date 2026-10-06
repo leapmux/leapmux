@@ -1256,54 +1256,44 @@ describe('workspace row menu', () => {
  */
 function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWorks?: boolean }, log: string[]): Page {
   const rowSelector = '[data-testid="workspace-item-ws-1"]:visible'
-  class Row {
-    readonly _apiName = 'Locator'
-    first() {
-      return this
-    }
-
-    async waitFor() {
+  // `toHaveAttribute(name, value)` sends the attribute name as `expressionArg` and the expected value as the first
+  // entry of `expectedText`.
+  const row: PlaywrightLocator = fakeLocator((check) => {
+    log.push(`${check.expression} ${typeof check.expressionArg === 'string' ? check.expressionArg : ''}`.trim())
+    const received = String(check.expressionArg === 'data-expanded' ? state.expanded : state.active)
+    return { matches: received === check.expectedText?.[0]?.string, received }
+  }, {
+    first: () => row,
+    waitFor: async () => {
       log.push('wait for row')
-    }
-
-    async getAttribute(name: string) {
+    },
+    getAttribute: async (name: string) => {
       log.push(`read ${name}`)
       if (name === 'data-expanded')
         return state.expanded ? 'true' : 'false'
       if (name === 'data-active')
         return state.active ? 'true' : 'false'
       throw new Error(`The fake row has no attribute ${name}.`)
-    }
-
-    locator(selector: string) {
+    },
+    locator: (selector: string) => {
       expect(selector).toBe('[data-testid="workspace-chevron-ws-1"]')
       return { click: async () => {
         log.push('click chevron')
         if (state.chevronWorks ?? true)
           state.expanded = !state.expanded
       } }
-    }
-
-    getByTestId(testId: string) {
+    },
+    getByTestId: (testId: string) => {
       expect(testId).toBe('workspace-title')
       return { click: async () => {
         log.push('click title')
         state.active = true
       } }
-    }
-
-    async click() {
+    },
+    click: async () => {
       throw new Error('A click on the whole row can land on its pinned three-dot trigger.')
-    }
-
-    // `toHaveAttribute(name, value)` sends the expected value as the first entry of `expectedText`.
-    async _expect(expression: string, options: { isNot: boolean, expressionArg?: string, expectedText?: ReadonlyArray<{ string?: string }> }) {
-      log.push(`${expression} ${options.expressionArg ?? ''}`.trim())
-      const received = String(options.expressionArg === 'data-expanded' ? state.expanded : state.active)
-      return { matches: received === options.expectedText?.[0]?.string, received, log: [], timedOut: false }
-    }
-  }
-  const row = new Row()
+    },
+  })
   return opaqueHandle<Page>({
     goto: (async (url: string) => {
       log.push(`goto ${url}`)
