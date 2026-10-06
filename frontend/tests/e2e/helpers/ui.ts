@@ -144,10 +144,21 @@ export async function focusComposer(page: Page): Promise<Locator> {
  */
 export async function sendMessage(page: Page, text: string, entry: MessageEntry = 'type') {
   const editor = await focusComposer(page)
-  await enterMessageText(page, text, entry)
-  await page.keyboard.press('Meta+Enter')
-  // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
-  await expect(editor).toHaveText('')
+  // The send can raise a control request at once (a native editor request, an MCP form), and its banner then hides
+  // this composer. A `:visible` locator stops matching the hidden composer, and an unscoped one is ambiguous when
+  // another tab mounts its own composer. So the clear check holds the element that received the text.
+  const sent = await editor.elementHandle()
+  try {
+    await enterMessageText(page, text, entry)
+    await page.keyboard.press('Meta+Enter')
+    // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
+    await expect.poll(() => sent.evaluate(element => element.textContent ?? ''), {
+      message: 'the composer that received the message must clear after the send',
+    }).toBe('')
+  }
+  finally {
+    await sent.dispose()
+  }
 }
 
 /**
