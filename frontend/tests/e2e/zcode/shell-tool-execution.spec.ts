@@ -21,6 +21,10 @@ zcodeTest('a bash command renders as a tool card with its output', async ({ nati
   // for an approval that this test never gives. A `printf` with a literal
   // format and a numeric argument passes the check. So the turn clicks nothing,
   // and an approval request would hold it.
+  //
+  // The output check is the proof that Build mode ran the command. The shared
+  // scenario below cannot carry this claim: it runs under the Yolo preset, and
+  // its command writes a file, which the read-only check refuses.
   await runNativeToolTurn(native, {
     toolCalls: [bashToolCall(native.provider, 'printf-call', `printf 'zcode-%d' 42`)],
     prompt: 'Run the printf command and show me the output.',

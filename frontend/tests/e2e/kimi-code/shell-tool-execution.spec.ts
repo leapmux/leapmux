@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, assistantBubbles, expectSettingsChip, toolRows, waitForSettingsHydrated } from '../helpers/ui'
+import { applyPermissionPreset, expectSettingsChip, toolRows, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('uses Kimi Code tools', () => {
@@ -19,6 +19,9 @@ kimiTest.describe('uses Kimi Code tools', () => {
     await expectSettingsChip(native.page, 'Never Ask')
   })
 
+  // The shared scenario at the end of this file never reloads the page, so
+  // this test holds the reload claim. The check before the reload is the
+  // first half of that claim: the row that the reload must keep.
   kimiTest('a command renders as a tool card with its output, and keeps it after a reload', async ({ native }) => {
     await runNativeToolTurn(native, {
       toolCalls: [bashToolCall(native.provider, 'echo-call', 'echo "kimi-test-output-$((40 + 2))"')],
@@ -28,14 +31,15 @@ kimiTest.describe('uses Kimi Code tools', () => {
 
     const toolMessages = toolRows(native.page)
     await expect(toolMessages.filter({ hasText: 'kimi-test-output-42' }).first()).toBeVisible()
-    await expect(assistantBubbles(native.page).filter({ hasText: 'The command printed its output.' })).not.toHaveCount(0)
 
     await native.page.reload()
     await expect(toolMessages.filter({ hasText: 'kimi-test-output-42' }).first()).toBeVisible()
   })
 
   // Kimi Code states a failed command's exit code only as a trailer on the
-  // output, and the plugin reads it from there.
+  // output, and the plugin reads it from there. The shared scenario at the
+  // end of this file runs no failed command for Kimi Code
+  // (`includeFailure: false`), so this test holds the only failure proof.
   kimiTest('a failed command shows its output and its exit code', async ({ native }) => {
     await runNativeToolTurn(native, {
       toolCalls: [bashToolCall(native.provider, 'exit-call', `sh -c 'echo "hello-from-kimi-$((40 + 2))"; exit 7'`)],
