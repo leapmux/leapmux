@@ -33,6 +33,9 @@ import {
   focusComposer,
   isMaybeVisible,
   offeredSettingsOptions,
+  queuePauseButton,
+  resumePausedQueue,
+  resumeQueueAfterFailure,
   rowOrderProblem,
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
@@ -600,6 +603,77 @@ function assertingLocator(name: string, log: string[], answer: (expression: stri
   }
   return opaqueHandle<PlaywrightLocator>(methods, new Locator())
 }
+
+/**
+ * A fake queue toggle. Its label follows the paused state, and a click toggles that state.
+ * The log records each label check with the label it required, and each click.
+ */
+function queueToggle(state: { paused: boolean }, log: string[]): { page: Page, button: PlaywrightLocator } {
+  const label = () => state.paused ? 'Resume Queue' : 'Pause Queue'
+  const button = assertingLocator('queue', log, (expression, options) => {
+    const required = JSON.stringify(options).includes('Resume Queue') ? 'Resume Queue' : 'Pause Queue'
+    log.push(`requires ${required}`)
+    return expression === 'to.have.text' && required === label()
+  }, {
+    click: async () => {
+      log.push('click')
+      state.paused = !state.paused
+    },
+  })
+  const page = opaqueHandle<Page>({ locator: (selector: string) => {
+    expect(selector).toBe('[data-testid="queue-pause-button"]:visible')
+    return button
+  } })
+  return { page, button }
+}
+
+describe('queuePauseButton', () => {
+  it('selects the pause toggle of the visible composer', () => {
+    const log: string[] = []
+    const { page, button } = queueToggle({ paused: false }, log)
+    expect(queuePauseButton(page)).toBe(button)
+  })
+})
+
+describe('resumePausedQueue', () => {
+  it('requires the paused label, clicks once, and requires the running label', async () => {
+    const log: string[] = []
+    const state = { paused: true }
+    await resumePausedQueue(queueToggle(state, log).page)
+    expect(log).toEqual(['queue:to.have.text', 'requires Resume Queue', 'click', 'queue:to.have.text', 'requires Pause Queue'])
+    expect(state.paused).toBe(false)
+  })
+
+  it('refuses a running queue and does not click it', async () => {
+    const log: string[] = []
+    const state = { paused: false }
+    await expect(resumePausedQueue(queueToggle(state, log).page)).rejects.toThrow(/toHaveText/)
+    expect(log).not.toContain('click')
+    expect(state.paused).toBe(false)
+  })
+})
+
+describe('resumeQueueAfterFailure', () => {
+  it('resumes a queue that the provider paused', async () => {
+    const log: string[] = []
+    const state = { paused: true }
+    await resumeQueueAfterFailure(queueToggle(state, log).page, 'paused')
+    expect(log).toContain('click')
+    expect(state.paused).toBe(false)
+  })
+
+  it('requires a running queue, and leaves it untouched, for a provider that keeps it running', async () => {
+    const log: string[] = []
+    const state = { paused: false }
+    await resumeQueueAfterFailure(queueToggle(state, log).page, 'running')
+    expect(log).toEqual(['queue:to.have.text', 'requires Pause Queue'])
+  })
+
+  it('fails when the queue state differs from the state that the caller states', async () => {
+    await expect(resumeQueueAfterFailure(queueToggle({ paused: true }, []).page, 'running')).rejects.toThrow(/toHaveText/)
+    await expect(resumeQueueAfterFailure(queueToggle({ paused: false }, []).page, 'paused')).rejects.toThrow(/toHaveText/)
+  })
+})
 
 describe('focusComposer', () => {
   it('waits for the visible composer, clicks it once, and returns it', async () => {

@@ -4,5 +4,5 @@ import { qwenTest } from '../qwen-fixtures'
 
 qwenTest('shows the native model failure and accepts the next valid prompt', async ({ page, modelScript, leapmuxServer, authenticatedQwenWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedQwenWorkspace.workspaceId, provider: AgentProvider.QWEN_CODE }
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

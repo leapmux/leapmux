@@ -23,7 +23,7 @@ import { bashToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, controlButton, messageBubbles, messageContents, openMenu, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
 interface LifecyclePreparation {
@@ -39,14 +39,6 @@ export type NativeResumeEvidence
 export interface NativeResumeResult extends NativeResumeTexts {
   /** The native model request that consumed the resumed prompt. */
   readonly request: MockModelRequestRecord
-}
-
-/** Resume a queue only when the native interruption left it paused. */
-export async function resumeInterruptedQueue(context: ManagedNativeScenarioContext): Promise<void> {
-  const button = context.page.locator('[data-testid="queue-pause-button"]:visible')
-  await expect(button).toHaveText('Resume Queue')
-  await button.click()
-  await expect(button).toHaveText('Pause Queue')
 }
 
 /**
@@ -162,7 +154,8 @@ export async function exerciseInterruptTurn(
     // already. That answer belongs to a cancelled turn, and no row may draw it.
     if (answerArrivesAfterStop)
       await expect(messageContents(context.page).filter({ hasText: `NEVERCOMPLETED${marker}` })).toHaveCount(0)
-    await resumeInterruptedQueue(context)
+    // A stop always pauses the queue, so the next prompt waits until the queue resumes.
+    await resumePausedQueue(context.page)
   }
   finally {
     if (options.kind === 'tool')

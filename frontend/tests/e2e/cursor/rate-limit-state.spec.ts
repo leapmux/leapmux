@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { messageContents, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectNoRateLimitState } from '../helpers/unsupportedRateLimit'
 
 cursorTest('reports actual native quota refusal without a quota meter', async ({ authenticatedCursorWorkspace, page, modelScript, leapmuxServer }) => {
@@ -16,9 +16,8 @@ cursorTest('reports actual native quota refusal without a quota meter', async ({
     await expect(messageContents(page).filter({ hasText: 'Upgrade your plan to continue' }).first()).toBeVisible()
     const receipt = (await modelScript.status()).requests.find(record => record.stepIndex === start)?.response
     expect(receipt?.serviceError).toBeDefined()
-    const resume = page.locator('[data-testid="queue-pause-button"]:visible')
-    if (await resume.count() > 0 && (await resume.textContent())?.includes('Resume'))
-      await resume.click()
+    // Cursor reports the refusal as the end of its turn, so the queue keeps running.
+    await resumeQueueAfterFailure(page, 'running')
     await sendNativeAnswer(context, 'Reply once after the actual quota refusal.', 'The actual native quota recovery completed.')
   } })
 })

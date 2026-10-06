@@ -4,5 +4,5 @@ import { kimiTest } from '../kimi-fixtures'
 
 kimiTest('shows the native model failure and accepts the next valid prompt', async ({ page, modelScript, leapmuxServer, authenticatedKimiWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKimiWorkspace.workspaceId, provider: AgentProvider.KIMI_CODE }
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

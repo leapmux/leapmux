@@ -4,5 +4,5 @@ import { piTest } from '../pi-fixtures'
 
 piTest('shows the native model failure and accepts a later valid prompt', async ({ authenticatedPiWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedPiWorkspace.workspaceId, provider: AgentProvider.PI }
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

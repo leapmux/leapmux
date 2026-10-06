@@ -6,12 +6,11 @@ import { AgentActivityState, AgentProvider, ListAgentInputQueueRequestSchema, Li
 import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
-import { resumeInterruptedQueue } from '../helpers/nativeLifecycle'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openAgentViaUI, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceChevron, workspaceRow } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openAgentViaUI, openWorkspace, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceChevron, workspaceRow } from '../helpers/ui'
 
 /** Click the displayed question option. Its control and label forward selection to the native input. */
 async function clickOption(page: Page, label: string) {
@@ -457,7 +456,7 @@ claudeTest.describe('Agent Settings', () => {
     expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     await expect.poll(async () => (await channel.callWorker(leapmuxServer.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: agent.id })).snapshot?.paused).toBe(true)
-    await resumeInterruptedQueue(context)
+    await resumePausedQueue(page)
 
     // Verify the agent is still responsive after interrupt by sending another message
     await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })

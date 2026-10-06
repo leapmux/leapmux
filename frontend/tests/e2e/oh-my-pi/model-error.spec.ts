@@ -4,5 +4,5 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('shows the native model failure and accepts the next valid prompt', async ({ page, modelScript, leapmuxServer, authenticatedOhMyPiWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedOhMyPiWorkspace.workspaceId, provider: AgentProvider.OH_MY_PI }
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

@@ -4,5 +4,5 @@ import { exerciseModelError } from '../helpers/nativeModelError'
 
 codewhaleTest('shows the native model failure and accepts the next valid prompt', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

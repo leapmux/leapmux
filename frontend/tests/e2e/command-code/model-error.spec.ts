@@ -4,5 +4,5 @@ import { nativeContext } from './scenarios'
 
 commandCodeTest('shows the native model failure and accepts a later valid turn', async ({ commandCodeWorkspace, page, modelScript, leapmuxServer }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: commandCodeWorkspace.workspaceId })
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

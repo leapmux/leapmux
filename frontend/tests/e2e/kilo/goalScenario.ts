@@ -6,6 +6,7 @@ import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, setGoal } from '../helpers/goalsAndTodos'
 import { waitForNativeInputQueueIdle } from '../helpers/nativeInputQueueIdle'
+import { queuePauseButton } from '../helpers/ui'
 
 export const KILO_ACP_IDLE_FALLBACK_MS = 60_000
 
@@ -29,7 +30,7 @@ export async function exerciseKiloGoal(page: Page, modelScript: ModelScript, obj
     await modelScript.waitForGate(gate)
     await expectGoalStatus(page, 'active')
 
-    await page.locator('[data-testid="queue-pause-button"]:visible').click()
+    await queuePauseButton(page).click()
     await clearGoal(page)
     await deliverQueuedKiloGoalCommand(page, '/goal clear')
     await expectEmptyGoalCard(page)
@@ -52,7 +53,7 @@ async function deliverQueuedKiloGoalCommand(page: Page, command: string): Promis
         throw error
     }
   }
-  await page.locator('[data-testid="queue-pause-button"]:visible').click()
+  await queuePauseButton(page).click()
   await expect(queue).toHaveCount(0)
 }
 

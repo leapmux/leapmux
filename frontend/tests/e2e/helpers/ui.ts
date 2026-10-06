@@ -150,6 +150,47 @@ export async function focusComposer(page: Page): Promise<Locator> {
 }
 
 /**
+ * Locate the pause toggle of the input queue in the visible composer. Its label is "Pause Queue" or "Resume Queue".
+ * A composer that takes no input, such as a read-only subagent tab, shows no toggle.
+ */
+export function queuePauseButton(page: Page): Locator {
+  return page.locator('[data-testid="queue-pause-button"]:visible')
+}
+
+/**
+ * Resume a paused input queue.
+ * The queue must be paused. A running queue fails the call, so a pause that never happened cannot pass.
+ */
+export async function resumePausedQueue(page: Page): Promise<void> {
+  const button = queuePauseButton(page)
+  await expect(button).toHaveText('Resume Queue')
+  await button.click()
+  await expect(button).toHaveText('Pause Queue')
+}
+
+/**
+ * The state of the input queue after a failed turn.
+ *
+ * The Worker pauses the queue for a stop, for a process exit that nobody asked for, and for an input that it could
+ * not deliver. A provider that reports a failed model call as the end of its turn leaves the queue running: its
+ * `SendInput` returns at delivery, before the model call, and a turn end never pauses the queue.
+ */
+export type QueueAfterFailure = 'paused' | 'running'
+
+/**
+ * Require the queue state that a failed turn leaves, and resume a paused queue, so the next prompt reaches the agent.
+ * The caller states the state of its provider. A check that accepted either state would let a lost pause pass, and
+ * also a pause that a provider crash causes.
+ */
+export async function resumeQueueAfterFailure(page: Page, state: QueueAfterFailure): Promise<void> {
+  if (state === 'paused') {
+    await resumePausedQueue(page)
+    return
+  }
+  await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+}
+
+/**
  * Send a message through the ProseMirror editor with no inter-key delay.
  * ProseMirror handles the ordered key events synchronously. The former 100ms delay added about five seconds to each arithmetic prompt.
  * Tests of input rules, mention triggers, and slash commands retain their deliberate local typing intervals.

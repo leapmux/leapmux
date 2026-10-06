@@ -4,5 +4,5 @@ import { nativeContext } from './scenarios'
 
 deepseekHarnessTest('shows the native model failure and accepts a later valid turn', async ({ deepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
   const context = nativeContext({ page, modelScript, leapmuxServer, workspaceId: deepseekHarnessWorkspace.workspaceId })
-  await exerciseModelError(context)
+  await exerciseModelError(context, { queueAfterFailure: 'running' })
 })

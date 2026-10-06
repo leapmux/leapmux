@@ -4,5 +4,5 @@ import { exerciseModelError } from '../helpers/nativeModelError'
 
 codexTest('reports a native model error and accepts the next turn', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
   void authenticatedCodexWorkspace
-  await exerciseModelError({ page, modelScript, provider: AgentProvider.CODEX })
+  await exerciseModelError({ page, modelScript, provider: AgentProvider.CODEX }, { queueAfterFailure: 'running' })
 })

@@ -3,7 +3,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { expectRateLimitNotice } from '../helpers/rateLimit'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
 
 /**
@@ -25,9 +25,8 @@ kiroTest.describe('Kiro basic chat', () => {
     await waitForAgentIdle(page)
     await expectRateLimitNotice(page, KIRO_THROTTLE_TEXT)
     expect((await modelScript.status()).requests.length, 'Kiro made the model call').toBeGreaterThan(0)
-    const queue = page.locator('[data-testid="queue-pause-button"]:visible')
-    if (await queue.count() > 0 && (await queue.textContent())?.includes('Resume'))
-      await queue.click()
+    // Kiro fails the prompt and ends its turn, and its process keeps running, so the queue keeps running.
+    await resumeQueueAfterFailure(page, 'running')
     const recovered = await sendNativeAnswer(context, 'Reply once after the native throttled turn ends.', 'The native Kiro session recovered after its service failure.')
     expect(recovered.protocol).toBe('aws-event-stream')
     expect((await currentNativeAgent(context)).id).toBe(before.id)

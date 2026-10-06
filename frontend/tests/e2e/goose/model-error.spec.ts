@@ -8,5 +8,5 @@ const GOOSE_REQUEST_ATTEMPTS = 4
 
 gooseTest('shows the native model failure and accepts a later valid prompt', async ({ authenticatedGooseWorkspace, page, modelScript, leapmuxServer }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId, provider: AgentProvider.GOOSE }
-  await exerciseModelError(context, { attempts: GOOSE_REQUEST_ATTEMPTS })
+  await exerciseModelError(context, { queueAfterFailure: 'running', attempts: GOOSE_REQUEST_ATTEMPTS })
 })

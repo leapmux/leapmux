@@ -1,10 +1,11 @@
 import type { MockModelError, MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { QueueAfterFailure } from './ui'
 import { expect } from '@playwright/test'
 import { currentNativeAgent, nativeTextStep } from './nativeScenario'
 import { uniqueMarker } from './shellArguments'
 import { observeSettledReceipts, waitForIdleSoundReceipt } from './turnEndSound'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from './ui'
 
 /** Prove quota headers came from the actual emitted generic model response. */
 export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioContext): Promise<void> {
@@ -28,7 +29,12 @@ export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioC
 /** Preserve native retry behavior while proving a service quota refusal and a usable later turn. */
 export async function exerciseNativeQuotaRefusal(
   context: ManagedNativeScenarioContext,
-  options: { error: MockModelError, receiptProof: (request: MockModelRequestRecord) => void | Promise<void> },
+  options: {
+    error: MockModelError
+    receiptProof: (request: MockModelRequestRecord) => void | Promise<void>
+    /** The state of the input queue after the refused turn, as the provider leaves it. See {@link QueueAfterFailure}. */
+    queueAfterFailure: QueueAfterFailure
+  },
 ): Promise<void> {
   const agent = await currentNativeAgent(context)
   const after = await observeSettledReceipts(context.page)
@@ -38,9 +44,7 @@ export async function exerciseNativeQuotaRefusal(
   await waitForIdleSoundReceipt(context.page, { agentId: agent.id, after })
   await options.receiptProof(await context.modelScript.requestAt(start))
   if ((await context.modelScript.status()).nextStep < start + 2) {
-    const queue = context.page.locator('[data-testid="queue-pause-button"]:visible')
-    if ((await queue.textContent())?.includes('Resume'))
-      await queue.click()
+    await resumeQueueAfterFailure(context.page, options.queueAfterFailure)
     await sendMessage(context.page, context.modelScript.prompt('Complete the valid turn after the native quota refusal.'))
   }
   await context.modelScript.waitForSteps(start + 2)

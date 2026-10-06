@@ -14,7 +14,7 @@ import { expect } from '@playwright/test'
 import { countGoalTransitionsInMessages } from './goalTransitions'
 import { SCENARIO_MARKER } from './mockModelScript'
 import { readAllAgentMessages } from './nativeMessages'
-import { composerEditor, expandSidebarSection, stableBox } from './ui'
+import { composerEditor, expandSidebarSection, queuePauseButton, stableBox } from './ui'
 
 /** Locator for the Goals & To-dos section header in the right sidebar. */
 export function goalsAndTodosSection(page: Page): Locator {
@@ -192,7 +192,7 @@ export interface TextGoalQueueCase {
  */
 export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase): Promise<void> {
   const queue = page.locator('[data-testid="agent-input-queue"]:visible')
-  const pauseButton = page.locator('[data-testid="queue-pause-button"]:visible')
+  const pauseButton = queuePauseButton(page)
   const modeTrigger = page.locator('[data-testid="composer-mode-trigger"]:visible')
 
   await expect(composerEditor(page)).toBeVisible()

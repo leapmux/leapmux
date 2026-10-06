@@ -1,11 +1,17 @@
 import type { MockModelError, MockModelRequestRecord } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
+import type { QueueAfterFailure } from './ui'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from './nativeConversation'
-import { sendMessage, visibleOnly, waitForAgentIdle } from './ui'
+import { resumeQueueAfterFailure, sendMessage, visibleOnly, waitForAgentIdle } from './ui'
 
 interface NativeModelErrorOptions {
+  /**
+   * The state of the input queue after the failed turn, as the provider leaves it.
+   * The caller states it, and the scenario requires it. See {@link QueueAfterFailure}.
+   */
+  queueAfterFailure: QueueAfterFailure
   error?: MockModelError
   prepare?: () => Promise<void>
   /**
@@ -72,7 +78,7 @@ export function failedTurnRequests(requests: readonly MockModelRequestRecord[], 
  */
 export async function exerciseModelError(
   context: NativeScenarioContext,
-  options: NativeModelErrorOptions = {},
+  options: NativeModelErrorOptions,
 ): Promise<MockModelRequestRecord[]> {
   const attempts = options.attempts ?? 1
   await options.prepare?.()
@@ -89,9 +95,7 @@ export async function exerciseModelError(
   await waitForAgentIdle(context.page)
   await expect(visibleOnly(context.page.getByText(error.message, { exact: false })).first()).toBeVisible()
   await expect(context.page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
-  const queue = context.page.locator('[data-testid="queue-pause-button"]:visible')
-  if (await queue.count() > 0 && (await queue.textContent())?.includes('Resume'))
-    await queue.click()
+  await resumeQueueAfterFailure(context.page, options.queueAfterFailure)
   await sendNativeAnswer(context, 'Reply once after the native service failure.', `RECOVERED${marker}`)
   return failed
 }

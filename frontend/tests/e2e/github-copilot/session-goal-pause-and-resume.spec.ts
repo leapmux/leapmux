@@ -1,12 +1,13 @@
 import { expect } from '@playwright/test'
 import { copilotTest } from '../copilot-fixtures'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, submitGoal } from '../helpers/goalsAndTodos'
+import { queuePauseButton } from '../helpers/ui'
 
 copilotTest('session-goal-pause-and-resume: sets, pauses, resumes and clears a native session goal', async ({ authenticatedCopilotWorkspace, page }) => {
   void authenticatedCopilotWorkspace
   const objective = 'Keep the native Copilot objective until the browser clears it.'
   const queue = page.locator('[data-testid="agent-input-queue"]:visible')
-  const pauseButton = page.locator('[data-testid="queue-pause-button"]:visible')
+  const pauseButton = queuePauseButton(page)
 
   await expandGoalsAndTodosSection(page)
   await pauseButton.click()
