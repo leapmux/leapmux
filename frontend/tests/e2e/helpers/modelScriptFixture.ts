@@ -286,10 +286,11 @@ export interface ModelScriptFixtures {
 }
 
 /**
- * The model script and the test deadline. Both Playwright test bases spread this object into their `extend` call:
+ * The model script and the test deadline. These Playwright test bases spread this object into their `extend` call:
  *
  * - ../fixtures.ts uses the shared suite Hub.
  * - ../process-control-fixtures.ts extends @playwright/test and owns its process-control Hub.
+ * - ../dev-server-fixtures.ts extends @playwright/test and starts a dev server for each test.
  *
  * Playwright starts a test's timer before fixture setup. `testStartedAt` is automatic and has no dependencies, so it
  * records that start before every other fixture runs. A wait that must end before the test's own timeout reads the

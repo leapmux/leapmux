@@ -1,5 +1,6 @@
 import type { DevServerHandle } from './helpers/devServer'
-import { test as base, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { devServerTest } from './dev-server-fixtures'
 import { fetchAltchaChallenge } from './helpers/altcha'
 import { runCLI, setHubSetting } from './helpers/cli'
 import { withAdminConfiguredDevServer } from './helpers/devServer'
@@ -71,13 +72,7 @@ const cases = [
 ] as const
 
 for (const { algorithm, args } of cases) {
-  const test = base.extend<{ server: DevServerHandle }>({
-    // eslint-disable-next-line no-empty-pattern
-    server: async ({}, use) => setupServerWithAlgorithm(use, algorithm, [...args]),
-    baseURL: async ({ server }, use) => {
-      await use(server.hubUrl)
-    },
-  })
+  const test = devServerTest<DevServerHandle>(use => setupServerWithAlgorithm(use, algorithm, [...args]))
 
   test.describe(`captcha WASM solvers (${algorithm})`, () => {
     test(`login solves a ${algorithm} challenge through the dynamically loaded worker`, async ({ page }) => {

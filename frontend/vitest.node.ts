@@ -224,6 +224,7 @@ export const NODE_TEST_FILES = [
   'src/test-support/visibleChatLocators.test.ts',
   'src/utils/controlResponse.test.ts',
   'tests/e2e/agentSettings.test.ts',
+  'tests/e2e/dev-server-fixtures.test.ts',
   'tests/e2e/global-setup.test.ts',
   'tests/e2e/global-teardown.test.ts',
   'tests/e2e/helpers/ampSurface.test.ts',

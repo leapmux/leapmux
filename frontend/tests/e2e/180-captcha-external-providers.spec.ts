@@ -1,5 +1,6 @@
 import type { DevServerHandle } from './helpers/devServer'
-import { test as base, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { devServerTest } from './dev-server-fixtures'
 import { runCLI } from './helpers/cli'
 import { withAdminConfiguredDevServer } from './helpers/devServer'
 
@@ -121,21 +122,9 @@ async function setupServerWithProvider(
 // One dedicated hub per provider, mirroring the 179 spec's per-algorithm
 // servers: the provider switch must not leak into the shared fixture's
 // hub.
-const turnstileTest = base.extend<{ server: DevServerHandle }>({
-  // eslint-disable-next-line no-empty-pattern
-  server: async ({}, use) => setupServerWithProvider('turnstile', TURNSTILE_SITE_KEY, TURNSTILE_SECRET, use),
-  baseURL: async ({ server }, use) => {
-    await use(server.hubUrl)
-  },
-})
+const turnstileTest = devServerTest<DevServerHandle>(use => setupServerWithProvider('turnstile', TURNSTILE_SITE_KEY, TURNSTILE_SECRET, use))
 
-const recaptchaTest = base.extend<{ server: DevServerHandle }>({
-  // eslint-disable-next-line no-empty-pattern
-  server: async ({}, use) => setupServerWithProvider('recaptcha_v3', 'recaptcha-site-key', 'recaptcha-secret', use),
-  baseURL: async ({ server }, use) => {
-    await use(server.hubUrl)
-  },
-})
+const recaptchaTest = devServerTest<DevServerHandle>(use => setupServerWithProvider('recaptcha_v3', 'recaptcha-site-key', 'recaptcha-secret', use))
 
 turnstileTest.describe('captcha provider: turnstile', () => {
   turnstileTest('fake checkbox solves, submit unlocks, denial stays uniform', async ({ page }) => {

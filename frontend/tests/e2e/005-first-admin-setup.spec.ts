@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { UnseededDevServerHandle } from './helpers/devServer'
-import { test as base, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { devServerTest } from './dev-server-fixtures'
 import { getCurrentUser, listPasskeysViaAPI } from './helpers/api'
 import { solveCaptchaViaUI } from './helpers/captcha'
 import { startUnseededDevServer, stopDevServer } from './helpers/devServer'
@@ -21,15 +22,11 @@ async function submitSetupForm(page: Page, username: string, displayName: string
 }
 
 /**
- * Uses a standalone unseeded dev server (no pre-registered admin) so we can
- * exercise the /setup flow. Scoped per test so each test sees a fresh
- * setup-mode instance; this file cannot use the shared fixtures from
- * fixtures.ts, because that fixture signs up `admin` automatically.
+ * Each test starts a new unseeded dev server, which has no administrator, so the
+ * test sees a fresh instance in setup mode. This file cannot use the shared
+ * fixtures of fixtures.ts, because the suite hub signs up `admin` at its start.
  */
-// Playwright fixtures declare their dependencies by destructuring the first
-// parameter; this fixture has no dependencies, hence the empty pattern.
-// eslint-disable-next-line no-empty-pattern
-async function setupServer({}: object, use: (server: UnseededDevServerHandle) => Promise<void>): Promise<void> {
+const test = devServerTest<UnseededDevServerHandle>(async (use) => {
   const server = await startUnseededDevServer({ dataDirPrefix: 'leapmux-e2e-setup' })
   try {
     await use(server)
@@ -37,13 +34,6 @@ async function setupServer({}: object, use: (server: UnseededDevServerHandle) =>
   finally {
     await stopDevServer(server)
   }
-}
-
-const test = base.extend<{ server: UnseededDevServerHandle }>({
-  server: setupServer,
-  baseURL: async ({ server }, use) => {
-    await use(server.hubUrl)
-  },
 })
 
 test.describe('First-admin setup', () => {
