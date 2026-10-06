@@ -163,13 +163,25 @@ export function platformModifier(platform: NodeJS.Platform): 'Meta' | 'Control' 
  */
 export const PLATFORM_MOD = platformModifier(process.platform)
 
+/** The CSS selector of the composer. */
+const COMPOSER_SELECTOR = '[data-testid="composer-editor"]'
+
+/** The CSS selector of the editable node inside the composer. */
+const COMPOSER_EDIT_NODE_SELECTOR = '.ProseMirror'
+
+/**
+ * The CSS selector of the editable area of a composer, with no visibility scope. A `page.evaluate` body, which cannot
+ * take a locator, takes it as an argument. Everywhere else, `composerEditor` locates the visible one.
+ */
+export const COMPOSER_EDITOR_SELECTOR = `${COMPOSER_SELECTOR} ${COMPOSER_EDIT_NODE_SELECTOR}`
+
 /**
  * Locate the editable area of the visible composer.
  * The shell mounts one composer at most, for the focused agent tab. The locator still requires a visible composer,
  * because only a visible composer can take the input.
  */
 export function composerEditor(page: Page): Locator {
-  return page.locator('[data-testid="composer-editor"]:visible .ProseMirror')
+  return page.locator(`${COMPOSER_SELECTOR}:visible ${COMPOSER_EDIT_NODE_SELECTOR}`)
 }
 
 /** Wait for the composer on screen, click it so that it holds the focus, and return it. */

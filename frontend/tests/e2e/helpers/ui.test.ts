@@ -28,6 +28,7 @@ import {
   chatScrollContainer,
   chooseSettingsOption,
   collapseWorkspaceRow,
+  COMPOSER_EDITOR_SELECTOR,
   composerEditor,
   controlActions,
   controlBanner,
@@ -1312,6 +1313,16 @@ function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWo
     }) as Page['getByRole'],
   })
 }
+
+describe('COMPOSER_EDITOR_SELECTOR', () => {
+  it('names the editable node of the composer that composerEditor locates, without the visibility scope', () => {
+    const selectors: string[] = []
+    composerEditor({ locator: (selector: string) => selectors.push(selector) } as unknown as Page)
+    expect(selectors).toHaveLength(1)
+    expect(COMPOSER_EDITOR_SELECTOR).toBe('[data-testid="composer-editor"] .ProseMirror')
+    expect(selectors[0]?.replace(':visible', '')).toBe(COMPOSER_EDITOR_SELECTOR)
+  })
+})
 
 describe('workspaceRowTitle', () => {
   it('locates the title inside the visible row', () => {

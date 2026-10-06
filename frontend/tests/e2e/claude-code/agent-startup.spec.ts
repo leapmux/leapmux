@@ -6,7 +6,7 @@ import { claudeTest } from '../claude-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from '../helpers/timingFixture'
-import { AGENT_TAB_SELECTOR, agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, sendMessage, settingsBar } from '../helpers/ui'
+import { AGENT_TAB_SELECTOR, agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, COMPOSER_EDITOR_SELECTOR, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, sendMessage, settingsBar } from '../helpers/ui'
 import { withTestWorkspace } from '../helpers/workspace'
 import { nativeLaunch } from './scenarios'
 
@@ -68,7 +68,7 @@ timingTest.describe('Claude Code agent open timing', () => {
 
       for (let iter = 0; iter < ITERATIONS; iter++) {
         // Reset the marks before each iteration. Observe tab and editor creation without the delay of Playwright polling.
-        await page.evaluate((agentTabSelector) => {
+        await page.evaluate(({ agentTabSelector, composerEditorSelector }) => {
           const w: Window & {
             __rpcMarks?: Array<unknown>
             __tabAppearedAt?: number | null
@@ -82,7 +82,7 @@ timingTest.describe('Claude Code agent open timing', () => {
           w.__editorAppearedAt = null
           w.__startupOverlayGoneAt = null
           w.__tabBaseline = document.querySelectorAll(agentTabSelector).length
-          const priorEditor = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
+          const priorEditor = document.querySelector(composerEditorSelector)
           w.__tabObserver?.disconnect()
           w.__tabObserver = new MutationObserver(() => {
             if (w.__tabAppearedAt == null) {
@@ -91,7 +91,7 @@ timingTest.describe('Claude Code agent open timing', () => {
                 w.__tabAppearedAt = performance.now()
             }
             if (w.__editorAppearedAt == null) {
-              const ed = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
+              const ed = document.querySelector(composerEditorSelector)
               // Require the new tab's editor node to differ from the editor before the click.
               if (ed && ed !== priorEditor)
                 w.__editorAppearedAt = performance.now()
@@ -104,7 +104,7 @@ timingTest.describe('Claude Code agent open timing', () => {
             }
           })
           w.__tabObserver.observe(document.body, { childList: true, subtree: true })
-        }, AGENT_TAB_SELECTOR)
+        }, { agentTabSelector: AGENT_TAB_SELECTOR, composerEditorSelector: COMPOSER_EDITOR_SELECTOR })
         const logsBefore = srv.logLines.length
         const tabsBefore = await agentTabs(page).count()
 
