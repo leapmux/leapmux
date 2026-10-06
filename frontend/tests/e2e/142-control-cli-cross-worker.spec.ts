@@ -27,6 +27,7 @@ import type { CLIConfigDir } from './helpers/cli'
 import type { MultiWorkerHarness } from './helpers/multiWorker'
 import { test as base, expect } from '@playwright/test'
 import { callHub, openAgentViaAPI } from './helpers/api'
+import { withCleanup } from './helpers/cleanup'
 import { cliAgentOpen, CLIError, mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { withExtraClients } from './helpers/multiClient'
 import { startMultiWorkerHarness } from './helpers/multiWorker'
@@ -44,14 +45,12 @@ const test = base.extend<{ crossWorker: CrossWorkerEnv }, {
   // eslint-disable-next-line no-empty-pattern -- Playwright requires first arg to be a destructuring pattern
   crossWorkerHarness: [async ({}, use) => {
     const harness = await startMultiWorkerHarness(2)
-    // The CLI's credential file uses the hub URL as its lookup key.
-    const cli = await mintCLITokenForAdmin(harness)
-    try {
+    // A failed mint stops the harness too.
+    await withCleanup(async () => {
+      // The CLI's credential file uses the hub URL as its lookup key.
+      const cli = await mintCLITokenForAdmin(harness)
       await use({ harness, cli })
-    }
-    finally {
-      await harness.stop()
-    }
+    }, () => harness.stop())
   }, { scope: 'worker' }],
 
   crossWorker: async ({ crossWorkerHarness }, use) => {

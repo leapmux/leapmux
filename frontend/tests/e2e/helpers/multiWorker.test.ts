@@ -1,10 +1,12 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { startMultiWorkerHarness } from './multiWorker'
 import { spawnTestProcess } from './processRegistry'
-import { findFreePort, waitForHubReady, waitForHubStateFile, waitForServer } from './server'
+import { findFreePort, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubStart } from './server'
+import { reportStartupFailure } from './serverOutput'
 
 let root: string
 
@@ -14,10 +16,14 @@ vi.mock('./server', async original => ({
   ...await original<typeof import('./server')>(),
   getGlobalState: () => ({ binaryPath: 'leapmux', tmpDir: root }),
   findFreePort: vi.fn(async () => 12345),
-  hubSpawnEnv: () => ({}),
-  waitForServer: vi.fn(),
-  waitForHubStateFile: vi.fn(),
-  waitForHubReady: vi.fn(),
+  hubSpawnEnv: (env: Record<string, string> = {}) => env,
+  waitForHubStart: vi.fn(),
+}))
+vi.mock('./serverOutput', async original => ({
+  ...await original<typeof import('./serverOutput')>(),
+  reportStartupFailure: vi.fn((_output: unknown, _what: string, error: unknown): never => {
+    throw error
+  }),
 }))
 
 let requireBoundPort = false
@@ -28,12 +34,15 @@ const nativeHubURLs = new Set<string>()
 let failure = ''
 let workerIDs: string[]
 let children: ReturnType<typeof createProcessStub>[]
+/** The stdout and the stderr of each child, by spawn order. */
+let streams: Array<{ stdout: PassThrough, stderr: PassThrough }>
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
   mkdirSync(scratch, { recursive: true })
   root = mkdtempSync(join(scratch, 'multi-worker-test-'))
   children = []
+  streams = []
   workerIDs = []
   failure = ''
   requireBoundPort = false
@@ -41,17 +50,19 @@ beforeEach(() => {
   states.clear()
   nativeHubURLs.clear()
   vi.mocked(findFreePort).mockReset().mockResolvedValue(12345)
-  vi.mocked(waitForHubReady).mockReset().mockResolvedValue(undefined)
-  vi.mocked(waitForHubStateFile).mockReset().mockImplementation(async (_path, proc) => {
+  vi.mocked(reportStartupFailure).mockClear()
+  vi.mocked(waitForHubStart).mockReset().mockImplementation(async (_path, proc) => {
     const state = states.get(proc.pid ?? -1)
     if (!state)
       throw new Error('The Hub has no bound port or state file.')
-    return state
+    return { hubUrl: hubUrlFromStateJson(state), listen: resolvedHubTCPFromStateJson(state) }
   })
-  vi.mocked(waitForServer).mockReset().mockResolvedValue(undefined)
   vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
     const stub = createProcessStub({ pid: 100 + children.length })
+    const io = { stdout: new PassThrough(), stderr: new PassThrough() }
+    Object.assign(stub.emitter, io)
     children.push(stub)
+    streams.push(io)
     if (args[0] === 'hub' && args.includes('127.0.0.1:0')) {
       const port = 24680 + hubCount++
       nativeHubURLs.add(`http://localhost:${port}`)
@@ -104,15 +115,53 @@ function childAt(i: number) {
 describe('multi-worker lifetime', () => {
   it.each(['readiness', 'SignUp', 'GetCurrentUser', 'CreateRegistrationKey', 'registration'])('closes partial startup after %s fails', async (stage) => {
     failure = stage
-    if (stage === 'readiness') {
-      vi.mocked(waitForServer).mockRejectedValueOnce(new Error('readiness failed'))
-      vi.mocked(waitForHubReady).mockRejectedValueOnce(new Error('readiness failed'))
-    }
-    await expect(startMultiWorkerHarness(1)).rejects.toThrow(`${stage} failed`)
+    if (stage === 'readiness')
+      vi.mocked(waitForHubStart).mockRejectedValueOnce(new Error('readiness failed'))
+    const result: unknown = await startMultiWorkerHarness(1).then(() => null, (error: unknown) => error)
+    expect(String(result)).toContain(`${stage} failed`)
+    expect(reportStartupFailure).toHaveBeenCalledExactlyOnceWith(expect.anything(), 'The multi-worker harness', result)
     expect(children.length).toBeGreaterThan(0)
     for (const child of children)
       expect(child.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
     expect(readdirSync(root)).toEqual([])
+  })
+
+  it('captures the output of the hub and of each worker, labelled with its process', async () => {
+    const harness = await startMultiWorkerHarness(1)
+    try {
+      streams[0]?.stdout.write('listening\n')
+      await vi.waitFor(() => expect(harness.output.since(0)).toBe('[hub] listening'))
+      streams[1]?.stderr.write('registered\n')
+      await vi.waitFor(() => expect(harness.output.since(0)).toBe('[hub] listening\n[worker-A] registered'))
+    }
+    finally {
+      await harness.stop()
+    }
+  })
+
+  it('reports the output when a later addition fails', async () => {
+    const harness = await startMultiWorkerHarness(0)
+    try {
+      failure = 'CreateRegistrationKey'
+      await expect(harness.addWorker('refused')).rejects.toThrow('CreateRegistrationKey failed')
+      expect(reportStartupFailure).toHaveBeenCalledExactlyOnceWith(harness.output, 'The worker refused of the multi-worker harness', expect.any(Error))
+    }
+    finally {
+      await harness.stop()
+    }
+  })
+
+  it('names each worker through its environment and starts it in post-quantum mode', async () => {
+    const harness = await startMultiWorkerHarness(1)
+    try {
+      const [, worker] = vi.mocked(spawnTestProcess).mock.calls
+      expect(worker?.[1]).toEqual(expect.arrayContaining(['--hub', harness.hubUrl, '--encryption-mode', 'post-quantum']))
+      expect(worker?.[1]).not.toContain('--name')
+      expect(worker?.[2]).toEqual(expect.objectContaining({ env: { LEAPMUX_WORKER_NAME: 'worker-A' } }))
+    }
+    finally {
+      await harness.stop()
+    }
   })
 
   it('makes concurrent stop callers wait for the same cleanup', async () => {
@@ -212,8 +261,7 @@ describe('multi-worker port ownership', () => {
         '-data-dir',
         harness.hubDataDir,
       ], expect.any(Object))
-      expect(waitForHubStateFile).toHaveBeenCalledWith(join(harness.hubDataDir, 'state.json'), harness.hubProc)
-      expect(waitForHubReady).toHaveBeenCalledWith(harness.hubUrl, harness.hubProc)
+      expect(waitForHubStart).toHaveBeenCalledWith(join(harness.hubDataDir, 'state.json'), harness.hubProc)
       expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'leapmux', expect.arrayContaining(['--hub', harness.hubUrl]), expect.any(Object))
     }
     finally {
@@ -239,7 +287,7 @@ describe('multi-worker port ownership', () => {
 
   it('stops the spawned Hub and removes its directory when the state file fails', async () => {
     const failed = new Error('The controlled Hub state file failed.')
-    vi.mocked(waitForHubStateFile).mockRejectedValueOnce(failed)
+    vi.mocked(waitForHubStart).mockRejectedValueOnce(failed)
     await expect(startMultiWorkerHarness(0)).rejects.toBe(failed)
     expect(children).toHaveLength(1)
     expect(childAt(0).emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')

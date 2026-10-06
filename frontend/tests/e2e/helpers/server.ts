@@ -211,6 +211,25 @@ export function waitForHubStateFile(statePath: string, proc: ChildProcess, timeo
   })
 }
 
+/** The addresses of a hub that started: the URL that a browser reaches, and the one TCP address that the hub bound. */
+export interface StartedHub {
+  hubUrl: string
+  listen: string
+}
+
+/**
+ * Wait for a spawned hub to write its state file and to answer HTTP, or fail when its process exits.
+ * A hub that listens on port 0 gets its port from the operating system, and the state file is the only record of it.
+ * `browserHost` replaces the bound host in `hubUrl`, so the URL matches the domain of the session cookies.
+ */
+export async function waitForHubStart(statePath: string, proc: ChildProcess, browserHost = E2E_BROWSER_HOST): Promise<StartedHub> {
+  const state = await waitForHubStateFile(statePath, proc)
+  const listen = resolvedHubTCPFromStateJson(state)
+  const hubUrl = hubUrlFromStateJson(state, browserHost)
+  await waitForHubReady(hubUrl, proc)
+  return { hubUrl, listen }
+}
+
 /** Wait until the hub responds or its process exits. */
 export function waitForHubReady(url: string, proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)

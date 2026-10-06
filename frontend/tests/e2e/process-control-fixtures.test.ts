@@ -7,9 +7,9 @@ import { listOnlineWorkerIDsViaAPI, listWorkersViaAPI, loginViaAPI, waitForNewOn
 import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
-import { findFreePort, waitForHubReady, waitForHubStateFile, waitForServer } from './helpers/server'
+import { findFreePort, waitForHubStart, waitForServer } from './helpers/server'
 import { reportStartupFailure } from './helpers/serverOutput'
-import { ensureWorkerOnline, restartHub, restartWorker } from './process-control-fixtures'
+import { ensureWorkerOnline, restartHub, restartWorker, SEPARATE_WORKER_NAME } from './process-control-fixtures'
 
 const startup = vi.hoisted(() => ({ root: '', fixtures: new Map<string, unknown>() }))
 
@@ -50,8 +50,7 @@ vi.mock('./helpers/server', async original => ({
   getGlobalState: () => ({ binaryPath: 'private-leapmux', tmpDir: startup.root }),
   findFreePort: vi.fn(async () => 12345),
   waitForServer: vi.fn(),
-  waitForHubStateFile: vi.fn(),
-  waitForHubReady: vi.fn(),
+  waitForHubStart: vi.fn(),
   hubSpawnEnv: (env: unknown) => env,
 }))
 vi.mock('./helpers/serverOutput', async original => ({
@@ -75,7 +74,6 @@ beforeEach(() => {
     hubProc: createProcessStub({ pid: 123 }).proc,
     workerProc: createProcessStub({ pid: 124 }).proc,
     dataDir: '/test-data',
-    binaryPath: 'leapmux',
     hubPort: 12345,
     output: { mark: () => 0, since: () => '', capture: vi.fn() },
   }
@@ -102,12 +100,21 @@ describe('process restart cleanup', () => {
     await restart(server)
     expect(stopProcess).toHaveBeenCalledExactlyOnceWith(previous)
     expect(server[field]).toBe(replacement)
-    expect(server.output.capture).toHaveBeenCalledWith(replacement, field === 'hubProc' ? 'hub' : 'worker')
+    expect(server.output.capture).toHaveBeenCalledWith(replacement, field === 'hubProc' ? 'hub' : SEPARATE_WORKER_NAME)
+    expect(replacement.unref).toHaveBeenCalledOnce()
     expect(reportStartupFailure).not.toHaveBeenCalled()
-    if (field === 'hubProc')
+    if (field === 'hubProc') {
+      expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', ['hub', '-listen', ':12345', '-data-dir', join(server.dataDir, 'hub')], expect.objectContaining({ detached: true }))
       expect(loginViaAPI).toHaveBeenCalledWith(server.hubUrl, 'admin', 'password')
-    else
+    }
+    else {
+      // The restarted Worker keeps the registration in its data directory, and it takes the same flags as the first start.
+      expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', ['worker', '--hub', server.hubUrl, '--data-dir', join(server.dataDir, 'worker')], expect.objectContaining({
+        detached: true,
+        env: { LEAPMUX_WORKER_NAME: SEPARATE_WORKER_NAME },
+      }))
       expect(listOnlineWorkerIDsViaAPI).toHaveBeenCalledTimes(2)
+    }
   })
 
   describe.each(['hub readiness', 'hub login', 'worker registration'])('%s failure', (stage) => {
@@ -184,8 +191,7 @@ describe('initial process fixture port ownership', () => {
     startup.root = mkdtempSync(join(scratch, 'process-fixture-startup-'))
     children = []
     vi.mocked(findFreePort).mockResolvedValue(12345)
-    vi.mocked(waitForHubStateFile).mockResolvedValue(JSON.stringify({ listen: ['127.0.0.1:24680'] }))
-    vi.mocked(waitForHubReady).mockResolvedValue(undefined)
+    vi.mocked(waitForHubStart).mockResolvedValue({ hubUrl: 'http://localhost:24680', listen: '127.0.0.1:24680' })
     vi.mocked(waitForNewOnlineWorkerViaAPI).mockResolvedValue('assigned-worker')
     vi.mocked(spawnTestProcess).mockImplementation((_command, _args) => {
       const stub = createProcessStub({ pid: 1000 + children.length })
@@ -210,21 +216,22 @@ describe('initial process fixture port ownership', () => {
       '-data-dir',
       expect.any(String),
     ], expect.any(Object))
-    expect(waitForHubStateFile).toHaveBeenCalledWith(expect.stringMatching(/state\.json$/), children[0]?.proc)
-    expect(waitForHubReady).toHaveBeenCalledWith('http://localhost:24680', children[0]?.proc)
-    expect(use).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://localhost:24680', hubPort: 24680, workerId: 'assigned-worker' }))
-    expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'private-leapmux', expect.arrayContaining(['--hub', 'http://localhost:24680']), expect.any(Object))
+    expect(waitForHubStart).toHaveBeenCalledWith(expect.stringMatching(/hub[/\\]state\.json$/), children[0]?.proc)
+    expect(use).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://localhost:24680', hubPort: 24680, workerId: 'assigned-worker', workerProc: children[1]?.proc }))
+    expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'private-leapmux', expect.arrayContaining(['--hub', 'http://localhost:24680', '--registration-key', 'private-registration']), expect.objectContaining({
+      detached: true,
+      env: { LEAPMUX_WORKER_NAME: SEPARATE_WORKER_NAME },
+    }))
+    for (const child of children)
+      expect(child.proc.unref).toHaveBeenCalledOnce()
     expect(stopProcesses).toHaveBeenCalledWith([...children].reverse().map(child => child.proc))
     expect(readdirSync(startup.root)).toEqual([])
   })
 
-  it.each(['state file', 'readiness', 'registration', 'spawn'])('cleans partial initial startup after %s fails', async (stage) => {
+  it.each(['hub start', 'registration', 'spawn'])('cleans partial initial startup after %s fails', async (stage) => {
     const failed = new Error(`The controlled ${stage} failed.`)
-    if (stage === 'state file') {
-      vi.mocked(waitForHubStateFile).mockRejectedValueOnce(failed)
-    }
-    else if (stage === 'readiness') {
-      vi.mocked(waitForHubReady).mockRejectedValueOnce(failed)
+    if (stage === 'hub start') {
+      vi.mocked(waitForHubStart).mockRejectedValueOnce(failed)
     }
     else if (stage === 'registration') {
       vi.mocked(waitForNewOnlineWorkerViaAPI).mockRejectedValueOnce(failed)
@@ -242,7 +249,7 @@ describe('initial process fixture port ownership', () => {
   it('preserves the initial startup failure when process cleanup fails too', async () => {
     const failed = new Error('The controlled initial state file failed.')
     const cleanupFailed = new Error('The controlled initial process cleanup failed.')
-    vi.mocked(waitForHubStateFile).mockRejectedValueOnce(failed)
+    vi.mocked(waitForHubStart).mockRejectedValueOnce(failed)
     vi.mocked(stopProcesses).mockRejectedValueOnce(cleanupFailed)
     const result: unknown = await runInitialFixture(async () => {}).then(() => null, (error: unknown) => error)
     expect(result).toBeInstanceOf(AggregateError)

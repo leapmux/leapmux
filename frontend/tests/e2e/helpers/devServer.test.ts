@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import type { DevServerHandle } from './devServer'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -12,13 +13,22 @@ const state = vi.hoisted(() => ({
   waitedURL: '',
 }))
 
-vi.mock('./server', async importOriginal => ({
-  ...await importOriginal<typeof import('./server')>(),
-  getGlobalState: () => ({ binaryPath: 'mock-leapmux', tmpDir: state.tmpDir }),
-  hubSpawnEnv: () => ({}),
-  findFreePort: () => { throw new Error('the hub must assign its own port') },
-  waitForHubReady: async (url: string) => { state.waitedURL = url },
-}))
+vi.mock('./server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./server')>()
+  return {
+    ...actual,
+    getGlobalState: () => ({ binaryPath: 'mock-leapmux', tmpDir: state.tmpDir }),
+    hubSpawnEnv: () => ({}),
+    findFreePort: () => { throw new Error('the hub must assign its own port') },
+    // The state file is real. No server answers the readiness request, so the mock records its URL instead.
+    waitForHubStart: async (statePath: string, proc: ChildProcess, browserHost?: string) => {
+      const raw = await actual.waitForHubStateFile(statePath, proc)
+      const hubUrl = actual.hubUrlFromStateJson(raw, browserHost)
+      state.waitedURL = hubUrl
+      return { hubUrl, listen: actual.resolvedHubTCPFromStateJson(raw) }
+    },
+  }
+})
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),

@@ -15,25 +15,27 @@ import {
   listOnlineWorkerIDsViaAPI,
   listWorkersViaAPI,
   loginViaAPI,
-  mintRegistrationKeyViaAPI,
   openPinnedModeAgentViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
-  waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
 import { cleanupOnFailure, finishCleanup, withCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { modelScriptFixtures } from './helpers/modelScriptFixture'
+import { spawnRegisteredWorker, spawnWorkerProcess } from './helpers/nativeWorker'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { createTestDirectory } from './helpers/runDirectory'
-import { getGlobalState, hubSpawnEnv, hubUrlFromStateJson, waitForHubReady, waitForHubStateFile, waitForServer } from './helpers/server'
+import { getGlobalState, hubSpawnEnv, waitForHubStart, waitForServer } from './helpers/server'
 import { attachServerLog, createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { attachToastLog, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { agentWorkspaceFixture, withTestWorkspace } from './helpers/workspace'
+
+/** The name of the Worker of the separate Hub. The output capture uses it as the label of the Worker lines also. */
+export const SEPARATE_WORKER_NAME = 'test-worker'
 
 export interface SeparateServerInfo {
   hubUrl: string
@@ -43,7 +45,6 @@ export interface SeparateServerInfo {
   hubProc: ChildProcess
   workerProc: ChildProcess
   dataDir: string
-  binaryPath: string
   hubPort: number
   /**
    * The captured Hub and Worker output includes every restart.
@@ -89,25 +90,23 @@ export async function ensureWorkerOnline(serverInfo: SeparateServerInfo) {
   await restartWorker(serverInfo)
 }
 
-/** Restart the worker and wait for its new connection. */
+/**
+ * Restart the worker and wait for its new connection.
+ * The Worker keeps its registration in its data directory, so the restart needs no registration key.
+ */
 export async function restartWorker(serverInfo: SeparateServerInfo): Promise<void> {
   await stopWorker(serverInfo)
   await waitForWorkerOffline(serverInfo)
 
-  const workerProc = spawnTestProcess(serverInfo.binaryPath, [
-    'worker',
-    '-hub',
-    serverInfo.hubUrl,
-    '-data-dir',
-    join(serverInfo.dataDir, 'worker'),
-  ], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+  const workerProc = spawnWorkerProcess({
+    hubUrl: serverInfo.hubUrl,
+    name: SEPARATE_WORKER_NAME,
+    dataDir: join(serverInfo.dataDir, 'worker'),
+    env: agentDefaultsEnv(),
+    output: serverInfo.output,
     detached: true,
-    env: hubSpawnEnv({ ...agentDefaultsEnv(), LEAPMUX_WORKER_NAME: 'test-worker' }),
   })
-  workerProc.unref()
   serverInfo.workerProc = workerProc
-  serverInfo.output.capture(workerProc, 'worker')
   await cleanupOnFailure(async () => {
     await waitForWorkerState(serverInfo, true)
   }, () => stopProcess(workerProc))
@@ -119,23 +118,33 @@ export async function stopHub(serverInfo: SeparateServerInfo): Promise<void> {
   await stopProcess(serverInfo.hubProc)
 }
 
-/** Restart the hub and verify that its authentication handler responds. */
-export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> {
-  await stopHub(serverInfo)
-  const hubProc = spawnTestProcess(serverInfo.binaryPath, [
+/**
+ * Spawn the separate Hub with its data below `dataDir`, and capture its output.
+ * A separate process group protects the Hub from a signal to the test runner, and the test process exits without a
+ * wait for it.
+ */
+function spawnSeparateHub(listen: string, dataDir: string, output: ServerOutput): ChildProcess {
+  const hubProc = spawnTestProcess(getGlobalState().binaryPath, [
     'hub',
     '-listen',
-    `:${serverInfo.hubPort}`,
+    listen,
     '-data-dir',
-    join(serverInfo.dataDir, 'hub'),
+    join(dataDir, 'hub'),
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     env: hubSpawnEnv(agentDefaultsEnv()),
   })
   hubProc.unref()
+  output.capture(hubProc, 'hub')
+  return hubProc
+}
+
+/** Restart the hub on its port and verify that its authentication handler responds. */
+export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> {
+  await stopHub(serverInfo)
+  const hubProc = spawnSeparateHub(`:${serverInfo.hubPort}`, serverInfo.dataDir, serverInfo.output)
   serverInfo.hubProc = hubProc
-  serverInfo.output.capture(hubProc, 'hub')
   await cleanupOnFailure(async () => {
     await waitForServer(serverInfo.hubUrl)
     await loginViaAPI(serverInfo.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
@@ -162,9 +171,7 @@ export const processTest = base.extend<
   // One Playwright worker owns this separate Hub and Worker.
   // eslint-disable-next-line no-empty-pattern
   separateHubWorker: [async ({}, use) => {
-    const globalState = getGlobalState()
     const dataDir = createTestDirectory('leapmux-e2e-separate-')
-    const hubDataDir = join(dataDir, 'hub')
     const workerDataDir = join(dataDir, 'worker')
     let hubUrl = ''
 
@@ -174,28 +181,14 @@ export const processTest = base.extend<
     let serverInfo: SeparateServerInfo | undefined
     await withCleanup(async () => {
       console.log('[e2e] Start the separate Hub on an assigned port.')
-      // A separate process group protects the Hub from signals to the test runner.
-      const hubProc = spawnTestProcess(globalState.binaryPath, [
-        'hub',
-        '-listen',
-        '127.0.0.1:0',
-        '-data-dir',
-        hubDataDir,
-      ], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-        env: hubSpawnEnv(agentDefaultsEnv()),
-      })
+      const hubProc = spawnSeparateHub('127.0.0.1:0', dataDir, output)
       started.push(hubProc)
-      hubProc.unref()
-      output.capture(hubProc, 'hub')
 
-      const state = await waitForHubStateFile(join(hubDataDir, 'state.json'), hubProc)
-        .catch(error => reportStartupFailure(output, 'Hub state file', error))
-      hubUrl = hubUrlFromStateJson(state)
+      // Startup waits run outside a test. Print recent server output on failure because no test attachment exists yet.
+      const hub = await waitForHubStart(join(dataDir, 'hub', 'state.json'), hubProc)
+        .catch(error => reportStartupFailure(output, 'Hub startup', error))
+      hubUrl = hub.hubUrl
       const hubPort = Number(new URL(hubUrl).port)
-      await waitForHubReady(hubUrl, hubProc)
-        .catch(error => reportStartupFailure(output, `Hub on port ${hubPort}`, error))
       console.log(`[e2e] The separate Hub is ready on port ${hubPort}.`)
 
       // A Hub with no users makes its first registered user an administrator.
@@ -208,35 +201,16 @@ export const processTest = base.extend<
       // Enable signup before creating newuser. A standalone hub defaults to closed signup after the first administrator exists.
       await enableSignupViaAPI(hubUrl, adminToken)
 
-      // Create the registration key as an administrator and pass it to the worker.
-      // PR #216 removed the previous worker-token approval flow.
-      const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
-
-      // Read the online Worker IDs before startup. Identify the new Worker from the added ID.
-      const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
-
       // A separate process group protects the Worker from signals to the test runner.
       console.log('[e2e] Start the separate Worker.')
-      const workerProc = spawnTestProcess(globalState.binaryPath, [
-        'worker',
-        '--hub',
-        hubUrl,
-        '--registration-key',
-        registrationKey,
-        '--data-dir',
-        workerDataDir,
-      ], {
-        stdio: ['ignore', 'pipe', 'pipe'],
+      const { proc: workerProc, workerId } = await spawnRegisteredWorker({ hubUrl, adminToken }, {
+        name: SEPARATE_WORKER_NAME,
+        dataDir: workerDataDir,
+        env: agentDefaultsEnv(),
+        output,
         detached: true,
-        env: hubSpawnEnv({ ...agentDefaultsEnv(), LEAPMUX_WORKER_NAME: 'test-worker' }),
-      })
-      workerProc.unref()
-      started.push(workerProc)
-      output.capture(workerProc, 'worker')
-
-      // Startup waits run outside a test. Print recent server output on failure because no test attachment exists yet.
-      const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
-        .catch(err => reportStartupFailure(output, 'worker registration', err))
+        onSpawn: proc => started.push(proc),
+      }).catch(error => reportStartupFailure(output, 'worker registration', error))
       console.log(`[e2e] The separate Worker is connected: ${workerId}.`)
 
       // Register the second test user.
@@ -250,7 +224,6 @@ export const processTest = base.extend<
         hubProc,
         workerProc,
         dataDir,
-        binaryPath: globalState.binaryPath,
         hubPort,
         output,
       }

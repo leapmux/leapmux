@@ -1,10 +1,12 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import process from 'node:process'
 import ts from 'typescript'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createProcessStub } from '~/test-support/childProcess'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { E2E_BROWSER_HOST, hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromStateJson, waitForServer } from './server'
+import { E2E_BROWSER_HOST, hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromStateJson, waitForHubStart, waitForServer } from './server'
 
 describe('E2E_BROWSER_HOST', () => {
   it('matches the browser session-cookie domain', () => {
@@ -237,5 +239,62 @@ describe('server readiness deadline', () => {
     const init = request.mock.calls[0]?.[1]
     expect(init?.signal?.aborted).toBe(true)
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('waitForHubStart', () => {
+  let directory: string
+  let statePath: string
+
+  beforeEach(() => {
+    const scratch = resolve(process.cwd(), '../.tmp')
+    mkdirSync(scratch, { recursive: true })
+    directory = mkdtempSync(join(scratch, 'hub-start-'))
+    statePath = join(directory, 'state.json')
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('reads the bound address from the state file and waits for the browser URL to answer', async () => {
+    writeFileSync(statePath, JSON.stringify({ listen: ['unix:/run/hub.sock', '127.0.0.1:43210'] }))
+    const request = vi.fn(async () => new Response('ready'))
+    vi.stubGlobal('fetch', request)
+    const { proc } = createProcessStub()
+    await expect(waitForHubStart(statePath, proc)).resolves.toEqual({ hubUrl: 'http://localhost:43210', listen: '127.0.0.1:43210' })
+    expect(request).toHaveBeenLastCalledWith('http://localhost:43210', expect.anything())
+    await expect(waitForHubStart(statePath, proc, '127.0.0.1')).resolves.toEqual({ hubUrl: 'http://127.0.0.1:43210', listen: '127.0.0.1:43210' })
+    expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:43210', expect.anything())
+    expect(proc.listenerCount('exit')).toBe(0)
+    expect(proc.listenerCount('error')).toBe(0)
+  })
+
+  it('fails with the exit of a hub that wrote no state file, and sends no request', async () => {
+    const request = vi.fn()
+    vi.stubGlobal('fetch', request)
+    await expect(waitForHubStart(statePath, createProcessStub({ exitCode: 1 }).proc)).rejects.toThrow('The hub exited before it wrote')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('refuses a state file with no TCP address before a request', async () => {
+    writeFileSync(statePath, JSON.stringify({ listen: ['unix:/run/hub.sock'] }))
+    const request = vi.fn()
+    vi.stubGlobal('fetch', request)
+    await expect(waitForHubStart(statePath, createProcessStub().proc)).rejects.toThrow('expected one TCP address')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('fails when the hub exits after it wrote the state file and before it answers', async () => {
+    writeFileSync(statePath, JSON.stringify({ listen: ['127.0.0.1:43210'] }))
+    const request = vi.fn<typeof fetch>(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', request)
+    const stub = createProcessStub()
+    const started = waitForHubStart(statePath, stub.proc)
+    await vi.waitFor(() => expect(request).toHaveBeenCalled())
+    stub.emitter.exitCode = 1
+    stub.emitter.emit('exit', 1, null)
+    await expect(started).rejects.toThrow('exited before startup completed')
+    expect(request.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
   })
 })

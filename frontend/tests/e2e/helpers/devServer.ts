@@ -22,7 +22,7 @@ import { mintCLITokenForAdmin } from './cli'
 import { stopProcess } from './process'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
-import { getGlobalState, hubDataDir, hubSpawnEnv, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
+import { getGlobalState, hubDataDir, hubSpawnEnv, waitForHubStart } from './server'
 
 export interface DevServerHandle {
   hubUrl: string
@@ -86,9 +86,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 
   const handle = { hubUrl: '', proc, dataDir }
   return cleanupOnFailure(async () => {
-    const statePath = join(hubDataDir(dataDir), 'state.json')
-    handle.hubUrl = hubUrlFromStateJson(await waitForHubStateFile(statePath, proc))
-    await waitForHubReady(handle.hubUrl, proc)
+    handle.hubUrl = (await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc)).hubUrl
     return handle
   }, () => stopDevServer(handle))
 }
@@ -166,11 +164,9 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 
   const handle = { hubUrl: '', listen: '', proc, dataDir }
   return cleanupOnFailure(async () => {
-    const statePath = join(hubDataDir(dataDir), 'state.json')
-    const state = await waitForHubStateFile(statePath, proc)
-    handle.listen = resolvedHubTCPFromStateJson(state)
-    handle.hubUrl = hubUrlFromStateJson(state, '127.0.0.1')
-    await waitForHubReady(handle.hubUrl, proc)
+    const { hubUrl, listen } = await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc, '127.0.0.1')
+    handle.hubUrl = hubUrl
+    handle.listen = listen
     return handle
   }, () => stopSoloServer(handle))
 }

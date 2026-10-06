@@ -1,22 +1,22 @@
 import type { ChildProcess } from 'node:child_process'
+import type { ServerOutput } from './serverOutput'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   closeTestChannels,
   getUserId,
-  listOnlineWorkerIDsViaAPI,
-  mintRegistrationKeyViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
-  waitForNewOnlineWorkerViaAPI,
 } from './api'
 import { cleanupOnFailure, finishCleanup } from './cleanup'
+import { spawnRegisteredWorker } from './nativeWorker'
 import { stopProcess, stopProcesses } from './process'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
-import { getGlobalState, hubSpawnEnv, hubUrlFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
+import { getGlobalState, hubSpawnEnv, waitForHubStart } from './server'
+import { createServerOutput, reportStartupFailure } from './serverOutput'
 
 /** A registered worker with its own process and database directory. */
 export interface HarnessWorker {
@@ -36,12 +36,17 @@ export interface MultiWorkerHarness {
   adminUserId: string
   /** Registered workers in launch order. */
   workers: HarnessWorker[]
+  /** The output of the hub and of each worker. Each line starts with the name of its process. */
+  output: ServerOutput
   addWorker: (name: string) => Promise<HarnessWorker>
   /** Concurrent calls share the same cleanup operation. */
   stop: () => Promise<void>
 }
 
-/** Start a hub and workers with separate databases. Close all resources after a startup failure. */
+/**
+ * Start a hub and workers with separate databases. Close all resources after a startup failure.
+ * A failed startup, and a failed later addition, print the output of every process before the error propagates.
+ */
 export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHarness> {
   if (!Number.isSafeInteger(count) || count < 0)
     throw new RangeError('The worker count must be a nonnegative integer')
@@ -50,8 +55,11 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
   const directories = new Set([hubDataDir])
   // Include unregistered children so a failed handshake cannot leave a process alive.
   const processes = new Set<ChildProcess>()
+  const output = createServerOutput()
   let additions: Promise<void> = Promise.resolve()
   let shutdown: Promise<void> | undefined
+  // The startup reports its own failure once, so only an addition after the startup reports its failure.
+  let started = false
   let hubUrl = ''
 
   function stop(): Promise<void> {
@@ -73,12 +81,9 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
       env: hubSpawnEnv(),
     })
     processes.add(hubProc)
-    hubProc.stdout?.resume()
-    hubProc.stderr?.resume()
-    const state = await waitForHubStateFile(join(hubDataDir, 'state.json'), hubProc)
+    output.capture(hubProc, 'hub')
     // The localhost URL matches the cookies that loginViaToken installs.
-    hubUrl = hubUrlFromStateJson(state)
-    await waitForHubReady(hubUrl, hubProc)
+    hubUrl = (await waitForHubStart(join(hubDataDir, 'state.json'), hubProc)).hubUrl
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
     const adminUserId = await getUserId(hubUrl, adminToken)
     const workers: HarnessWorker[] = []
@@ -88,32 +93,22 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
       directories.add(dataDir)
       let proc: ChildProcess | undefined
       return cleanupOnFailure(async () => {
-        const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
-        const before = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
-        proc = spawnTestProcess(binaryPath, [
-          'worker',
-          '--hub',
-          hubUrl,
-          '--registration-key',
-          registrationKey,
-          '--name',
+        const registered = await spawnRegisteredWorker({ hubUrl, adminToken }, {
           name,
-          '--data-dir',
           dataDir,
-          '--encryption-mode',
-          'post-quantum',
-        ], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: hubSpawnEnv(),
+          extraArgs: ['--encryption-mode', 'post-quantum'],
+          output,
+          onSpawn: (spawned) => {
+            proc = spawned
+            processes.add(spawned)
+          },
         })
-        processes.add(proc)
-        proc.stdout?.resume()
-        proc.stderr?.resume()
-        const id = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, before)
-        const worker = { id, name, dataDir, proc }
+        const worker = { id: registered.workerId, name, dataDir, proc: registered.proc }
         workers.push(worker)
         return worker
       }, async () => {
+        // The registration stops its own process when it fails. This stop returns at once for an exited process, and
+        // it still waits for a process whose own stop failed.
         if (proc) {
           await stopProcess(proc)
           processes.delete(proc)
@@ -130,11 +125,12 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
       const attempt = additions.then(() => spawnWorker(name))
       // The caller receives the failure. The queue must remain available for subsequent additions and cleanup.
       additions = attempt.then(() => {}, () => {})
-      return attempt
+      return started ? attempt.catch(error => reportStartupFailure(output, `The worker ${name} of the multi-worker harness`, error)) : attempt
     }
 
     for (let i = 0; i < count; i++)
       await addWorker(`worker-${String.fromCharCode(65 + i)}`)
-    return { hubUrl, hubDataDir, hubProc, adminToken, adminUserId, workers, addWorker, stop }
-  }, stop)
+    started = true
+    return { hubUrl, hubDataDir, hubProc, adminToken, adminUserId, workers, output, addWorker, stop }
+  }, stop).catch(error => reportStartupFailure(output, 'The multi-worker harness', error))
 }

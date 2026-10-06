@@ -24,7 +24,7 @@ import { registerAmbientScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { stopProcess } from './process'
 import { trackProcess } from './processRegistry'
-import { hubDataDir, hubSpawnEnv, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubReady, waitForHubStateFile } from './server'
+import { hubDataDir, hubSpawnEnv, waitForHubStart } from './server'
 
 export interface SuiteServerState {
   hubUrl: string
@@ -155,11 +155,8 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
 
     // The hub writes its resolved bind set to <data-dir>/state.json once every
     // listener is bound; the TCP entry there is the port the browser reaches.
-    const statePath = join(hubDataDir(dataDir), 'state.json')
-    const state = await waitForHubStateFile(statePath, proc)
-    const hubUrl = hubUrlFromStateJson(state)
-    const boundHubUrl = `http://${resolvedHubTCPFromStateJson(state)}`
-    await waitForHubReady(hubUrl, proc)
+    const { hubUrl, listen } = await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc)
+    const boundHubUrl = `http://${listen}`
     const adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
     await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
     const [adminUserId, workerId, newuserToken, baselineHubSettings] = await Promise.all([
