@@ -10,35 +10,17 @@ import { openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { withNativeWorker } from '../helpers/nativeWorker'
-import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
-import { chooseSettingsOption, openWorkspace, tabById, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
-import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
+import { openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { withAgentWorkspace } from '../helpers/workspace'
+import { nativeContext } from './scenarios'
 
-// LeapMux exposes no interactive native workspace-trust route for this provider.
-codewhaleTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId, provider: AgentProvider.CODEWHALE }
-  await chooseSettingsOption(page, 'permissionMode-ask')
-  await waitForSettingsIdle(page)
-  const operation = await createNativePermissionFileWrite(context, { fileName: 'native-workspace-trust-control.txt', callId: 'native-workspace-trust-permission', outputPrefix: 'NATIVECONTROL' })
-  await exerciseUnsupportedNativeControl(context, {
-    purpose: 'workspace-trust',
-    classify: codewhaleExtractControl,
-    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
-      toolCall: operation.toolCall,
-      decision: 'allow',
-      beforeDecision: async (banner) => {
-        await operation.beforeDecision()
-        await beforeDecision(banner)
-      },
-      nativeProof: operation.nativeProof,
-    }),
-  })
+codewhaleTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask', classify: codewhaleExtractControl })
 })
 
 codewhaleTest('keeps project config unloaded and applies the actual global configuration', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {
@@ -52,7 +34,7 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
   }, async ({ server }) => {
     await withAgentWorkspace(server, { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-project-config' }, async ({ workspaceId }) => {
       await openWorkspace(page, workspaceId)
-      const context = { page, modelScript, leapmuxServer: server, workspaceId, provider: AgentProvider.CODEWHALE }
+      const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
       const baselineAgent = await currentNativeAgent(context)
       const selectedModel = baselineAgent.optionGroups.find(group => group.id === 'model')?.currentValue
       if (!selectedModel || !baselineAgent.agentSessionId)
@@ -135,7 +117,7 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
     }, async ({ server }) => {
       await withAgentWorkspace(server, { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-global-config' }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
-        const context = { page, modelScript, leapmuxServer: server, workspaceId, provider: AgentProvider.CODEWHALE }
+        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
         expect((await currentNativeAgent(context)).optionGroups.find(group => group.id === 'effort')?.currentValue).toBe('auto')
         const global = await sendNativeAnswer(context, 'Reply through the actual private global Codewhale configuration.', 'The native global configuration control completed.')
         expect(global.body).toHaveProperty('model', baseline.model)

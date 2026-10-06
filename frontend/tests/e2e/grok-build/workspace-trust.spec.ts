@@ -6,10 +6,11 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText, nativeModelToolNames } from '../helpers/nativeScenario'
 import { mcpToolCall } from '../helpers/providerToolCalls'
 import { openGrokMcpWorkspace } from './mcpWorkspace'
+import { nativeContext } from './scenarios'
 
 for (const decision of ['allow', 'deny'] as const) {
   grokTest(`keeps project configuration unloaded until the native trust decision is ${decision}`, async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.GROK_BUILD }
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     const { receiptLog } = await openGrokMcpWorkspace(context, decision)
     const request = await sendNativeAnswer(context, 'Reply once with the current native project configuration.', 'The native project configuration choice reached this turn.')
     // Grok reaches every MCP server through its two generic tools, `search_tool` and `use_tool`.

@@ -1,29 +1,26 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { COMMAND_CODE_AGENT, commandCodeTest, createCommandCodeWorkingDir, expect } from '../command-code-fixtures'
-import { expectNoNativeStartupControl } from '../helpers/nativeControlObservation'
+import { commandCodeTest, expect } from '../command-code-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { tabById } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
+import { createGitRepo } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
 commandCodeTest('keeps the actual untrusted project mod unloaded without a native trust dialog', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const workingDir = createCommandCodeWorkingDir()
-  const marker = join(workingDir, 'native-project-mod-executed')
-  const mods = join(workingDir, '.commandcode/mods')
-  mkdirSync(mods, { recursive: true })
-  writeFileSync(join(mods, 'native-project-trust.mjs'), `import {writeFileSync} from 'node:fs';export default function(){writeFileSync(${JSON.stringify(marker)},'Native project mod executed.')}`)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await expectNoNativeStartupControl(context, {
-    testId: 'control-banner',
-    additionalTestIds: ['dialog-editor'],
-    start: async () => {
-      const agent = await openProviderAgent(leapmuxServer, context.workspaceId, COMMAND_CODE_AGENT, { workingDir })
-      await tabById(page, agent.agentId).click()
-    },
-    relatedProof: async () => {
-      await sendNativeAnswer(context, 'Return a native answer from the untrusted scratch project.', 'The native project probe completed.')
-      expect(existsSync(marker)).toBe(false)
+  await exerciseNativeWorkspaceTrustLimit(context, {
+    projectConfiguration: {
+      prepare: ({ directory }) => {
+        createGitRepo(directory, '.')
+        const executed = join(directory, 'native-project-mod-executed')
+        const mods = join(directory, '.commandcode', 'mods')
+        mkdirSync(mods, { recursive: true })
+        writeFileSync(join(mods, 'native-project-trust.mjs'), `import {writeFileSync} from 'node:fs';export default function(){writeFileSync(${JSON.stringify(executed)},'Native project mod executed.')}`)
+      },
+      prove: async (privateContext, { directory }) => {
+        await sendNativeAnswer(privateContext, 'Return a native answer from the untrusted scratch project.', 'The native project probe completed.')
+        expect(existsSync(join(directory, 'native-project-mod-executed'))).toBe(false)
+      },
     },
   })
 })

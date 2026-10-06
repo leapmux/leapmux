@@ -3,42 +3,18 @@ import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { kimiExtractControl } from '../../../src/components/chat/providers/kimi/extractControl'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
-
 import { nativeModelToolNames } from '../helpers/nativeScenario'
-import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-
-import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
-import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { kimiTest } from '../kimi-fixtures'
 
-// LeapMux exposes no interactive native workspace-trust route for this provider.
-kimiTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedKimiWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKimiWorkspace.workspaceId, provider: AgentProvider.KIMI_CODE }
-  await chooseSettingsOption(page, 'permissionMode-manual')
-  await waitForSettingsIdle(page)
-  const operation = await createNativePermissionFileWrite(context, { fileName: 'native-workspace-trust-control.txt', callId: 'native-workspace-trust-permission', outputPrefix: 'NATIVECONTROL' })
-  await exerciseUnsupportedNativeControl(context, {
-    purpose: 'workspace-trust',
-    classify: kimiExtractControl,
-    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
-      toolCall: operation.toolCall,
-      decision: 'allow',
-      beforeDecision: async (banner) => {
-        await operation.beforeDecision()
-        await beforeDecision(banner)
-      },
-      nativeProof: operation.nativeProof,
-    }),
-  })
+kimiTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-manual', classify: kimiExtractControl })
 })
 
-kimiTest('keeps untrusted project MCP configuration unloaded without a browser trust route', async ({ page, modelScript, leapmuxServer, authenticatedKimiWorkspace }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedKimiWorkspace.workspaceId, provider: AgentProvider.KIMI_CODE }
-  await exerciseNativeWorkspaceTrustLimit(context, {
+kimiTest('keeps untrusted project MCP configuration unloaded without a browser trust route', async ({ native }) => {
+  await exerciseNativeWorkspaceTrustLimit(native, {
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
         const script = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })

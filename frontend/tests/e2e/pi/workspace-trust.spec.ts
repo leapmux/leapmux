@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { openAgentViaAPI } from '../helpers/api'
@@ -12,9 +13,10 @@ import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 import { writePiMcpConfiguration } from './mcpConfiguration'
+import { nativeContext } from './scenarios'
 
 piTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId, provider: AgentProvider.PI }
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare({ directory, marker }) {

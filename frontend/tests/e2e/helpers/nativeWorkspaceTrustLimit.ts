@@ -1,27 +1,41 @@
+import type { ControlExtractionInput, ExtractedControlRequest } from '../../../src/components/chat/providers/capabilities'
+import type { MockModelToolCall } from './mockModelScript'
+import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from './nativeStartupWrapper'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
+import { readMcpServerReceipt } from './mcpServerReceipt'
 import { expectNoNativeStartupControl } from './nativeControlObservation'
-import { nativeAgentById } from './nativeScenario'
+import { sendNativeAnswer } from './nativeConversation'
+import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from './nativePermission'
+import { nativeAgentById, nativeModelInstructionText } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { resolveNativeStartupLaunch } from './nativeStartupWrapper'
-import { createTestDirectory } from './runDirectory'
-import { uniqueMarker } from './shellArguments'
-import { tabById } from './ui'
+import { nativeToolResult } from './nativeToolResult'
+import { createTestDirectory, isFileNameComponent } from './runDirectory'
+import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
+import { chooseSettingsOption, tabById, waitForSettingsIdle } from './ui'
+import { exerciseUnsupportedNativeControl } from './unsupportedNativeControl'
+import { createGitRepo } from './worktree'
 
 export interface NativeProjectConfiguration {
   directory: string
   marker: string
 }
 
+/** The project configuration that a workspace-trust scenario writes, and its proof that the provider read it. */
+export interface NativeProjectConfigurationProof {
+  prepare: (project: NativeProjectConfiguration) => Promise<void> | void
+  prove: (context: ManagedNativeScenarioContext, project: NativeProjectConfiguration & { agentId: string }) => Promise<void>
+}
+
 interface NativeWorkspaceTrustBaseOptions {
-  projectConfiguration: {
-    prepare: (project: NativeProjectConfiguration) => Promise<void> | void
-    prove: (context: ManagedNativeScenarioContext, project: NativeProjectConfiguration & { agentId: string }) => Promise<void>
-  }
+  projectConfiguration: NativeProjectConfigurationProof
   optionValues?: Record<string, string>
   worker?: {
     launch: NativeStartupLaunch
@@ -108,5 +122,119 @@ export async function exerciseNativeWorkspaceTrustLimit(
   }
   else {
     await run(context)
+  }
+}
+
+/**
+ * A project that holds one instruction file, and the proof that the text of the file reached the model.
+ *
+ * The proof reads the request through the context reader of the provider when the provider sets one, and through
+ * the generic instruction reader otherwise. The generic reader takes the instructions and the user text only, so a
+ * marker in a tool schema or a tool result does not satisfy it.
+ */
+export function instructionFileConfiguration(
+  fileName: string,
+  options: {
+    /**
+     * Make the directory the root of a git repository of its own. A provider that reads the file from each
+     * directory up to the repository root then stops at the directory, and does not also read the instructions of
+     * the LeapMux checkout around it.
+     */
+    gitRoot?: boolean
+    /** The text by which the provider states the path of the file that it loaded. */
+    sourceLine?: (path: string) => string
+  } = {},
+): NativeProjectConfigurationProof {
+  if (!isFileNameComponent(fileName))
+    throw new Error('The project instruction file requires one file name component.')
+  return {
+    prepare: ({ directory, marker }) => {
+      if (options.gitRoot)
+        createGitRepo(directory, '.')
+      writeFileSync(join(directory, fileName), `# Native project configuration\nKeep ${marker} as a standing project instruction.\n`)
+    },
+    prove: async (context, { directory, marker }) => {
+      const request = await sendNativeAnswer(context, 'Reply once after native project configuration loads.', 'The native project configuration turn completed.')
+      const text = context.readModelContext?.(request) ?? nativeModelInstructionText(request)
+      expect(text).toContain(marker)
+      if (options.sourceLine)
+        expect(text).toContain(options.sourceLine(join(directory, fileName)))
+    },
+  }
+}
+
+/**
+ * Wait until the MCP server of `receiptLog` answered `initialize` and listed `tool`.
+ *
+ * The server writes its receipt again after each message, so the receipt can exist before the server lists a tool.
+ * The wait therefore requires the tool, not only the file.
+ */
+export async function expectMcpServerLoaded(receiptLog: string, tool = 'echo'): Promise<void> {
+  if (!tool)
+    throw new Error('The MCP server check requires the name of a tool.')
+  const listed = () => existsSync(receiptLog) && readMcpServerReceipt(receiptLog).toolCatalogs.some(catalog => catalog.tools.some(entry => entry.name === tool))
+  await expect.poll(listed, { message: `the MCP server of ${receiptLog} lists ${tool}` }).toBe(true)
+  expect(readMcpServerReceipt(receiptLog).initializeCapabilities).not.toBeNull()
+}
+
+/**
+ * Prove that LeapMux offers no workspace-trust route for a provider that asks before a tool runs.
+ *
+ * The provider asks for one real operation, the browser classifier reads each control that the provider sends, and
+ * no control offers a trust decision.
+ */
+export async function exerciseMissingWorkspaceTrustRoute(
+  context: ManagedNativeScenarioContext,
+  options: {
+    /** The test ID of the settings option under which the provider asks before a tool runs. */
+    askOption: string
+    classify: (input: ControlExtractionInput) => ExtractedControlRequest | null
+    /**
+     * Prepare the operation that the provider asks for, after the ask option applies. The default writes one file
+     * in the working directory through the shell tool of the provider.
+     */
+    operation?: () => Promise<NativePermissionOperationPlan> | NativePermissionOperationPlan
+  },
+): Promise<void> {
+  if (!options.askOption)
+    throw new Error('The missing workspace-trust route requires the option under which the provider asks.')
+  await chooseSettingsOption(context.page, options.askOption)
+  await waitForSettingsIdle(context.page)
+  const operation = options.operation
+    ? await options.operation()
+    : await createNativePermissionFileWrite(context, { fileName: 'native-workspace-trust-control.txt', callId: 'native-workspace-trust-permission', outputPrefix: 'NATIVECONTROL' })
+  await exerciseUnsupportedNativeControl(context, {
+    purpose: 'workspace-trust',
+    classify: options.classify,
+    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
+      toolCall: operation.toolCall,
+      ...(operation.outputGate ? { outputGate: operation.outputGate } : {}),
+      decision: 'allow',
+      beforeDecision: async (banner) => {
+        await operation.beforeDecision()
+        await beforeDecision(banner)
+      },
+      nativeProof: operation.nativeProof,
+    }),
+  })
+}
+
+/**
+ * A shell command that writes one file in a private directory outside the working directory, and prints the text
+ * of that file. `toolCall` gives the shell tool call of the provider that carries the command.
+ */
+export function outsideFileWriteOperation(toolCall: (callId: string, command: string) => MockModelToolCall): NativePermissionOperationPlan {
+  const file = join(createTestDirectory('native-workspace-trust-'), 'native-control.txt')
+  const callId = 'native-control-permission'
+  const command = `printf 'NATIVECONTROL%s\\n' "$((40 + 2))" > ${quotePosixShellArgument(file)}; cat ${quotePosixShellArgument(file)}`
+  return {
+    toolCall: toolCall(callId, command),
+    beforeDecision: () => {
+      expect(existsSync(file)).toBe(false)
+    },
+    nativeProof: (request) => {
+      expect(nativeToolResult(request, callId)).toContain('NATIVECONTROL42')
+      expect(readFileSync(file, 'utf8')).toBe('NATIVECONTROL42\n')
+    },
   }
 }

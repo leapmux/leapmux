@@ -1,50 +1,23 @@
-import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampTest } from '../amp-fixtures'
-import { ampToolResultReader } from '../helpers/ampToolResult'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision } from '../helpers/nativePermission'
-
-import { exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
-
-import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
-import { exerciseUnsupportedNativeControl } from '../helpers/unsupportedNativeControl'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { readAmpExecutorCatalog } from './nativeCatalog'
 import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
 
-// LeapMux exposes no interactive native workspace-trust route for this provider.
-ampTest('classifies real native controls and proves the missing workspace-trust route', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {
-  const context: ManagedNativeScenarioContext = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
-  context.readToolResult = ampToolResultReader(context)
-  await chooseSettingsOption(page, 'permissionMode-ask')
-  await waitForSettingsIdle(page)
-  const operation = await createNativePermissionFileWrite(context, { fileName: 'native-workspace-trust-control.txt', callId: 'native-workspace-trust-permission', outputPrefix: 'NATIVECONTROL' })
-  await exerciseUnsupportedNativeControl(context, {
-    purpose: 'workspace-trust',
-    classify: ampExtractControl,
-    relatedProof: beforeDecision => exerciseNativePermissionDecision(context, {
-      toolCall: operation.toolCall,
-      decision: 'allow',
-      beforeDecision: async (banner) => {
-        await operation.beforeDecision()
-        await beforeDecision(banner)
-      },
-      nativeProof: operation.nativeProof,
-    }),
-  })
+ampTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask', classify: ampExtractControl })
 })
 
-ampTest('keeps untrusted project MCP servers blocked without an interactive trust decision', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }, testInfo) => {
-  const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
+ampTest('keeps untrusted project MCP servers blocked without an interactive trust decision', async ({ native }, testInfo) => {
   let expectedConfiguration: { command: string, args: string[] } | undefined
-  await exerciseNativeWorkspaceTrustLimit(context, {
+  await exerciseNativeWorkspaceTrustLimit(native, {
     optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll },
     projectConfiguration: {
       prepare: ({ directory, marker }) => {

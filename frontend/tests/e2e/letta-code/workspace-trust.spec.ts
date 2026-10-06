@@ -25,15 +25,14 @@ lettaTest('starts with a real project configuration and no native workspace trus
         writeFileSync(join(directory, 'native-read.txt'), `${marker}\n`)
       },
       prove: async (privateContext, { directory, marker }) => {
-        const start = (await modelScript.status()).stepCount
-        await modelScript.queue(
+        const start = await modelScript.queue(
           { toolCalls: [readToolCall(privateContext.provider, callId, join(directory, 'native-read.txt'))] },
           { text: 'The native project configuration probe completed.' },
         )
         await sendMessage(page, modelScript.prompt('Read the private file once and then complete.'))
-        const status = await modelScript.waitForSteps(start + 2)
+        await modelScript.waitForSteps(start + 2)
         await waitForAgentIdle(page)
-        expect(nativeToolResult(status.requests.find(request => request.stepIndex === start + 1), callId)).toContain(marker)
+        expect(nativeToolResult(await modelScript.requestAt(start + 1), callId)).toContain(marker)
         const receipt = join(directory, 'native-project-hook-receipt.json')
         expect(existsSync(receipt)).toBe(true)
         const actual: unknown = JSON.parse(readFileSync(receipt, 'utf8'))
