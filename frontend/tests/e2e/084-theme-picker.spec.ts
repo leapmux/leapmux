@@ -161,9 +161,8 @@ test.describe('Theme picker', () => {
     await resetToMatchUi(terminalRow)
     // One control says "follow the app", and it governs the mode pills, which
     // keep reporting the mode the app is on.
-    const terminalModes = terminalRow.getByRole('radiogroup', { name: 'Terminal theme mode' })
-    await expect(terminalModes.getByRole('radio', { name: 'Match UI' })).toHaveCount(0)
-    await expect(terminalModes.getByRole('radio', { name: 'System' })).toBeDisabled()
+    await expect(themeModeRadio(terminalRow, 'Terminal theme mode', 'Match UI')).toHaveCount(0)
+    await expect(themeModeRadio(terminalRow, 'Terminal theme mode', 'System')).toBeDisabled()
 
     await pickTheme(themeRow, 'nord')
     // Still following, not silently pinned to the value it happened to hold.
@@ -204,9 +203,9 @@ test.describe('Theme picker', () => {
     await resetToMatchUi(terminalRow)
 
     await pickTheme(terminalRow, 'gruvbox')
-    const terminalModes = terminalRow.getByRole('radiogroup', { name: 'Terminal theme mode' })
-    await expect(terminalModes.getByRole('radio', { name: 'Dark' })).toBeEnabled()
-    await expect(terminalModes.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
+    const terminalDark = themeModeRadio(terminalRow, 'Terminal theme mode', 'Dark')
+    await expect(terminalDark).toBeEnabled()
+    await expect(terminalDark).toHaveAttribute('aria-checked', 'true')
 
     await setPreferenceScope(page, 'appearance.terminalTheme', 'device')
     await expect.poll(() => getBrowserPrefValue(page, leapmuxServer.adminUserId, 'terminalTheme'))

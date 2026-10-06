@@ -137,8 +137,8 @@ test.describe('Workspace Chat', () => {
 
     // Create an agent tab.
     await openAgentViaUI(page)
+    await expectAgentTabCount(page, initialCount + 1)
     const tabs = agentTabs(page)
-    await expect(tabs).toHaveCount(initialCount + 1)
 
     // The new tab becomes active. Select the first tab.
     await tabs.first().click()
@@ -166,10 +166,9 @@ test.describe('Workspace Chat', () => {
 
     // Create an agent tab.
     await openAgentViaUI(page)
+    const countBefore = initialCount + 1
+    await expectAgentTabCount(page, countBefore)
     const tabs = agentTabs(page)
-    await expect(tabs).toHaveCount(initialCount + 1)
-
-    const countBefore = await tabs.count()
 
     // Close the last tab through a middle-button MouseEvent.
     // Playwright dispatchEvent can create an Event with no button value.
@@ -180,6 +179,6 @@ test.describe('Workspace Chat', () => {
     })
 
     // Require removal of the closed tab.
-    await expect(tabs).toHaveCount(countBefore - 1)
+    await expectAgentTabCount(page, countBefore - 1)
   })
 })

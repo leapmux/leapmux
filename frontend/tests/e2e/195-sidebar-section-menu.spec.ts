@@ -108,7 +108,7 @@ test.describe('sidebar section menu', () => {
     // rows inside it are not a usable signal here.
     const section = sidebarSectionHeader(page, 'workspaces_archived')
     // The SUMMARY row is the toggle; the pane around it is not.
-    await page.locator('[data-testid="section-header-workspaces_archived-summary"]:visible').first().click()
+    await section.getByTestId('section-header-workspaces_archived-summary').click()
     await expect(section).toHaveAttribute('data-closed', '')
 
     // By its test id, not by role: this row is a `menuitemcheckbox`, so the

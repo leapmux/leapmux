@@ -5,7 +5,7 @@ import { nativeAgentById } from './helpers/nativeScenario'
 import { openPreferencesAs, preferenceScopeChip, setPreferenceScope } from './helpers/preferences'
 import { retryUntilPass } from './helpers/retryUntilPass'
 import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet, sendToolUsingTurn, waitForIdleSoundReceipt } from './helpers/turnEndSound'
-import { agentTabs, expectAgentTabCount, getBrowserPref, openAgentViaUI, openSettingsAt, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, getBrowserPref, openAgentViaUI, openSettingsAt, tabById, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
 // The doorbell fires on a turn that USED a tool, so each turn here makes a real
 // tool call through `sendToolUsingTurn` -- a text-only answer is the negative
@@ -116,22 +116,19 @@ test.describe('Turn End Sound Preferences', () => {
   })
 
   test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
-    void authenticatedWorkspace // fixture trigger
     await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open a second agent tab so we have somewhere to land after closing
     await openAgentViaUI(page)
 
-    // Switch back to the first agent tab (the one with a completed turn)
-    const tabs = agentTabs(page)
-    await tabs.first().click()
-    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true')
-    const closingId = await tabs.first().getAttribute('data-tab-id')
-    if (!closingId)
-      throw new Error('The close sound probe needs the native agent ID.')
+    // Switch back to the agent of the fixture, the one with a completed turn.
+    const closingId = authenticatedWorkspace.agentId
+    const closing = tabById(page, closingId)
+    await closing.click()
+    await expect(closing).toHaveAttribute('aria-selected', 'true')
 
     // Close it. Closing a tab whose turn already ended must not re-ring.
-    await tabs.first().locator('[data-testid="tab-close"]').click()
+    await closing.locator('[data-testid="tab-close"]').click()
     await expectAgentTabCount(page, 1)
     await retryUntilPass(async () => {
       expect(await nativeAgentById({ leapmuxServer }, closingId), 'the Worker lists the closed agent no more').toBeNull()

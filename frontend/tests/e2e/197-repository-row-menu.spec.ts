@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
 import { expect, test } from './fixtures'
-import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem, workspaceChildren } from './helpers/ui'
+import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem, sidebarLeaves, visibleOnly, workspaceChildren } from './helpers/ui'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
@@ -118,7 +118,8 @@ test.describe('repository row menu', () => {
     await openWorkspace(page, workspaceId)
 
     const subtree = workspaceChildren(page, workspaceId)
-    const leaves = subtree.locator('[data-testid="tab-tree-leaf"]:visible')
+    // A folded branch keeps its leaves in the DOM, hidden, so the count reads the visible leaves.
+    const leaves = visibleOnly(sidebarLeaves(page, workspaceId))
     await expect(leaves.first()).toBeVisible()
 
     const repoRow = repoGroupRow(subtree)

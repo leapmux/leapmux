@@ -1,6 +1,6 @@
 import { frontendRoot } from '~/test-support/sourceTree'
 import { expect, test } from './fixtures'
-import { treeRow } from './helpers/ui'
+import { sidebarSectionHeader, treeRow } from './helpers/ui'
 
 test.describe('File Browser Navigation', () => {
   // The agent works in the frontend directory, so the tree shows its files.
@@ -10,7 +10,7 @@ test.describe('File Browser Navigation', () => {
     void authenticatedWorkspace
 
     // The Files sidebar should be visible in the right panel
-    await expect(page.locator('[data-testid="section-header-files-summary"]')).toBeVisible()
+    await expect(sidebarSectionHeader(page, 'files')).toBeVisible()
 
     // Wait for file entries to load (working dir is the frontend dir)
     // package.json should exist in the frontend directory

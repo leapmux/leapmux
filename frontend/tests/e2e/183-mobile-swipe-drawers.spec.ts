@@ -136,7 +136,7 @@ async function expectMainThreadIdle(page: Page) {
  */
 async function transcriptY(page: Page): Promise<number> {
   const bar = (await page.getByTestId('tab-bar').boundingBox())!
-  const editor = (await page.getByTestId('composer-editor').boundingBox())!
+  const editor = (await composerEditor(page).boundingBox())!
   return (bar.y + bar.height + editor.y) / 2
 }
 

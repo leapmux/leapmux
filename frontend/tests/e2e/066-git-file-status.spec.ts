@@ -157,10 +157,10 @@ test.describe('Git File Status', () => {
     await page.locator('[data-testid="files-filter-changed"]').click()
     await expect(treeRow(page, 'untracked.txt')).toBeVisible()
     await page.locator('[data-testid="files-flat-list-toggle"]').click()
-    await expect(page.locator('[data-testid="files-flat-list"]')).toBeVisible()
+    await expect(page.locator('[data-testid="files-flat-list"]:visible')).toBeVisible()
 
     // The untracked file row should have a diff stats badge showing *1.
-    const flatList = page.locator('[data-testid="files-flat-list"]')
+    const flatList = page.locator('[data-testid="files-flat-list"]:visible')
     const untrackedRow = flatList.locator('div', { hasText: 'untracked.txt' }).first()
     const badge = untrackedRow.locator('[data-testid="git-diff-stats"]')
     await expect(badge).toBeVisible()
@@ -184,7 +184,7 @@ test.describe('Git File Status', () => {
 
     // Flat list should be visible. Its rows are not tree rows, so the names are
     // read inside the list.
-    const flatList = page.locator('[data-testid="files-flat-list"]')
+    const flatList = page.locator('[data-testid="files-flat-list"]:visible')
     await expect(flatList).toBeVisible()
     await expect(flatList.getByText('file_a.txt')).toBeVisible()
     await expect(flatList.getByText('file_b.txt')).toBeVisible()
@@ -205,7 +205,7 @@ test.describe('Git File Status', () => {
 
     await page.locator('[data-testid="files-filter-changed"]').click()
     await page.locator('[data-testid="files-flat-list-toggle"]').click()
-    const rows = page.locator('[data-testid="files-flat-list"] > div')
+    const rows = page.locator('[data-testid="files-flat-list"]:visible').locator(':scope > div')
     await expect(rows).toHaveCount(3)
 
     // Default: repo-relative path, ascending.

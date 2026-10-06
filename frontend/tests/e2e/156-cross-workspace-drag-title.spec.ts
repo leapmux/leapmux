@@ -127,9 +127,9 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     // so the empty read of wsA below cannot pass on a tree that never rendered.
     await expect.poll(() => sidebarLeafIds(page, wsB)).toContain(wsAAgentId)
     // wsAAgentId must not appear back under wsA's sidebar section
-    // after refresh — the move op committed to the hub and the
-    // post-reload `listTabs(wsA)` should no longer return it. The reload
-    // restores wsA as expanded, so a bare chevron click would collapse it.
+    // after refresh — the move op committed to the hub, so the CRDT
+    // projection that the reload builds no longer places it under wsA. The
+    // reload restores wsA as expanded, so a bare chevron click would collapse it.
     await expandWorkspaceRow(page, wsA)
     expect(await sidebarLeafIds(page, wsA)).toEqual([])
   })
