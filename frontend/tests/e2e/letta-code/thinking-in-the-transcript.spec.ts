@@ -1,16 +1,10 @@
-import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { expect, lettaTest } from '../letta-fixtures'
+import { exerciseThinkingRows } from '../helpers/thinkingRows'
+import { lettaTest } from '../letta-fixtures'
+import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code basic chat', () => {
-  lettaTest('draws model reasoning in a thought band', async ({ authenticatedReasoningLettaWorkspace, page, modelScript }) => {
-    void authenticatedReasoningLettaWorkspace
-    const reasoning = 'LETTA_THOUGHT_MARKER I compare the two values.'
-    await modelScript.queue({ reasoning, text: 'The answer is 6912.' })
-    await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    await expect(bandRows(page, 'thought').filter({ hasText: reasoning }).first()).toBeVisible()
-    await expect(bandRows(page, 'text').filter({ hasText: reasoning })).toHaveCount(0)
+  lettaTest('draws model reasoning in a thought band', async ({ authenticatedReasoningLettaWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasoningLettaWorkspace.workspaceId })
+    await exerciseThinkingRows(context)
   })
 })

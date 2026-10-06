@@ -1,21 +1,9 @@
-import { diracTest, expect } from '../dirac-fixtures'
-import { diracRespondToolCall } from '../helpers/providerToolCalls'
-import { ARITHMETIC_PROMPT, bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { diracTest } from '../dirac-fixtures'
+import { exerciseThinkingRows } from '../helpers/thinkingRows'
 
 diracTest.describe('Dirac thinking and context usage', () => {
-  const REASONING = 'I add the two numbers column by column.'
-
-  diracTest('draws the reasoning in a thought band', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
-    void authenticatedDiracWorkspace
-    await modelScript.queue({
-      reasoning: REASONING,
-      toolCalls: [diracRespondToolCall('dirac-think', 'complete', '6912')],
-    })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await waitForAgentIdle(page)
-
-    await expect(bandRows(page, 'thought').filter({ hasText: REASONING }).first()).toBeVisible()
-    // The reasoning stays out of the answer text.
-    await expect(bandRows(page, 'text').filter({ hasText: REASONING })).toHaveCount(0)
+  diracTest('draws the reasoning in a thought band', async ({ native }) => {
+    // The context answers through Dirac's respond tool, and the reasoning rides on that step.
+    await exerciseThinkingRows(native)
   })
 })

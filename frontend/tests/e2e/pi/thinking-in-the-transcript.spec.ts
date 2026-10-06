@@ -1,32 +1,9 @@
-import { expect } from '@playwright/test'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, bandRows, expectAssistantAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { exerciseThinkingRows } from '../helpers/thinkingRows'
 import { piTest } from '../pi-fixtures'
 
-const REASONING = 'I add the two numbers.'
-
-piTest('draws the thinking of a reply as a row of its own, before the answer, also after a reload', async ({ authenticatedPiWorkspace, page, modelScript }) => {
-  void authenticatedPiWorkspace
+piTest('draws the thinking of a reply as a row of its own, before the answer, also after a reload', async ({ native }) => {
   // Pi reads `reasoning_content` as a thinking block, and states the whole reply as
   // ONE message that holds the thinking and the text. The worker persists the
   // thinking as a row of its own, so the saved transcript keeps it.
-  await modelScript.queue({ reasoning: REASONING, text: ARITHMETIC_ANSWER_TEXT })
-  await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-  await modelScript.waitForSteps()
-  await waitForAgentIdle(page)
-
-  const expectSeparateRows = async () => {
-    await expectAssistantAnswer(page)
-    await expect(bandRows(page, 'thought').filter({ hasText: REASONING }).first()).toBeVisible()
-    // The answer row holds the answer alone.
-    await expect(bandRows(page, 'text').filter({ hasText: ARITHMETIC_ANSWER_TEXT }).filter({ hasText: REASONING })).toHaveCount(0)
-    const rows = await bandRows(page).allTextContents()
-    const thought = rows.findIndex(text => text.includes(REASONING))
-    const answer = rows.findIndex(text => text.includes(ARITHMETIC_ANSWER_TEXT))
-    expect(thought).toBeGreaterThanOrEqual(0)
-    expect(thought, 'the thinking comes before the answer').toBeLessThan(answer)
-  }
-  await expectSeparateRows()
-
-  await page.reload()
-  await expectSeparateRows()
+  await exerciseThinkingRows(native)
 })

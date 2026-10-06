@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, bandRows, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('codex tool execution', () => {
   codexTest('persists completed reasoning during shell command execution', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
@@ -40,14 +40,14 @@ codexTest.describe('codex tool execution', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'codex-42' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'codex-42' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'codex-42' }).first()).toBeVisible()
-    await expect(page.locator('[data-band="thought"]:visible ul > li').first()).toBeVisible()
+    await expect(bandRows(page, 'thought').locator('ul > li').first()).toBeVisible()
     expect(await page.evaluate(() => (window as Window & { __codexReasoningSeen?: boolean }).__codexReasoningSeen)).toBe(true)
 
     await page.reload()
-    await expect(page.locator('[data-band="thought"]:visible').filter({ hasText: 'Thinking' }).first()).toBeVisible()
-    await expect(page.locator('[data-band="thought"]:visible ul > li').first()).toBeVisible()
+    await expect(bandRows(page, 'thought').filter({ hasText: 'Thinking' }).first()).toBeVisible()
+    await expect(bandRows(page, 'thought').locator('ul > li').first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'codex-42' }).first()).toBeVisible()
   })
 })

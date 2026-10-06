@@ -6,13 +6,12 @@ junieTest.describe('Junie basic chat', () => {
   junieTest('does not expose model reasoning as an ACP thought row', async ({ authenticatedResponsesJunieWorkspace, page, modelScript }) => {
     void authenticatedResponsesJunieWorkspace
     const reasoning = 'JUNIE_THOUGHT_MARKER I compare the two values.'
-    await modelScript.queue({ reasoning, toolCalls: [junieAnswerToolCall('junie-thought-answer', 'The answer is 6912.')] })
+    const start = await modelScript.queue({ reasoning, toolCalls: [junieAnswerToolCall('junie-thought-answer', 'The answer is 6912.')] })
     await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
-    const status = await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 1)
     await waitForAgentIdle(page)
 
-    const request = status.requests.find(record => record.stepIndex === 0)
-    expect(request?.path).toBe('/v1/responses')
+    expect((await modelScript.requestAt(start)).path).toBe('/v1/responses')
     await expect(assistantBubbles(page).filter({ hasText: 'The answer is 6912.' }).first()).toBeVisible()
     // The ACP bridge emits thought chunks from system events. It does not send
     // the reasoning item of this model response as a thought row.

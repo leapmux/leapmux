@@ -1,16 +1,10 @@
-import { droidTest, expect } from '../droid-fixtures'
-import { bandRows, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { droidTest } from '../droid-fixtures'
+import { exerciseThinkingRows } from '../helpers/thinkingRows'
+import { nativeContext } from './scenarios'
 
 droidTest.describe('Factory Droid basic chat', () => {
-  droidTest('draws model reasoning in a thought band', async ({ authenticatedReasoningDroidWorkspace, page, modelScript }) => {
-    void authenticatedReasoningDroidWorkspace
-    const reasoning = 'DROID_THOUGHT_MARKER I compare the two values.'
-    await modelScript.queue({ reasoning, text: 'The answer is 6912.' })
-    await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-
-    await expect(bandRows(page, 'thought').filter({ hasText: reasoning }).first()).toBeVisible()
-    await expect(bandRows(page, 'text').filter({ hasText: reasoning })).toHaveCount(0)
+  droidTest('draws model reasoning in a thought band', async ({ authenticatedReasoningDroidWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasoningDroidWorkspace.workspaceId })
+    await exerciseThinkingRows(context)
   })
 })
