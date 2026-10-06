@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeToolOutputFilePathsOperations } from './nativeToolOutputFilePaths'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assertPrivateNativePath } from './nativeCredentialIsolation'
-import { checkNativeOutputReceipt, expectUnchangedNativeRecord, nativeOutputPathsPrecedePreview, presentPreviewMarkers, proveNativeOutputReceipt, runNativeToolOutputFilePathsProof } from './nativeToolOutputFilePaths'
+import { checkNativeOutputReceipt, expectUnchangedNativeRecord, nativeOutputPathsPrecedePreview, presentPreviewMarkers, proveNativeOutputReceipt, proveNativeToolOutputFilePaths, runNativeToolOutputFilePathsProof } from './nativeToolOutputFilePaths'
 
 /** The Worker state that the mocked agent and snapshot reads return. */
 const worker = vi.hoisted(() => ({
@@ -446,6 +446,42 @@ describe('expectUnchangedNativeRecord', () => {
   it('refuses a Worker snapshot of another native session', async () => {
     worker.snapshot = { ...worker.snapshot, agentSessionId: 'other-session' }
     await expect(expectUnchangedNativeRecord(context, agent, () => record, record)).rejects.toThrow('the Worker snapshot belongs to the native session')
+  })
+})
+
+describe('proveNativeToolOutputFilePaths', () => {
+  const page = { reload: async () => null }
+  const base = {
+    context: { page, workspaceId: 'native-workspace' } as unknown as ManagedNativeScenarioContext,
+    callId: 'native-call',
+    previewText: 'native first line',
+    previewMarkers: ['native first line'],
+    paths: [],
+    status: 'completed',
+    workerProof: async () => {},
+  }
+
+  beforeEach(() => {
+    resultRow.events.length = 0
+  })
+
+  it('reveals the result row before it counts the row, on each pass', async () => {
+    await proveNativeToolOutputFilePaths({
+      ...base,
+      revealView: async () => {
+        resultRow.events.push('reveal')
+      },
+      prepareView: async () => {
+        resultRow.events.push('prepare')
+      },
+    })
+    const steps = resultRow.events.filter(event => event === 'reveal' || event === 'row count:1' || event === 'prepare')
+    expect(steps).toEqual(['reveal', 'row count:1', 'prepare', 'reveal', 'row count:1', 'prepare'])
+  })
+
+  it('counts the result row first when no step reveals it', async () => {
+    await proveNativeToolOutputFilePaths(base)
+    expect(resultRow.events[0]).toBe('row count:1')
   })
 })
 

@@ -25,6 +25,12 @@ export interface NativeToolOutputFilePathsOptions {
   absentMarkers?: readonly string[]
   paths: readonly string[]
   status: string
+  /**
+   * Bring the result row into the rendered rows of the chat before the view proof counts it. The chat renders only
+   * the rows near its scroll position, so a row far above the end has no element until the chat scrolls to it.
+   */
+  revealView?: () => Promise<void>
+  /** Prepare the counted result row for the marker checks, for example expand it. */
   prepareView?: (result: Locator) => Promise<void>
   /** Check the original native packet and its call/session owner on each pass. */
   workerProof: (reloaded: boolean) => Promise<void>
@@ -96,6 +102,7 @@ export async function proveNativeToolOutputFilePaths(options: NativeToolOutputFi
   await runNativeToolOutputFilePathsProof(options, {
     workerProof: options.workerProof,
     viewProof: async () => {
+      await options.revealView?.()
       await expect(result).toHaveCount(1)
       await expect(result).toHaveAttribute('data-tool-status', options.status)
       await options.prepareView?.(result)

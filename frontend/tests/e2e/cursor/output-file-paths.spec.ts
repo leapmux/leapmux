@@ -38,8 +38,10 @@ cursorTest('retains complete inline output for the selected native shell route a
     previewMarkers: [output.firstMarker, output.lastMarker],
     paths: [],
     status: 'completed',
+    // The chat follows the end of the turn and renders only the rows near its scroll position. The result row of this
+    // single-exchange turn has no element there, so the chat scrolls to the top before the proof counts the row.
+    revealView: () => chatScrollContainer(native.page).evaluate(element => element.scrollTo({ top: 0, behavior: 'instant' })),
     prepareView: async (result) => {
-      await chatScrollContainer(native.page).evaluate(element => element.scrollTo({ top: 0, behavior: 'instant' }))
       await expandNativeResultView(result)
       // Copy copies the complete output, which holds the omitted middle line, so that line cannot be an absent marker.
       // The expanded row shows the head and the tail of the output, and not the middle line.
