@@ -14,6 +14,14 @@ import { deferred } from '../../../src/test-support/async'
 import { withCleanup } from './cleanup'
 import { stopProcesses } from './process'
 
+/**
+ * A fixture project for the tests of the E2E launcher, `scripts/run-e2e.ts`.
+ *
+ * The project is a private directory under `.tmp` with a Taskfile, a build script, and a Playwright project of two
+ * cases, `alpha` and `beta`. The launcher builds it and runs it as it runs the real suite. The processes of the project
+ * write JSON records into `records/`, so a test can read what each process saw and hold or release each case.
+ */
+
 const require = createRequire(import.meta.url)
 const scratch = resolve(import.meta.dirname, '../../../../.tmp')
 
@@ -26,7 +34,7 @@ import process from 'node:process'
 const records = join(process.cwd(), 'records');
 const policy = JSON.parse(readFileSync(join(records, 'policy.json'), 'utf8'));
 if (policy.holdBuild) {
-  console.log('native-build-entered');
+  console.log('fixture-build-entered');
   const entry = join(records, 'build-entry.json');
   const draft = entry + '.writing';
   const processTable = process.platform === 'win32' ? null : execFileSync('ps', ['-o', 'pid=,ppid=,pgid=,command=', '-p', process.pid + ',' + process.ppid], { encoding: 'utf8' });
@@ -75,8 +83,8 @@ export default async function setup(config) {
   assert.ok(noncePath);
   assert.ok(nonce);
   assert.equal(readFileSync(noncePath, 'utf8'), nonce);
-  const nativeRoot = dirname(noncePath);
-  const binaryPath = join(nativeRoot, process.platform === 'win32' ? 'leapmux.exe' : 'leapmux');
+  const runDir = dirname(noncePath);
+  const binaryPath = join(runDir, process.platform === 'win32' ? 'leapmux.exe' : 'leapmux');
   const records = resolve(process.cwd(), '../records');
   const buildCount = readFileSync(resolve(process.cwd(), '../build-count'), 'utf8');
   assert.equal(readFileSync(binaryPath, 'utf8'), 'private-build-' + buildCount);
@@ -87,7 +95,7 @@ export default async function setup(config) {
       assert.ok(label === 'alpha' || label === 'beta');
       writeRecord(join(records, 'browser-' + label + '-' + nonce + '.json'), { label, nonce, processId: process.pid, url: request.url });
       response.writeHead(200, { 'Content-Type': 'text/html' });
-      response.end('<!doctype html><html><body><h1>Native shard browser</h1><p data-testid="native-identity">' + nonce + '</p><button type="button" id="native-action">Run native action</button><output data-testid="native-result" id="native-result">idle</output><script>document.getElementById("native-action").addEventListener("click", () => { document.getElementById("native-result").textContent = "clicked:" + ' + JSON.stringify(nonce) + '; });</script></body></html>');
+      response.end('<!doctype html><html><body><h1>Fixture shard browser</h1><p data-testid="fixture-identity">' + nonce + '</p><button type="button" id="fixture-action">Run fixture action</button><output data-testid="fixture-result" id="fixture-result">idle</output><script>document.getElementById("fixture-action").addEventListener("click", () => { document.getElementById("fixture-result").textContent = "clicked:" + ' + JSON.stringify(nonce) + '; });</script></body></html>');
       return;
     }
     if (address.pathname === '/favicon.ico') {
@@ -97,7 +105,7 @@ export default async function setup(config) {
     }
     assert.equal(request.url, '/identity');
     response.writeHead(200, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify({ nonce, nativeRoot, processId: process.pid }));
+    response.end(JSON.stringify({ nonce, runDir, processId: process.pid }));
   });
   await new Promise((accept, reject) => {
     server.once('error', reject);
@@ -105,8 +113,8 @@ export default async function setup(config) {
   });
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  const statePath = join(nativeRoot, 'fixture-state.json');
-  const state = { nativeRoot, nativeRootIsSymlink: lstatSync(nativeRoot).isSymbolicLink(), binaryPath, noncePath, nonce, processId: process.pid, port: address.port, statePath, workers: config.workers };
+  const statePath = join(runDir, 'fixture-state.json');
+  const state = { runDir, runDirIsSymlink: lstatSync(runDir).isSymbolicLink(), binaryPath, noncePath, nonce, processId: process.pid, port: address.port, statePath, workers: config.workers };
   writeRecord(statePath, state);
   process.env.E2E_STATE_PATH = statePath;
   writeRecord(join(records, 'setup-' + nonce + '.json'), state);
@@ -153,53 +161,53 @@ export async function runCase(label, testInfo, page) {
   const state = JSON.parse(readFileSync(process.env.E2E_STATE_PATH, 'utf8'));
   const response = await fetch('http://127.0.0.1:' + state.port + '/identity');
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ nonce: state.nonce, nativeRoot: state.nativeRoot, processId: state.processId });
+  expect(await response.json()).toEqual({ nonce: state.nonce, runDir: state.runDir, processId: state.processId });
   let browserUrl;
   if (policy.browserTrace) {
-    expect(page, 'the browser fixture receives its native Page').toBeDefined();
+    expect(page, 'the browser fixture receives its Playwright Page').toBeDefined();
     browserUrl = 'http://127.0.0.1:' + state.port + '/browser?case=' + label;
     const navigation = await page.goto(browserUrl);
     expect(navigation?.status()).toBe(200);
-    await expect(page.getByTestId('native-identity')).toHaveText(state.nonce);
-    await page.getByRole('button', { name: 'Run native action' }).click();
-    await expect(page.getByTestId('native-result')).toHaveText('clicked:' + state.nonce);
+    await expect(page.getByTestId('fixture-identity')).toHaveText(state.nonce);
+    await page.getByRole('button', { name: 'Run fixture action' }).click();
+    await expect(page.getByTestId('fixture-result')).toHaveText('clicked:' + state.nonce);
   }
-  let nativeChildProcessId;
+  let ownedChildProcessId;
   if (policy.cancellation) {
-    const child = fork(new URL('../native-child.mjs', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const child = fork(new URL('../owned-child.mjs', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
     expect(child.pid).toBeGreaterThan(0);
-    nativeChildProcessId = child.pid;
-    writeRecord(join(records, 'owned-child-' + label + '.json'), { nativeChildProcessId: child.pid });
-    const registry = join(state.nativeRoot, 'processes');
+    ownedChildProcessId = child.pid;
+    writeRecord(join(records, 'owned-child-' + label + '.json'), { ownedChildProcessId: child.pid });
+    const registry = join(state.runDir, 'processes');
     mkdirSync(registry);
     writeFileSync(join(registry, String(child.pid)), '');
     await new Promise((accept, reject) => {
       child.once('error', reject);
-      child.once('message', message => message === 'ready' ? accept() : reject(new Error('The native fixture child did not become ready.')));
+      child.once('message', message => message === 'ready' ? accept() : reject(new Error('The owned fixture child did not become ready.')));
     });
   }
-  const entered = { label, nonce: state.nonce, nativeRoot: state.nativeRoot, port: state.port, processId: state.processId, workerProcessId: process.pid, nativeChildProcessId, browserUrl, parallelIndex: testInfo.parallelIndex, started: process.hrtime.bigint().toString() };
+  const entered = { label, nonce: state.nonce, runDir: state.runDir, port: state.port, processId: state.processId, workerProcessId: process.pid, ownedChildProcessId, browserUrl, parallelIndex: testInfo.parallelIndex, started: process.hrtime.bigint().toString() };
   writeRecord(join(records, 'entry-' + label + '.json'), entered);
   await waitForRelease(join(records, 'release-' + label));
   const attachment = testInfo.outputPath('receipt.txt');
-  writeFileSync(attachment, 'native-case-' + label);
+  writeFileSync(attachment, 'fixture-case-' + label);
   await testInfo.attach('isolation-receipt', { path: attachment, contentType: 'text/plain' });
   writeRecord(join(records, 'exit-' + label + '.json'), { label, finished: process.hrtime.bigint().toString() });
   expect((policy.failCases ?? []).includes(label), 'intentional fixture failure').toBe(false);
 }
 `
 
-const nativeChild = String.raw`
+const ownedChildScript = String.raw`
 import { createServer } from 'node:http'
 import process from 'node:process'
-createServer((request, response) => response.end('native fixture child')).listen(0, '127.0.0.1', () => process.send('ready'));
+createServer((request, response) => response.end('owned fixture child')).listen(0, '127.0.0.1', () => process.send('ready'));
 `
 
-export interface NativeRecord {
+export interface FixtureRecord {
   [key: string]: unknown
 }
 
-export interface NativeCase {
+export interface FixtureCase {
   id: string
   title: string
   file: string
@@ -210,23 +218,23 @@ export interface NativeCase {
 export interface FixtureRun {
   root: string
   records: string
-  report: NativeRecord
-  cases: NativeCase[]
+  report: FixtureRecord
+  cases: FixtureCase[]
   code: number
   parallelRelease: boolean
   reportPath: string
   consolePath: string
 }
 
-/** Remove the private fixture only after its outer test passes. Preserve failed native evidence. */
-export function cleanupNativeE2eFixture(root: string, outerTestPassed: boolean): void {
+/** Remove the fixture project only after its outer test passes. Keep the evidence of a failed run. */
+export function cleanupLauncherFixtureProject(root: string, outerTestPassed: boolean): void {
   if (!outerTestPassed)
     return
   rmSync(root, { recursive: true, force: true })
 }
 
-/** Keep the exact native case failures and retained paths in outer assertion output. */
-export function nativeFixtureDiagnostics(run: FixtureRun): string {
+/** State the exact failures of the fixture cases and the retained paths in the output of an outer assertion. */
+export function launcherFixtureDiagnostics(run: FixtureRun): string {
   return JSON.stringify({
     root: run.root,
     reportPath: run.reportPath,
@@ -236,40 +244,40 @@ export function nativeFixtureDiagnostics(run: FixtureRun): string {
   }, null, 2)
 }
 
-export interface NativeCompletion {
+export interface LauncherCompletion {
   code: number | null
   signal: NodeJS.Signals | null
 }
 
-export function readNativeFixtureRecord(path: string): NativeRecord {
+export function readFixtureRecord(path: string): FixtureRecord {
   const record: unknown = JSON.parse(readFileSync(path, 'utf8'))
   if (!isObject(record))
-    throw new Error(`The native fixture record is not an object: ${path}`)
+    throw new Error(`The fixture record is not an object: ${path}`)
   return record
 }
 
-export function nativeFixtureStringField(record: NativeRecord, key: string): string {
+export function fixtureStringField(record: FixtureRecord, key: string): string {
   const value = record[key]
   if (typeof value !== 'string' || !value)
-    throw new Error(`The native fixture record has no nonempty ${key}.`)
+    throw new Error(`The fixture record has no nonempty ${key}.`)
   return value
 }
 
-export function nativeFixtureCases(report: NativeRecord): NativeCase[] {
-  const cases: NativeCase[] = []
+export function fixtureCases(report: FixtureRecord): FixtureCase[] {
+  const cases: FixtureCase[] = []
   const visit = (suites: unknown): void => {
     if (!Array.isArray(suites))
-      throw new Error('The native report has no suite array.')
+      throw new Error('The fixture report has no suite array.')
     for (const suite of suites) {
       if (!isObject(suite) || !Array.isArray(suite.specs))
-        throw new Error('The native report contains an incomplete suite.')
+        throw new Error('The fixture report contains an incomplete suite.')
       for (const spec of suite.specs) {
         if (!isObject(spec) || !Array.isArray(spec.tests) || spec.tests.length !== 1)
-          throw new Error('The native report must contain exactly one test per fixture case.')
+          throw new Error('The fixture report must hold exactly one test for each fixture case.')
         const test = spec.tests[0]
         if (!isObject(test) || !Array.isArray(test.results))
-          throw new Error('The native report contains an incomplete test.')
-        cases.push({ id: nativeFixtureStringField(spec, 'id'), title: nativeFixtureStringField(spec, 'title'), file: nativeFixtureStringField(spec, 'file'), status: nativeFixtureStringField(test, 'status'), results: test.results })
+          throw new Error('The fixture report contains an incomplete test.')
+        cases.push({ id: fixtureStringField(spec, 'id'), title: fixtureStringField(spec, 'title'), file: fixtureStringField(spec, 'file'), status: fixtureStringField(test, 'status'), results: test.results })
       }
       if (suite.suites !== undefined)
         visit(suite.suites)
@@ -287,9 +295,9 @@ export interface FixturePolicy {
   browserTrace?: boolean
 }
 
-export function createNativeE2eFixture(policy: FixturePolicy = {}): string {
+export function createLauncherFixtureProject(policy: FixturePolicy = {}): string {
   mkdirSync(scratch, { recursive: true })
-  const root = mkdtempSync(join(scratch, 'e2e-native-integration-'))
+  const root = mkdtempSync(join(scratch, 'e2e-launcher-fixture-'))
   const frontend = join(root, 'frontend')
   const tests = join(frontend, 'tests')
   const records = join(root, 'records')
@@ -316,7 +324,7 @@ export default {
 };
 `)
   writeFileSync(join(frontend, 'global-setup.mjs'), globalSetup)
-  writeFileSync(join(frontend, 'native-child.mjs'), nativeChild)
+  writeFileSync(join(frontend, 'owned-child.mjs'), ownedChildScript)
   writeFileSync(join(tests, 'fixture.mjs'), fixtureRuntime)
   for (const label of ['alpha', 'beta']) {
     const browserFixture = policy.browserTrace ? '{ page }' : '{}'
@@ -326,8 +334,8 @@ export default {
   return root
 }
 
-/** Release every waiting fixture process before cleanup can stop its owning runner. */
-export function releaseNativeFixtureProcesses(records: string): void {
+/** Release every waiting fixture process before the cleanup stops the launcher that owns it. */
+export function releaseFixtureProcesses(records: string): void {
   for (const file of ['release-alpha', 'release-beta', 'release-build']) {
     const path = join(records, file)
     if (!existsSync(path))
@@ -335,20 +343,20 @@ export function releaseNativeFixtureProcesses(records: string): void {
   }
 }
 
-interface NativeRunnerOptions {
+interface LauncherOptions {
   args?: string[]
   reportPath?: string
 }
 
-/** Start a private controller without changing the caller's E2E environment. */
-export function startNativeE2eRunner(root: string, options: NativeRunnerOptions = {}): { child: ChildProcess, completion: Promise<NativeCompletion>, log: string } {
+/** Start a private launcher without a change to the E2E environment of the caller. */
+export function startLauncher(root: string, options: LauncherOptions = {}): { child: ChildProcess, completion: Promise<LauncherCompletion>, log: string } {
   const driver = join(root, 'run-e2e-driver.mjs')
-  const runnerUrl = pathToFileURL(resolve(import.meta.dirname, '../../../scripts/run-e2e.ts')).href
+  const launcherUrl = pathToFileURL(resolve(import.meta.dirname, '../../../scripts/run-e2e.ts')).href
   writeFileSync(driver, `
 import process from 'node:process'
-import { runE2E } from ${JSON.stringify(runnerUrl)}
+import { runE2E } from ${JSON.stringify(launcherUrl)}
 
-// Windows cannot deliver a catchable POSIX signal. The control pipe invokes the runner's handler.
+// Windows cannot deliver a catchable POSIX signal. The control pipe invokes the handler of the launcher.
 if (process.platform === 'win32')
   process.stdin.once('data', signal => process.emit(signal.toString().trim()));
 
@@ -363,9 +371,9 @@ finally {
   process.stdin.destroy();
 }
 `)
-  const log = join(root, `runner-console-${randomUUID()}.log`)
+  const log = join(root, `launcher-console-${randomUUID()}.log`)
   const descriptor = openSync(log, 'wx')
-  const env = shardReporterEnvironment(process.env, join(root, 'controller-artifacts'))
+  const env = shardReporterEnvironment(process.env, join(root, 'launcher-artifacts'))
   for (const key of ['LEAPMUX_E2E_OUTPUT_FILE_DIR', 'LEAPMUX_E2E_NONCE_PATH', 'LEAPMUX_E2E_NONCE', 'PLAYWRIGHT_LAST_RUN_OUTPUT_FILE'])
     delete env[key]
   env.PLAYWRIGHT_JSON_OUTPUT_FILE = options.reportPath ?? join(root, 'retained-artifacts', 'combined.json')
@@ -385,11 +393,11 @@ finally {
       closeSync(descriptor)
     }
     catch (closeError) {
-      throw new AggregateError([error, closeError], 'The native controller start and its log close failed.')
+      throw new AggregateError([error, closeError], 'The launcher start and its log close failed.')
     }
     throw error
   }
-  const completion = new Promise<NativeCompletion>((accept, reject) => {
+  const completion = new Promise<LauncherCompletion>((accept, reject) => {
     child.once('error', reject)
     child.once('close', (code, signal) => accept({ code, signal }))
   })
@@ -400,7 +408,7 @@ finally {
     closeSync(descriptor)
   }
   catch (error) {
-    const failedCompletion = withCleanup(async (): Promise<NativeCompletion> => {
+    const failedCompletion = withCleanup(async (): Promise<LauncherCompletion> => {
       throw error
     }, async () => {
       await stopProcesses([child])
@@ -411,7 +419,7 @@ finally {
   return { child, completion, log }
 }
 
-export interface NativeFixtureRunOptions {
+export interface FixtureRunOptions {
   workers: 1 | 2
   failCases?: readonly string[]
   args?: string[]
@@ -424,8 +432,8 @@ export interface NativeFixtureRunOptions {
   expectedCases?: readonly string[]
 }
 
-/** Run two controlled native cases and preserve their report after transient cleanup. */
-export async function executeNativeE2eFixture(root: string, options: NativeFixtureRunOptions): Promise<FixtureRun> {
+/** Run the two controlled fixture cases, and keep their report after the transient cleanup. */
+export async function runLauncherFixtureProject(root: string, options: FixtureRunOptions): Promise<FixtureRun> {
   const { workers, failCases } = options
   const records = join(root, 'records')
   for (const label of ['alpha', 'beta']) {
@@ -445,10 +453,10 @@ export async function executeNativeE2eFixture(root: string, options: NativeFixtu
   const watcherFailure = deferred<never>()
   const failWatcher = (error: unknown) => {
     try {
-      releaseNativeFixtureProcesses(records)
+      releaseFixtureProcesses(records)
     }
     catch (releaseError) {
-      error = new AggregateError([error, releaseError], 'The native fixture watcher and case release failed.')
+      error = new AggregateError([error, releaseError], 'The fixture watcher and the case release failed.')
     }
     watcherFailure.reject(error)
   }
@@ -464,7 +472,7 @@ export async function executeNativeE2eFixture(root: string, options: NativeFixtu
         parallelRelease = true
       }
       for (const entry of entries) {
-        const label = nativeFixtureStringField(readNativeFixtureRecord(join(records, entry)), 'label')
+        const label = fixtureStringField(readFixtureRecord(join(records, entry)), 'label')
         const release = join(records, `release-${label}`)
         if (!existsSync(release))
           writeFileSync(release, 'release')
@@ -476,43 +484,43 @@ export async function executeNativeE2eFixture(root: string, options: NativeFixtu
   }
   const listener = watch(records, releaseCases)
   listener.once('error', failWatcher)
-  let runner: ReturnType<typeof startNativeE2eRunner> | undefined
+  let launcher: ReturnType<typeof startLauncher> | undefined
   return withCleanup(async () => {
-    runner = startNativeE2eRunner(root, { args: [`--workers=${workers}`, '--reporter=json', `--output=${output}`, ...(options.args ?? [])], reportPath })
-    const result = await Promise.race([runner.completion, watcherFailure.promise])
+    launcher = startLauncher(root, { args: [`--workers=${workers}`, '--reporter=json', `--output=${output}`, ...(options.args ?? [])], reportPath })
+    const result = await Promise.race([launcher.completion, watcherFailure.promise])
     if (result.code === null || result.signal !== null)
-      throw new Error(`The private native controller exited through signal ${result.signal}.`)
+      throw new Error(`The private launcher exited through signal ${result.signal}.`)
     if (!existsSync(reportPath))
-      throw new Error(`The private native controller produced no report.\n${readFileSync(runner.log, 'utf8')}`)
-    const report = readNativeFixtureRecord(reportPath)
-    return { root, records, report, cases: nativeFixtureCases(report), code: result.code, parallelRelease, reportPath, consolePath: runner.log }
+      throw new Error(`The private launcher produced no report.\n${readFileSync(launcher.log, 'utf8')}`)
+    const report = readFixtureRecord(reportPath)
+    return { root, records, report, cases: fixtureCases(report), code: result.code, parallelRelease, reportPath, consolePath: launcher.log }
   }, async () => {
     listener.close()
-    releaseNativeFixtureProcesses(records)
-    if (runner) {
-      await stopProcesses([runner.child])
-      await runner.completion
+    releaseFixtureProcesses(records)
+    if (launcher) {
+      await stopProcesses([launcher.child])
+      await launcher.completion
     }
   })
 }
 
-interface NativeZipArchive {
+interface PlaywrightZipArchive {
   entries: () => Promise<string[]>
   read: (entry: string) => Promise<Buffer>
   close: () => void
 }
 
-function isNativeZipConstructor(value: unknown): value is new (path: string) => NativeZipArchive {
+function isPlaywrightZipConstructor(value: unknown): value is new (path: string) => PlaywrightZipArchive {
   if (typeof value !== 'function')
     return false
   const prototype: unknown = value.prototype
   return isObject(prototype) && typeof prototype.entries === 'function' && typeof prototype.read === 'function' && typeof prototype.close === 'function'
 }
 
-/** Read archive entries with the same installed ZIP helper that native Playwright merge uses. */
-export async function readNativeZipEntries(path: string): Promise<Map<string, Buffer>> {
+/** Read the entries of an archive with the installed ZIP helper that the merge of Playwright uses. */
+export async function readPlaywrightZipEntries(path: string): Promise<Map<string, Buffer>> {
   const core: unknown = require('playwright-core/lib/coreBundle')
-  if (!isObject(core) || !isObject(core.utils) || !isNativeZipConstructor(core.utils.ZipFile))
+  if (!isObject(core) || !isObject(core.utils) || !isPlaywrightZipConstructor(core.utils.ZipFile))
     throw new Error('The installed Playwright ZIP helper has no valid archive interface.')
   const archive = new core.utils.ZipFile(path)
   return withCleanup(async () => {
