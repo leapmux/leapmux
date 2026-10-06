@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI } from './helpers/api'
 import { withExtraClients } from './helpers/multiClient'
-import { gotoWorkspace, tiles, workspaceRow } from './helpers/ui'
+import { gotoWorkspace, tiles, waitForLayoutSave, workspaceRow } from './helpers/ui'
 
 /**
  * Cross-workspace tab move convergence and workspace isolation.
@@ -34,7 +34,7 @@ import { gotoWorkspace, tiles, workspaceRow } from './helpers/ui'
 test.describe('Cross-workspace projection isolation', () => {
   test('a layout edit in W1 does not reach a client viewing W2', async ({ browser, leapmuxServer }) => {
     const { hubUrl, adminToken } = leapmuxServer
-    // The suite reset deletes both workspaces before the next test.
+    // The suite reset deletes these workspaces, and the marker below, before the next test.
     const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W1')
     const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-W2')
     await withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {
@@ -47,14 +47,19 @@ test.describe('Cross-workspace projection isolation', () => {
       await expect(tiles(pageA)).toHaveCount(1)
       await expect(tiles(pageB)).toHaveCount(1)
 
-      // Split in W1 — W2's view must remain a single tile.
+      // Split in W1 — W2's view must remain a single tile. The hub commits
+      // the split before the layout-saved event of the client that sent it.
+      const saved = waitForLayoutSave(pageA)
       await pageA.locator('[data-testid="split-horizontal"]').first().click()
       await expect(tiles(pageA)).toHaveCount(2)
+      await saved
 
-      // Wait long enough for any cross-talk to land if the projection
-      // were broken — 750ms is well past the in-process WS round-trip
-      // budget (the plan's 500ms window).
-      await pageB.waitForTimeout(750)
+      // Then a marker event that reaches every subscriber: a new workspace.
+      // The hub sends each subscriber its events in commit order, so B
+      // receives any cross-talk from the split before the marker, and the
+      // marker row in B's sidebar ends the window.
+      const marker = await createWorkspaceViaAPI(hubUrl, adminToken, 'iso-marker')
+      await expect(workspaceRow(pageB, marker), 'the marker event reached B after the split').toBeVisible()
       await expect(tiles(pageB)).toHaveCount(1)
     })
   })

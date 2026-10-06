@@ -1,8 +1,10 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { cssAttributeValue } from './helpers/cssAttribute'
 import { boxCenter, dragSidebarLeafTo, mouseDragOnto } from './helpers/drag'
 import { selectedAgentTab } from './helpers/nativeScenario'
 import { agentTabs, collapseWorkspaceRow, expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
+import { maxVisibleCountDuring } from './helpers/visibleCountRecorder'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
@@ -268,21 +270,22 @@ test.describe('Multi-Workspace', () => {
     await expectAgentTabCount(page, 1)
     await saved
 
-    // Reload and verify ws1 has exactly 1 tab tree leaf (no stale flash)
-    await page.reload()
-    await waitForWorkspaceReady(page)
-    await agentTabs(page).first().waitFor()
-
+    // Reload and verify ws1 has exactly 1 tab tree leaf (no stale flash).
     // ws1 (active, auto-expanded) should have exactly 1 leaf — the remaining tab.
-    // If the stale agent flash bug is present, we'd briefly see 2 leaves.
-    // Wait a bit to ensure any flash would have occurred.
-    await page.waitForTimeout(1000)
-
-    // Count leaves within ws1's children wrapper specifically
-    await expect(sidebarLeaves(page, ws1)).toHaveCount(1)
-
-    // Also verify the tab bar shows exactly 1 tab
-    await expectAgentTabCount(page, 1)
+    // If the stale agent flash bug is present, we'd briefly see 2 leaves, so the
+    // recorder counts the visible leaves of ws1 at every DOM change of the
+    // reload, not only once it settles.
+    const leaves = { container: `[data-testid="workspace-children-${cssAttributeValue(ws1)}"]`, item: '[data-testid="tab-tree-leaf"]' }
+    const mostLeavesShown = await maxVisibleCountDuring(page, leaves, async () => {
+      await page.reload()
+      await waitForWorkspaceReady(page)
+      await agentTabs(page).first().waitFor()
+      // Count leaves within ws1's children wrapper specifically
+      await expect(sidebarLeaves(page, ws1)).toHaveCount(1)
+      // Also verify the tab bar shows exactly 1 tab
+      await expectAgentTabCount(page, 1)
+    })
+    expect(mostLeavesShown, 'ws1 never showed the moved tab while the page loaded').toBe(1)
   })
 
   test('move tab back to original workspace preserves tab bar', async ({ page, leapmuxServer }) => {

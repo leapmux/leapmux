@@ -1,7 +1,6 @@
-import { motion } from '../../src/styles/tokens'
 import { expect, test } from './fixtures'
 import { openPreferencesAs } from './helpers/preferences'
-import { openAppAs, openSettingsAt, PLATFORM_MOD } from './helpers/ui'
+import { expectDialogStaysOpen, openAppAs, openSettingsAt, PLATFORM_MOD } from './helpers/ui'
 
 test.describe('Preferences navigation', () => {
   test('opens via the menu and via Cmd/Ctrl+Comma', async ({ page, leapmuxServer }) => {
@@ -110,11 +109,9 @@ test.describe('Preferences navigation', () => {
 
     await search.press('Escape')
     await expect(search).toHaveValue('')
-    // Outlast `Dialog`'s exit animation before reading the dialog: it defers
-    // the unmount, so a check here also passes on a dialog whose exit
-    // animation still runs.
-    await page.waitForTimeout(motion.fast * 3)
-    await expect(dialog, 'Escape closed the dialog instead of clearing the search').toBeVisible()
+    // `Dialog` defers its unmount while its exit animation runs, so the check
+    // reads the closing state itself, not only the visibility.
+    await expectDialogStaysOpen(dialog, 'Escape closed the dialog instead of clearing the search')
 
     // An empty query blocks nothing, so the same key now reaches the dialog.
     await search.press('Escape')

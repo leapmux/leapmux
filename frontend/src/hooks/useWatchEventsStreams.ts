@@ -426,6 +426,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     if (isFatalTransportError(err) || channelManager.fatalCloseInfo())
       return
     announceOutage(workerId, err)
+    // One event for each loss and each failed redial, AFTER the announcement
+    // decided: `184-disconnect-toast.spec.ts` waits for further failed redials
+    // after the one announcement, because each of them is a chance to announce
+    // the same outage again. `failures` counts the loss itself as 1.
+    emitDevEvent('leapmux:watch-events-redial', () => ({ workerId, failures: reconnectBackoff.attemptCount(workerId) + 1 }))
     reconnectBackoff.schedule(workerId, () => {
       if (s.closed)
         return

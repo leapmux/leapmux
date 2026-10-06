@@ -15,9 +15,13 @@ import { chatScrollContainer, USER_BUBBLE_SELECTOR, waitForAgentStarted } from '
  */
 
 /**
- * How long to rest on the preview card before checking that it is still there. Comfortably
- * longer than POINTER_CLOSE_DELAY_MS, so a card that ignored the pointer would already be gone.
- * A fixed wait is the only way to assert that something does NOT happen within a window.
+ * How far the page clock runs while the pointer rests on the preview card, before the check that
+ * the card is still there. Comfortably longer than POINTER_CLOSE_DELAY_MS, so a card that ignored
+ * the pointer has closed by then.
+ *
+ * The test runs the page's fake clock instead of waiting: `clock.runFor` fires every timer that
+ * falls due inside the run, the close timer included, before it returns. So the check cannot run
+ * before the close timer, which a wall-clock wait cannot promise under load.
  */
 const POPOVER_LINGER_MS = 1000
 
@@ -37,6 +41,11 @@ test.describe('chat scroll rail', () => {
   test('hides the native scrollbar, dots each user message, and jumps on a dot click', async ({ page, authenticatedWorkspace, modelScript }) => {
     // A short viewport so a couple of tall user bubbles overflow and the rail appears.
     await page.setViewportSize({ width: 720, height: 380 })
+    // The fake clock flows with real time until a step below runs it ahead. The reload starts the
+    // app under it, so every timer and every `performance.now()` of the app reads the one clock.
+    // This spec is in ISOLATED_CONTEXT_SPECS, because no API removes the clock from its context.
+    await page.clock.install()
+    await page.reload()
 
     await waitForAgentStarted(page)
 
@@ -82,7 +91,7 @@ test.describe('chat scroll rail', () => {
     const previewBox = await preview.boundingBox()
     expect(previewBox).not.toBeNull()
     await page.mouse.move(previewBox!.x + previewBox!.width / 2, previewBox!.y + previewBox!.height / 2)
-    await page.waitForTimeout(POPOVER_LINGER_MS)
+    await page.clock.runFor(POPOVER_LINGER_MS)
     await expect(preview).toBeVisible()
     // And its text is selectable, although the rail around it sets user-select: none so a thumb
     // drag never selects anything.
@@ -100,7 +109,7 @@ test.describe('chat scroll rail', () => {
     await page.mouse.up()
     const selected = await selectedText(page)
     expect(selected.length, 'the drag must leave a selection the reader can copy').toBeGreaterThan(0)
-    await page.waitForTimeout(POPOVER_LINGER_MS)
+    await page.clock.runFor(POPOVER_LINGER_MS)
     await expect(preview).toBeVisible()
 
     // The reader's next click collapses that selection, and the card lets go with it.

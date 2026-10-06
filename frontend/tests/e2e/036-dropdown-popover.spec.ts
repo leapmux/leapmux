@@ -4,6 +4,7 @@ import { expect, test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
 import { waitTimeoutBeforeTestDeadline } from './helpers/testDeadline'
+import { settleFrames } from './helpers/touch'
 import { closeComposerMenus, composerEditor, openAgentInfoCard, openAgentViaUI, openPlusMenu, resolvedColor, stableBox } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/
@@ -124,8 +125,10 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Wait for the popover to close via light-dismiss
     await expect(popover).not.toBeVisible()
 
-    // Give the browser a moment to settle focus.
-    await page.waitForTimeout(200)
+    // The light-dismiss moves focus while it hides the popover, and the
+    // `toggle` event of the close comes in a later task. The next frames run
+    // after both, so a focus change that the close causes has landed.
+    await settleFrames(page)
 
     // The editor should retain focus after the popover closes. `contains` is also
     // true for the editor itself.
@@ -205,9 +208,10 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     const dragFromX = textBox!.x + textBox!.width / 2
     // Sweep right, staying inside the element the whole way.
     const dragToX = textBox!.x + textBox!.width - 2
+    // Each step is rendered before the next one, as a real drag paces itself.
     for (let i = 1; i <= 5; i++) {
       await page.mouse.move(dragFromX + ((dragToX - dragFromX) * i) / 5, dragY)
-      await page.waitForTimeout(50)
+      await settleFrames(page)
     }
     await page.mouse.up()
 

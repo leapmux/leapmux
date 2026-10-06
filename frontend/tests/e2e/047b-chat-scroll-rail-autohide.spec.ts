@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { RAIL, RAIL_FILLER_MESSAGE, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
@@ -20,13 +21,31 @@ import { CHAT_SCROLL_CONTAINER, chatScrollContainer, readAttached, sendMessage, 
  */
 
 /**
- * A wait that comfortably outlasts the rail's idle window (RAIL_VISIBLE_IDLE_MS in
- * ~/components/chat/ChatView, 1200ms). Not imported: pulling a component into the e2e type
+ * A run of the page clock that comfortably outlasts the rail's idle window (RAIL_VISIBLE_IDLE_MS
+ * in ~/components/chat/ChatView, 1200ms). Not imported: pulling a component into the e2e type
  * program drags `import.meta.env` with it, which that tsconfig does not model. Only a LOWER
  * bound is needed here, so a generous local value cannot make the test wrong -- if the window
  * ever grew past this, the test would stop proving anything rather than start failing.
+ *
+ * The test runs the page's fake clock instead of waiting: `clock.runFor` fires every timer that
+ * falls due inside the run, the idle timer included, before it returns.
  */
 const PAST_RAIL_IDLE_MS = 4000
+
+/**
+ * The fade state of the rail: its opacity, and how many transitions run on it. The idle class
+ * fades the rail through a CSS transition that starts at once, so a rail that the idle timer just
+ * faded still reads an opacity near 1 for a moment, but it already runs a transition.
+ */
+async function railFade(rail: Locator): Promise<{ opacity: string, transitions: number }> {
+  return rail.evaluate(element => ({
+    opacity: getComputedStyle(element).opacity,
+    transitions: element.getAnimations().length,
+  }))
+}
+
+/** A rail that is lit and runs no fade. */
+const LIT_AND_SETTLED = { opacity: '1', transitions: 0 } as const
 
 test.describe('chat scroll rail auto-hide', () => {
   test('fades the rail when scrolling stops and brings it back on the next scroll', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -55,6 +74,11 @@ test.describe('chat scroll rail auto-hide', () => {
     // the rail used to fade out from under the reader sitting on it. Only a real browser
     // covers this: it needs the live idle timer, a real hover, and the CSS opacity it drives.
     await page.setViewportSize({ width: 1024, height: 600 })
+    // The fake clock flows with real time until a step below runs it ahead. The reload starts the
+    // app under it, so every timer and every `performance.now()` of the app reads the one clock.
+    // This spec is in ISOLATED_CONTEXT_SPECS, because no API removes the clock from its context.
+    await page.clock.install()
+    await page.reload()
     await seedOverflowingConversation(page, modelScript)
 
     const rail = page.locator(RAIL)
@@ -66,8 +90,9 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '1')
 
     // Well past the idle window the cursor has not moved, and the rail is still there.
-    await page.waitForTimeout(PAST_RAIL_IDLE_MS)
-    await expect(rail).toHaveCSS('opacity', '1')
+    await expect.poll(() => railFade(rail), 'the fade-in ends').toEqual(LIT_AND_SETTLED)
+    await page.clock.runFor(PAST_RAIL_IDLE_MS)
+    expect(await railFade(rail), 'the idle window passed, and the rail under the cursor did not fade').toEqual(LIT_AND_SETTLED)
 
     // Leaving hands it back to the window, which fades it.
     await page.mouse.move(railBox!.x - 200, railBox!.y + railBox!.height / 2, { steps: 5 })

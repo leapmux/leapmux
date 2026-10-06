@@ -3,7 +3,7 @@ import type { TouchPoint } from './helpers/touch'
 import { expect, test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
-import { COARSE_POINTER_METRICS, touchHold, touchSwipe, touchTap } from './helpers/touch'
+import { COARSE_POINTER_METRICS, recordClicks, settleFrames, touchHold, touchSwipe, touchTap } from './helpers/touch'
 import { userBubbles } from './helpers/ui'
 
 /**
@@ -137,11 +137,15 @@ test.describe('tap to select text (phone)', () => {
 
   test('a single tap selects nothing', async ({ page }) => {
     const row = messageRow(page)
-    await touchTap(page, await aimAt(page, row, 'brown'))
+    const point = await aimAt(page, row, 'brown')
+    const clicks = await recordClicks(page)
+    await touchTap(page, point)
 
-    // A fixed wait is the only way to assert that something does NOT happen: the
-    // gesture acts on the release, so there is no later state to poll towards.
-    await page.waitForTimeout(500)
+    // The gesture acts on the release, so there is no later state of its own to
+    // poll towards. The tap's synthesized click is the last thing the tap
+    // causes, so the check waits for it and for the frames after it.
+    await expect.poll(async () => (await clicks.selections()).length, 'the tap synthesized its click').toBeGreaterThan(0)
+    await settleFrames(page)
     expect(await selectedText(page)).toBe('')
     await expect(page.getByTestId('quote-selection-popover')).toBeHidden()
   })
@@ -155,7 +159,10 @@ test.describe('tap to select text (phone)', () => {
     await touchTap(page, point)
     await touchSwipe(page, { from: point, to: { x: point.x, y: point.y - 120 } })
 
-    await page.waitForTimeout(500)
+    // The recognizer decides at each pointer event, and the protocol answers each
+    // touch only after the page handled it. A pan synthesizes no mouse event, so
+    // the frames after the lift are the end of the gesture.
+    await settleFrames(page)
     expect(await selectedText(page)).toBe('')
   })
 
@@ -164,10 +171,15 @@ test.describe('tap to select text (phone)', () => {
   // follows the second tap collapses the selection a frame after it is made.
   test('the selection survives the mouse events the tap synthesizes', async ({ page }) => {
     const row = messageRow(page)
-    await touchTap(page, await aimAt(page, row, 'jumps'), { taps: 2 })
+    const point = await aimAt(page, row, 'jumps')
+    const clicks = await recordClicks(page)
+    await touchTap(page, point, { taps: 2 })
 
     await expect.poll(() => selectedText(page)).toBe('jumps')
-    await page.waitForTimeout(500)
+    // A click that saw the word selected came after the second tap's `mousedown`
+    // and `mouseup`, the events that used to collapse the selection.
+    await expect.poll(() => clicks.selections(), 'a synthesized click saw the selected word').toContain('jumps')
+    await settleFrames(page)
     expect(await selectedText(page)).toBe('jumps')
   })
 

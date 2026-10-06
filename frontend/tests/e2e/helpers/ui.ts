@@ -835,6 +835,23 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
 }
 
 /**
+ * Require that `dialog` is open and does not close.
+ *
+ * `Dialog` defers its unmount by `motion.fast` ms while its closing marker plays the fade-out, so a visibility check
+ * alone also passes on a dialog that closes. The marker starts a CSS transition of the opacity and the transform at
+ * once, in the same task as the key press or the click that closes the dialog. So an open dialog whose opacity is 1
+ * and whose element runs no animation does not close, and the check needs no wait for the fade to end.
+ */
+export async function expectDialogStaysOpen(dialog: Locator, message: string): Promise<void> {
+  await expect(dialog, message).toBeVisible()
+  const state = await dialog.evaluate(element => ({
+    opacity: getComputedStyle(element).opacity,
+    animations: element.getAnimations().map(animation => animation instanceof CSSTransition ? `transition of ${animation.transitionProperty}` : animation.constructor.name),
+  }))
+  expect(state, message).toEqual({ opacity: '1', animations: [] })
+}
+
+/**
  * Locate the step-up prompt that asks the user to prove a factor ("Verify your identity").
  * The hub refuses a sensitive action on a session that proved no factor, and the client then opens this prompt.
  */

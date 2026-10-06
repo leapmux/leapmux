@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
+import { randomUUID } from 'node:crypto'
 import { devices, expect } from '@playwright/test'
 
 /**
@@ -151,6 +152,40 @@ export async function settleFrames(page: Page): Promise<void> {
   await page.evaluate(() => new Promise<void>(resolve =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   ))
+}
+
+/** The `click` events that a page received after {@link recordClicks}, oldest first. */
+export interface RecordedClicks {
+  /** The text of the selection at the moment of each click. */
+  selections: () => Promise<string[]>
+}
+
+/**
+ * Record each `click` that the page receives from now on, with the text of the selection at that moment.
+ *
+ * A tap synthesizes `mousedown`, `mouseup` and `click`, in that order, for the pages that listen only for a mouse.
+ * So a recorded click is the end of the mouse events of one tap, and its selection text states what the selection
+ * held after the default action of that tap's `mousedown`. A wait on it replaces a wait sized in milliseconds.
+ * The listener runs in the capture phase on `window`, so no handler of the app can stop it first. A navigation ends
+ * the record.
+ */
+export async function recordClicks(page: Pick<Page, 'evaluate'>): Promise<RecordedClicks> {
+  const key = `__e2eRecordedClicks_${randomUUID().replaceAll('-', '')}`
+  await page.evaluate((name) => {
+    const record: string[] = []
+    Object.defineProperty(window, name, { value: record, configurable: true })
+    window.addEventListener('click', () => {
+      record.push(window.getSelection()?.toString() ?? '')
+    }, { capture: true })
+  }, key)
+  return {
+    selections: () => page.evaluate((name) => {
+      const record: unknown = Reflect.get(window, name)
+      if (!Array.isArray(record))
+        throw new Error('The click record of this page is gone: a navigation replaced the page after recordClicks.')
+      return record.map(String)
+    }, key),
+  }
 }
 
 /**

@@ -1,9 +1,19 @@
+import type { Page } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { agentTabs, loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
+import { agentTabs, loginViaToken, openWorkspace, repoGroupRow, waitForWorkspaceReady, workspaceChildren, workspaceRow, workspaceRowTitle } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import { createGitRepo } from './helpers/worktree'
+
+/**
+ * Wait until the sidebar shows the git state of the repository of workspace `workspaceId`: its repository row names
+ * `repoName`. That row reads the git state that the diff badge of the workspace row reads, so a check after this wait
+ * reads the state of that repository. A state that leaked from another repository names the other repository.
+ */
+async function expectRepoRowOf(page: Page, workspaceId: string, repoName: string): Promise<void> {
+  await expect(repoGroupRow(workspaceChildren(page, workspaceId)), 'the sidebar shows the git state of the workspace').toContainText(repoName)
+}
 
 test.describe('Diff Stat Isolation', () => {
   test('diff stats do not leak from one workspace to another', async ({ page, leapmuxServer }) => {
@@ -47,7 +57,9 @@ test.describe('Diff Stat Isolation', () => {
     // After switching, workspace A should still have no diff stats.
     // Before the fix, workspace B's diff stats would leak into workspace A
     // because the reactive effect applied stale git data during the switch.
-    await page.waitForTimeout(3000) // Allow time for any stale effect to fire
+    // The stale effect runs during the switch, so it ran once the sidebar
+    // shows the git state of repo A itself.
+    await expectRepoRowOf(page, wsA, 'repo-a')
     await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
 
     // Switch back to workspace B — diff stats should reappear.
@@ -58,7 +70,7 @@ test.describe('Diff Stat Isolation', () => {
     // Switch to workspace A one more time — still no diff stats.
     await workspaceRowTitle(page, wsA).click()
     await waitForWorkspaceReady(page)
-    await page.waitForTimeout(3000)
+    await expectRepoRowOf(page, wsA, 'repo-a')
     await expect(wsAItem.locator('[data-testid="git-diff-stats"]')).not.toBeVisible()
   })
 })

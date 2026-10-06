@@ -39,6 +39,7 @@ import {
   expandSidebarSection,
   expandWorkspaceRow,
   expectAgentTabCount,
+  expectDialogStaysOpen,
   expectNoControlBanner,
   expectPermissionShortcuts,
   expectRowsInOrder,
@@ -1563,6 +1564,49 @@ describe('elevationPrompt', () => {
   it('selects the step-up dialog by its name', () => {
     const { root } = fakeTree()
     expect((elevationPrompt(root) as unknown as { path: string }).path).toBe('page >> role=dialog[name=Verify your identity]')
+  })
+})
+
+describe('expectDialogStaysOpen', () => {
+  /** A CSS transition as the browser reports it, for the `instanceof` check of the helper. */
+  class FakeCssTransition {
+    constructor(readonly transitionProperty: string) {}
+  }
+
+  /** A dialog whose visibility, computed opacity, and running animations the test states. */
+  function dialog(state: { visible: boolean, opacity: string, animations: object[] }) {
+    vi.stubGlobal('CSSTransition', FakeCssTransition)
+    vi.stubGlobal('getComputedStyle', () => ({ opacity: state.opacity }))
+    const element = { getAnimations: () => state.animations }
+    return fakeLocator(() => state.visible, {
+      evaluate: async <R>(read: (element: Element) => R) => read(element as unknown as Element),
+    })
+  }
+
+  it('accepts an open dialog that runs no animation', async () => {
+    await expect(expectDialogStaysOpen(dialog({ visible: true, opacity: '1', animations: [] }), 'the dialog stays')).resolves.toBeUndefined()
+  })
+
+  it('refuses a dialog whose closing transition runs, although it is still visible', async () => {
+    const closing = dialog({ visible: true, opacity: '1', animations: [new FakeCssTransition('opacity')] })
+    await expect(expectDialogStaysOpen(closing, 'the dialog stays')).rejects.toThrow('transition of opacity')
+  })
+
+  it('refuses a dialog that faded out but is not unmounted yet', async () => {
+    await expect(expectDialogStaysOpen(dialog({ visible: true, opacity: '0', animations: [] }), 'the dialog stays')).rejects.toThrow('the dialog stays')
+  })
+
+  it('names another animation by its kind', async () => {
+    class CSSAnimation {}
+    const animated = dialog({ visible: true, opacity: '1', animations: [new CSSAnimation()] })
+    await expect(expectDialogStaysOpen(animated, 'the dialog stays')).rejects.toThrow('CSSAnimation')
+  })
+
+  it('refuses a dialog that is gone, before it reads the closing state', async () => {
+    const evaluate = vi.fn()
+    const gone = fakeLocator(() => false, { evaluate })
+    await expect(expectDialogStaysOpen(gone, 'the dialog stays')).rejects.toThrow('the dialog stays')
+    expect(evaluate).not.toHaveBeenCalled()
   })
 })
 

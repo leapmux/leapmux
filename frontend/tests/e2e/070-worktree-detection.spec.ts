@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { frontendRoot } from '~/test-support/sourceTree'
@@ -16,6 +17,21 @@ import {
   waitForWorker,
 } from './helpers/worktree'
 
+/**
+ * Move the open dialog from a repository root to `dir`, and require that the git mode options hide.
+ *
+ * The dialog shows the options of the repository root first. Between two directories it keeps the options of the
+ * last answer while the probe of the next directory runs (`useGitPathInfo` skips its loading state when the options
+ * show), so the options hide only when the probe of `dir` answers. An assertion on a dialog that opened at `dir`
+ * directly can pass before that probe answers, because the options do not show yet either way.
+ */
+async function expectGitOptionsHideOnlyAfterTheProbe(page: Page, dir: string): Promise<void> {
+  await expect(page.getByText('Use current state'), 'the repository root shows its options first').toBeVisible()
+  await setWorkingDir(page, dir)
+  await expect(page.getByText('Use current state')).not.toBeVisible()
+  await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
+}
+
 test.describe('Worktree Detection', () => {
   // The dialogs below open from a workspace whose agent works in the frontend
   // directory. The dialog's own working directory is set per case.
@@ -31,15 +47,9 @@ test.describe('Worktree Detection', () => {
     const nonGitDir = join(dataDir, 'not-a-repo')
     mkdirSync(nonGitDir, { recursive: true })
 
-    // Set working directory to a known non-git directory
-    await openNewWorkspaceDialogAt(page, adminToken, nonGitDir)
-
-    // Wait for the git info check to complete.
-    await page.waitForTimeout(2000)
-
-    // Verify git mode radio options are not visible
-    await expect(page.getByText('Use current state')).not.toBeVisible()
-    await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
+    // Set working directory to a known non-git directory, after a repository root.
+    await openNewWorkspaceDialogAt(page, adminToken, createGitRepo(dataDir, 'test-repo-before-plain'))
+    await expectGitOptionsHideOnlyAfterTheProbe(page, nonGitDir)
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -55,15 +65,10 @@ test.describe('Worktree Detection', () => {
     const subDir = join(repoDir, 'src', 'components')
     mkdirSync(subDir, { recursive: true })
 
-    // Set working directory to a subdirectory of the git repo
-    await openNewWorkspaceDialogAt(page, adminToken, subDir)
-
-    // Wait for the git info check to complete.
-    await page.waitForTimeout(2000)
-
-    // Verify git mode radio options are not visible (even though it's inside a git repo)
-    await expect(page.getByText('Use current state')).not.toBeVisible()
-    await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
+    // Set working directory to a subdirectory of the git repo, after the repository root.
+    // The options stay hidden even though the directory is inside a git repo.
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await expectGitOptionsHideOnlyAfterTheProbe(page, subDir)
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })

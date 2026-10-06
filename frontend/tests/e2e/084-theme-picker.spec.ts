@@ -1,10 +1,9 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
-import { motion } from '../../src/styles/tokens'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
 import { openPreferencesAs, pickThemeMode, setPreferenceScope, themeModeRadio } from './helpers/preferences'
-import { getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme, resolvedColor } from './helpers/ui'
+import { expectDialogStaysOpen, getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme, resolvedColor } from './helpers/ui'
 
 /**
  * The palette actually reaches the page.
@@ -17,7 +16,7 @@ import { getBrowserPrefValue, openAppAs, openSettingsAt, pickTheme, resolvedColo
  * the picker chose. A theme that is stored, resolved and never painted passes
  * every other test in the repo.
  */
-async function backgroundVar(page: import('@playwright/test').Page): Promise<string> {
+async function backgroundVar(page: Page): Promise<string> {
   return page.evaluate(() =>
     getComputedStyle(document.documentElement).getPropertyValue('--background').trim())
 }
@@ -91,7 +90,7 @@ test.describe('Theme picker', () => {
    * settings before each test, and the explicit pick keeps each case correct
    * on its own.
    */
-  async function resetToMatchUi(row: import('@playwright/test').Locator) {
+  async function resetToMatchUi(row: Locator) {
     await pickTheme(row, 'match-ui')
     await expect(row.getByTestId('theme-chooser-name')).toHaveAttribute('data-value', 'match-ui')
   }
@@ -426,9 +425,8 @@ test.describe('Theme picker', () => {
 
     // `Dialog` defers its unmount by `motion.fast` ms so the fade-out can play,
     // so a bare visibility check here also passes on a dialog that IS closing.
-    // Outlast that window before reading the dialog.
-    await page.waitForTimeout(motion.fast * 3)
-    await expect(dialog, 'the first Escape took the dialog as well as the menu').toBeVisible()
+    // The check reads the closing state itself.
+    await expectDialogStaysOpen(dialog, 'the first Escape took the dialog as well as the menu')
 
     // The dialog is still live, not merely still painted.
     await trigger.click()
@@ -487,7 +485,7 @@ test.describe('Theme picker', () => {
  */
 test.describe('color-scheme follows the app', () => {
   /** Resolve a `light-dark()` through the UA and report which branch it took. */
-  async function branchTaken(page: import('@playwright/test').Page): Promise<'light' | 'dark'> {
+  async function branchTaken(page: Page): Promise<'light' | 'dark'> {
     return page.evaluate(() => {
       const probe = document.createElement('div')
       // Opaque, maximally separated values, so the branch is unambiguous.

@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test'
+import type { ServerInfo } from './fixtures'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
@@ -9,11 +11,36 @@ import { showWorkspaceWithAgents } from './helpers/workspace'
 import { commitFile, createGitRepo, createWorkspaceWithWorktreeViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
 
 /**
- * How long to let a toast show up before concluding none is coming. The close
- * RPC has already resolved by then -- this covers only the render hop between
- * `showWarnToast` and the element landing in the DOM.
+ * Wait until the Worker finished the close of the file tab, and read the toasts that the close raised.
+ *
+ * The close shows its git warning before the tab leaves the bar: `handleTabClose` calls `showWarnToast` after the
+ * inspection and before its commit phase, and the toast host mounts the toast at once. The commit phase then sends
+ * its Worker calls without awaiting them, so a toast that a failed call raises comes after the tab is gone. Those
+ * calls end when the Worker drops the file tab from the branch: the agent tab is then the last tab of its dirty
+ * branch, and the Worker prompts for it. That verdict is the end of the close, so the toasts read after it are all
+ * the toasts that the close raised.
  */
-const TOAST_SETTLE_MS = 1500
+async function toastsAfterFileTabClose(
+  page: Page,
+  server: Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'workerId'>,
+  agentTabId: string,
+): Promise<string> {
+  await retryUntilPass(async () => {
+    const inspection = await inspectLastTabCloseViaAPI(server.hubUrl, server.adminToken, server.workerId, TabType.AGENT, agentTabId)
+    expect(inspection.shouldPrompt, 'the Worker treats the agent tab as the last tab of its dirty branch').toBe(true)
+  })
+  const toasts = await getRecordedToasts(page)
+  return toasts.map(t => `${t.variant}: ${t.message}`).join('\n')
+}
+
+/** The ID of the one agent tab of the page. */
+async function soleAgentTabId(page: Page): Promise<string> {
+  await expectAgentTabCount(page, 1)
+  const agentTabId = await agentTabs(page).getAttribute('data-tab-id')
+  if (!agentTabId)
+    throw new Error('The agent tab has no data-tab-id attribute, so the Worker probe cannot name it.')
+  return agentTabId
+}
 
 /**
  * Closing a file tab in an ordinary git checkout.
@@ -45,6 +72,7 @@ test.describe('file tab close', () => {
     await treeRow(page, 'notes.md').click()
     const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
     await expect(fileTab).toHaveCount(1)
+    const agentTabId = await soleAgentTabId(page)
 
     await clearRecordedToasts(page)
     await fileTab.locator('[data-testid="tab-close"]').click()
@@ -54,12 +82,10 @@ test.describe('file tab close', () => {
     await expect(fileTab).toHaveCount(0)
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
-    // Nothing was warned about. The wait is load-bearing: the toast is
-    // rendered a beat after the close resolves, so asserting its absence the
-    // instant the tab disappears passes whether or not one is coming.
-    await page.waitForTimeout(TOAST_SETTLE_MS)
-    const toasts = await getRecordedToasts(page)
-    expect(toasts.map(t => `${t.variant}: ${t.message}`).join('\n')).toBe('')
+    // Nothing was warned about. The read waits for the end of the close on
+    // the Worker: asserting the absence of a toast the instant the tab
+    // disappears passes whether or not a late one is coming.
+    expect(await toastsAfterFileTabClose(page, leapmuxServer, agentTabId)).toBe('')
 
     // The agent tab is untouched — closing a file viewer is not a close of
     // anything else.
@@ -102,6 +128,7 @@ test.describe('file tab close', () => {
     await treeRow(page, 'README.md').click()
     const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
     await expect(fileTab).toHaveCount(1)
+    const agentTabId = await soleAgentTabId(page)
 
     await clearRecordedToasts(page)
     await fileTab.locator('[data-testid="tab-close"]').click()
@@ -109,9 +136,7 @@ test.describe('file tab close', () => {
     await expect(fileTab).toHaveCount(0)
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
-    await page.waitForTimeout(TOAST_SETTLE_MS)
-    const toasts = await getRecordedToasts(page)
-    expect(toasts.map(t => `${t.variant}: ${t.message}`).join('\n')).toBe('')
+    expect(await toastsAfterFileTabClose(page, leapmuxServer, agentTabId)).toBe('')
 
     // The sibling agent still holds the worktree, so nothing was removed.
     expect(existsSync(worktreeDir)).toBe(true)

@@ -1,7 +1,11 @@
+import { TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { expect, test } from './fixtures'
 import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/worktree'
+
+/** The notice that the Worker writes after a shell exits with code 0, through its closing bracket. */
+const EXITED_NOTICE = '[Terminal process exited (0) - Press Enter to restart]'
 
 test.describe('Terminal', () => {
   // Closing a terminal that is running something is the case the close guard
@@ -189,13 +193,24 @@ test.describe('Terminal', () => {
     await expect(activeXterm(page)).toBeVisible()
 
     // Verify the terminal no longer accepts input: type something and
-    // confirm it does NOT appear in the terminal output
+    // confirm it does NOT appear in the terminal output.
+    //
+    // The exited terminal swallows every key but Enter, and Enter restarts
+    // the shell. So the proof waits for the restarted shell to echo a marker:
+    // terminal output keeps its order, so a typed line that reached any shell
+    // shows before that marker. A fixed wait could end before a late echo.
+    await expect(terminalTabs(page), 'the tab knows that its shell exited').toHaveAttribute('data-terminal-status', String(TerminalStatus.EXITED))
+    await waitForTerminalText(page, EXITED_NOTICE)
     await focusActiveTerminal(page)
     await page.keyboard.type('echo SHOULD_NOT_APPEAR', { delay: 100 })
     await page.keyboard.press('Enter')
-    await page.waitForTimeout(1000)
-    const textAfter = await getTerminalText(page)
-    expect(textAfter).not.toContain('SHOULD_NOT_APPEAR')
+    await expect(async () => {
+      const text = await getTerminalText(page)
+      const afterNotice = text.slice(text.indexOf(EXITED_NOTICE) + EXITED_NOTICE.length)
+      expect(afterNotice.trim().length, 'the restarted shell prints its prompt after the exit notice').toBeGreaterThan(0)
+    }).toPass()
+    await waitForTerminalReady(page)
+    expect(await getTerminalText(page)).not.toContain('SHOULD_NOT_APPEAR')
 
     // Closing the tab manually should work.
     // Use dispatchEvent to avoid Playwright actionability timeout issues

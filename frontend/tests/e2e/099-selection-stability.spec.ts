@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { QUICK_BROWN_FOX, sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
+import { settleFrames } from './helpers/touch'
 import { ASSISTANT_BUBBLE_SELECTOR, chatScrollContainer, firstAssistantMessageRow } from './helpers/ui'
 
 /**
@@ -19,6 +20,16 @@ import { ASSISTANT_BUBBLE_SELECTOR, chatScrollContainer, firstAssistantMessageRo
 test.describe('chat text selection stability', () => {
   async function selectionLength(page: Page): Promise<number> {
     return (await selectedText(page)).trim().length
+  }
+
+  /**
+   * Wait until the release of a drag-select settled: the quote popover shows, and the frames after it ran.
+   * The popover shows from a rAF after the release, so the click handler and the re-render that the release can
+   * start ran before it. It cannot show for a selection that the release collapsed.
+   */
+  async function expectReleaseSettled(page: Page): Promise<void> {
+    await expect(page.locator('[data-testid="quote-selection-button"]'), 'the quote popover shows for the selection').toBeVisible()
+    await settleFrames(page)
   }
 
   async function dragSelectFirstLine(page: Page) {
@@ -49,14 +60,13 @@ test.describe('chat text selection stability', () => {
       expect(await dragSelectFirstLine(page), 'the drag selects text').toBeGreaterThan(0)
     }).toPass()
 
-    // The release is the moment that used to lose it; give the click handler,
-    // the popover's rAF, and any re-render a chance to land.
-    await page.waitForTimeout(600)
+    // The release is the moment that used to lose it. The popover the
+    // selection is FOR appears from a rAF after the click handler and any
+    // re-render ran, and it cannot appear if the selection was collapsed
+    // first. So its appearance ends the window, and the next frames flush
+    // what it queued.
+    await expectReleaseSettled(page)
     expect(await selectionLength(page), 'the selection survives the release').toBeGreaterThan(0)
-
-    // And the popover the selection is FOR actually appears, which it cannot do
-    // if the selection was collapsed before its rAF ran.
-    await expect(page.locator('[data-testid="quote-selection-button"]')).toBeVisible()
   })
 
   test('selecting text while scrolled up does not move the viewport', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -66,11 +76,15 @@ test.describe('chat text selection stability', () => {
 
     const scroller = chatScrollContainer(page)
     await scroller.evaluate(el => el.scrollTo({ top: 0 }))
-    await page.waitForTimeout(300)
+    // The first row is on screen, and the frames after the scroll ran the
+    // re-anchoring that measuring the rows can do.
+    await expect(firstAssistantMessageRow(page)).toBeInViewport()
+    await settleFrames(page)
     const before = await scroller.evaluate(el => el.scrollTop)
 
-    await dragSelectFirstLine(page)
-    await page.waitForTimeout(600)
+    // A drag that selects nothing cannot move the viewport for the reason this test guards.
+    expect(await dragSelectFirstLine(page), 'the drag selects text').toBeGreaterThan(0)
+    await expectReleaseSettled(page)
 
     const after = await scroller.evaluate(el => el.scrollTop)
     expect(Math.abs(after - before), `viewport moved ${before} -> ${after} while selecting`).toBeLessThanOrEqual(2)

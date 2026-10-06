@@ -77,6 +77,7 @@ describe('useWatchEventsStreams', () => {
     disposeRoot = undefined
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   async function flush() {
@@ -313,6 +314,65 @@ describe('useWatchEventsStreams', () => {
     // The app's own sentence, not the drained channel's. Rendering err.message
     // is what put "channel disconnected" on a user's screen.
     expect(vi.mocked(showWarnToastWithLoggedCause).mock.calls[0]![0]).toContain('Connection to worker lost')
+  })
+
+  // The E2E spec of the announcement waits on this event: each failed redial
+  // after the announcement is a chance to announce the same outage again.
+  it('reports the loss and each failed redial in a dev build, after the announcement decided', async () => {
+    vi.stubEnv('LEAPMUX_DEV', '1')
+    const reports: unknown[] = []
+    const record = (event: Event) => reports.push({
+      ...(event as CustomEvent<Record<string, unknown>>).detail,
+      announced: vi.mocked(showWarnToastWithLoggedCause).mock.calls.length,
+    })
+    window.addEventListener('leapmux:watch-events-redial', record)
+    try {
+      const { harness } = mount(
+        () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      )
+      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+      await flush()
+      vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+        throw new ChannelError('transport', 'channel disconnected')
+      })
+      handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+      await flush()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      await vi.advanceTimersByTimeAsync(2000)
+      await flush()
+      await vi.advanceTimersByTimeAsync(4000)
+      await flush()
+      expect(reports).toEqual([
+        { workerId: 'w1', failures: 1, announced: 0 },
+        { workerId: 'w1', failures: 2, announced: 0 },
+        { workerId: 'w1', failures: 3, announced: 1 },
+        { workerId: 'w1', failures: 4, announced: 1 },
+      ])
+    }
+    finally {
+      window.removeEventListener('leapmux:watch-events-redial', record)
+    }
+  })
+
+  it('reports no redial outside a dev build', async () => {
+    vi.stubEnv('LEAPMUX_DEV', '')
+    const reports: unknown[] = []
+    const record = (event: Event) => reports.push(event)
+    window.addEventListener('leapmux:watch-events-redial', record)
+    try {
+      const { harness } = mount(
+        () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      )
+      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+      await flush()
+      handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+      await flush()
+      expect(reports).toEqual([])
+    }
+    finally {
+      window.removeEventListener('leapmux:watch-events-redial', record)
+    }
   })
 
   // The user reported TWO toasts for one drop. The redial loop must not add a
