@@ -1,9 +1,6 @@
 import { codexTest } from '../codex-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 
-codexTest('refuses a PDF and excludes its actual bytes from the next native request', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
-  void authenticatedCodexWorkspace
-  const rejected = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'codex-refused.pdf' })
-  await expectRefusedAttachmentsAbsent(page, modelScript, [rejected])
+codexTest('refuses a PDF and excludes its actual bytes from the next native request', async ({ native }) => {
+  await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'codex-refused.pdf' })
 })

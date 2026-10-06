@@ -1,17 +1,20 @@
 import type { Page } from '@playwright/test'
 import type { AttachmentKind } from './attachments'
-import type { MockModelProtocol, MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
-import type { ModelScript } from './modelScriptFixture'
+import type { MockModelProtocol, MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
+import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { expect } from '@playwright/test'
+import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
 import { expectAttachmentOutcome, PDF_PAGE_MARKER, sendWithAttachment } from './attachments'
 import { CURSOR_RUN_PATH } from './cursorSurface'
+import { jsonStringValues } from './jsonStringValues'
 import { stepRequest } from './mockModelScript'
-import { assistantBubbles, expectUserMessage, sendMessage, waitForAgentIdle } from './ui'
+import { nativeTextStep } from './nativeScenario'
+import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 
 const CHANNEL_TOLERANCE = 48
 const EXPECTED_QUADRANTS = [
@@ -21,84 +24,51 @@ const EXPECTED_QUADRANTS = [
   [255, 255, 0],
 ]
 
-function record(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function collectStrings(value: unknown, output: string[]): void {
-  if (typeof value === 'string') {
-    output.push(value)
-    return
-  }
-  if (Array.isArray(value)) {
-    for (const item of value)
-      collectStrings(item, output)
-    return
-  }
-  const object = record(value)
-  if (object) {
-    for (const child of Object.values(object))
-      collectStrings(child, output)
-  }
-}
-
 /** Read the user content of a scripted native request. */
 export function nativeUserStrings(body: unknown): string[] {
-  const request = record(body)
-  if (!request)
+  if (!isObject(body))
     return []
   const parts: unknown[] = []
   for (const field of ['messages', 'input']) {
-    const rows = request[field]
+    const rows = body[field]
     if (!Array.isArray(rows))
       continue
     for (const row of rows) {
-      const message = record(row)
-      if (message?.role === 'user')
-        parts.push(message.content ?? message)
+      if (isObject(row) && row.role === 'user')
+        parts.push(row.content ?? row)
     }
   }
-  if (Array.isArray(request.contents)) {
-    for (const row of request.contents) {
-      const message = record(row)
-      if (message?.role !== 'user' || !Array.isArray(message.parts))
+  if (Array.isArray(body.contents)) {
+    for (const row of body.contents) {
+      if (!isObject(row) || row.role !== 'user' || !Array.isArray(row.parts))
         continue
-      for (const value of message.parts) {
-        const part = record(value)
-        if (part && (typeof part.text === 'string' || record(part.inlineData)))
+      for (const part of row.parts) {
+        if (isObject(part) && (typeof part.text === 'string' || isObject(part.inlineData)))
           parts.push(part)
       }
     }
   }
-  if (typeof request.input === 'string')
-    parts.push(request.input)
-  const state = record(request.conversationState)
-  const current = record(state?.currentMessage)
-  const kiroUser = record(current?.userInputMessage)
+  if (typeof body.input === 'string')
+    parts.push(body.input)
+  const kiroUser = kiroCurrentUserInput(body)
   if (kiroUser) {
     for (const field of ['content', 'images', 'attachments', 'documents', 'documentAttachments']) {
       if (kiroUser[field] !== undefined)
         parts.push(kiroUser[field])
     }
   }
-  if (request.prompt !== undefined)
-    parts.push(request.prompt)
-  if (request.attachments !== undefined)
-    parts.push(request.attachments)
-
-  const strings: string[] = []
-  for (const part of parts)
-    collectStrings(part, strings)
-  return strings
+  if (body.prompt !== undefined)
+    parts.push(body.prompt)
+  if (body.attachments !== undefined)
+    parts.push(body.attachments)
+  return parts.flatMap(jsonStringValues)
 }
 
 /** Select the native model request that consumed one ordered step of the script. */
 export function scriptedRequest(status: MockModelScenarioStatus, protocol?: MockModelProtocol, stepIndex = 0): MockModelRequestRecord {
   const request = stepRequest(status, stepIndex)
   if (protocol)
-    expect(request.protocol).toBe(protocol)
+    expect(request.protocol, 'the scripted request uses the model API of the provider').toBe(protocol)
   return request
 }
 
@@ -161,12 +131,13 @@ function currentUserTurn(rows: unknown): Array<[number, Record<string, unknown>]
     return []
   const turn: Array<[number, Record<string, unknown>]> = []
   for (let index = rows.length - 1; index >= 0; index--) {
-    const row = record(rows[index])
-    if (INSTRUCTION_ROLES.has(row?.role))
+    const row: unknown = rows[index]
+    const role = isObject(row) ? row.role : undefined
+    if (INSTRUCTION_ROLES.has(role))
       continue
-    if (row?.role !== 'user') {
+    if (!isObject(row) || role !== 'user') {
       const firstInTurn = turn[0]
-      if (row?.role === 'tool' && firstInTurn && firstInTurn[0] === index + 1)
+      if (role === 'tool' && firstInTurn && firstInTurn[0] === index + 1)
         turn.shift()
       break
     }
@@ -191,7 +162,7 @@ const BASE64_DATA_URI = /^data:([^;,]+);base64,(.*)$/s
 /**
  * Read a typed file part whose payload is a base64 data URI.
  *
- * Chat Completions carries a PDF as `file.file_data` and an image as
+ * Chat Completions carries a file as `file.file_data` and an image as
  * `image_url.url`. OpenAI Responses carries an image as `image_url`. Each must
  * have the form `data:<type>;base64,<data>`. Each provider that a proof covers
  * writes that form with no media type parameter. A raw base64 string, a URL, a
@@ -207,14 +178,17 @@ function dataURIPart(location: string, field: string, value: unknown): TypedFile
   return { location, declaredType: `${field}=data:${mime}`, mediaType: mime, data: match[2] ?? '' }
 }
 
-/** Read the source of an Anthropic content block. Only a base64 source carries the bytes. */
-function anthropicSourcePart(location: string, value: unknown): TypedFilePart {
-  const source = record(value)
-  if (!source)
+/**
+ * Read the source of an Anthropic-shaped content block. Only a base64 source carries the bytes.
+ * Anthropic spells the media type field `media_type`. Amp's own block spells it `mediaType`.
+ */
+function anthropicSourcePart(location: string, value: unknown, mediaTypeField: 'media_type' | 'mediaType'): TypedFilePart {
+  if (!isObject(value))
     return { location, defect: 'has no source' }
-  if (source.type !== 'base64')
-    return { location, defect: `has a source of type ${String(source.type)}, not base64 bytes` }
-  return { location, declaredType: `media_type=${String(source.media_type)}`, mediaType: mediaTypeOf(source.media_type), data: source.data }
+  if (value.type !== 'base64')
+    return { location, defect: `has a source of type ${String(value.type)}, not base64 bytes` }
+  const mediaType = value[mediaTypeField]
+  return { location, declaredType: `${mediaTypeField}=${String(mediaType)}`, mediaType: mediaTypeOf(mediaType), data: value.data }
 }
 
 /** Return the typed part that one content element declares, or undefined for an element of another kind. */
@@ -238,13 +212,12 @@ function currentTurnContentParts(
   answersToolCall: ToolResultRow = () => false,
 ): TypedFilePart[] {
   const parts: TypedFilePart[] = []
-  for (const [index, row] of currentUserTurn(record(body)?.[rowsField])) {
+  for (const [index, row] of currentUserTurn(isObject(body) ? body[rowsField] : undefined)) {
     const content = row[contentField]
     if (!Array.isArray(content) || answersToolCall(content))
       continue
-    content.forEach((value, position) => {
-      const element = record(value)
-      const part = element ? read(element, `${rowsField}[${index}].${contentField}[${position}]`) : undefined
+    content.forEach((value: unknown, position) => {
+      const part = isObject(value) ? read(value, `${rowsField}[${index}].${contentField}[${position}]`) : undefined
       if (part)
         parts.push(part)
     })
@@ -255,19 +228,19 @@ function currentTurnContentParts(
 /** Anthropic Messages: a `document` block with a base64 source in a user message that answers no tool call. */
 function anthropicFileParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (block, location) =>
-    block.type === 'document' ? anthropicSourcePart(location, block.source) : undefined, holdsAnthropicToolResult)
+    block.type === 'document' ? anthropicSourcePart(location, block.source, 'media_type') : undefined, holdsAnthropicToolResult)
 }
 
 /** Chat Completions: a `file` part with `file.file_data` in a user message. */
 function chatCompletionFileParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (part, location) =>
-    part.type === 'file' ? dataURIPart(location, 'file.file_data', record(part.file)?.file_data) : undefined)
+    part.type === 'file' ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data) : undefined)
 }
 
 /** Return the user input message of Kiro's current turn. */
 function kiroCurrentUserInput(body: unknown): Record<string, unknown> | null {
-  const state = record(record(body)?.conversationState)
-  return record(record(state?.currentMessage)?.userInputMessage)
+  const state = pickObject(isObject(body) ? body : null, 'conversationState')
+  return pickObject(pickObject(state, 'currentMessage'), 'userInputMessage')
 }
 
 /** Read the entries of one file list of Kiro's current user input message. */
@@ -275,13 +248,13 @@ function kiroFileParts(user: Record<string, unknown> | null, field: 'documents' 
   const entries = user?.[field]
   if (!Array.isArray(entries))
     return []
-  return entries.map((value, position) => {
-    const entry = record(value)
+  return entries.map((entry: unknown, position) => {
+    const fields: Record<string, unknown> = isObject(entry) ? entry : {}
     return {
       location: `conversationState.currentMessage.userInputMessage.${field}[${position}]`,
-      declaredType: `format=${String(entry?.format)}`,
-      mediaType: KIRO_FORMAT_MEDIA_TYPES.get(entry?.format),
-      data: record(entry?.source)?.bytes,
+      declaredType: `format=${String(fields.format)}`,
+      mediaType: KIRO_FORMAT_MEDIA_TYPES.get(fields.format),
+      data: pickObject(fields, 'source')?.bytes,
     }
   })
 }
@@ -298,13 +271,16 @@ function kiroDocumentParts(body: unknown): TypedFilePart[] {
 
 /** Read a Google `inlineData` part. */
 function googleInlinePart(part: Record<string, unknown>, location: string): TypedFilePart | undefined {
-  const inline = record(part.inlineData)
+  const inline = pickObject(part, 'inlineData')
   if (!inline)
     return undefined
   return { location, declaredType: `mimeType=${String(inline.mimeType)}`, mediaType: mediaTypeOf(inline.mimeType), data: inline.data }
 }
 
-/** Google Generative Language: an `inlineData` part in a user content that answers no function call. */
+/**
+ * Google Generative Language: an `inlineData` part in a user content that answers no function call.
+ * Google carries a file and an image in the same part shape, so both proofs read these parts.
+ */
 function googleInlineParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'contents', 'parts', googleInlinePart, holdsGoogleFunctionResponse)
 }
@@ -321,7 +297,7 @@ function typedFileParts(protocol: MockModelProtocol, body: unknown): TypedFilePa
     case 'google-generative-language':
       return googleInlineParts(body)
     case 'openai-responses':
-      throw new Error('no provider that accepts a PDF uses the openai-responses protocol, so the PDF proof has no reader for it')
+      throw new Error('no provider that sends a typed file part uses the openai-responses protocol, so the file proof has no reader for it')
   }
 }
 
@@ -350,16 +326,35 @@ function sourceBytesDefect(bytes: Buffer, source: Buffer): string | undefined {
   return `has ${bytes.length} bytes with SHA-256 ${sha256(bytes)}, not the ${source.length}-byte source with SHA-256 ${sha256(source)}`
 }
 
-/** Return why a typed part does not carry the exact source PDF, or undefined when it does. */
-function pdfPartDefect(part: TypedFilePart, source: Buffer): string | undefined {
+/** The media type that a typed file part must declare, and the name that a failure gives it. */
+interface FileTypeExpectation {
+  label: string
+  accepts: (mediaType: string | undefined) => boolean
+}
+
+/** Return why a typed part does not carry the exact source file with an accepted type, or undefined when it does. */
+function filePartDefect(part: TypedFilePart, source: Buffer, expected: FileTypeExpectation): string | undefined {
   if ('defect' in part)
     return part.defect
-  if (part.mediaType !== PDF_MEDIA_TYPE)
-    return `declares ${part.declaredType}, not PDF`
+  if (!expected.accepts(part.mediaType))
+    return `declares ${part.declaredType}, not ${expected.label}`
   const decoded = decodeCanonicalBase64(part.data)
   if ('defect' in decoded)
     return decoded.defect
   return sourceBytesDefect(decoded.bytes, source)
+}
+
+/** Require the exact source file in a typed file part of the current user turn, and state each part that came close. */
+function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, expected: FileTypeExpectation): void {
+  const defects: string[] = []
+  for (const part of typedFileParts(request.protocol, request.body)) {
+    const defect = filePartDefect(part, source, expected)
+    if (defect === undefined)
+      return
+    defects.push(`${part.location} ${defect}`)
+  }
+  const detail = defects.length > 0 ? `: ${defects.join('; ')}` : ''
+  throw new Error(`the current user turn of the scripted ${request.protocol} request carries no typed ${expected.label} part with the exact source bytes${detail}`)
 }
 
 /**
@@ -371,15 +366,37 @@ function pdfPartDefect(part: TypedFilePart, source: Buffer): string | undefined 
  * can produce the same sample. Base64 inside text does not give the model a PDF.
  */
 export function expectNativePdfPart(request: MockModelRequestRecord, source: Buffer): void {
-  const defects: string[] = []
-  for (const part of typedFileParts(request.protocol, request.body)) {
-    const defect = pdfPartDefect(part, source)
-    if (defect === undefined)
-      return
-    defects.push(`${part.location} ${defect}`)
+  expectTypedFilePart(request, source, { label: 'PDF', accepts: mediaType => mediaType === PDF_MEDIA_TYPE })
+}
+
+/**
+ * The media type that the typed part of a file must declare: the exact type, or an anchored pattern.
+ *
+ * Use a pattern only for a type that the test cannot state. The browser takes the declared type of a file with no
+ * known extension from the platform: on macOS a `.bin` file declares `application/macbinary`.
+ */
+export type DeclaredMediaType = string | RegExp
+
+/**
+ * Require the exact source file in a typed file part of the request's current user turn.
+ *
+ * The part must declare a media type that `mediaType` accepts and carry the exact
+ * source bytes in canonical base64. As with a PDF (see `expectNativePdfPart`), the
+ * part proves that the agent received the original bytes and gave the model a file.
+ * The complete base64 inside text or a data URI inside text does not count.
+ */
+export function expectNativeFilePart(request: MockModelRequestRecord, source: Buffer, mediaType: DeclaredMediaType): void {
+  if (typeof mediaType === 'string') {
+    if (mediaType === '')
+      throw new Error('a file part proof needs the media type that the part declares')
+    expectTypedFilePart(request, source, { label: mediaType, accepts: declared => declared === mediaType })
+    return
   }
-  const detail = defects.length > 0 ? `: ${defects.join('; ')}` : ''
-  throw new Error(`the current user turn of the scripted ${request.protocol} request carries no typed PDF part with the exact source bytes${detail}`)
+  // A global or sticky pattern keeps its last match position between calls, so one part could change the result
+  // for the next part.
+  if (mediaType.global || mediaType.sticky)
+    throw new Error('a file part proof needs a media type pattern without the g or y flag')
+  expectTypedFilePart(request, source, { label: String(mediaType), accepts: declared => declared !== undefined && mediaType.test(declared) })
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
@@ -400,12 +417,12 @@ function encodedImageType(bytes: Buffer): ImageMediaType | undefined {
 
 /** An Anthropic user message that holds a `tool_result` block answers a tool call. */
 function holdsAnthropicToolResult(content: unknown[]): boolean {
-  return content.some(block => record(block)?.type === 'tool_result')
+  return content.some(block => isObject(block) && block.type === 'tool_result')
 }
 
 /** A Google user content that holds a `functionResponse` part answers a function call. */
 function holdsGoogleFunctionResponse(content: unknown[]): boolean {
-  return content.some(part => record(record(part)?.functionResponse) !== null)
+  return content.some(part => isObject(part) && isObject(part.functionResponse))
 }
 
 /**
@@ -417,7 +434,7 @@ function holdsGoogleFunctionResponse(content: unknown[]): boolean {
  */
 function anthropicImageParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (block, location) =>
-    block.type === 'image' ? anthropicSourcePart(location, block.source) : undefined, holdsAnthropicToolResult)
+    block.type === 'image' ? anthropicSourcePart(location, block.source, 'media_type') : undefined, holdsAnthropicToolResult)
 }
 
 /**
@@ -428,22 +445,14 @@ function anthropicImageParts(body: unknown): TypedFilePart[] {
  * (see `providers/amp/attachments.go` in the backend). A message that holds a tool result stays out.
  */
 function ampImageParts(body: unknown): TypedFilePart[] {
-  return currentTurnContentParts(body, 'messages', 'content', (block, location) => {
-    if (block.type !== 'image')
-      return undefined
-    const source = record(block.source)
-    if (!source)
-      return { location, defect: 'has no source' }
-    if (source.type !== 'base64')
-      return { location, defect: `has a source of type ${String(source.type)}, not base64 bytes` }
-    return { location, declaredType: `mediaType=${String(source.mediaType)}`, mediaType: mediaTypeOf(source.mediaType), data: source.data }
-  }, holdsAnthropicToolResult)
+  return currentTurnContentParts(body, 'messages', 'content', (block, location) =>
+    block.type === 'image' ? anthropicSourcePart(location, block.source, 'mediaType') : undefined, holdsAnthropicToolResult)
 }
 
 /** Chat Completions: an `image_url` part with a base64 data URI in a user message. A tool result is a `tool` row, which ends the turn. */
 function chatCompletionImageParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (part, location) =>
-    part.type === 'image_url' ? dataURIPart(location, 'image_url.url', record(part.image_url)?.url) : undefined)
+    part.type === 'image_url' ? dataURIPart(location, 'image_url.url', pickObject(part, 'image_url')?.url) : undefined)
 }
 
 /** OpenAI Responses: an `input_image` part in a user message. A tool result is a `function_call_output` item, which ends the turn. */
@@ -461,13 +470,12 @@ function responsesImageParts(body: unknown): TypedFilePart[] {
  * its raw bytes in base64 and the media type field that Cursor declares.
  */
 function cursorImageParts(body: unknown): TypedFilePart[] {
-  const attachments = record(body)?.attachments
+  const attachments = isObject(body) ? body.attachments : undefined
   if (!Array.isArray(attachments))
     return []
   const parts: TypedFilePart[] = []
-  attachments.forEach((value, position) => {
-    const attachment = record(value)
-    if (attachment?.kind === 'image')
+  attachments.forEach((attachment: unknown, position) => {
+    if (isObject(attachment) && attachment.kind === 'image')
       parts.push({ location: `attachments[${position}]`, declaredType: `mimeType=${String(attachment.mimeType)}`, mediaType: mediaTypeOf(attachment.mimeType), data: attachment.data })
   })
   return parts
@@ -481,15 +489,10 @@ function cursorImageParts(body: unknown): TypedFilePart[] {
  */
 function kiroImageParts(body: unknown): TypedFilePart[] {
   const user = kiroCurrentUserInput(body)
-  const toolResults = record(user?.userInputMessageContext)?.toolResults
+  const toolResults = pickObject(user, 'userInputMessageContext')?.toolResults
   if (Array.isArray(toolResults) && toolResults.length > 0)
     return []
   return kiroFileParts(user, 'images')
-}
-
-/** Google Generative Language: an `inlineData` part in a user content that answers no function call. */
-function googleImageParts(body: unknown): TypedFilePart[] {
-  return currentTurnContentParts(body, 'contents', 'parts', googleInlinePart, holdsGoogleFunctionResponse)
 }
 
 /** Select the typed image parts of the current user turn, by the request's own protocol and route. */
@@ -504,7 +507,7 @@ function typedImageParts(request: MockModelRequestRecord): TypedFilePart[] {
     case 'aws-event-stream':
       return kiroImageParts(request.body)
     case 'google-generative-language':
-      return googleImageParts(request.body)
+      return googleInlineParts(request.body)
   }
 }
 
@@ -513,14 +516,7 @@ export type QuadrantDecoder = (dataURI: string) => Promise<number[][]>
 
 /** Return why a typed part does not carry the exact source image, or undefined when it does. */
 function exactImagePartDefect(part: TypedFilePart, source: Buffer, sourceType: ImageMediaType): string | undefined {
-  if ('defect' in part)
-    return part.defect
-  if (part.mediaType !== sourceType)
-    return `declares ${part.declaredType}, not ${sourceType}`
-  const decoded = decodeCanonicalBase64(part.data)
-  if ('defect' in decoded)
-    return decoded.defect
-  return sourceBytesDefect(decoded.bytes, source)
+  return filePartDefect(part, source, { label: sourceType, accepts: mediaType => mediaType === sourceType })
 }
 
 /** Return why a typed part does not carry the source image transcoded into `mediaType`, or undefined when it does. */
@@ -649,113 +645,217 @@ function hasQuadrantColors(pixels: number[][]): boolean {
   })
 }
 
-/** How a provider hands an image attachment to its model. */
-export interface ImageHandoff {
+/** How a provider hands an attachment to its model. Each field applies to one attachment kind. */
+export interface AttachmentHandoff {
   /**
-   * The media type that the provider re-encodes the image into before its model
-   * request. Leave it absent for a provider that sends the source bytes
-   * unchanged. Set it only from evidence that the provider transcodes, because
-   * it replaces the exact-byte proof with a decoded-color proof.
+   * For an image: the media type that the provider re-encodes the image into
+   * before its model request. Leave it absent for a provider that sends the
+   * source bytes unchanged. Set it only from evidence that the provider
+   * transcodes, because it replaces the exact-byte proof with a decoded-color
+   * proof.
    */
   transcodedImageType?: ImageMediaType
+  /**
+   * For a binary file: the media type that its typed file part declares (see
+   * `expectNativeFilePart`). A binary proof needs it, because only a typed part
+   * gives the model a file.
+   */
+  binaryMediaType?: DeclaredMediaType
+}
+
+/** Return the media type of a binary proof, or refuse a binary proof without one. */
+function binaryMediaType(handoff: AttachmentHandoff): DeclaredMediaType {
+  if (handoff.binaryMediaType === undefined)
+    throw new Error('a binary attachment proof needs the media type that its typed file part declares')
+  return handoff.binaryMediaType
+}
+
+/** Refuse a handoff field that does not apply to the attachment kind, and a binary proof without its media type. */
+function validateHandoff(kind: AttachmentKind, handoff: AttachmentHandoff): void {
+  if (handoff.transcodedImageType !== undefined && kind !== 'image')
+    throw new Error(`a transcoded image type applies to an image attachment, not to a ${kind} attachment`)
+  if (handoff.binaryMediaType !== undefined && kind !== 'binary')
+    throw new Error(`a binary media type applies to a binary attachment, not to a ${kind} attachment`)
+  if (kind === 'binary')
+    binaryMediaType(handoff)
+}
+
+/** How `expectNativeAttachmentProof` selects the request and reads the handoff. */
+export interface AttachmentProofOptions extends AttachmentHandoff {
+  /** The model API of the provider. A request on another API fails the proof. */
+  protocol?: MockModelProtocol
+  /**
+   * The ordered step whose request carries the attachment: the first step by
+   * default. A test that runs a turn before the attachment turn measures this
+   * index from the index that `ModelScript.queue` returns.
+   */
+  stepIndex?: number
 }
 
 /**
  * Prove the source file's content in the scripted native user request.
  *
- * The request of the step at `stepIndex` carries the proof: the first ordered
- * step by default, a later one for a test that holds a turn before the
- * attachment turn. A PDF needs a typed PDF part with the exact source bytes
- * (see `expectNativePdfPart`). An image needs a typed image part of the current
- * user turn (see `expectNativeImagePart`).
+ * A PDF needs a typed PDF part with the exact source bytes (see
+ * `expectNativePdfPart`). An image needs a typed image part of the current user
+ * turn (see `expectNativeImagePart`). A binary file needs a typed file part (see
+ * `expectNativeFilePart`). A text file must reach the user content whole.
  */
 export async function expectNativeAttachmentProof(
   page: Page,
   status: MockModelScenarioStatus,
   kind: AttachmentKind,
   sourcePath: string,
-  protocol?: MockModelProtocol,
-  handoff: ImageHandoff = {},
-  stepIndex = 0,
+  options: AttachmentProofOptions = {},
 ): Promise<void> {
+  const { protocol, stepIndex = 0, ...handoff } = options
   await expectAttachmentInRequest(page, scriptedRequest(status, protocol, stepIndex), kind, sourcePath, handoff)
 }
 
-async function expectAttachmentInRequest(page: Page, request: MockModelRequestRecord, kind: AttachmentKind, sourcePath: string, handoff: ImageHandoff): Promise<void> {
-  if (handoff.transcodedImageType !== undefined && kind !== 'image')
-    throw new Error(`a transcoded image type applies to an image attachment, not to a ${kind} attachment`)
+async function expectAttachmentInRequest(page: Page, request: MockModelRequestRecord, kind: AttachmentKind, sourcePath: string, handoff: AttachmentHandoff): Promise<void> {
+  validateHandoff(kind, handoff)
   const source = readFileSync(sourcePath)
-  if (kind === 'pdf') {
-    expectNativePdfPart(request, source)
-    return
+  switch (kind) {
+    case 'pdf':
+      expectNativePdfPart(request, source)
+      return
+    case 'image':
+      await expectNativeImagePart(request, source, uri => imageQuadrants(page, uri), handoff.transcodedImageType)
+      return
+    case 'binary':
+      expectNativeFilePart(request, source, binaryMediaType(handoff))
+      return
+    case 'text': {
+      const content = nativeUserStrings(request.body)
+      if (content.length === 0)
+        throw new Error('the native request has no user content for the attachment')
+      expect(content.join('\n'), 'the native user content must include the full text file').toContain(source.toString('utf8'))
+    }
   }
-  if (kind === 'image') {
-    await expectNativeImagePart(request, source, uri => imageQuadrants(page, uri), handoff.transcodedImageType)
-    return
-  }
-  const content = nativeUserStrings(request.body)
-  if (content.length === 0)
-    throw new Error('the native request has no user content for the attachment')
-  const joined = content.join('\n')
-  if (kind === 'text') {
-    expect(joined, 'the native user content must include the full text file').toContain(source.toString('utf8'))
-    return
-  }
-  if (!joined.includes(source.toString('base64')))
-    throw new Error('the native user content omits the complete binary file')
 }
+
+/** How `exerciseAttachmentDelivery` attaches the file and proves its handoff. */
+export interface AttachmentDeliveryOptions extends AttachmentHandoff {
+  /** A caller's fixture file, for a provider that needs another valid file. Its base name must be the file name. */
+  fixturePath?: string
+  /** The model API of the provider. A request on another API fails the proof. */
+  protocol?: MockModelProtocol
+  /**
+   * A proof that replaces the typed-part proof, for a provider that hands the
+   * file over in its own shape (Grok copies the file and states its path). It
+   * excludes the handoff fields, which only the typed-part proof reads.
+   */
+  proof?: (request: MockModelRequestRecord, sourcePath: string) => void | Promise<void>
+}
+
+/** The answer of the attachment turn. */
+const DELIVERY_ANSWER = 'Attachment received.'
+
+/** The prompt of the attachment turn. */
+const DELIVERY_PROMPT = 'Inspect the attached file.'
 
 /**
  * Verify that one attachment reaches the provider's model request and the chat.
  *
- * `protocol` states the model API that the provider uses. When it is set, a
- * request on another API fails the proof. `transcodedImageType` states the
- * image format that a transcoding provider writes (see `ImageHandoff`).
+ * The turn queues its answer through the context's text step, attaches the file,
+ * sends it with the prompt, and waits for the agent. It then proves the handoff
+ * in the request of its own step, and requires one user row with the file name
+ * and the prompt, and the answer. It returns that request.
  */
 export async function exerciseAttachmentDelivery(
-  page: Page,
-  modelScript: ModelScript,
+  context: NativeScenarioContext,
   kind: AttachmentKind,
   fileName: string,
-  options: { fixturePath?: string, protocol?: MockModelProtocol } & ImageHandoff = {},
-): Promise<void> {
-  const { protocol, transcodedImageType, ...outcome } = options
+  options: AttachmentDeliveryOptions = {},
+): Promise<MockModelRequestRecord> {
+  const { protocol, proof, fixturePath, ...handoff } = options
+  if (proof !== undefined && (handoff.transcodedImageType !== undefined || handoff.binaryMediaType !== undefined))
+    throw new Error('a custom attachment proof replaces the typed-part proof, so it takes no transcoded image type and no binary media type')
+  if (proof === undefined)
+    validateHandoff(kind, handoff)
+  const { page, modelScript } = context
   // The step that this helper queues holds the attachment turn, also when the
   // test queued other steps first.
-  const stepIndex = await modelScript.queue({ text: 'Attachment received.' })
-  const sourcePath = await expectAttachmentOutcome(page, kind, { supported: true, fileName, ...outcome })
-  await sendWithAttachment(page, modelScript.prompt('Inspect the attached file.'))
-  const status = await modelScript.waitForSteps()
+  const stepIndex = await modelScript.queue(nativeTextStep(context, DELIVERY_ANSWER))
+  const sourcePath = await expectAttachmentOutcome(page, kind, { supported: true, fileName, ...(fixturePath === undefined ? {} : { fixturePath }) })
+  await sendWithAttachment(page, modelScript.prompt(DELIVERY_PROMPT))
+  await modelScript.waitForSteps(stepIndex + 1)
   await waitForAgentIdle(page)
 
-  const handoff: ImageHandoff = transcodedImageType === undefined ? {} : { transcodedImageType }
-  await expectAttachmentInRequest(page, scriptedRequest(status, protocol, stepIndex), kind, sourcePath, handoff)
-  await expectUserMessage(page, fileName)
-  await expect(assistantBubbles(page).filter({ hasText: 'Attachment received.' }).first()).toBeVisible()
+  // Read the record after the turn ends. A native client can add to its request after the mock counts the step.
+  const request = await modelScript.requestAt(stepIndex)
+  if (protocol !== undefined)
+    expect(request.protocol, 'the attachment request uses the model API of the provider').toBe(protocol)
+  if (proof === undefined)
+    await expectAttachmentInRequest(page, request, kind, sourcePath, handoff)
+  else
+    await proof(request, sourcePath)
+  await expect(userBubbles(page).filter({ hasText: fileName }).filter({ hasText: DELIVERY_PROMPT }).first()).toBeVisible()
+  await expect(assistantBubbles(page).filter({ hasText: DELIVERY_ANSWER }).first()).toBeVisible()
+  return request
 }
 
-/** Send a clean turn after refusal and require the rejected bytes to stay out. */
+/** A refused attachment: its kind, or its kind and the name of its fixture file. */
+export type RefusedAttachment = AttachmentKind | { kind: AttachmentKind, fileName: string }
+
+/**
+ * Attach each refused file and require that the composer refuses it, then send
+ * a clean turn and require that none of the refused content reaches the model
+ * (see `expectRefusedAttachmentsAbsent`). Return the request of the clean turn.
+ */
+export async function exerciseAttachmentRefusal(
+  context: NativeScenarioContext,
+  ...refused: [RefusedAttachment, ...RefusedAttachment[]]
+): Promise<MockModelRequestRecord> {
+  const rejectedPaths: string[] = []
+  for (const attachment of refused) {
+    const { kind, fileName } = typeof attachment === 'string' ? { kind: attachment, fileName: undefined } : attachment
+    rejectedPaths.push(await expectAttachmentOutcome(context.page, kind, { supported: false, ...(fileName === undefined ? {} : { fileName }) }))
+  }
+  return expectRefusedAttachmentsAbsent(context, rejectedPaths)
+}
+
+/** The prompt of the clean turn after a refusal. */
+const CLEAN_PROMPT = 'Reply once without attachments.'
+
+/** The answer of the clean turn after a refusal. */
+const CLEAN_ANSWER = 'The clean prompt answered.'
+
+/**
+ * Send a clean turn after a refusal and require the rejected content to stay out.
+ * The answer goes through the context's text step. Return the request of the clean turn.
+ */
 export async function expectRefusedAttachmentsAbsent(
-  page: Page,
-  modelScript: ModelScript,
-  rejectedPaths: string[],
-  response: MockModelStep = { text: 'The clean prompt answered.' },
-): Promise<void> {
-  const cleanStepIndex = await modelScript.queue(response)
-  await sendMessage(page, modelScript.prompt('Reply once without attachments.'))
-  const status = await modelScript.waitForSteps()
+  context: NativeScenarioContext,
+  rejectedPaths: readonly string[],
+): Promise<MockModelRequestRecord> {
+  if (rejectedPaths.length === 0)
+    throw new Error('a refusal proof needs at least one refused file')
+  const { page, modelScript } = context
+  const stepIndex = await modelScript.queue(nativeTextStep(context, CLEAN_ANSWER))
+  await sendMessage(page, modelScript.prompt(CLEAN_PROMPT))
+  await modelScript.waitForSteps(stepIndex + 1)
   await waitForAgentIdle(page)
-  await expectNoRejectedContent(page, status, rejectedPaths, cleanStepIndex)
+  const request = await modelScript.requestAt(stepIndex)
+  await expectNoRejectedContentIn(page, request, rejectedPaths)
+  await expect(assistantBubbles(page).filter({ hasText: CLEAN_ANSWER }).first()).toBeVisible()
+  return request
 }
 
-/** Check the clean request for rejected content after a refusal. */
-export async function expectNoRejectedContent(page: Page, status: MockModelScenarioStatus, rejectedPaths: string[], stepIndex = status.stepCount - 1): Promise<void> {
-  const body = scriptedRequest(status, undefined, stepIndex).body
-  const userContent = nativeUserStrings(body).join('\n')
-  const requestStrings: string[] = []
-  collectStrings(body, requestStrings)
+/** Check the clean request of the step at `stepIndex` for rejected content after a refusal. The last step by default. */
+export async function expectNoRejectedContent(page: Page, status: MockModelScenarioStatus, rejectedPaths: readonly string[], stepIndex = status.stepCount - 1): Promise<void> {
+  await expectNoRejectedContentIn(page, scriptedRequest(status, undefined, stepIndex), rejectedPaths)
+}
+
+/**
+ * Require the clean prompt in the user content of `request`, and require that no rejected file reaches the request:
+ * not its name in the user content, not its bytes in base64 anywhere, not the page text of a PDF, not the text of a
+ * text file, and not an image that decodes to the colors of a rejected image or PDF.
+ */
+async function expectNoRejectedContentIn(page: Page, request: MockModelRequestRecord, rejectedPaths: readonly string[]): Promise<void> {
+  const userContent = nativeUserStrings(request.body).join('\n')
+  const requestStrings = jsonStringValues(request.body)
   const requestContent = requestStrings.join('\n')
-  expect(userContent).toContain('Reply once without attachments.')
+  expect(userContent).toContain(CLEAN_PROMPT)
   const checkImages = rejectedPaths.some(path => path.endsWith('.png') || path.endsWith('.pdf'))
   const images: number[][][] = []
   if (checkImages) {

@@ -89,7 +89,7 @@ codebuddyTest.describe('CodeBuddy Code steering', () => {
     expect(nextTurn?.protocol).toBe('openai-chat-completions')
     expect(lastUserText(nextTurn?.body)).toContain('Also inspect the image I attached.')
     expect(lastUserText(nextTurn?.body)).toContain('Attached file "codebuddy-steer.png" (image/png)')
-    await expectNativeAttachmentProof(page, status, 'image', attachment, 'openai-chat-completions', {}, 2)
+    await expectNativeAttachmentProof(page, status, 'image', attachment, { protocol: 'openai-chat-completions', stepIndex: 2 })
     await expect(assistantBubbles(page).filter({ hasText: 'I saw the queued text.' })).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I saw the queued image.' })).toBeVisible()
     await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(2)

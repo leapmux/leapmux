@@ -31,21 +31,28 @@ describe('expectGrokCopiedBytes', () => {
     expect(readFileSync(copied)).toEqual(readFileSync(source))
   })
 
-  it.each([undefined, null, {}, { messages: [] }, { messages: [{ role: 'assistant', content: 'No user descriptor.' }] }])('rejects an absent native user descriptor: %j', (request) => {
-    expect(() => expectGrokCopiedBytes(request, source, 'application/pdf')).toThrow()
+  // A body with no message list fails before the descriptor search. A message list with no user text fails the text check.
+  it.each([
+    [undefined, 'contains no messages array'],
+    [null, 'contains no messages array'],
+    [{}, 'contains no messages array'],
+    [{ messages: [] }, 'the last user message of the native Grok request holds text'],
+    [{ messages: [{ role: 'assistant', content: 'No user descriptor.' }] }, 'the last user message of the native Grok request holds text'],
+  ])('rejects an absent native user descriptor: %j', (request, error) => {
+    expect(() => expectGrokCopiedBytes(request, source, 'application/pdf')).toThrow(error)
   })
 
   it('rejects a mismatched native MIME value', () => {
-    expect(() => expectGrokCopiedBytes(body('application/octet-stream'), source, 'application/pdf')).toThrow()
+    expect(() => expectGrokCopiedBytes(body('application/octet-stream'), source, 'application/pdf')).toThrow('the Grok copied-file descriptor states the media type of the source')
   })
 
   it('rejects a mismatched native byte size', () => {
-    expect(() => expectGrokCopiedBytes(body('application/pdf', 5), source, 'application/pdf')).toThrow()
+    expect(() => expectGrokCopiedBytes(body('application/pdf', 5), source, 'application/pdf')).toThrow('the Grok copied-file descriptor states the size of the source')
   })
 
   it('rejects different copied bytes even when the byte size matches', () => {
     writeFileSync(copied, Buffer.from([0x25, 0x50, 0x44, 0x46, 0, 0xFE]))
-    expect(() => expectGrokCopiedBytes(body(), source, 'application/pdf')).toThrow()
+    expect(() => expectGrokCopiedBytes(body(), source, 'application/pdf')).toThrow('the Grok copy holds the bytes of the source')
   })
 
   it('rejects an absent actual copied file', () => {
@@ -56,7 +63,7 @@ describe('expectGrokCopiedBytes', () => {
   it('rejects a copied path that loses the original basename', () => {
     const foreign = join(directory, 'foreign.pdf')
     writeFileSync(foreign, readFileSync(source))
-    expect(() => expectGrokCopiedBytes(body('application/pdf', 6, foreign), source, 'application/pdf')).toThrow()
+    expect(() => expectGrokCopiedBytes(body('application/pdf', 6, foreign), source, 'application/pdf')).toThrow('the Grok copy keeps the name of the source file')
   })
 
   it('rejects the original source path as a native copied-file descriptor', () => {

@@ -1,10 +1,6 @@
 import { cursorTest } from '../cursor-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 
-cursorTest('other-binary-attachments: keeps refused PDF and binary attachments out of the next request', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
-  void authenticatedCursorWorkspace
-  const pdf = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'cursor-doc.pdf' })
-  const binary = await expectAttachmentOutcome(page, 'binary', { supported: false, fileName: 'cursor-blob.bin' })
-  await expectRefusedAttachmentsAbsent(page, modelScript, [pdf, binary])
+cursorTest('other-binary-attachments: keeps refused PDF and binary attachments out of the next request', async ({ native }) => {
+  await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'cursor-doc.pdf' }, { kind: 'binary', fileName: 'cursor-blob.bin' })
 })

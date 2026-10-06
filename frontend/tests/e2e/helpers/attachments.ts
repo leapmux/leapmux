@@ -5,7 +5,7 @@ import { basename, join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 import { createTestDirectory } from './runDirectory'
-import { focusComposer, waitForNativeSettingsHydrated } from './ui'
+import { sendMessage, waitForNativeSettingsHydrated } from './ui'
 
 /**
  * Attachment fixtures and the composer flows that consume them.
@@ -135,10 +135,12 @@ export async function attachFile(page: Page, path: string): Promise<void> {
   await page.locator('[data-testid="file-input"]').setInputFiles(path)
 }
 
+/** Locate every visible attachment pill of the composer. */
 export function attachmentPills(page: Page) {
   return page.locator('[data-testid="attachment-pill"]:visible')
 }
 
+/** Locate the visible strip that holds the composer's attachment pills. */
 export function attachmentStrip(page: Page) {
   return page.locator('[data-testid="attachment-strip"]:visible')
 }
@@ -158,7 +160,8 @@ export function selectAttachmentFixture(kind: AttachmentKind, options: Attachmen
  *
  * A provider that supports the kind gets a pill that names the file. A provider
  * that does not gets no pill and a toast that states the refusal. The toast text
- * is provider-neutral (`attachments.ts` builds it from the capability map).
+ * is provider-neutral (`describeUnsupportedAttachment` in
+ * `src/components/chat/attachments.ts` builds it from the capability map).
  */
 export async function expectAttachmentOutcome(
   page: Page,
@@ -186,12 +189,14 @@ export async function expectAttachmentOutcome(
   return path
 }
 
-/** Send the composer with its attachment and optional text, then wait for the strip to clear. */
+/**
+ * Send the composer's attachments with `text`, then require that the pills clear.
+ * `sendMessage` types the text, sends it, and requires that the composer clears.
+ * An attachment-only send has no text to type, so a test of it clicks the send button itself.
+ */
 export async function sendWithAttachment(page: Page, text: string): Promise<void> {
-  const editor = await focusComposer(page)
-  if (text)
-    await page.keyboard.type(text)
-  await page.keyboard.press('Meta+Enter')
-  await expect(editor).toHaveText('')
+  if (text === '')
+    throw new Error('An attachment send needs text. A test of an attachment-only send clicks the send button.')
+  await sendMessage(page, text)
   await expect(attachmentPills(page)).toHaveCount(0)
 }

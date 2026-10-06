@@ -2,10 +2,9 @@ import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { kiroTest } from '../kiro-fixtures'
 
 kiroTest.describe('Kiro attachments', () => {
-  kiroTest('accepts a PDF attachment and carries it through the turn', async ({ authenticatedKiroWorkspace, page, modelScript }) => {
-    void authenticatedKiroWorkspace
+  kiroTest('accepts a PDF attachment and carries it through the turn', async ({ native }) => {
     // Kiro sends the original bytes to its service as a `documents` entry with
     // `format: pdf` in the current user input message.
-    await exerciseAttachmentDelivery(page, modelScript, 'pdf', 'kiro-doc.pdf', { protocol: 'aws-event-stream' })
+    await exerciseAttachmentDelivery(native, 'pdf', 'kiro-doc.pdf', { protocol: 'aws-event-stream' })
   })
 })

@@ -1,9 +1,6 @@
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 import { zcodeTest } from '../zcode-fixtures'
 
-zcodeTest('refuses native pdf input and keeps its actual bytes out of a clean model request', async ({ authenticatedZCodeWorkspace, page, modelScript }) => {
-  void authenticatedZCodeWorkspace
-  const rejected = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'zcode-refused.pdf' })
-  await expectRefusedAttachmentsAbsent(page, modelScript, [rejected])
+zcodeTest('refuses native pdf input and keeps its actual bytes out of a clean model request', async ({ native }) => {
+  await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'zcode-refused.pdf' })
 })

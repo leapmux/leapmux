@@ -1,12 +1,8 @@
 import { clineTest } from '../cline-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 
 clineTest.describe('Cline attachments', () => {
-  clineTest('refuses a PDF and a binary file', async ({ authenticatedClineWorkspace, page, modelScript }) => {
-    void authenticatedClineWorkspace
-    const pdf = await expectAttachmentOutcome(page, 'pdf', { supported: false })
-    const binary = await expectAttachmentOutcome(page, 'binary', { supported: false })
-    await expectRefusedAttachmentsAbsent(page, modelScript, [pdf, binary])
+  clineTest('refuses a PDF and a binary file', async ({ native }) => {
+    await exerciseAttachmentRefusal(native, 'pdf', 'binary')
   })
 })

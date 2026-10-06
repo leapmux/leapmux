@@ -1,14 +1,8 @@
 import { diracTest } from '../dirac-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
-import { diracRespondToolCall } from '../helpers/providerToolCalls'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 
 diracTest.describe('Dirac attachments', () => {
-  diracTest('refuses a PDF attachment that Dirac cannot read', async ({ authenticatedDiracWorkspace, page, modelScript }) => {
-    void authenticatedDiracWorkspace
-    const rejected = await expectAttachmentOutcome(page, 'pdf', { supported: false })
-    await expectRefusedAttachmentsAbsent(page, modelScript, [rejected], {
-      toolCalls: [diracRespondToolCall('dirac-clean-pdf', 'complete', 'The clean prompt ended.')],
-    })
+  diracTest('refuses a PDF attachment that Dirac cannot read', async ({ native }) => {
+    await exerciseAttachmentRefusal(native, 'pdf')
   })
 })

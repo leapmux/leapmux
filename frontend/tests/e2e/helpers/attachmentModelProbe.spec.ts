@@ -97,7 +97,7 @@ test.describe('expectNativeAttachmentProof', () => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] }] })
-      await expectNativeAttachmentProof(probe, status, 'image', source, 'openai-chat-completions', { transcodedImageType: 'image/webp' })
+      await expectNativeAttachmentProof(probe, status, 'image', source, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' })
     })
   })
 
@@ -118,7 +118,7 @@ test.describe('expectNativeAttachmentProof', () => {
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: white } }] }] })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
       // The allowance admits a WebP, so only the decoded colors reject this image.
-      const wrongColors = expectNativeAttachmentProof(probe, status, 'image', source, 'openai-chat-completions', { transcodedImageType: 'image/webp' })
+      const wrongColors = expectNativeAttachmentProof(probe, status, 'image', source, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' })
       await expect(wrongColors).rejects.toThrow('does not carry the complete image file')
       await expect(wrongColors).rejects.toThrow('decodes to the quadrant pixels')
     })
@@ -218,7 +218,7 @@ test.describe('expectNativeAttachmentProof', () => {
       const source = writeAttachmentFixture('pdf')
       const header = readFileSync(source).subarray(0, 8).toString('base64')
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'file', file: { filename: 'doc.pdf', file_data: `data:application/pdf;base64,${header}` } }] }] })
-      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source, 'openai-chat-completions')).rejects.toThrow('has 8 bytes with SHA-256')
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source, { protocol: 'openai-chat-completions' })).rejects.toThrow('has 8 bytes with SHA-256')
     })
   })
 
@@ -229,7 +229,7 @@ test.describe('expectNativeAttachmentProof', () => {
         content: 'Inspect the attached file.',
         documents: [{ name: 'doc', format: 'pdf', source: { bytes: readFileSync(source).toString('base64') } }],
       } } } }
-      await expectNativeAttachmentProof(probe, scriptedStatus(body, 'aws-event-stream'), 'pdf', source, 'aws-event-stream')
+      await expectNativeAttachmentProof(probe, scriptedStatus(body, 'aws-event-stream'), 'pdf', source, { protocol: 'aws-event-stream' })
     })
   })
 
@@ -241,7 +241,7 @@ test.describe('expectNativeAttachmentProof', () => {
         { role: 'system', content: 'You are a coding agent.' },
         { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, { type: 'file', file: { filename: 'doc.pdf', file_data: fileData } }] },
       ] })
-      await expectNativeAttachmentProof(probe, status, 'pdf', source, 'openai-chat-completions')
+      await expectNativeAttachmentProof(probe, status, 'pdf', source, { protocol: 'openai-chat-completions' })
     })
   })
 
@@ -250,7 +250,7 @@ test.describe('expectNativeAttachmentProof', () => {
       const source = writeAttachmentFixture('pdf')
       const document = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: readFileSync(source).toString('base64') } }
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }, document] }] }, 'anthropic-messages')
-      await expectNativeAttachmentProof(probe, status, 'pdf', source, 'anthropic-messages')
+      await expectNativeAttachmentProof(probe, status, 'pdf', source, { protocol: 'anthropic-messages' })
     })
   })
 })

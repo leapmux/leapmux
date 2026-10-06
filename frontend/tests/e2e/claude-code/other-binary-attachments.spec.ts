@@ -1,7 +1,6 @@
-import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { writeAttachmentFixture } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
+import { nativeContext } from './scenarios'
 
 claudeTest.describe('Attachment Support', () => {
   // The Linux/WebKitGTK image-paste path (entirely empty DataTransfer →
@@ -11,22 +10,9 @@ claudeTest.describe('Attachment Support', () => {
   // shape. The conversion logic is covered by the platformBridge unit
   // test; manual paste in the desktop build is the only true end-to-end.
 
-  claudeTest('unsupported file type stays out of the next model request', async ({ page, authenticatedWorkspace, modelScript }) => {
-    void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Upload a binary file (unsupported type for the default provider).
-    const fileInput = page.locator('[data-testid="file-input"]')
-    const rejected = writeAttachmentFixture('binary')
-    await fileInput.setInputFiles(rejected)
-
-    // No attachment pill should appear.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
-
-    // A toast should have been shown in the DOM (output element with .toast-message).
-    const toast = page.locator('output .toast-message')
-    await expect(toast).toContainText('binary')
-    await expectRefusedAttachmentsAbsent(page, modelScript, [rejected])
+  claudeTest('unsupported file type stays out of the next model request', async ({ page, modelScript, leapmuxServer, authenticatedWorkspace }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
+    // The composer of the default provider refuses a binary file with no pill and a toast.
+    await exerciseAttachmentRefusal(context, 'binary')
   })
 })

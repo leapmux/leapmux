@@ -4,14 +4,18 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { basename, join, resolve } from 'node:path'
 import { crc32, inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { expectAttachmentOutcome, selectAttachmentFixture, writeAttachmentFixture } from './attachments'
+import { expectAttachmentOutcome, selectAttachmentFixture, sendWithAttachment, writeAttachmentFixture } from './attachments'
 
 let runDir: string
 vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
 
-const ui = vi.hoisted(() => ({ events: [] as string[], hydration: vi.fn<() => Promise<void>>() }))
+const ui = vi.hoisted(() => ({
+  events: [] as string[],
+  hydration: vi.fn<() => Promise<void>>(),
+  send: vi.fn<(page: unknown, text: string) => Promise<void>>(),
+}))
 vi.mock('./ui', () => ({
-  focusComposer: vi.fn(),
+  sendMessage: ui.send,
   waitForNativeSettingsHydrated: ui.hydration,
 }))
 
@@ -23,6 +27,7 @@ beforeEach(() => {
   ui.hydration.mockReset().mockImplementation(async () => {
     ui.events.push('hydrated')
   })
+  ui.send.mockReset()
 })
 
 afterEach(() => rmSync(runDir, { recursive: true, force: true }))
@@ -183,5 +188,31 @@ describe('expectAttachmentOutcome', () => {
     await expect(expectAttachmentOutcome(attachingPage(new Error('unreachable')), 'pdf', { supported: false })).rejects.toBe(failure)
     expect(ui.events).toEqual([])
     expect(readdirSync(runDir)).toEqual([])
+  })
+})
+
+describe('sendWithAttachment', () => {
+  /** A page whose pill locator must not be read: the send fails before the pill check, or the test stops there. */
+  const page = {
+    locator: () => {
+      throw new Error('the send reached the pill check')
+    },
+  } as unknown as Page
+
+  it('sends the text through sendMessage before it checks the pills', async () => {
+    const stop = new Error('The fake send stops before the pill check.')
+    ui.send.mockRejectedValueOnce(stop)
+    await expect(sendWithAttachment(page, 'Inspect the attached file.')).rejects.toBe(stop)
+    expect(ui.send).toHaveBeenCalledExactlyOnceWith(page, 'Inspect the attached file.')
+  })
+
+  it('checks that the pills clear after the send', async () => {
+    await expect(sendWithAttachment(page, 'Inspect the attached file.')).rejects.toThrow('the send reached the pill check')
+    expect(ui.send).toHaveBeenCalledOnce()
+  })
+
+  it('refuses an empty text before it sends anything', async () => {
+    await expect(sendWithAttachment(page, '')).rejects.toThrow('An attachment send needs text')
+    expect(ui.send).not.toHaveBeenCalled()
   })
 })

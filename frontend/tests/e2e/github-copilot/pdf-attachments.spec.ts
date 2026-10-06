@@ -1,9 +1,6 @@
 import { copilotTest } from '../copilot-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 
-copilotTest('keeps a refused PDF attachment out of the next request', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
-  void authenticatedCopilotWorkspace
-  const rejected = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'copilot-doc.pdf' })
-  await expectRefusedAttachmentsAbsent(page, modelScript, [rejected])
+copilotTest('keeps a refused PDF attachment out of the next request', async ({ native }) => {
+  await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'copilot-doc.pdf' })
 })

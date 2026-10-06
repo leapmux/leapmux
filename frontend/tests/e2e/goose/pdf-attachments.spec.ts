@@ -1,10 +1,6 @@
 import { gooseTest } from '../goose-fixtures'
-import { expectRefusedAttachmentsAbsent } from '../helpers/attachmentModelProbe'
-import { expectAttachmentOutcome } from '../helpers/attachments'
+import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 
-gooseTest('keeps refused PDF and binary attachments out of the next request', async ({ authenticatedGooseWorkspace, page, modelScript }) => {
-  void authenticatedGooseWorkspace
-  const pdf = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'goose-doc.pdf' })
-  const binary = await expectAttachmentOutcome(page, 'binary', { supported: false, fileName: 'goose-blob.bin' })
-  await expectRefusedAttachmentsAbsent(page, modelScript, [pdf, binary])
+gooseTest('keeps refused PDF and binary attachments out of the next request', async ({ native }) => {
+  await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'goose-doc.pdf' }, { kind: 'binary', fileName: 'goose-blob.bin' })
 })

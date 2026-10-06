@@ -1,13 +1,17 @@
 import type { Page } from '@playwright/test'
-import type { QuadrantDecoder } from './attachmentModelProbe'
+import type { AttachmentDeliveryOptions, QuadrantDecoder } from './attachmentModelProbe'
+import type { AttachmentKind } from './attachments'
 import type { MockModelProtocol, MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
+import type { ModelScript } from './modelScriptFixture'
+import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
-import { expectNativeAttachmentProof, expectNativeImagePart, expectNativePdfPart, nativeUserStrings, scriptedRequest } from './attachmentModelProbe'
+import { exerciseAttachmentDelivery, expectNativeAttachmentProof, expectNativeFilePart, expectNativeImagePart, expectNativePdfPart, expectRefusedAttachmentsAbsent, nativeUserStrings, scriptedRequest } from './attachmentModelProbe'
 import { writeAttachmentFixture } from './attachments'
 import { CURSOR_RUN_PATH } from './cursorSurface'
 
@@ -24,6 +28,8 @@ const encoded = pdf.toString('base64')
 const pngPath = writeAttachmentFixture('image')
 const png = readFileSync(pngPath)
 const pngBase64 = png.toString('base64')
+const binaryPath = writeAttachmentFixture('binary')
+const binary = readFileSync(binaryPath)
 
 afterAll(() => rmSync(runDir, { recursive: true, force: true }))
 
@@ -554,9 +560,50 @@ describe('expectNativePdfPart', () => {
     expect(() => expectNativePdfPart(nativeRequest('google-generative-language', body), pdf)).toThrow(NO_PDF_PART)
   })
 
-  it('states that no PDF route uses the Responses protocol', () => {
+  it('states that no file route uses the Responses protocol', () => {
     const request = nativeRequest('openai-responses', { input: [{ role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] }] })
-    expect(() => expectNativePdfPart(request, pdf)).toThrow('no provider that accepts a PDF uses the openai-responses protocol')
+    expect(() => expectNativePdfPart(request, pdf)).toThrow('no provider that sends a typed file part uses the openai-responses protocol')
+  })
+})
+
+describe('expectNativeFilePart', () => {
+  const wav = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0x24, 0, 0, 0]), Buffer.from('WAVEfmt ', 'latin1')])
+  const wavBase64 = wav.toString('base64')
+
+  it('accepts the exact bytes of a non-PDF type in each typed file shape', () => {
+    expect(() => expectNativeFilePart(google({ role: 'user', parts: [{ text: 'Read the valid WAV.' }, { inlineData: { mimeType: 'audio/wav', data: wavBase64 } }] }), wav, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeFilePart(chat({ role: 'user', content: [chatFile(`data:audio/wav;base64,${wavBase64}`)] }), wav, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeFilePart(anthropic({ role: 'user', content: [anthropicDocument(wavBase64, 'audio/wav')] }), wav, 'audio/wav')).not.toThrow()
+  })
+
+  it('fails a part that declares another media type', () => {
+    expect(() => expectNativeFilePart(google({ role: 'user', parts: [{ inlineData: { mimeType: 'audio/x-wav', data: wavBase64 } }] }), wav, 'audio/wav'))
+      .toThrow('contents[0].parts[0] declares mimeType=audio/x-wav, not audio/wav')
+  })
+
+  it('fails a data URI with a media type parameter', () => {
+    expect(() => expectNativeFilePart(chat({ role: 'user', content: [chatFile(`data:audio/wav;codecs=1;base64,${wavBase64}`)] }), wav, 'audio/wav'))
+      .toThrow('has a file.file_data that is not of the form data:<type>;base64,<data>')
+  })
+
+  it('fails the exact bytes outside a typed part, and different bytes inside one', () => {
+    expect(() => expectNativeFilePart(chat({ role: 'user', content: wavBase64 }), wav, 'audio/wav'))
+      .toThrow('carries no typed audio/wav part with the exact source bytes')
+    expect(() => expectNativeFilePart(chat({ role: 'user', content: [chatFile(`data:audio/wav;base64,${wav.subarray(0, 4).toString('base64')}`)] }), wav, 'audio/wav'))
+      .toThrow('has 4 bytes with SHA-256')
+  })
+
+  it('accepts a declared type that an anchored pattern matches, and fails one that it does not match', () => {
+    const request = chat({ role: 'user', content: [chatFile(`data:application/octet-stream;base64,${wavBase64}`)] })
+    expect(() => expectNativeFilePart(request, wav, /^application\//)).not.toThrow()
+    expect(() => expectNativeFilePart(request, wav, /^audio\//)).toThrow('declares file.file_data=data:application/octet-stream, not /^audio\\//')
+  })
+
+  it('refuses an empty media type and a pattern that keeps a match position', () => {
+    const request = chat({ role: 'user', content: [chatFile(`data:audio/wav;base64,${wavBase64}`)] })
+    expect(() => expectNativeFilePart(request, wav, '')).toThrow('needs the media type that the part declares')
+    expect(() => expectNativeFilePart(request, wav, /^audio\//g)).toThrow('without the g or y flag')
+    expect(() => expectNativeFilePart(request, wav, /^audio\//y)).toThrow('without the g or y flag')
   })
 })
 
@@ -926,21 +973,53 @@ describe('expectNativeAttachmentProof', () => {
 
   it('applies a transcoded image type to an image attachment only', async () => {
     const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
-    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, 'openai-chat-completions', { transcodedImageType: 'image/webp' }))
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' }))
       .rejects
       .toThrow('a transcoded image type applies to an image attachment, not to a pdf attachment')
-    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, 'openai-chat-completions')).resolves.toBeUndefined()
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { protocol: 'openai-chat-completions' })).resolves.toBeUndefined()
+  })
+
+  it('applies a binary media type to a binary attachment only', async () => {
+    const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { binaryMediaType: 'application/pdf' }))
+      .rejects
+      .toThrow('a binary media type applies to a binary attachment, not to a pdf attachment')
+  })
+
+  it('requires the media type of a binary attachment, so base64 in the user text never proves it', async () => {
+    const inText = chat({ role: 'user', content: `Inspect this: ${binary.toString('base64')}` })
+    await expect(expectNativeAttachmentProof(noBrowser, status(inText), 'binary', binaryPath))
+      .rejects
+      .toThrow('a binary attachment proof needs the media type that its typed file part declares')
+    await expect(expectNativeAttachmentProof(noBrowser, status(inText), 'binary', binaryPath, { binaryMediaType: /^application\// }))
+      .rejects
+      .toThrow('carries no typed /^application\\// part with the exact source bytes')
+  })
+
+  it('accepts a binary attachment in a typed file part of the declared type', async () => {
+    const request = chat({ role: 'user', content: [chatFile(`data:application/macbinary;base64,${binary.toString('base64')}`)] })
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { protocol: 'openai-chat-completions', binaryMediaType: /^application\// }))
+      .resolves
+      .toBeUndefined()
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { binaryMediaType: 'application/octet-stream' }))
+      .rejects
+      .toThrow('declares file.file_data=data:application/macbinary, not application/octet-stream')
   })
 
   it('reads the request of the step that stepIndex states', async () => {
     const clean = chat({ role: 'user', content: 'Reply once without attachments.' })
     const withPdf = nativeRequest('openai-chat-completions', { messages: [{ role: 'user', content: [chatFile(pdfDataURI(encoded))] }] }, 2)
-    await expect(expectNativeAttachmentProof(noBrowser, status(clean, withPdf), 'pdf', pdfPath, 'openai-chat-completions', {}, 2))
+    await expect(expectNativeAttachmentProof(noBrowser, status(clean, withPdf), 'pdf', pdfPath, { protocol: 'openai-chat-completions', stepIndex: 2 }))
       .resolves
       .toBeUndefined()
-    await expect(expectNativeAttachmentProof(noBrowser, status(clean, withPdf), 'pdf', pdfPath, 'openai-chat-completions'))
+    await expect(expectNativeAttachmentProof(noBrowser, status(clean, withPdf), 'pdf', pdfPath, { protocol: 'openai-chat-completions' }))
       .rejects
       .toThrow(NO_PDF_PART)
+  })
+
+  it('fails a request on another model API than the protocol states', async () => {
+    const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
+    await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { protocol: 'anthropic-messages' })).rejects.toThrow('the scripted request uses the model API of the provider')
   })
 
   it('decodes a transcoded image in the browser page that it receives', async () => {
@@ -951,7 +1030,7 @@ describe('expectNativeAttachmentProof', () => {
         return SOURCE_QUADRANTS
       },
     })
-    await expect(expectNativeAttachmentProof(page, status(chat({ role: 'user', content: [chatImage(webpURI)] })), 'image', pngPath, 'openai-chat-completions', { transcodedImageType: 'image/webp' }))
+    await expect(expectNativeAttachmentProof(page, status(chat({ role: 'user', content: [chatImage(webpURI)] })), 'image', pngPath, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' }))
       .resolves
       .toBeUndefined()
     expect(decoded).toEqual([webpURI])
@@ -1143,6 +1222,62 @@ describe('expectNativeAttachmentProof', () => {
   })
 })
 
+/** A context whose script records each queued step, so a refused option can show that no turn started. */
+function scriptedContext(textStep?: NativeScenarioContext['textStep']) {
+  const queue = vi.fn<(...steps: unknown[]) => Promise<number>>(async () => 0)
+  const modelScript = { queue } as unknown as ModelScript
+  const context: NativeScenarioContext = { page: noBrowser, modelScript, provider: AgentProvider.CLAUDE_CODE, ...(textStep ? { textStep } : {}) }
+  return { context, queue }
+}
+
+describe('exerciseAttachmentDelivery', () => {
+  it.each<[string, AttachmentKind, AttachmentDeliveryOptions, string]>([
+    ['a custom proof with a transcoded image type', 'image', { proof: () => undefined, transcodedImageType: 'image/webp' }, 'a custom attachment proof replaces the typed-part proof'],
+    ['a custom proof with a binary media type', 'binary', { proof: () => undefined, binaryMediaType: 'audio/wav' }, 'a custom attachment proof replaces the typed-part proof'],
+    ['a transcoded image type for a PDF', 'pdf', { transcodedImageType: 'image/png' }, 'a transcoded image type applies to an image attachment, not to a pdf attachment'],
+    ['a binary media type for a text file', 'text', { binaryMediaType: 'text/plain' }, 'a binary media type applies to a binary attachment, not to a text attachment'],
+    ['a binary file with no media type and no proof', 'binary', {}, 'a binary attachment proof needs the media type that its typed file part declares'],
+  ])('refuses %s before it queues a step', async (_name, kind, options, message) => {
+    const { context, queue } = scriptedContext()
+    await expect(exerciseAttachmentDelivery(context, kind, 'attachment.bin', options)).rejects.toThrow(message)
+    expect(queue).not.toHaveBeenCalled()
+  })
+
+  it('accepts a custom proof for a binary file with no media type', async () => {
+    const stop = new Error('The fake script stops the turn.')
+    const { context, queue } = scriptedContext()
+    queue.mockRejectedValueOnce(stop)
+    await expect(exerciseAttachmentDelivery(context, 'binary', 'grok-blob.bin', { proof: () => undefined })).rejects.toBe(stop)
+    expect(queue).toHaveBeenCalledOnce()
+  })
+
+  it('queues its answer through the text step of the context', async () => {
+    const stop = new Error('The fake script stops the turn.')
+    const answer = (text: string) => ({ toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text } }] })
+    const { context, queue } = scriptedContext(answer)
+    queue.mockRejectedValueOnce(stop)
+    await expect(exerciseAttachmentDelivery(context, 'text', 'notes.txt')).rejects.toBe(stop)
+    expect(queue).toHaveBeenCalledExactlyOnceWith(answer('Attachment received.'))
+  })
+})
+
+describe('expectRefusedAttachmentsAbsent', () => {
+  it('refuses an empty list of refused files before it queues a step', async () => {
+    const { context, queue } = scriptedContext()
+    await expect(expectRefusedAttachmentsAbsent(context, [])).rejects.toThrow('a refusal proof needs at least one refused file')
+    expect(queue).not.toHaveBeenCalled()
+  })
+
+  it('queues its clean answer through the text step of the context', async () => {
+    const stop = new Error('The fake script stops the turn.')
+    const answer = (text: string) => ({ toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text } }] })
+    const { context, queue } = scriptedContext(answer)
+    queue.mockRejectedValueOnce(stop)
+    await expect(expectRefusedAttachmentsAbsent(context, [binaryPath])).rejects.toBe(stop)
+    expect(queue).toHaveBeenCalledExactlyOnceWith(answer('The clean prompt answered.'))
+  })
+})
+
 describe('scriptedRequest', () => {
   it('selects the request that consumed the given step', () => {
     const withPdf = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
@@ -1165,6 +1300,6 @@ describe('scriptedRequest', () => {
   })
 
   it('fails when the request uses another protocol than the caller states', () => {
-    expect(() => scriptedRequest(status(chat()), 'anthropic-messages')).toThrow()
+    expect(() => scriptedRequest(status(chat()), 'anthropic-messages')).toThrow('the scripted request uses the model API of the provider')
   })
 })

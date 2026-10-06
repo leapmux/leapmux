@@ -1,12 +1,11 @@
 import { grokTest } from '../grok-fixtures'
-
-import { exerciseGrokAttachment, expectGrokCopiedBytes } from './attachmentScenarios'
+import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { expectGrokCopiedBytes } from './attachmentScenarios'
 
 grokTest.describe('Grok Build attachments', () => {
-  grokTest('accepts a PDF attachment and carries it through the turn', async ({ authenticatedGrokWorkspace, page, modelScript }) => {
-    void authenticatedGrokWorkspace
-    await exerciseGrokAttachment(page, modelScript, 'pdf', 'grok-doc.pdf', (body, sourcePath) => {
-      expectGrokCopiedBytes(body, sourcePath, 'application/pdf')
+  grokTest('accepts a PDF attachment and carries it through the turn', async ({ native }) => {
+    await exerciseAttachmentDelivery(native, 'pdf', 'grok-doc.pdf', {
+      proof: (request, sourcePath) => expectGrokCopiedBytes(request.body, sourcePath, 'application/pdf'),
     })
   })
 })
