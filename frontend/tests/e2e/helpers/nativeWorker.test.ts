@@ -17,6 +17,7 @@ const calls = vi.hoisted(() => ({
   stop: vi.fn(),
   directory: vi.fn(),
   environment: vi.fn(),
+  alive: vi.fn(),
 }))
 vi.mock('./api', () => ({
   mintRegistrationKeyViaAPI: calls.mint,
@@ -26,6 +27,8 @@ vi.mock('./api', () => ({
 }))
 vi.mock('./processRegistry', () => ({ spawnTestProcess: calls.spawn }))
 vi.mock('./process', () => ({ stopProcess: calls.stop }))
+// The fake Worker holds a made-up process ID, which a real process on the host can hold also.
+vi.mock('./processTree', () => ({ isAlive: calls.alive }))
 vi.mock('./runDirectory', () => ({ createTestDirectory: calls.directory }))
 vi.mock('./server', () => ({
   getGlobalState: () => ({ binaryPath: '/isolated/leapmux' }),
@@ -50,6 +53,7 @@ beforeEach(() => {
   calls.directory.mockReturnValue(directory)
   calls.spawn.mockReturnValue(proc)
   calls.environment.mockImplementation(value => ({ ...value, PRIVATE_ENV_FILTERED: 'true' }))
+  calls.alive.mockReturnValue(false)
   calls.stop.mockImplementation(async () => {
     Object.assign(proc, { exitCode: 0 })
     proc.emit('close', 0)
@@ -119,10 +123,8 @@ describe('withNativeWorker', () => {
   it('keeps independent stream callbacks and captured failure output', async () => {
     const chunks: Array<{ text: string, stream: string }> = []
     const ends = new Set<string>()
-    const afterStop = vi.fn()
     await expect(withNativeWorker(server, {
       ...options,
-      afterStop,
       onStdio: (chunk, stream) => { chunks.push({ text: chunk.toString(), stream }) },
       onStdioEnd: (stream) => { ends.add(stream) },
     }, async () => {
@@ -134,7 +136,7 @@ describe('withNativeWorker', () => {
     expect(ends).toEqual(new Set(['stdout', 'stderr']))
     expect(calls.stop).toHaveBeenCalledOnce()
     expect(calls.deregister).toHaveBeenCalledOnce()
-    expect(afterStop).toHaveBeenCalledWith(proc)
+    expect(calls.alive).toHaveBeenCalledWith(proc.pid)
     expect(onlineSignal().aborted).toBe(true)
   })
 
@@ -207,38 +209,80 @@ describe('withNativeWorker', () => {
     expect(existsSync(directory), 'a live Worker keeps its files after stop fails').toBe(true)
   })
 
-  it('awaits the physical process check after stop on success and registration failure', async () => {
-    const afterStop = vi.fn(async (stopped: ChildProcess) => {
-      expect(stopped).toBe(proc)
-      expect(calls.stop).toHaveBeenCalledWith(stopped)
-      expect(stopped.exitCode).toBe(0)
+  it('checks the process ID after the stop, on success and on a registration failure', async () => {
+    calls.alive.mockImplementation((pid: number) => {
+      expect(pid).toBe(proc.pid)
+      expect(calls.stop).toHaveBeenCalledWith(proc)
+      expect(proc.exitCode).toBe(0)
+      return false
     })
-    await withNativeWorker(server, { ...options, afterStop }, async () => {})
-    expect(afterStop).toHaveBeenCalledOnce()
+    await withNativeWorker(server, options, async () => {})
+    expect(calls.alive).toHaveBeenCalled()
+    calls.alive.mockClear()
     calls.online.mockRejectedValueOnce(new Error('The next Worker did not reach online state.'))
     mkdirSync(directory)
     proc = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: 31235 })
     calls.spawn.mockReturnValue(proc)
-    await expect(withNativeWorker(server, { ...options, afterStop }, async () => {})).rejects.toThrow('The private Worker failed')
-    expect(afterStop).toHaveBeenCalledTimes(2)
+    await expect(withNativeWorker(server, options, async () => {})).rejects.toThrow('The private Worker failed')
+    expect(calls.alive).toHaveBeenCalledWith(31235)
   })
 
-  it('still deregisters the Worker when its physical process check fails', async () => {
-    const failure = new Error('The private Worker PID still exists.')
-    const afterStop = vi.fn(async () => {
-      throw failure
-    })
-    await expect(withNativeWorker(server, { ...options, afterStop }, async () => {})).rejects.toMatchObject({ cause: { errors: [failure] } })
-    expect(afterStop).toHaveBeenCalledWith(proc)
-    expect(calls.deregister).toHaveBeenCalledWith(server.hubUrl, server.adminToken, 'private-worker')
+  it('fails a stopped Worker whose process ID still exists, still deregisters it, and keeps its files', async () => {
+    calls.alive.mockReturnValue(true)
+    const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
+    try {
+      await expect(withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {}))
+        .rejects
+        .toMatchObject({ cause: { errors: [{ message: 'The private Worker 31234 did not physically exit.' }] } })
+      expect(calls.deregister).toHaveBeenCalledWith(server.hubUrl, server.adminToken, 'private-worker')
+      expect(existsSync(directory), 'a Worker that still runs keeps its data directory').toBe(true)
+      expect(existsSync(privateDirectory), 'a Worker that still runs keeps its private files').toBe(true)
+    }
+    finally {
+      rmSync(privateDirectory, { recursive: true, force: true })
+    }
   })
 
-  it('does not report physical stop when stop itself fails', async () => {
-    const afterStop = vi.fn()
+  it('does not check the process ID when the stop itself fails', async () => {
     calls.stop.mockRejectedValueOnce(new Error('The private Worker did not stop.'))
-    await expect(withNativeWorker(server, { ...options, afterStop }, async () => {})).rejects.toThrow('The private Worker failed')
-    expect(afterStop).not.toHaveBeenCalled()
+    await expect(withNativeWorker(server, options, async () => {})).rejects.toThrow('The private Worker failed')
+    expect(calls.alive).not.toHaveBeenCalled()
     expect(calls.deregister).toHaveBeenCalledOnce()
+  })
+
+  it('removes its private directories with its data directory after the Worker exits', async () => {
+    const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
+    await withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {
+      expect(existsSync(privateDirectory)).toBe(true)
+    })
+    expect(existsSync(directory)).toBe(false)
+    expect(existsSync(privateDirectory)).toBe(false)
+  })
+
+  it('removes its private directories when no Worker process started', async () => {
+    const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
+    calls.mint.mockRejectedValue(new Error('Registration refused.'))
+    await expect(withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {})).rejects.toThrow('The private Worker failed')
+    expect(existsSync(privateDirectory)).toBe(false)
+  })
+
+  it('keeps its private directories after a failed stop, because the Worker can still read them', async () => {
+    const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
+    try {
+      calls.stop.mockRejectedValue(new Error('The private Worker did not stop.'))
+      await expect(withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {})).rejects.toThrow('The private Worker failed')
+      expect(existsSync(privateDirectory)).toBe(true)
+    }
+    finally {
+      rmSync(privateDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('removes its private directories when it refuses its options before a Worker starts', async () => {
+    const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
+    await expect(withNativeWorker({ ...server, agentEnv: {} }, { ...options, privateDirectories: [privateDirectory] }, async () => {})).rejects.toThrow('isolated agent environment')
+    expect(existsSync(privateDirectory)).toBe(false)
+    expect(calls.directory).not.toHaveBeenCalled()
   })
 
   it('rejects absent or empty private homes before registration', async () => {

@@ -1,9 +1,9 @@
 import type { ServerInfo } from '../fixtures'
 import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
+import type { PrivateWorkerSetup } from '../helpers/privateNativeWorkspace'
 import type { WorkspaceFixture } from '../helpers/workspace'
 import type { LettaMcpServer } from './mcpConfiguration'
-import { rmSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
@@ -14,12 +14,9 @@ import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
 import { currentNativeAgent, nativeOptionValue } from '../helpers/nativeScenario'
-import { withNativeWorker } from '../helpers/nativeWorker'
-import { isAlive } from '../helpers/processTree'
-import { createTestDirectory } from '../helpers/runDirectory'
-import { loginViaToken, openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
+import { withPrivateNativeWorkspace } from '../helpers/privateNativeWorkspace'
+import { tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
-import { newProviderWorkingDir, withTestWorkspace } from '../helpers/workspace'
 import { lettaTest } from '../letta-fixtures'
 import { configureLettaMcp } from './mcpConfiguration'
 import { LETTA_AGENT } from './scenarios'
@@ -46,44 +43,37 @@ export function openMcpLettaAgent(
   })
 }
 
+/** What the private files of the Letta MCP Worker hold. */
+interface LettaMcpFiles {
+  home: string
+  backendDirectory: string
+  nodeExecutable: string
+}
+
+/** Write a private mock agent environment with a local Letta backend into `runDirectory`, for the Letta MCP Worker. */
+export async function prepareMcpLetta(runDirectory: string, mockModelUrl: string): Promise<PrivateWorkerSetup<LettaMcpFiles>> {
+  const environment = await createMockAgentEnvironment(runDirectory, mockModelUrl)
+  const nodeExecutable = requireBinary('node', 'The private Letta MCP fixture requires the Node executable', environment.env)
+  const backendDirectory = environment.env.LETTA_LOCAL_BACKEND_DIR
+  if (!backendDirectory)
+    throw new Error('The private Letta MCP fixture requires a local backend directory.')
+  return { agentEnv: environment.env, setup: { home: environment.homeDir, backendDirectory, nodeExecutable } }
+}
+
 /** Keep native MCP settings and the native backend inside one private Worker environment. */
 export const mcpLettaTest = lettaTest.extend<{ privateMcpLettaWorkspace: PrivateMcpLettaWorkspace }>({
   privateMcpLettaWorkspace: async ({ page, leapmuxServer }, use) => {
-    const runDirectory = createTestDirectory('letta-mcp-private-')
-    let workerAttempted = false
-    let workerStopped = false
-    await withCleanup(async () => {
-      const environment = await createMockAgentEnvironment(runDirectory, leapmuxServer.mockModelUrl)
-      const nodeExecutable = requireBinary('node', 'The private Letta MCP fixture requires the Node executable', environment.env)
-      const backendDirectory = environment.env.LETTA_LOCAL_BACKEND_DIR
-      if (!backendDirectory)
-        throw new Error('The private Letta MCP fixture requires a local backend directory.')
-      workerAttempted = true
-      await withNativeWorker({ ...leapmuxServer, agentEnv: environment.env }, {
-        dataDirPrefix: 'letta-mcp-worker',
-        workerName: 'Letta MCP test',
-        afterStop: (worker) => {
-          if (worker.pid && isAlive(worker.pid))
-            throw new Error('The private Letta MCP Worker did not physically exit.')
-          workerStopped = true
-        },
-      }, async ({ server }) => {
-        await withTestWorkspace(server, 'letta-mcp-private', async (workspace) => {
-          const workingDir = newProviderWorkingDir(LETTA_AGENT, 'letta-mcp-native-wd-')
-          const agentId = await openMcpLettaAgent(server, workspace.workspaceId, workingDir)
-          await loginViaToken(page, server.adminToken)
-          await openWorkspace(page, workspace.workspaceId)
-          const applied = await currentNativeAgent({ page, leapmuxServer: server })
-          expect(applied.id).toBe(agentId)
-          expect(applied.agentProvider).toBe(AgentProvider.LETTA)
-          expect(applied.agentSessionId).not.toBe('')
-          expect(nativeOptionValue(applied, OPTION_ID_PERMISSION_MODE)).toBe(LETTA_MODE.Unrestricted)
-          await use({ ...workspace, server, runDirectory, home: environment.homeDir, backendDirectory, nodeExecutable, workingDir })
-        })
-      })
-    }, async () => {
-      if (!workerAttempted || workerStopped)
-        rmSync(runDirectory, { recursive: true, force: true })
+    await withPrivateNativeWorkspace(page, leapmuxServer, {
+      prefix: 'letta-mcp',
+      workerName: 'Letta MCP test',
+      providerAgent: LETTA_AGENT,
+      prepare: runDirectory => prepareMcpLetta(runDirectory, leapmuxServer.mockModelUrl),
+      openAgent: openMcpLettaAgent,
+    }, async ({ workspaceId, server, workingDir, agent, runDirectory, setup }) => {
+      expect(agent.agentProvider).toBe(AgentProvider.LETTA)
+      expect(agent.agentSessionId).not.toBe('')
+      expect(nativeOptionValue(agent, OPTION_ID_PERMISSION_MODE)).toBe(LETTA_MODE.Unrestricted)
+      await use({ workspaceId, server, runDirectory, workingDir, ...setup })
     })
   },
 })

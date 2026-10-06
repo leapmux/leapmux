@@ -7,6 +7,7 @@ import { deregisterWorkerViaAPI, listOnlineWorkerIDsViaAPI, mintRegistrationKeyV
 import { cleanupOnFailure, finishCleanup, withCleanup } from './cleanup'
 import { stopProcess } from './process'
 import { spawnTestProcess } from './processRegistry'
+import { isAlive } from './processTree'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState, hubSpawnEnv } from './server'
 import { createServerOutput } from './serverOutput'
@@ -159,29 +160,38 @@ export interface NativeWorkerOptions {
   dataDirPrefix: string
   workerName: string
   env?: NodeJS.ProcessEnv
+  /**
+   * Directories of private files that the Worker or its agents read, such as a private home. The Worker removes each
+   * one with its data directory, under the same rule: only after its process exited, because a live process can still
+   * need the files.
+   */
+  privateDirectories?: readonly string[]
   onStdio?: (chunk: Buffer, stream: 'stdout' | 'stderr') => void
   onStdioEnd?: (stream: 'stdout' | 'stderr') => void
-  /** Validate physical process cleanup after stop succeeds. Deregistration still runs if validation fails. */
-  afterStop?: (process: ChildProcess) => void | Promise<void>
 }
 
-/** Register one private Worker with the suite Hub and retain all failure diagnostics. */
+/**
+ * Register one private Worker with the suite Hub and retain all failure diagnostics.
+ *
+ * The cleanup stops the Worker, and then requires that its process ID no longer exists: a stop that returned while the
+ * process still runs fails the cleanup. The deregistration runs whether or not that check passes. The data directory
+ * and the `privateDirectories` go away only after the process exited.
+ */
 export async function withNativeWorker<Server extends NativeWorkerServer>(
   server: Server,
   options: NativeWorkerOptions,
   use: (worker: NativeWorker<Server>) => Promise<void>,
 ): Promise<void> {
-  if (!server.agentEnv || !server.agentEnv.HOME)
-    throw new Error('The private Worker requires the isolated agent environment and HOME.')
-  if (!options.workerName.trim() || !options.dataDirPrefix.trim())
-    throw new Error('The private Worker requires a name and a data directory prefix.')
-  const agentEnv: Record<string, string> = {}
-  for (const [key, value] of Object.entries({ ...server.agentEnv, ...options.env })) {
-    if (typeof value === 'string')
-      agentEnv[key] = value
+  const privateDirectories = options.privateDirectories ?? []
+  let agentEnv: Record<string, string>
+  try {
+    agentEnv = privateAgentEnvironment(server, options)
   }
-  if (!agentEnv.HOME?.trim())
-    throw new Error('The private Worker environment requires a nonempty isolated HOME.')
+  catch (error) {
+    // No Worker started, so no process can still read the private files.
+    removeDirectories(privateDirectories)
+    throw error
+  }
   const dataDir = createTestDirectory(`${options.dataDirPrefix}-`)
   const output = createServerOutput()
   // The registration sets these from its callback, which the control flow analysis of TypeScript cannot follow.
@@ -214,11 +224,11 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
       if (!proc)
         return
       // The registration stops a Worker that it could not register, and a second stop of an exited process returns
-      // at once. This stop still runs, because `afterStop` must see each stopped Worker.
+      // at once. This stop still runs, because the physical exit check must see each stopped Worker.
       await finishCleanup([
         (async () => {
           await stopProcess(proc)
-          await options.afterStop?.(proc)
+          requirePhysicalExit(proc)
         })(),
         id ? deregisterWorkerViaAPI(server.hubUrl, server.adminToken, id) : Promise.resolve(),
       ])
@@ -230,9 +240,46 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
   finally {
     // Keep a live Worker's files if stop fails. Process cleanup can still need those files.
     const { proc } = worker
-    if (!proc || proc.exitCode !== null || proc.signalCode !== null)
-      rmSync(dataDir, { recursive: true, force: true })
+    if (!proc || exited(proc))
+      removeDirectories([dataDir, ...privateDirectories])
   }
+}
+
+/** Validate the private Worker options, and return the agent environment of the Worker: each variable with a value. */
+function privateAgentEnvironment(server: NativeWorkerServer, options: NativeWorkerOptions): Record<string, string> {
+  if (!server.agentEnv || !server.agentEnv.HOME)
+    throw new Error('The private Worker requires the isolated agent environment and HOME.')
+  if (!options.workerName.trim() || !options.dataDirPrefix.trim())
+    throw new Error('The private Worker requires a name and a data directory prefix.')
+  const agentEnv: Record<string, string> = {}
+  for (const [key, value] of Object.entries({ ...server.agentEnv, ...options.env })) {
+    if (typeof value === 'string')
+      agentEnv[key] = value
+  }
+  if (!agentEnv.HOME?.trim())
+    throw new Error('The private Worker environment requires a nonempty isolated HOME.')
+  return agentEnv
+}
+
+function removeDirectories(directories: readonly string[]): void {
+  for (const directory of directories)
+    rmSync(directory, { recursive: true, force: true })
+}
+
+/** Whether a process exited: Node recorded its exit, and the operating system lists no process with its ID. */
+function exited(proc: ChildProcess): boolean {
+  if (proc.exitCode === null && proc.signalCode === null)
+    return false
+  return proc.pid === undefined || !isAlive(proc.pid)
+}
+
+/**
+ * Refuse a stopped Worker whose process ID still exists. The check asks the operating system, so it does not rest on
+ * the exit that Node recorded.
+ */
+function requirePhysicalExit(proc: ChildProcess): void {
+  if (proc.pid !== undefined && isAlive(proc.pid))
+    throw new Error(`The private Worker ${proc.pid} did not physically exit.`)
 }
 
 /** Forward each chunk of the Worker output, and the end of each stream, to the callbacks of the caller. */
