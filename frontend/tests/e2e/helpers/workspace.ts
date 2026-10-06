@@ -131,8 +131,35 @@ export interface WorkspaceWithAgents {
 }
 
 /**
- * Create a workspace on the suite hub with `agentCount` agents, and return the workspace and the agents in open order.
+ * The agents that `createWorkspaceWithAgentsViaAPI` opens, and the directory that they work in. A test states either
+ * `agentCount`, for that many agents with no title (one by default), or `agentTitles`, for one agent with each title.
+ * The type refuses both at once.
+ */
+export type WorkspaceAgentsOptions = { workingDir?: string } & (
+  | { agentCount?: number, agentTitles?: never }
+  | { agentTitles: readonly string[], agentCount?: never }
+)
+
+/**
+ * The title of each agent to open, in open order. An agent with no title has an undefined entry.
+ * A wrong count or an empty title fails here, before the caller writes anything.
+ */
+function workspaceAgentTitles(options: WorkspaceAgentsOptions): ReadonlyArray<string | undefined> {
+  if (options.agentTitles !== undefined) {
+    if (options.agentTitles.some(agentTitle => agentTitle.trim() === ''))
+      throw new Error('An agent title must hold visible text. Omit `agentTitles` for agents with no title.')
+    return options.agentTitles
+  }
+  const agentCount = options.agentCount ?? 1
+  if (!Number.isSafeInteger(agentCount) || agentCount < 0)
+    throw new RangeError(`An agent count must be a nonnegative integer, not ${agentCount}.`)
+  return Array.from<undefined>({ length: agentCount }).fill(undefined)
+}
+
+/**
+ * Create a workspace on the suite hub with its agents, and return the workspace and the agents in open order.
  * The agents open one after another with the provider default, so their tabs keep that order.
+ * `agentTitles` gives each agent a visible title, which an agent that the API opens otherwise lacks.
  *
  * A spec on the suite hub deletes nothing afterwards: the per-test reset of `./fixtures.ts` deletes every workspace
  * before the next test and reports a failed delete. A spec on its own hub uses `withTestWorkspace` instead.
@@ -140,15 +167,13 @@ export interface WorkspaceWithAgents {
 export async function createWorkspaceWithAgentsViaAPI(
   server: AgentServer,
   title: string,
-  options: { agentCount?: number, workingDir?: string } = {},
+  options: WorkspaceAgentsOptions = {},
 ): Promise<WorkspaceWithAgents> {
-  const agentCount = options.agentCount ?? 1
-  if (!Number.isSafeInteger(agentCount) || agentCount < 0)
-    throw new RangeError(`An agent count must be a nonnegative integer, not ${agentCount}.`)
+  const agentTitles = workspaceAgentTitles(options)
   const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, title)
   const agentIds: string[] = []
-  for (let index = 0; index < agentCount; index++)
-    agentIds.push(await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, options.workingDir))
+  for (const agentTitle of agentTitles)
+    agentIds.push(await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspaceId, options.workingDir, agentTitle === undefined ? undefined : { title: agentTitle }))
   return { workspaceId, agentIds }
 }
 
@@ -161,7 +186,7 @@ export async function showWorkspaceWithAgents(
   page: Page,
   server: AgentServer,
   title: string,
-  options: { agentCount?: number, workingDir?: string } = {},
+  options: WorkspaceAgentsOptions = {},
 ): Promise<WorkspaceWithAgents> {
   const created = await createWorkspaceWithAgentsViaAPI(server, title, options)
   await loginViaToken(page, server.adminToken)

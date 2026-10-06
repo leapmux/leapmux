@@ -269,7 +269,30 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
     await expect(createWorkspaceWithAgentsViaAPI(server, 'Docs')).resolves.toEqual({ workspaceId: 'workspace', agentIds: ['agent-1'] })
     expect(order).toEqual(['create Docs', 'open'])
     // No open options: the agent takes the provider default, as a hand-built workspace did.
-    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', undefined)
+    expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, server.workerId, 'workspace', undefined, undefined)
+  })
+
+  it('opens one agent with each title, in title order, in the working directory of the caller', async () => {
+    let next = 0
+    vi.mocked(openAgentViaAPI).mockImplementation(async () => `agent-${++next}`)
+    const created = await createWorkspaceWithAgentsViaAPI(server, 'Docs', { agentTitles: ['Source Agent', 'Source Agent', 'Other Agent'], workingDir: '/repo' })
+    expect(created).toEqual({ workspaceId: 'workspace', agentIds: ['agent-1', 'agent-2', 'agent-3'] })
+    expect(vi.mocked(openAgentViaAPI).mock.calls.map(call => [call[4], call[5]])).toEqual([
+      ['/repo', { title: 'Source Agent' }],
+      ['/repo', { title: 'Source Agent' }],
+      ['/repo', { title: 'Other Agent' }],
+    ])
+  })
+
+  it('creates an empty workspace for an empty title list', async () => {
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Empty', { agentTitles: [] })).resolves.toEqual({ workspaceId: 'workspace', agentIds: [] })
+    expect(openAgentViaAPI).not.toHaveBeenCalled()
+  })
+
+  it.each(['', '  '])('refuses the agent title %j before it creates a workspace', async (agentTitle) => {
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Bad', { agentTitles: ['Good', agentTitle] })).rejects.toThrow('visible text')
+    expect(createWorkspaceViaAPI).not.toHaveBeenCalled()
+    expect(openAgentViaAPI).not.toHaveBeenCalled()
   })
 
   it('opens the agents one after another, in the working directory of the caller, and returns them in open order', async () => {

@@ -1,9 +1,9 @@
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { boxCenter, dragSidebarLeafTo } from './helpers/drag'
 import { tabbarLabels } from './helpers/tabLabels'
-import { agentTabs, expandWorkspaceRow, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, sidebarLeafLabels, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { agentTabs, expandWorkspaceRow, expectAgentTabCount, sidebarLeafIds, sidebarLeafLabels, sidebarLeaves, waitForLayoutSave, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { createWorkspaceWithAgentsViaAPI, showWorkspaceWithAgents } from './helpers/workspace'
 
 /**
  * Regression: dragging a tab from a non-active workspace's expanded
@@ -40,24 +40,19 @@ import { agentTabs, expandWorkspaceRow, expectAgentTabCount, loginViaToken, open
 
 test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
   test('drag from non-active sidebar section to active workspace keeps title; survives reload', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-
-    // API-seed both workspaces with an agent. We pass a known title
-    // (the bug strips exactly this field; the API path defaults
-    // `title=""` which would render the empty-fallback both before
-    // AND after the move, masking the regression).
-    const wsA = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Source')
-    const wsB = await createWorkspaceViaAPI(hubUrl, adminToken, 'Drag Target')
+    // Give each agent a known title. The bug removes exactly this field.
+    // An agent that the API opens has an empty title by default, which
+    // shows the empty fallback before the move and after it, so the
+    // test could not see the regression.
     const wsATitle = 'Source Agent'
     const wsBTitle = 'Target Agent'
-    const wsAAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, wsA, undefined, { title: wsATitle })
-    await openAgentViaAPI(hubUrl, adminToken, workerId, wsB, undefined, { title: wsBTitle })
+    const { workspaceId: wsA, agentIds: [wsAAgentId] } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Drag Source', { agentTitles: [wsATitle] })
+    if (!wsAAgentId)
+      throw new Error('The source workspace opened no agent.')
 
-    await loginViaToken(page, adminToken)
-
-    // Land on wsB (the destination — the user's repro had the
-    // target workspace active at the moment of the drag).
-    await openWorkspace(page, wsB)
+    // Show wsB, the destination. In the original report, the target
+    // workspace was active at the time of the drag.
+    const { workspaceId: wsB } = await showWorkspaceWithAgents(page, leapmuxServer, 'Drag Target', { agentTitles: [wsBTitle] })
     await agentTabs(page).first().waitFor()
     // Poll: the title is worker-side metadata, fetched asynchronously after
     // the tab itself renders from the CRDT projection. A one-shot read races
