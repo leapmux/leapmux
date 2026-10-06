@@ -20,6 +20,7 @@ import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab
 import { retryUntilPass } from './retryUntilPass'
 import { E2E_BROWSER_HOST } from './server'
 import { readEntry, waitForStoredEntry, writeEntry } from './storage'
+import { AGENT_TAB_SELECTOR } from './tabSelectors'
 import { terminalXterm } from './terminal'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 
@@ -2133,11 +2134,8 @@ export async function gotoWorkspace(page: Page, token: string, workspaceId: stri
 
 /** Locate a tab by its hub-side `tab_id`. */
 export function tabById(page: Page, tabId: string): Locator {
-  return page.locator(`[data-testid="tab"][data-tab-id="${tabId}"]`)
+  return page.locator(`[data-testid="tab"][data-tab-id="${cssAttributeValue(tabId)}"]`)
 }
-
-/** The CSS selector of an agent tab. A `page.evaluate` body, which cannot take a locator, takes it as an argument. */
-export const AGENT_TAB_SELECTOR = '[data-testid="tab"][data-tab-type="agent"]'
 
 /** Locate every agent tab of every tile's tab bar. */
 export function agentTabs(page: Page): Locator {

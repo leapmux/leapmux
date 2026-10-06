@@ -11,8 +11,9 @@ import { expect } from '@playwright/test'
 import { test as base } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
+import { AGENT_TAB_SELECTOR } from './helpers/tabSelectors'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from './helpers/timingFixture'
-import { AGENT_TAB_SELECTOR, agentTabs, expectAgentTabCount, loginViaToken, openAgentViaUI, openWorkspace } from './helpers/ui'
+import { agentTabs, expectAgentTabCount, loginViaToken, openAgentViaUI, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,

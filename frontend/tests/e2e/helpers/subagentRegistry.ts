@@ -17,10 +17,12 @@ import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import type { RunningNativeChild } from './runningChildProof'
 import { expect } from '@playwright/test'
 import { cleanupOnFailure, withCleanup } from './cleanup'
+import { cssAttributeValue } from './cssAttribute'
 import { selectedAgentTabId } from './nativeScenario'
 import { readNativeSidebarSnapshot } from './nativeSidebarSnapshot'
 import { spawnSubagentToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
+import { AGENT_TAB_SELECTOR } from './tabSelectors'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expandSidebarSection, expectAssistantAnswer, interruptButton, sendMessage, tabById, waitForAgentIdle } from './ui'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
@@ -100,7 +102,7 @@ export async function requireRegistryRow(
  * A child can appear beside its parent, so its position does not identify it.
  */
 export async function openChildTabFromRow(page: Page, row: Locator): Promise<string> {
-  const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
+  const agentTabs = page.locator(`${AGENT_TAB_SELECTOR}:visible`)
   const tabIds = async () => agentTabs.evaluateAll(tabs => tabs.map(tab => tab.getAttribute('data-tab-id') ?? ''))
   const beforeIds = await tabIds()
   expect(beforeIds.every(id => id.trim() !== ''), 'every rendered agent tab has an ID').toBe(true)
@@ -115,7 +117,7 @@ export async function openChildTabFromRow(page: Page, row: Locator): Promise<str
   await row.click()
   await expect(agentTabs).toHaveCount(expectedIds.length)
   expect((await tabIds()).sort(), 'the row selects only its exact native child tab').toEqual(expectedIds)
-  const childTab = page.locator(`[data-testid="tab"][data-tab-type="agent"][data-tab-id="${childId}"]:visible`)
+  const childTab = page.locator(`${AGENT_TAB_SELECTOR}[data-tab-id="${cssAttributeValue(childId)}"]:visible`)
   await expect(childTab).toBeVisible()
   await expect(childTab).toHaveAttribute('aria-selected', 'true')
   return childId
@@ -215,7 +217,7 @@ export async function openHeldChildTab(context: HeldChildContext, test: HeldChil
   const { page, modelScript } = context
   // The step count after the root's turns. The queue below sets it before the prompt is sent.
   let target = 0
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]:visible'), 'the workspace holds only the root agent').toHaveCount(1)
+  await expect(page.locator(`${AGENT_TAB_SELECTOR}:visible`), 'the workspace holds only the root agent').toHaveCount(1)
   const parentId = await selectedAgentTabId(page)
   await expectNoRegistryRows(page, context.leapmuxServer)
   let sent = false

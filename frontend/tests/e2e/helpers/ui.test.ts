@@ -67,6 +67,7 @@ import {
   sidebarSectionHeader,
   subagentReportBubble,
   submitLoginForm,
+  tabById,
   terminalTabs,
   tiles,
   toggleModeWithShortcut,
@@ -610,6 +611,12 @@ describe('chat and tab locators', () => {
     { name: 'tiles', locate: tiles, selector: '[data-testid="tile"]' },
   ])('$name selects $selector', ({ locate, selector }) => {
     expect(locate(selectorPage())).toBe(selector)
+  })
+
+  it('selects a tab by its ID, and escapes the ID through cssAttributeValue', () => {
+    expect(tabById(selectorPage(), 'tab-1')).toBe('[data-testid="tab"][data-tab-id="tab-1"]')
+    const tabId = 'tab"1\\\n'
+    expect(tabById(selectorPage(), tabId)).toBe(`[data-testid="tab"][data-tab-id="${cssAttributeValue(tabId)}"]`)
   })
 })
 

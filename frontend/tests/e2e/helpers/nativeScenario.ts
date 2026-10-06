@@ -13,6 +13,7 @@ import { jsonStringValues } from './jsonStringValues'
 import { requestRows, requestToolDescriptors } from './modelRequestBody'
 import { nativeToolResult } from './nativeToolResult'
 import { retryUntilPass } from './retryUntilPass'
+import { AGENT_TAB_SELECTOR } from './tabSelectors'
 
 /** The provider supplies any native final-answer tool through this callback. */
 export type NativeTextStep = (text: string) => MockModelStep
@@ -163,7 +164,7 @@ export async function nativeAgentById(
 
 /** Locate the selected agent tab of the visible tab bar. The tab identifies an agent. Its state is not a Worker verdict. */
 export function selectedAgentTab(page: Page): Locator {
-  return page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
+  return page.locator(`${AGENT_TAB_SELECTOR}[aria-selected="true"]:visible`).first()
 }
 
 /**
