@@ -159,6 +159,11 @@ export interface ToolUsingTurnOptions {
    * returns when the mock takes the answer step, not when it answers.
    */
   holdAnswerMs?: number
+  /**
+   * Hold the final answer until the caller releases this gate of the model script, so the caller can wait for a
+   * state of its own inside the turn. The turn cannot end before the release. It excludes `holdAnswerMs`.
+   */
+  answerGate?: string
 }
 
 /**
@@ -167,14 +172,20 @@ export interface ToolUsingTurnOptions {
  * The function returns when the agent requests both steps, not when the turn ends.
  */
 export async function sendToolUsingTurn(page: Page, script: ModelScript, options: ToolUsingTurnOptions = {}): Promise<SoundReceiptBoundary> {
-  const { provider = AgentProvider.CLAUDE_CODE, holdAnswerMs } = options
+  const { provider = AgentProvider.CLAUDE_CODE, holdAnswerMs, answerGate } = options
   if (holdAnswerMs !== undefined && (!Number.isSafeInteger(holdAnswerMs) || holdAnswerMs < 0))
     throw new RangeError(`A held answer needs a nonnegative whole number of milliseconds, not ${holdAnswerMs}.`)
+  if (answerGate !== undefined && answerGate.trim() === '')
+    throw new Error('A gated answer needs the name of its gate.')
+  if (answerGate !== undefined && holdAnswerMs !== undefined)
+    throw new Error('An answer is held either for a time or until its gate opens, not both.')
   const agentId = await selectedAgentTabId(page)
   const after = await soundReceiptCursor(page)
-  const answer: MockModelStep = holdAnswerMs === undefined
-    ? { text: 'The working directory is above.' }
-    : { text: 'The working directory is above.', delayMs: holdAnswerMs }
+  const answer: MockModelStep = {
+    text: 'The working directory is above.',
+    ...(holdAnswerMs === undefined ? {} : { delayMs: holdAnswerMs }),
+    ...(answerGate === undefined ? {} : { gate: answerGate }),
+  }
   const start = await script.queue({ toolCalls: [bashToolCall(provider, 'pwd-call', 'pwd')] }, answer)
   await sendMessage(page, script.prompt(TOOL_USING_PROMPT))
   await script.waitForSteps(start + 2)

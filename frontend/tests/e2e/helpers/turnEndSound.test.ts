@@ -95,4 +95,24 @@ describe('sendToolUsingTurn', () => {
     expect(page.evaluate).not.toHaveBeenCalled()
     expect(selectedAgentTabId).not.toHaveBeenCalled()
   })
+
+  it('holds the answer behind the gate of the caller, and still waits for the answer step only', async () => {
+    const log: string[] = []
+    await sendToolUsingTurn(probedPage([]), recordingScript(log, 4), { answerGate: 'presence-a' })
+    expect(log).toEqual([
+      `queue ${JSON.stringify([{ toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] }, { text: 'The working directory is above.', gate: 'presence-a' }])}`,
+      'wait 6',
+    ])
+  })
+
+  it.each([
+    [{ answerGate: '' }, 'needs the name of its gate'],
+    [{ answerGate: ' ' }, 'needs the name of its gate'],
+    [{ answerGate: 'gate', holdAnswerMs: 10 }, 'not both'],
+  ])('refuses the options %j before it reads the page', async (options, message) => {
+    const page = probedPage([])
+    await expect(sendToolUsingTurn(page, recordingScript([], 0), options)).rejects.toThrow(message)
+    expect(page.evaluate).not.toHaveBeenCalled()
+    expect(selectedAgentTabId).not.toHaveBeenCalled()
+  })
 })
