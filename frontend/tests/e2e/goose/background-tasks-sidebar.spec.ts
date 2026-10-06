@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { gooseTest } from '../goose-fixtures'
+import { nativeAgentById } from '../helpers/nativeScenario'
 import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, listAgents, requireRegistryRow } from '../helpers/subagentRegistry'
+import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage } from '../helpers/ui'
 
 gooseTest('background-tasks-sidebar: delegate spawn creates a clickable row with a tool-request transcript', async ({
@@ -103,8 +104,7 @@ gooseTest('background-tasks-sidebar: delegate spawn creates a clickable row with
   // unreachable: tabs live in the user CRDT and the hub's tab projection is
   // empty here, so the id list was always [].
   await expect.poll(async () => {
-    const agents = await listAgents(hubUrl, adminToken, workerId, [childId])
-    const child = agents?.find(a => a.id === childId)
+    const child = await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, childId)
     if (!child)
       return null
     return {

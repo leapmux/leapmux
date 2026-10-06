@@ -1,10 +1,10 @@
 import { expect } from '@playwright/test'
 
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codewhaleTest, codewhaleToolMessages } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { nativeToolResultAt } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { assistantBubbles, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 const CODEWHALE = AgentProvider.CODEWHALE
 
@@ -34,7 +34,7 @@ codewhaleTest.describe('Codewhale approvals', () => {
 
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(codewhaleToolMessages(page).filter({ hasText: 'approved-42' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'approved-42' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I created approved.txt.' })).toBeVisible()
   })
 

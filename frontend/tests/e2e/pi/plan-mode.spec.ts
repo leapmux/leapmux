@@ -2,9 +2,9 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
+import { nativeAgentById } from '../helpers/nativeScenario'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { listAgents } from '../helpers/subagentRegistry'
 import { openWorkspace, sendMessage } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
@@ -14,7 +14,7 @@ piTest('tracks a fresh Pi implementation session after plan approval', async ({ 
     agentProvider: provider,
     ...agentOpenOptions(agentSettings(provider)),
   })
-  const readSession = async () => (await listAgents(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, [agentId]))?.[0]?.agentSessionId ?? ''
+  const readSession = async () => (await nativeAgentById({ leapmuxServer }, agentId))?.agentSessionId ?? ''
   await expect.poll(readSession).not.toBe('')
   const originalSession = await readSession()
   expect(originalSession).not.toBe('')

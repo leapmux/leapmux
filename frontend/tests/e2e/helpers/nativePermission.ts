@@ -11,13 +11,12 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
-import { nativeResultBubble } from './nativeResultView'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { waitForNativeToolSteps } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
+import { assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
 export interface NativePermissionOperationPlan {
@@ -95,7 +94,7 @@ export async function exerciseNativePermissionDecision(
  * The row carries the declined status and its heading, and it keeps the native refusal text when the caller gives one.
  */
 export async function expectDeclinedToolRow(page: Page, renderedCallId: string, refusal?: string): Promise<void> {
-  const row = nativeResultBubble(page, renderedCallId)
+  const row = toolCallRow(page, renderedCallId)
   await expect(row).toHaveCount(1)
   await expect(row).toHaveAttribute('data-tool-status', 'declined')
   await expect(row).toContainText('Declined')

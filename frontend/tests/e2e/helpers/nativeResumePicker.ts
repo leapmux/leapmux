@@ -10,9 +10,8 @@ import { expect } from '@playwright/test'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts } from './nativeResume'
-import { nativeModelConversationTurns } from './nativeScenario'
-import { listAgents } from './subagentRegistry'
-import { assistantBubbles, loginViaToken, openMenu, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
+import { nativeAgentById, nativeModelConversationTurns } from './nativeScenario'
+import { agentTabs, assistantBubbles, loginViaToken, openMenu, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
 /** The fixtures one picker resume spec already holds: the shared page, the scripted model and the running hub. */
@@ -97,7 +96,7 @@ export async function resumePickerScenario(
   })
   await loginViaToken(page, adminToken)
   await openWorkspace(page, workspaceId)
-  await page.locator('[data-testid="tab"][data-tab-type="agent"]').filter({ hasText: 'Subject' }).first().click()
+  await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
   if (options.rules && options.rules.length > 0)
     await modelScript.rule(...options.rules)
   const texts = nativeResumeTexts()
@@ -114,8 +113,7 @@ export async function resumePickerScenario(
   }
   let sessionId = ''
   await expect.poll(async () => {
-    const agents = await listAgents(hubUrl, adminToken, workerId, [subjectId])
-    sessionId = agents?.find(agent => agent.id === subjectId)?.agentSessionId ?? ''
+    sessionId = (await nativeAgentById({ leapmuxServer: context.leapmuxServer }, subjectId))?.agentSessionId ?? ''
     return sessionId
   }).not.toBe('')
   const originalAnswerRows = await countOriginalAnswerRows({ leapmuxServer: context.leapmuxServer }, subjectId, texts)

@@ -1,11 +1,11 @@
 import type { Locator, Page } from '@playwright/test'
+import type { ToolSpanRowPosition } from '../../../src/components/chat/model/row'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { FileSortOrder } from '../../../src/lib/fileSort'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import process from 'node:process'
 import { fromJson } from '@bufbuild/protobuf'
-
 import { expect, test } from '@playwright/test'
 import { permissionPresetsFor } from '../../../src/components/chat/providers/permissionPresets'
 import { permissionPresetAvailable } from '../../../src/components/chat/providerSettings'
@@ -15,7 +15,8 @@ import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/l
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
 import { authedHeaders } from './api'
 import { solveCaptchaViaUI } from './captcha'
-import { nativeAgentById } from './nativeScenario'
+import { cssAttributeValue } from './cssAttribute'
+import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTabId } from './nativeScenario'
 import { E2E_BROWSER_HOST } from './server'
 import { readEntry, storageKeys, writeEntry } from './storage'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
@@ -120,14 +121,29 @@ export async function enterMessageText(page: Page, text: string, entry: MessageE
 }
 
 /**
+ * Locate the editable area of the visible composer.
+ * The shell mounts one composer at most, for the focused agent tab. The locator still requires a visible composer,
+ * because only a visible composer can take the input.
+ */
+export function composerEditor(page: Page): Locator {
+  return page.locator('[data-testid="composer-editor"]:visible .ProseMirror')
+}
+
+/** Wait for the composer on screen, click it so that it holds the focus, and return it. */
+export async function focusComposer(page: Page): Promise<Locator> {
+  const editor = composerEditor(page)
+  await expect(editor).toBeVisible()
+  await editor.click()
+  return editor
+}
+
+/**
  * Send a message through the ProseMirror editor with no inter-key delay.
  * ProseMirror handles the ordered key events synchronously. The former 100ms delay added about five seconds to each arithmetic prompt.
  * Tests of input rules, mention triggers, and slash commands retain their deliberate local typing intervals.
  */
 export async function sendMessage(page: Page, text: string, entry: MessageEntry = 'type') {
-  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
+  const editor = await focusComposer(page)
   await enterMessageText(page, text, entry)
   await page.keyboard.press('Meta+Enter')
   // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
@@ -181,6 +197,64 @@ export function messageContents(page: Page) {
   return page.locator(`[data-testid="message-content"]${VISIBLE}`)
 }
 
+/** The place of one tool row in its span: the call, a live update, or the result. */
+export type ToolCallRowRole = ToolSpanRowPosition['role']
+
+/** Locate the visible row of one tool call in one role. The result row by default. */
+export function toolCallRow(page: Page, callId: string, role: ToolCallRowRole = 'result'): Locator {
+  return page.locator(`[data-testid="message-bubble"][data-tool-call-id="${cssAttributeValue(callId)}"][data-tool-row-role="${role}"]${VISIBLE}`)
+}
+
+/** Locate every visible tool row, whatever its call or role. */
+export function toolRows(page: Page): Locator {
+  return page.locator(`[data-tool-message]${VISIBLE}`)
+}
+
+/**
+ * Locate the visible bubble in which a subagent's report reached its parent, and which holds `report`.
+ * The bubble header reads "<reporter> reported", and "Subagent" is the reporter when the provider gives no label.
+ */
+export function subagentReportBubble(page: Page, report: string | RegExp, reporter = 'Subagent'): Locator {
+  return messageBubbles(page).filter({ hasText: `${reporter} reported` }).filter({ hasText: report })
+}
+
+/**
+ * State why the rows do not hold `texts` in order, or return '' when they do.
+ * Each text must sit in its own row, and the rows of the texts must follow one another in the order of `texts`.
+ * A row holds a text when the text is part of the row's text. The first row that holds a text decides its place.
+ */
+export function rowOrderProblem(rowTexts: readonly string[], texts: readonly string[]): string {
+  const places = texts.map(text => rowTexts.findIndex(row => row.includes(text)))
+  const missing = texts.filter((_, index) => places[index] === -1)
+  if (missing.length > 0)
+    return `no row holds ${missing.map(text => JSON.stringify(text)).join(', ')}`
+  for (let index = 1; index < texts.length; index++) {
+    const earlier = JSON.stringify(texts[index - 1])
+    const later = JSON.stringify(texts[index])
+    if (places[index] === places[index - 1])
+      return `${earlier} and ${later} are in one row (row ${places[index]})`
+    if (places[index]! < places[index - 1]!)
+      return `${later} (row ${places[index]}) comes before ${earlier} (row ${places[index - 1]})`
+  }
+  return ''
+}
+
+/**
+ * Require each of `texts` in its own row of `rows`, in the order of `texts`.
+ * An order check through `findIndex` passes when the earlier text is missing, because a missing text reads as -1.
+ * This check fails for a missing text, for a reversed order, and for two texts in one row.
+ */
+export async function expectRowsInOrder(rows: Locator, texts: readonly string[]): Promise<void> {
+  if (texts.length < 2)
+    throw new Error('A row order needs at least two texts.')
+  if (texts.includes(''))
+    throw new Error('A row order needs texts that are not empty, because every row holds an empty text.')
+  // The poll reports the last problem as the received value.
+  await expect.poll(async () => rowOrderProblem(await rows.allTextContents(), texts), {
+    message: `the rows hold ${texts.map(text => JSON.stringify(text)).join(', ')} in this order`,
+  }).toBe('')
+}
+
 /** Locate every visible native control banner without narrowing its count. */
 export function visibleControlBanner(page: Page) {
   return page.getByTestId('control-banner').filter({ visible: true })
@@ -214,9 +288,12 @@ export function bandRows(page: Page, kind?: 'text' | 'thought') {
 /** The chat's scrolling element, which the app publishes for exactly this purpose. */
 export const CHAT_SCROLL_CONTAINER = '[data-chat-scroll-container="true"]'
 
-/** Return a locator for the chat's scrolling element. */
+/**
+ * Return a locator for the chat's visible scrolling element.
+ * Each agent tab of a tile mounts its own ChatView, so only the visible one is the chat on screen.
+ */
 export function chatScrollContainer(page: Page) {
-  return page.locator(CHAT_SCROLL_CONTAINER)
+  return page.locator(CHAT_SCROLL_CONTAINER + VISIBLE)
 }
 
 /**
@@ -696,13 +773,13 @@ export async function openAgentViaUI(page: Page) {
   // An early click therefore creates no tab and would leave the later count check waiting until timeout.
   await waitForActiveTabContext(page)
   // Count existing agent tabs so we can wait for the new one to appear.
-  const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
+  const tabsBefore = await agentTabs(page).count()
   await page.locator('[data-testid^="new-agent-button"]').first().click()
   // Wait for the new agent tab to appear (the API call is async)
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
+  await expectAgentTabCount(page, tabsBefore + 1)
   // Wait for the new tab to become selected and its editor to be ready
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]')).toBeVisible()
-  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+  await expect(composerEditor(page)).toBeVisible()
 }
 
 /**
@@ -1046,11 +1123,7 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
   const hubUrl = pageHubUrl(page)
   // A previous settings RPC can replace the process. Read the Worker catalog after that RPC settles.
   await waitForSettingsIdle(page)
-  const activeTab = page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
-  await expect(activeTab).toBeVisible()
-  const agentId = await activeTab.getAttribute('data-tab-id')
-  if (!agentId)
-    throw new Error('The active settings tab contains no native agent ID.')
+  const agentId = await selectedAgentTabId(page)
   const cookie = await readSessionCookie(page, 'The native settings lookup')
   const response = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/LocateTab`, {
     method: 'POST',
@@ -1092,7 +1165,7 @@ async function validateNativeSettingsOption(page: Page, testId: string): Promise
   const groupId = settingsGroupIdOf(testId)
   const value = testId.slice(groupId.length + 1)
   const { agent } = await nativeSettingsAgent(page)
-  const group = agent.optionGroups.find(candidate => candidate.id === groupId)
+  const group = nativeOptionGroup(agent, groupId)
   if (!group)
     throw new Error(`The native catalog has no option group ${groupId}.`)
   if (!group.options.some(option => option.id === value))
@@ -1108,7 +1181,7 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
   if (!permissionPresetAvailable(preset, snapshot.agent.optionGroups))
     throw new Error(`The actual native catalog offers no mutable ${kind} permission preset.`)
   const entries = Object.entries(preset.sets)
-  const active = entries.every(([groupId, value]) => snapshot.agent.optionGroups.find(group => group.id === groupId)?.currentValue === value)
+  const active = entries.every(([groupId, value]) => nativeOptionValue(snapshot.agent, groupId) === value)
   const offered = await openPermissionShortcut(page, kind)
   if (active) {
     await expect(offered).toBeDisabled()
@@ -1127,7 +1200,7 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
   await waitForSettingsIdle(page)
   await expect.poll(async () => {
     const current = await nativeAgentById(snapshot.context, snapshot.agent.id)
-    return entries.every(([groupId, value]) => current?.optionGroups.find(group => group.id === groupId)?.currentValue === value)
+    return current !== null && entries.every(([groupId, value]) => nativeOptionValue(current, groupId) === value)
   }).toBe(true)
 }
 
@@ -1150,6 +1223,46 @@ export async function openPermissionShortcut(page: Page, kind: 'smart' | 'bypass
   const offered = menu.getByTestId(testId)
   await expect(offered).toBeVisible()
   return offered
+}
+
+/**
+ * How the `[+]` menu offers a permission shortcut:
+ * - `offered`: the shortcut is there and enabled.
+ * - `disabled`: the shortcut is there and disabled, as it is while its preset is active.
+ * - `absent`: the menu has no such shortcut.
+ */
+export type PermissionShortcutState = 'offered' | 'disabled' | 'absent'
+
+/**
+ * Require the stated state of each permission shortcut in the composer's `[+]` menu, then close the menus.
+ * An open menu keeps its row list, and a shortcut that arrives later enters the next row list. So the function opens
+ * and closes one probe menu first, as `openPermissionShortcut` does, and checks the rows of the next menu.
+ */
+export async function expectPermissionShortcuts(
+  page: Page,
+  expected: Partial<Record<'smart' | 'bypass', PermissionShortcutState>>,
+): Promise<void> {
+  const kinds = (['smart', 'bypass'] as const).filter(kind => expected[kind] !== undefined)
+  if (kinds.length === 0)
+    throw new Error('The permission shortcut check needs the state of at least one shortcut.')
+  await closeComposerMenus(page)
+  await openPlusMenu(page)
+  await closeComposerMenus(page)
+  const menu = await openPlusMenu(page)
+  for (const kind of kinds) {
+    const shortcut = menu.getByTestId(`composer-${kind}-permissions`)
+    const state = expected[kind]
+    if (state === 'absent') {
+      await expect(shortcut, `the menu has no ${kind} permission shortcut`).toHaveCount(0)
+      continue
+    }
+    await expect(shortcut, `the menu offers the ${kind} permission shortcut`).toBeVisible()
+    if (state === 'disabled')
+      await expect(shortcut, `the ${kind} permission shortcut is disabled`).toBeDisabled()
+    else
+      await expect(shortcut, `the ${kind} permission shortcut is enabled`).toBeEnabled()
+  }
+  await closeComposerMenus(page)
 }
 
 /** Open the composer's `[+]` menu and leave it open. */
@@ -1204,6 +1317,25 @@ export async function chooseSettingsOption(page: Page, testId: string) {
     const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
     await menu.getByTestId(testId).click()
   }).toPass()
+}
+
+/**
+ * Return the values that the settings menu offers for one option group, in menu order.
+ * The menu draws up to seven options as radio items and a longer list as a filterable list box. Both carry the test
+ * ID `<groupId>-<value>`. The function reads the option rows by their role, so a row's label element and the filter
+ * box, which carry test IDs with the same prefix, stay out of the list. It closes the menus before it returns.
+ */
+export async function offeredSettingsOptions(page: Page, groupId: string): Promise<string[]> {
+  const menu = await openSettingsMenu(page, groupId)
+  const testIds = await menu.locator('[role="menuitemradio"], [role="option"]')
+    .evaluateAll(rows => rows.map(row => row.getAttribute('data-testid') ?? ''))
+  await closeComposerMenus(page)
+  const prefix = `${groupId}-`
+  return testIds.map((testId) => {
+    if (!testId.startsWith(prefix) || testId.length === prefix.length)
+      throw new Error(`The ${groupId} settings menu holds an option whose test ID is not "${prefix}<value>": "${testId}".`)
+    return testId.slice(prefix.length)
+  })
 }
 
 /**
@@ -1619,7 +1751,7 @@ export async function gotoWorkspace(page: Page, token: string, workspaceId: stri
   await loginViaToken(page, token)
   await openWorkspace(page, workspaceId)
   // Wait for the first tile to mount before the caller changes the layout.
-  await page.locator('[data-testid="tile"]').first().waitFor()
+  await tiles(page).first().waitFor()
 }
 
 /**
@@ -1630,7 +1762,7 @@ export async function gotoWorkspace(page: Page, token: string, workspaceId: stri
  * Drag and restore specs use the remaining visible title to verify metadata.
  */
 export async function tabbarAgentLabels(page: Page): Promise<string[]> {
-  return page.locator('[data-testid="tab"][data-tab-type="agent"]').evaluateAll(els =>
+  return agentTabs(page).evaluateAll(els =>
     els.map((el) => {
       const clone = el.cloneNode(true) as HTMLElement
       // A row's context menu keeps its items in the DOM behind the popover
@@ -1645,6 +1777,32 @@ export async function tabbarAgentLabels(page: Page): Promise<string[]> {
 /** Locate a tab by its hub-side `tab_id`. */
 export function tabById(page: Page, tabId: string): Locator {
   return page.locator(`[data-testid="tab"][data-tab-id="${tabId}"]`)
+}
+
+/** Locate every agent tab of every tile's tab bar. */
+export function agentTabs(page: Page): Locator {
+  return page.locator('[data-testid="tab"][data-tab-type="agent"]')
+}
+
+/** Locate every terminal tab of every tile's tab bar. */
+export function terminalTabs(page: Page): Locator {
+  return page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+}
+
+/** Locate every tile of the workspace layout. */
+export function tiles(page: Page): Locator {
+  return page.locator('[data-testid="tile"]')
+}
+
+/**
+ * Require `count` agent tabs in the tab bars.
+ * This is an assertion about the view, not a readiness wait. The tab list is optimistic state, so a tab can show
+ * before its agent starts and can leave before its agent stops. Wait on the Worker for an agent's state.
+ */
+export async function expectAgentTabCount(page: Page, count: number): Promise<void> {
+  if (!Number.isSafeInteger(count) || count < 0)
+    throw new Error(`An agent tab count must be a nonnegative integer, not ${count}.`)
+  await expect(agentTabs(page)).toHaveCount(count)
 }
 
 /**

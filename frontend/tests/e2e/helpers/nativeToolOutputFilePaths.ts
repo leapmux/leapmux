@@ -2,7 +2,7 @@ import type { Locator } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { copyNativeToolOutputPreview } from './nativeToolOutput'
-import { openWorkspace, readAttachedWithArgument } from './ui'
+import { openWorkspace, readAttachedWithArgument, toolCallRow } from './ui'
 
 export interface NativeToolOutputFilePathsOptions {
   context: Pick<ManagedNativeScenarioContext, 'page' | 'workspaceId'>
@@ -71,8 +71,7 @@ export function nativeOutputPathsPrecedePreview(matches: (SVGElement | HTMLEleme
 
 /** Require the exact native result row. The added path text opens no file. */
 export async function proveNativeToolOutputFilePaths(options: NativeToolOutputFilePathsOptions): Promise<void> {
-  const escapedCallId = await options.context.page.evaluate(id => CSS.escape(id), options.callId)
-  const result = options.context.page.locator(`[data-testid="message-bubble"][data-tool-call-id=${escapedCallId}][data-tool-row-role="result"]:visible`)
+  const result = toolCallRow(options.context.page, options.callId)
   await runNativeToolOutputFilePathsProof(options, {
     workerProof: options.workerProof,
     viewProof: async () => {

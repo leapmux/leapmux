@@ -2,8 +2,9 @@ import { expect } from '@playwright/test'
 /** Test child tab identity and isolated transcripts. Preserve the completed span edge cases. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
+import { nativeAgentById } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, listAgents, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 claudeTest.describe('Claude subagent background tasks', () => {
@@ -65,10 +66,7 @@ claudeTest.describe('Claude subagent background tasks', () => {
     //    non-empty spawn span id. Query the worker directly for that tab id.
     let child: { id: string, parentAgentId: string, spawnSpanId: string } | null = null
     await expect.poll(async () => {
-      const agents = await listAgents(hubUrl, adminToken, workerId, [childTabId])
-      if (!agents)
-        return null
-      const found = agents.find(a => a.id === childTabId)
+      const found = await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, childTabId)
       child = found ? { id: found.id, parentAgentId: found.parentAgentId, spawnSpanId: found.spawnSpanId } : null
       return child
     }).not.toBeNull()

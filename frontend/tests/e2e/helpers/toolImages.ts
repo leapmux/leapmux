@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { FINISHED_TOOL_STATUSES } from '../../../src/components/chat/model/toolCallStatus'
-import { readAttached } from './ui'
+import { readAttached, toolRows } from './ui'
 
 /**
  * Image-in-tool-result fixtures and assertions.
@@ -31,11 +31,6 @@ export function writeToolImage(workingDir: string, marker: string): string {
   const name = `tool-image-${marker}.png`
   writeFileSync(join(workingDir, name), Buffer.from(TOOL_IMAGE_PNG_BASE64, 'base64'))
   return name
-}
-
-/** Every visible tool row. Scope to `:visible` — a premeasure copy is hidden. */
-export function toolRows(page: Page): Locator {
-  return page.locator('[data-tool-message]:visible')
 }
 
 /** Check the picture inside one correlated result bubble. */

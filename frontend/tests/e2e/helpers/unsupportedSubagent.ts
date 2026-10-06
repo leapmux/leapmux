@@ -5,7 +5,9 @@ import { expect } from '@playwright/test'
 import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, InterruptAgentRequestSchema, InterruptAgentResponseSchema, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
-import { listAgents, openChildTabFromRow } from './subagentRegistry'
+import { nativeAgentsByIds } from './nativeScenario'
+import { openChildTabFromRow } from './subagentRegistry'
+import { composerEditor } from './ui'
 
 export interface RunningNativeChild {
   row: Locator
@@ -25,9 +27,9 @@ export async function expectUnsupportedSubagent(
     expect(child.parentId).not.toBe('')
     await expect(child.row).toHaveAttribute('data-status', 'running')
     const { hubUrl, adminToken, workerId } = context.leapmuxServer
-    const agents = await listAgents(hubUrl, adminToken, workerId, [child.childId, child.parentId])
-    const info = agents?.find(agent => agent.id === child.childId)
-    const parent = agents?.find(agent => agent.id === child.parentId)
+    const agents = await nativeAgentsByIds(context, [child.childId, child.parentId])
+    const info = agents.find(agent => agent.id === child.childId)
+    const parent = agents.find(agent => agent.id === child.parentId)
     expect(info).toBeDefined()
     expect(parent).toBeDefined()
     if (!info || !parent)
@@ -47,7 +49,7 @@ export async function expectUnsupportedSubagent(
     else {
       expect(info.acceptsMessages).toBe(false)
       expect(parent.acceptsMessages).toBe(true)
-      await expect(context.page.getByTestId('composer-editor').locator('.ProseMirror').filter({ visible: true })).toHaveAttribute('contenteditable', 'false')
+      await expect(composerEditor(context.page)).toHaveAttribute('contenteditable', 'false')
       const inputId = crypto.randomUUID()
       const before = await channel.callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: child.childId })
       expect(before.snapshot).toBeDefined()

@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { codewhaleTest, codewhaleToolMessages, expectCodewhalePosture } from '../codewhale-fixtures'
+import { codewhaleTest, expectCodewhalePosture } from '../codewhale-fixtures'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 const CODEWHALE = AgentProvider.CODEWHALE
 
@@ -26,7 +26,7 @@ codewhaleTest.describe('Codewhale approvals', () => {
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(codewhaleToolMessages(page).filter({ hasText: 'bypass-42' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'bypass-42' }).first()).toBeVisible()
     // The same posture that the composer menu's bypass shortcut lands on.
     await expectCodewhalePosture(page, 'full_access')
 
@@ -38,7 +38,7 @@ codewhaleTest.describe('Codewhale approvals', () => {
     await sendMessage(page, modelScript.prompt('Create unasked.txt.'))
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
-    await expect(codewhaleToolMessages(page).filter({ hasText: 'unasked-42' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'unasked-42' }).first()).toBeVisible()
     await expect(page.locator('[data-testid="control-banner"]')).toHaveCount(0)
   })
 })

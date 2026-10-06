@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
-import { boxOf, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
+import { boxOf, expectAgentTabCount, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
@@ -27,11 +27,6 @@ import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as t
  * Uses the `separateHubWorker` fixture because it is the only one that can
  * stop and restart the Worker independently of the Hub.
  */
-
-/** Wait for the workspace to be fully loaded with its initial agent tabs. */
-async function waitForAgentTabs(page: Page, count: number) {
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(count)
-}
 
 /** Simulate a drag-and-drop from one point to another using mouse events. */
 async function dragTo(page: Page, source: { x: number, y: number }, target: { x: number, y: number }) {
@@ -121,7 +116,7 @@ test.describe('Offline close and cross-workspace move', () => {
     try {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, wsA)
-      await waitForAgentTabs(page, 2)
+      await expectAgentTabCount(page, 2)
       // Poll: titles are Worker-side metadata fetched after the tab itself
       // renders from the CRDT projection, so a one-shot read races the fetch.
       await expect.poll(async () => (await tabbarAgentLabels(page)).sort())
@@ -147,7 +142,7 @@ test.describe('Offline close and cross-workspace move', () => {
       await recordToastTexts(page)
       await closingTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
 
-      await waitForAgentTabs(page, 1)
+      await expectAgentTabCount(page, 1)
       // The toast is what distinguishes "took the unreachable branch" from
       // "the close somehow reached the worker" -- both end with one tab left.
       await expect.poll(async () => (await recordedToastTexts(page)).join('\n'))
@@ -164,10 +159,10 @@ test.describe('Offline close and cross-workspace move', () => {
       )
 
       // wsA is left empty and wsB gained the tab, without a Worker round-trip.
-      await waitForAgentTabs(page, 0)
+      await expectAgentTabCount(page, 0)
       await workspaceRow(page, wsB).click()
       await waitForWorkspaceReady(page)
-      await waitForAgentTabs(page, 1)
+      await expectAgentTabCount(page, 1)
 
       // ─── 3. Both edits are durable, not just optimistic UI ──────────────
       //
@@ -176,7 +171,7 @@ test.describe('Offline close and cross-workspace move', () => {
       // or reappear entirely (close).
       await page.reload()
       await waitForWorkspaceReady(page)
-      await waitForAgentTabs(page, 1)
+      await expectAgentTabCount(page, 1)
       await expect.poll(() => sidebarLeafIds(page, wsB)).toEqual([movedAgentId])
       // Expand wsA so its (now empty) section mounts.
       await workspaceChevron(page, wsA).click()

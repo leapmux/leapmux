@@ -4,8 +4,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { expect, fastAgentTest, openFastAgentAgent } from '../fastagent-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
+import { nativeAgentById } from '../helpers/nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { expandBackgroundTasksSection, listAgents, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { expandBackgroundTasksSection, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, messageContents, openMenu, openWorkspace, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 
@@ -270,8 +271,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
 
     let sessionID = ''
     await expect.poll(async () => {
-      const agents = await listAgents(hubUrl, adminToken, workerId, [rootID])
-      sessionID = agents?.find(agent => agent.id === rootID)?.agentSessionId ?? ''
+      sessionID = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, rootID))?.agentSessionId ?? ''
       return sessionID
     }).not.toBe('')
     await closeAgentViaAPI(hubUrl, adminToken, workerId, rootID)

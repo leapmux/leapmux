@@ -4,9 +4,8 @@ import { diracTest } from '../dirac-fixtures'
 import { expect } from '../fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
-import { nativeModelContextText } from '../helpers/nativeScenario'
+import { nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
-import { listAgents } from '../helpers/subagentRegistry'
 import { assistantBubbles, loginViaToken, openMenu, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { closeAgentViaAPI, createGitRepo, openNewAgentDialog, setWorkingDir, waitForWorker } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
@@ -42,8 +41,7 @@ diracTest.describe('Dirac session resume', () => {
       const continued = held.requests.find(request => request.stepIndex === 1)
       expect(JSON.stringify(continued?.body).includes(firstAnswer)).toBe(true)
       await expect.poll(async () => {
-        const agents = await listAgents(hubUrl, adminToken, workerId, [subjectId])
-        sessionId = agents?.find(agent => agent.id === subjectId)?.agentSessionId ?? ''
+        sessionId = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, subjectId))?.agentSessionId ?? ''
         return sessionId
       }).not.toBe('')
       await closeAgentViaAPI(hubUrl, adminToken, workerId, subjectId)

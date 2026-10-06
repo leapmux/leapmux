@@ -10,12 +10,12 @@
  * exerciseChildInterrupt uses this registry to open and stop a native child.
  */
 import type { Locator, Page } from '@playwright/test'
-import type { AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelMatcher, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import { expect } from '@playwright/test'
-import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { cleanupOnFailure } from './cleanup'
 import { countGoalTransitionsInMessages } from './goalTransitions'
@@ -25,6 +25,7 @@ import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
   assistantBubbles,
+  composerEditor,
   expectAssistantAnswer,
   sendMessage,
   stableBox,
@@ -119,7 +120,7 @@ export async function exerciseTextGoalQueue(page: Page, test: TextGoalQueueCase)
   const pauseButton = page.locator('[data-testid="queue-pause-button"]:visible')
   const modeTrigger = page.locator('[data-testid="composer-mode-trigger"]:visible')
 
-  await expect(page.locator('[data-testid="composer-editor"]:visible .ProseMirror')).toBeVisible()
+  await expect(composerEditor(page)).toBeVisible()
   await expect(goalsAndTodosSection(page)).toBeVisible()
   await expandGoalsAndTodosSection(page)
   await expect(goalAction(page, 'set')).toBeVisible()
@@ -540,31 +541,6 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
     await expect(row.filter({ hasText: label })).toBeVisible()
 }
 
-/**
- * Poll listAgents for a native child whose parentAgentId matches.
- * Require its nonempty spawnSpanId, which correlates the child tab with its spawn.
- * Return the child ID and spawnSpanId.
- */
-export async function waitForChildAgent(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  tabIds: string[],
-  parentAgentId: string,
-): Promise<{ id: string, spawnSpanId: string }> {
-  let child: { id: string, spawnSpanId: string } | null = null
-  await expect.poll(async () => {
-    const agents = await listAgents(hubUrl, token, workerId, tabIds)
-    if (!agents)
-      return null
-    const found = agents.find(a => a.parentAgentId === parentAgentId)
-    child = found ? { id: found.id, spawnSpanId: found.spawnSpanId } : null
-    return child
-  }).not.toBeNull()
-  expect(child!.spawnSpanId).not.toBe('')
-  return child!
-}
-
 /** Assert the section header and its rows remain visible after tasks finish. */
 export async function expectSectionPersists(page: Page): Promise<void> {
   await expect(backgroundTasksSection(page)).toBeVisible()
@@ -595,33 +571,6 @@ export async function countGoalTransitions(
     return countGoalTransitionsInMessages(resp.messages ?? [])
   }
   catch {
-    return null
-  }
-}
-
-/**
- * Read full agent information through the encrypted test channel.
- * Return null after a failed read so the caller can wait for reconnection.
- */
-export async function listAgents(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  tabIds: string[],
-): Promise<AgentInfo[] | null> {
-  const channel = await getTestChannel(hubUrl, token)
-  try {
-    const resp = await channel.callWorker(
-      workerId,
-      'ListAgents',
-      ListAgentsRequestSchema,
-      ListAgentsResponseSchema,
-      { tabIds },
-    )
-    return resp.agents
-  }
-  catch (error) {
-    console.warn('Could not list agents:', error instanceof Error ? error.message : typeof error)
     return null
   }
 }

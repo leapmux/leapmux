@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
-import { compactionChatSelector, expectCompactionNotice } from '../helpers/compaction'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { expectCompactionNotice } from '../helpers/compaction'
+import { chatScrollContainer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
 const OLD_CONTEXT_MARKER = 'LEAPMUXOLDCONTEXTPIRIVER'
@@ -10,7 +10,7 @@ const SUMMARY_MARKER = 'Summary: the earlier Pi turns established the topic.'
 piTest('manual-compaction: replaces a failed native compaction start with its error', async ({ authenticatedPiWorkspace, page }) => {
   void authenticatedPiWorkspace
   await sendMessage(page, '/compact')
-  const chat = page.locator(compactionChatSelector())
+  const chat = chatScrollContainer(page)
   await expect(chat).toContainText('Nothing to compact (session too small)')
   await waitForAgentIdle(page)
 

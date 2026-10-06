@@ -4,7 +4,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sendNativeAnswer } from './nativeConversation'
-import { currentNativeAgent, nativeAgentById } from './nativeScenario'
+import { currentNativeAgent, expectNativeOptionValue, nativeAgentById, nativeOptionGroup, nativeOptionValue } from './nativeScenario'
 import { chooseSettingsOption, expectSettingsOptionChosen, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
 interface NativeOptionProof {
@@ -24,7 +24,7 @@ export async function waitForNativeOptionApplied(context: Pick<ManagedNativeScen
   await expect.poll(async () => {
     const current = await nativeAgentById(context, id)
     return current?.status === AgentStatus.ACTIVE && current.agentSessionId !== ''
-      && current.optionGroups.find(group => group.id === groupId)?.currentValue === value
+      && nativeOptionValue(current, groupId) === value
   }).toBe(true)
   const applied = await nativeAgentById(context, id)
   if (!applied)
@@ -37,8 +37,7 @@ export async function exerciseRestoredNativeOption(context: ManagedNativeScenari
   await context.page.reload()
   await waitForNativeSettingsHydrated(context.page)
   await expectSettingsOptionChosen(context.page, `${options.groupId}-${options.value}`)
-  const restored = await currentNativeAgent(context)
-  expect(restored.optionGroups.find(candidate => candidate.id === options.groupId)?.currentValue).toBe(options.value)
+  await expectNativeOptionValue(context, options.groupId, options.value)
   const next = await sendNativeAnswer(context, 'Reply once after restoring the selected native setting.', 'The restored native setting reached the next turn.')
   await options.nativeProof(next)
 }
@@ -53,7 +52,7 @@ export async function exerciseNativeOption(
   await options.prepare?.()
   await waitForNativeSettingsHydrated(context.page)
   const before = await currentNativeAgent(context)
-  const group = before.optionGroups.find(candidate => candidate.id === options.groupId)
+  const group = nativeOptionGroup(before, options.groupId)
   expect(group?.mutable).toBe(true)
   expect(group?.options.map(option => option.id)).toContain(options.value)
   const optionId = `${options.groupId}-${options.value}`

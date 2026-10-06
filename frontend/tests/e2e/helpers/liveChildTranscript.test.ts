@@ -142,6 +142,12 @@ vi.mock('./subagentRegistry', async importOriginal => ({
   },
 }))
 
+// The helper reads the parent from the selected agent tab, which the fake browser tracks.
+vi.mock('./nativeScenario', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeScenario')>(),
+  selectedAgentTabId: async () => browser.selected,
+}))
+
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   // A fake assertion reads the current fake state once. The simulated agent writes each row before the helper can observe it.
@@ -362,8 +368,6 @@ function fakePage(): Page {
   // The fake supplies only the two page queries that the helper makes directly.
   return Object.assign({} as Page, {
     locator: (selector: string) => {
-      if (selector === '[data-testid="tab"][data-tab-type="agent"]')
-        return { first: () => ({ getAttribute: async (name: string) => name === 'data-tab-id' ? PARENT_TAB : null }) }
       if (selector === '[data-tool-message]:visible')
         return rows('tool')
       if (RESULT_BUBBLE_SELECTOR.test(selector))

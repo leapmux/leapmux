@@ -1,7 +1,34 @@
 import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
-import { describe, expect, it, vi } from 'vitest'
-import { nativeLastStepBody, nativeModelBodiesAfter, nativeModelContextText, nativeModelConversationTurns, nativeModelInstructionText, nativeModelLastUserText, nativeModelToolNames, nativeScenarioModelContextText, nativeToolArgumentText, nativeToolOutcome, selectedAgentTab } from './nativeScenario'
+import { create } from '@bufbuild/protobuf'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentInfoSchema, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import {
+  expectNativeOptionValue,
+  nativeAgentById,
+  nativeAgentsByIds,
+  nativeLastStepBody,
+  nativeModelBodiesAfter,
+  nativeModelContextText,
+  nativeModelConversationTurns,
+  nativeModelInstructionText,
+  nativeModelLastUserText,
+  nativeModelToolNames,
+  nativeOptionGroup,
+  nativeOptionValue,
+  nativeScenarioModelContextText,
+  nativeToolArgumentText,
+  nativeToolOutcome,
+  selectedAgentTab,
+  selectedAgentTabId,
+} from './nativeScenario'
+
+const workerChannel = vi.hoisted(() => ({ callWorker: vi.fn() }))
+vi.mock('./api', () => ({ getTestChannel: async () => workerChannel }))
+
+beforeEach(() => {
+  workerChannel.callWorker.mockReset()
+})
 
 describe('nativeScenarioModelContextText', () => {
   it('uses the injected reader for the unchanged recorded request', () => {
@@ -329,6 +356,115 @@ describe('selectedAgentTab', () => {
     expect(selectedAgentTab(page)).toBe('FIRST_TAB')
     expect(locator).toHaveBeenCalledExactlyOnceWith('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible')
     expect(first).toHaveBeenCalledOnce()
+  })
+})
+
+/** A page whose selected agent tab is visible and holds `tabId`. Its `toBeVisible` checks read the fake locator. */
+function pageWithSelectedTab(tabId: string | null): Page {
+  class Locator {
+    readonly _apiName = 'Locator'
+    async _expect() {
+      return { matches: true, received: true, log: [], timedOut: false }
+    }
+
+    first() {
+      return this
+    }
+
+    async getAttribute(name: string) {
+      return name === 'data-tab-id' ? tabId : null
+    }
+  }
+  return Object.assign({} as Page, { locator: () => new Locator() })
+}
+
+describe('selectedAgentTabId', () => {
+  it('returns the agent ID of the selected tab', async () => {
+    expect(await selectedAgentTabId(pageWithSelectedTab('selected-agent'))).toBe('selected-agent')
+  })
+
+  it.each([null, ''])('fails with the absent attribute instead of returning an empty agent ID: %j', async (tabId) => {
+    await expect(selectedAgentTabId(pageWithSelectedTab(tabId))).rejects.toThrow('The selected agent tab has no agent ID')
+  })
+})
+
+describe('nativeAgentsByIds', () => {
+  const server = { leapmuxServer: { hubUrl: 'http://hub.invalid', adminToken: 'session', workerId: 'worker-1' } }
+
+  it('reads the Worker agents of the given IDs through one ListAgents call', async () => {
+    const agents = [create(AgentInfoSchema, { id: 'first' }), create(AgentInfoSchema, { id: 'second' })]
+    workerChannel.callWorker.mockResolvedValueOnce({ agents })
+    expect(await nativeAgentsByIds(server, ['first', 'second'])).toBe(agents)
+    expect(workerChannel.callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', 'ListAgents', expect.anything(), expect.anything(), { tabIds: ['first', 'second'] })
+  })
+
+  it('throws the failure of the Worker read, so a poll retries and reports it', async () => {
+    const failure = new Error('The Worker channel closed.')
+    workerChannel.callWorker.mockRejectedValueOnce(failure)
+    await expect(nativeAgentsByIds(server, ['first'])).rejects.toBe(failure)
+  })
+
+  it.each([{ label: 'no ID', ids: [] }, { label: 'an empty ID', ids: ['first', ''] }])('refuses $label before the read', async ({ ids }) => {
+    await expect(nativeAgentsByIds(server, ids)).rejects.toThrow('one or more agent IDs, each nonempty')
+    expect(workerChannel.callWorker).not.toHaveBeenCalled()
+  })
+})
+
+describe('nativeAgentById', () => {
+  const server = { leapmuxServer: { hubUrl: 'http://hub.invalid', adminToken: 'session', workerId: 'worker-1' } }
+
+  it('returns the agent of the ID and ignores another agent in the reply', async () => {
+    const agent = create(AgentInfoSchema, { id: 'wanted' })
+    workerChannel.callWorker.mockResolvedValueOnce({ agents: [create(AgentInfoSchema, { id: 'other' }), agent] })
+    expect(await nativeAgentById(server, 'wanted')).toBe(agent)
+    expect(workerChannel.callWorker).toHaveBeenCalledWith('worker-1', 'ListAgents', expect.anything(), expect.anything(), { tabIds: ['wanted'] })
+  })
+
+  it('returns null when the Worker holds no such agent', async () => {
+    workerChannel.callWorker.mockResolvedValueOnce({ agents: [] })
+    expect(await nativeAgentById(server, 'missing')).toBeNull()
+  })
+})
+
+describe('nativeOptionValue', () => {
+  const agent = create(AgentInfoSchema, { optionGroups: [
+    create(AvailableOptionGroupSchema, { id: 'permissionMode', currentValue: 'plan', options: [{ id: 'plan', name: 'Plan' }] }),
+    create(AvailableOptionGroupSchema, { id: 'effort', currentValue: '', options: [] }),
+  ] })
+
+  it('returns the current value of the group, and the group itself', () => {
+    expect(nativeOptionValue(agent, 'permissionMode')).toBe('plan')
+    expect(nativeOptionGroup(agent, 'permissionMode')?.options.map(option => option.id)).toEqual(['plan'])
+  })
+
+  it('keeps an empty current value apart from an absent group', () => {
+    expect(nativeOptionValue(agent, 'effort')).toBe('')
+    expect(nativeOptionValue(agent, 'model')).toBeUndefined()
+    expect(nativeOptionGroup(agent, 'model')).toBeUndefined()
+  })
+})
+
+describe('expectNativeOptionValue', () => {
+  const context = { page: pageWithSelectedTab('selected-agent'), leapmuxServer: { hubUrl: 'http://hub.invalid', adminToken: 'session', workerId: 'worker-1' } }
+  const agent = create(AgentInfoSchema, {
+    id: 'selected-agent',
+    status: AgentStatus.ACTIVE,
+    optionGroups: [create(AvailableOptionGroupSchema, { id: 'permissionMode', currentValue: 'plan' })],
+  })
+
+  it('passes for the current value of the active agent', async () => {
+    workerChannel.callWorker.mockResolvedValue({ agents: [agent] })
+    await expect(expectNativeOptionValue(context, 'permissionMode', 'plan')).resolves.toBeUndefined()
+  })
+
+  it('fails with the group and its value for another value', async () => {
+    workerChannel.callWorker.mockResolvedValue({ agents: [agent] })
+    await expect(expectNativeOptionValue(context, 'permissionMode', 'build')).rejects.toThrow('the current value of the native option group permissionMode')
+  })
+
+  it('fails with the groups of the catalog for an absent group, not with "expected undefined"', async () => {
+    workerChannel.callWorker.mockResolvedValue({ agents: [agent] })
+    await expect(expectNativeOptionValue(context, 'model', 'mock')).rejects.toThrow('The native catalog has no option group model. It has permissionMode.')
   })
 })
 

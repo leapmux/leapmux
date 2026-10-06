@@ -25,7 +25,7 @@ import { bashToolCall } from './providerToolCalls'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument } from './shellArguments'
-import { assistantBubbles, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, messageBubbles, messageContents, openMenu, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, openNewAgentDialog, setWorkingDir, waitForWorker } from './worktree'
 
 interface LifecyclePreparation {
@@ -367,7 +367,7 @@ export async function exerciseAgentStartup(
       expect((await nativeAgentById(privateContext, agentId))?.status).toBe(AgentStatus.STARTING)
       await expect(visibleOnly(context.page.getByTestId('agent-startup-overlay'))).toBeVisible()
     }
-    const editor = context.page.locator('[data-testid="composer-editor"]:visible .ProseMirror')
+    const editor = composerEditor(context.page)
     await expect(editor).toBeVisible()
     await sendMessage(context.page, context.modelScript.prompt(prompt))
     await wrapper.entry

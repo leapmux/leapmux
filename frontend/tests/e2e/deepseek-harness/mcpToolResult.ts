@@ -16,7 +16,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { copyNativeToolOutputPreview } from '../helpers/nativeToolOutput'
 import { nativeOutputPathsPrecedePreview } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
-import { openWorkspace, readAttachedWithArgument } from '../helpers/ui'
+import { openWorkspace, readAttachedWithArgument, toolCallRow } from '../helpers/ui'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
 
@@ -156,8 +156,7 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
     expect(result.frame).toEqual(receipt.frame)
     expect(result.message.content).toEqual(receipt.message.content)
     expect(nativeMcpDisplay(snapshot, options.callId)).toEqual(nativeDisplay)
-    const escaped = await context.page.evaluate(id => CSS.escape(id), options.callId)
-    const bubble = context.page.locator(`[data-testid="message-bubble"][data-tool-call-id=${escaped}][data-tool-row-role="result"]:visible`)
+    const bubble = toolCallRow(context.page, options.callId)
     await expect(bubble).toHaveCount(1)
     await expect(bubble).toHaveAttribute('data-tool-status', 'completed')
     await expandNativeResultView(bubble)

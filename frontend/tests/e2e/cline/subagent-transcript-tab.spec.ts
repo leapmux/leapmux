@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
+import { nativeAgentsByIds } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { expectNoRegistryRows, expectRegistryRow, expectRowBecomesFinal, expectSectionPersists, listAgents, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { expectNoRegistryRows, expectRegistryRow, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, bandRows, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 
 /**
@@ -117,8 +118,8 @@ clineTest.describe('Cline subagent registry', () => {
 
     // Worker-backed: each child states the lead as its parent.
     await expect.poll(async () => {
-      const agents = await listAgents(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, childTabIds)
-      return childTabIds.map(id => agents?.find(agent => agent.id === id)?.parentAgentId ?? null)
+      const agents = await nativeAgentsByIds({ leapmuxServer }, childTabIds)
+      return childTabIds.map(id => agents.find(agent => agent.id === id)?.parentAgentId ?? null)
     }).toEqual([parentTabId, parentTabId])
   })
 })

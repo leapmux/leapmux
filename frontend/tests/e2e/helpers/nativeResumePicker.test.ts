@@ -65,15 +65,6 @@ vi.mock('./worktree', () => ({
   setWorkingDir: async (_page: Page, path: string) => { picker.events.push(`working-dir:${path.split('/').at(-1)?.split('-').slice(0, 2).join('-')}`) },
 }))
 
-vi.mock('./subagentRegistry', () => ({
-  listAgents: async () => {
-    picker.events.push('list-agents')
-    const agentSessionId = picker.emptySessionReads > 0 ? '' : STORED_SESSION
-    picker.emptySessionReads = Math.max(0, picker.emptySessionReads - 1)
-    return [create(AgentInfoSchema, { id: SUBJECT_ID, agentSessionId })]
-  },
-}))
-
 vi.mock('./nativeResume', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeResume')>(),
   countOriginalAnswerRows: async (_context: unknown, agentId: string) => {
@@ -94,6 +85,12 @@ vi.mock('./nativeResume', async importOriginal => ({
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
   nativeModelConversationTurns: (request: MockModelRequestRecord): NativeModelTurn[] => [{ role: 'assistant', text: `default reader:${request.stepIndex}` }],
+  nativeAgentById: async (_context: unknown, agentId: string) => {
+    picker.events.push('list-agents')
+    const agentSessionId = picker.emptySessionReads > 0 ? '' : STORED_SESSION
+    picker.emptySessionReads = Math.max(0, picker.emptySessionReads - 1)
+    return create(AgentInfoSchema, { id: agentId, agentSessionId })
+  },
 }))
 
 /** Locate chat rows in memory. A filter keeps the rows that hold its text. */
@@ -108,6 +105,7 @@ function rows(texts: () => readonly string[], filters: readonly string[] = []) {
 }
 
 vi.mock('./ui', () => ({
+  agentTabs: (page: Page) => page.locator('[data-testid="tab"][data-tab-type="agent"]'),
   assistantBubbles: () => rows(() => picker.assistantRows),
   userBubbles: () => rows(() => picker.userRows),
   loginViaToken: async () => { picker.events.push('login') },

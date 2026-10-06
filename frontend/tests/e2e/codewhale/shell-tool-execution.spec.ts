@@ -1,10 +1,10 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 
-import { codewhaleTest, codewhaleToolMessages } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, assistantBubbles, sendMessage, transcriptRows, waitForAgentIdle } from '../helpers/ui'
+import { applyPermissionPreset, assistantBubbles, sendMessage, toolRows, transcriptRows, waitForAgentIdle } from '../helpers/ui'
 import { runWithoutApprovals } from './toolScenarios'
 
 const CODEWHALE = AgentProvider.CODEWHALE
@@ -24,7 +24,7 @@ codewhaleTest.describe('Codewhale tool execution', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(codewhaleToolMessages(page).filter({ hasText: 'codewhale-42' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'codewhale-42' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'The command printed its number.' })).toBeVisible()
   })
 
@@ -41,7 +41,7 @@ codewhaleTest.describe('Codewhale tool execution', () => {
     await modelScript.waitForSteps()
     await waitForAgentIdle(page)
 
-    await expect(codewhaleToolMessages(page).filter({ hasText: 'ls codewhale-missing-path' }).first()).toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'ls codewhale-missing-path' }).first()).toBeVisible()
     const failure = transcriptRows(page).filter({ hasText: 'No such file or directory' }).first()
     await expect(failure).toContainText('Error')
     await expect(failure).toContainText('codewhale-missing-path')

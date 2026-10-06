@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { CHAT_SCROLL_CONTAINER } from './ui'
+import { chatScrollContainer } from './ui'
 
 /**
  * The compaction notice row.
@@ -15,19 +15,10 @@ import { CHAT_SCROLL_CONTAINER } from './ui'
 export const COMPACTION_NOTICE_TEXT = 'Context compacted'
 const COMPACTION_NOTICE_PATTERN = new RegExp(`^\\s*${COMPACTION_NOTICE_TEXT}(?:\\s|\\(|$)`)
 
-/**
- * The selector of the chat rows a notice can appear in.
- *
- * Scoped to `:visible`: ChatView keeps a hidden premeasure copy of every
- * unmeasured row, and a bare container locator matches it as well.
- */
-export function compactionChatSelector(): string {
-  return `${CHAT_SCROLL_CONTAINER}:visible`
-}
-
 /** The first notice row in the visible transcript. */
 export function compactionNoticeRow(page: Page): Locator {
-  return page.locator(`${compactionChatSelector()} [data-testid="notification-divider"]:visible`)
+  return chatScrollContainer(page)
+    .locator('[data-testid="notification-divider"]:visible')
     .filter({ hasText: COMPACTION_NOTICE_PATTERN })
     .first()
 }

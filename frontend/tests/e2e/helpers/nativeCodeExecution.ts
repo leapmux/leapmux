@@ -7,7 +7,7 @@ import { googleFunctionDeclarations } from './googleModelContent'
 import { nativeModelToolNames, nativeToolOutcome } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { codeExecutionToolCall } from './providerToolCalls'
-import { assistantBubbles } from './ui'
+import { assistantBubbles, toolCallRow } from './ui'
 
 interface NativeScriptCase {
   label: string
@@ -58,7 +58,7 @@ export async function exerciseNativeCodeExecution(
     if (result.failed !== undefined)
       expect(result.failed).toBe(script.failed)
     await options.nativeProof?.(request, callId, script.expected, script.failed)
-    const bubble = context.page.locator(`[data-testid="message-bubble"][data-tool-call-id="${callId}"][data-tool-row-role="result"]:visible`)
+    const bubble = toolCallRow(context.page, callId)
     await expect(bubble).toHaveCount(1)
     await expect(bubble).toHaveAttribute('data-tool-status', script.failed ? 'failed' : 'completed')
     await options.prepareResultView?.(callId, false)

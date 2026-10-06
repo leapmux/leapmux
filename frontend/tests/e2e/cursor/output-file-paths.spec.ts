@@ -44,7 +44,7 @@ cursorTest('retains complete inline output for the selected native shell route a
     const stored = await readNativeMessageSnapshot(native, current.id)
     expect(stored.messages.filter(message => message.spanId === callId).map(nativeMessageBody)).toEqual(originals)
     expect(await cursorNativeToolOutput(native, callId)).toEqual(exact)
-    await chatScrollContainer(page).filter({ visible: true }).evaluate(element => element.scrollTo({ top: 0, behavior: 'instant' }))
+    await chatScrollContainer(page).evaluate(element => element.scrollTo({ top: 0, behavior: 'instant' }))
     await expect(result).toHaveCount(1)
     await expandNativeResultView(result)
     await expect(result).toContainText(output.firstMarker)

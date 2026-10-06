@@ -58,11 +58,6 @@ export const CODEWHALE_E2E_SKIP_REASON: string | null = CODEWHALE.path === null
  */
 export const CODEWHALE_SERVES_JOB_ROUTES: boolean = INSTALL.version !== null && (INSTALL.version[0] > 0 || INSTALL.version[1] >= 10)
 
-/** The tool rows on screen. */
-export function codewhaleToolMessages(page: Page) {
-  return page.locator('[data-tool-message]:visible')
-}
-
 /**
  * Assert the permission posture the agent reports.
  *

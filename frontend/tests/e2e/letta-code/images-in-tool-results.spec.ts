@@ -5,8 +5,8 @@ import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { getTestChannel } from '../helpers/api'
 import { lettaViewImageToolCall } from '../helpers/providerToolCalls'
-import { toolRows, writeToolImage } from '../helpers/toolImages'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { writeToolImage } from '../helpers/toolImages'
+import { sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
 import { LETTA_TITLE_RULE, expect as lettaExpect, lettaTest } from '../letta-fixtures'
 
 lettaTest.describe('Letta Code images in tool results', () => {

@@ -5,7 +5,7 @@ import { basename, join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 import { createTestDirectory } from './runDirectory'
-import { waitForSettingsHydrated } from './ui'
+import { focusComposer, waitForSettingsHydrated } from './ui'
 
 /**
  * Attachment fixtures and the composer flows that consume them.
@@ -187,8 +187,7 @@ export async function expectAttachmentOutcome(
 
 /** Send the composer with its attachment and optional text, then wait for the strip to clear. */
 export async function sendWithAttachment(page: Page, text: string): Promise<void> {
-  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-  await editor.click()
+  const editor = await focusComposer(page)
   if (text)
     await page.keyboard.type(text)
   await page.keyboard.press('Meta+Enter')

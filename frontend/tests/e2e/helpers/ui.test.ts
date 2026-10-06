@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, Locator as PlaywrightLocator } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { PermissionShortcutState } from './ui'
 import { Buffer } from 'node:buffer'
 import { dirname, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
@@ -10,19 +11,34 @@ import { permissionPresetAvailable } from '../../../src/components/chat/provider
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { cssAttributeValue } from './cssAttribute'
 import { startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 import {
+  agentTabs,
   applyPermissionPreset,
   ARITHMETIC_ANSWER,
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
+  chatScrollContainer,
   chooseSettingsOption,
+  composerEditor,
   enterMessageText,
+  expectAgentTabCount,
+  expectPermissionShortcuts,
+  expectRowsInOrder,
+  focusComposer,
   isMaybeVisible,
+  offeredSettingsOptions,
+  rowOrderProblem,
   screenshotIfEnabled,
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
+  subagentReportBubble,
+  terminalTabs,
+  tiles,
+  toolCallRow,
+  toolRows,
   waitForAgentIdle,
   waitForLayoutSave,
   waitForNativeSettingsHydrated,
@@ -177,13 +193,20 @@ describe('isMaybeVisible', () => {
   })
 })
 
-/** Check each supplied method. Reject every missing method on the opaque test handle. */
+/**
+ * Check each supplied method. Reject every missing method on the opaque test handle.
+ * Two reads answer undefined:
+ * - `then`, which an async function reads on the handle that it returns, so the handle is not a thenable.
+ * - A symbol, which a failure message reads to describe the handle.
+ */
 function opaqueHandle<T extends object>(methods: Partial<T>, prototype: object = {}): T {
   const target = Object.assign(prototype, methods) as T
   return new Proxy(target, {
     get: (value, property, receiver) => {
       if (property in value)
         return Reflect.get(value, property, receiver)
+      if (property === 'then' || typeof property === 'symbol')
+        return undefined
       throw new Error(`The UI unit accessed an unimplemented handle property: ${String(property)}.`)
     },
   })
@@ -608,6 +631,291 @@ describe('waitForLayoutSave', () => {
     target.dispatchEvent(new Event('leapmux:layout-saved'))
     await third
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+/** A page whose `locator` returns the selector, so a test reads the exact selector that a helper builds. */
+function selectorPage(): Page {
+  return Object.assign({} as Page, { locator: (selector: string) => selector })
+}
+
+describe('toolCallRow', () => {
+  it('selects the visible result row of the exact call ID', () => {
+    expect(toolCallRow(selectorPage(), 'live-child-read')).toBe(
+      '[data-testid="message-bubble"][data-tool-call-id="live-child-read"][data-tool-row-role="result"]:visible',
+    )
+  })
+
+  it.each(['request', 'update', 'result'] as const)('selects the visible %s row of the call', (role) => {
+    expect(toolCallRow(selectorPage(), 'call-1', role)).toBe(
+      `[data-testid="message-bubble"][data-tool-call-id="call-1"][data-tool-row-role="${role}"]:visible`,
+    )
+  })
+
+  it('escapes a quote and a backslash in the call ID for a quoted attribute value', () => {
+    expect(toolCallRow(selectorPage(), 'a"b\\c')).toBe(
+      '[data-testid="message-bubble"][data-tool-call-id="a\\"b\\\\c"][data-tool-row-role="result"]:visible',
+    )
+  })
+
+  it('keeps an empty call ID as an empty attribute value, so it matches no real call', () => {
+    expect(toolCallRow(selectorPage(), '')).toContain('[data-tool-call-id=""]')
+  })
+
+  it.each([
+    { callId: 'a\nb', escaped: 'a\\a b' },
+    { callId: 'a\rb', escaped: 'a\\d b' },
+    { callId: 'a\fb', escaped: 'a\\c b' },
+  ])('escapes the line break in $callId as a CSS hex escape, because a quoted CSS string cannot hold one', ({ callId, escaped }) => {
+    expect(toolCallRow(selectorPage(), callId)).toContain(`[data-tool-call-id="${escaped}"]`)
+  })
+
+  // `cssAttribute.test.ts` matches each escaped value against a CSS parser. This file runs without a DOM.
+  it('escapes the call ID through cssAttributeValue', () => {
+    const callId = 'Run"Shell\\Command\n1'
+    expect(toolCallRow(selectorPage(), callId)).toContain(`[data-tool-call-id="${cssAttributeValue(callId)}"]`)
+  })
+})
+
+describe('chat and tab locators', () => {
+  it.each([
+    { name: 'toolRows', locate: toolRows, selector: '[data-tool-message]:visible' },
+    { name: 'chatScrollContainer', locate: chatScrollContainer, selector: '[data-chat-scroll-container="true"]:visible' },
+    { name: 'composerEditor', locate: composerEditor, selector: '[data-testid="composer-editor"]:visible .ProseMirror' },
+    { name: 'agentTabs', locate: agentTabs, selector: '[data-testid="tab"][data-tab-type="agent"]' },
+    { name: 'terminalTabs', locate: terminalTabs, selector: '[data-testid="tab"][data-tab-type="terminal"]' },
+    { name: 'tiles', locate: tiles, selector: '[data-testid="tile"]' },
+  ])('$name selects $selector', ({ locate, selector }) => {
+    expect(locate(selectorPage())).toBe(selector)
+  })
+})
+
+/** A locator whose assertions record their expression and answer from `answer`. */
+function assertingLocator(name: string, log: string[], answer: (expression: string, options: { expectedNumber?: number }) => boolean, methods: Partial<PlaywrightLocator> = {}): PlaywrightLocator {
+  class Locator {
+    readonly _apiName = 'Locator'
+    async _expect(expression: string, options: { expectedNumber?: number }) {
+      log.push(`${name}:${expression}${options.expectedNumber === undefined ? '' : `=${options.expectedNumber}`}`)
+      return { matches: answer(expression, options), received: true, log: [], timedOut: false }
+    }
+  }
+  return opaqueHandle<PlaywrightLocator>(methods, new Locator())
+}
+
+describe('focusComposer', () => {
+  it('waits for the visible composer, clicks it once, and returns it', async () => {
+    const log: string[] = []
+    const click = vi.fn(async () => {
+      log.push('editor:click')
+    })
+    const editor = assertingLocator('editor', log, () => true, { click })
+    const page = opaqueHandle<Page>({ locator: (selector: string) => {
+      expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
+      return editor
+    } })
+    expect(await focusComposer(page)).toBe(editor)
+    expect(log).toEqual(['editor:to.be.visible', 'editor:click'])
+  })
+})
+
+describe('expectAgentTabCount', () => {
+  it('requires the exact count of agent tabs', async () => {
+    const log: string[] = []
+    const tabs = assertingLocator('tabs', log, (_expression, options) => options.expectedNumber === 2)
+    const page = opaqueHandle<Page>({ locator: () => tabs })
+    await expectAgentTabCount(page, 2)
+    expect(log).toEqual(['tabs:to.have.count=2'])
+    await expect(expectAgentTabCount(page, 3)).rejects.toThrow(/toHaveCount/)
+  })
+
+  it.each([-1, 1.5, Number.NaN])('refuses the count %s before it reads the page', async (count) => {
+    const page = opaqueHandle<Page>({})
+    await expect(expectAgentTabCount(page, count)).rejects.toThrow('nonnegative integer')
+  })
+})
+
+describe('subagentReportBubble', () => {
+  function chainPage() {
+    const chain: unknown[] = []
+    const link: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({ filter: (options) => {
+      chain.push(options?.hasText)
+      return link
+    } })
+    const page = opaqueHandle<Page>({ locator: (selector: string) => {
+      chain.push(selector)
+      return link
+    } })
+    return { page, chain }
+  }
+
+  it('filters the visible bubbles to the report header and then to the report text', () => {
+    const { page, chain } = chainPage()
+    subagentReportBubble(page, /PONG/)
+    expect(chain).toEqual(['[data-testid="message-bubble"]:visible', 'Subagent reported', /PONG/])
+  })
+
+  it('uses the label of the reporter that the provider gives', () => {
+    const { page, chain } = chainPage()
+    subagentReportBubble(page, 'done', 'Explorer')
+    expect(chain).toEqual(['[data-testid="message-bubble"]:visible', 'Explorer reported', 'done'])
+  })
+})
+
+describe('rowOrderProblem', () => {
+  const rows = ['user prompt', 'READ_MARKER from the child', 'thinking', 'FINAL answer']
+
+  it('accepts texts in their own rows in order, and reads the first row that holds a text', () => {
+    expect(rowOrderProblem(rows, ['READ_MARKER', 'FINAL'])).toBe('')
+    expect(rowOrderProblem([...rows, 'READ_MARKER again'], ['READ_MARKER', 'FINAL'])).toBe('')
+  })
+
+  it('fails for a missing text, which an order check through findIndex reads as -1', () => {
+    expect(rowOrderProblem(rows, ['ABSENT', 'FINAL'])).toBe('no row holds "ABSENT"')
+    expect(rowOrderProblem(rows, ['ABSENT', 'GONE'])).toBe('no row holds "ABSENT", "GONE"')
+    expect(rowOrderProblem([], ['READ_MARKER', 'FINAL'])).toBe('no row holds "READ_MARKER", "FINAL"')
+  })
+
+  it('fails for a reversed order', () => {
+    expect(rowOrderProblem(rows, ['FINAL', 'READ_MARKER'])).toBe('"READ_MARKER" (row 1) comes before "FINAL" (row 3)')
+  })
+
+  it('fails for two texts in one row', () => {
+    expect(rowOrderProblem(['READ_MARKER and FINAL'], ['READ_MARKER', 'FINAL'])).toBe('"READ_MARKER" and "FINAL" are in one row (row 0)')
+  })
+
+  it('checks each neighbor pair of a longer list', () => {
+    expect(rowOrderProblem(rows, ['user', 'READ_MARKER', 'FINAL'])).toBe('')
+    expect(rowOrderProblem(rows, ['user', 'FINAL', 'thinking'])).toBe('"thinking" (row 2) comes before "FINAL" (row 3)')
+  })
+})
+
+describe('expectRowsInOrder', () => {
+  it('passes for rows that hold the texts in order', async () => {
+    const rows = opaqueHandle<PlaywrightLocator>({ allTextContents: async () => ['first READ', 'then FINAL'] })
+    await expect(expectRowsInOrder(rows, ['READ', 'FINAL'])).resolves.toBeUndefined()
+  })
+
+  it.each([
+    { label: 'one text', texts: ['READ'], error: 'at least two texts' },
+    { label: 'an empty text', texts: ['READ', ''], error: 'not empty' },
+  ])('refuses $label before it reads the rows', async ({ texts, error }) => {
+    const rows = opaqueHandle<PlaywrightLocator>({})
+    await expect(expectRowsInOrder(rows, texts)).rejects.toThrow(error)
+  })
+})
+
+/** A page with a composer `[+]` menu whose triggers report themselves open. It records each assertion and click. */
+function plusMenuPage(options: { popover: PlaywrightLocator, groupPopover?: PlaywrightLocator, log: string[] }): Page {
+  const trigger = (name: string) => assertingLocator(name, options.log, () => true, {
+    getAttribute: async () => 'true',
+    click: async () => { options.log.push(`${name}:click`) },
+  })
+  return opaqueHandle<Page>({
+    evaluate: async () => {
+      options.log.push('close-menus')
+      return undefined
+    },
+    locator: (selector: string) => {
+      if (selector === '[data-testid="composer-plus-trigger"]')
+        return trigger('plus')
+      if (selector === '[data-testid="composer-plus-popover"]')
+        return options.popover
+      if (selector.endsWith('-popover"]') && options.groupPopover)
+        return options.groupPopover
+      if (selector.startsWith('[data-testid="composer-group-'))
+        return trigger('group')
+      throw new Error(`The menu page has no locator for ${selector}.`)
+    },
+  })
+}
+
+describe('offeredSettingsOptions', () => {
+  function menuWith(testIds: string[]) {
+    const log: string[] = []
+    const rowSelectors: string[] = []
+    const groupPopover = opaqueHandle<PlaywrightLocator>({ locator: (selector: string) => {
+      rowSelectors.push(selector)
+      return opaqueHandle<PlaywrightLocator>({ evaluateAll: (async () => testIds) as unknown as PlaywrightLocator['evaluateAll'] })
+    } })
+    const page = plusMenuPage({ popover: opaqueHandle<PlaywrightLocator>({}), groupPopover, log })
+    return { page, log, rowSelectors }
+  }
+
+  it('returns the offered values in menu order from the option rows alone, and closes the menus', async () => {
+    const { page, log, rowSelectors } = menuWith(['permissionMode-default', 'permissionMode-danger-full-access', 'permissionMode-plan'])
+    expect(await offeredSettingsOptions(page, 'permissionMode')).toEqual(['default', 'danger-full-access', 'plan'])
+    // A label element and the filter box carry the same test ID prefix, so the rows come from their role alone.
+    expect(rowSelectors).toEqual(['[role="menuitemradio"], [role="option"]'])
+    expect(log.at(-2)).toBe('close-menus')
+  })
+
+  it('returns an empty list for a menu without an option row', async () => {
+    expect(await offeredSettingsOptions(menuWith([]).page, 'effort')).toEqual([])
+  })
+
+  it.each(['effort-high', 'permissionMode-', ''])('fails for an option row whose test ID is not "<groupId>-<value>": %j', async (testId) => {
+    await expect(offeredSettingsOptions(menuWith([testId]).page, 'permissionMode')).rejects.toThrow('is not "permissionMode-<value>"')
+  })
+})
+
+describe('expectPermissionShortcuts', () => {
+  function menuWith(states: Partial<Record<'smart' | 'bypass', PermissionShortcutState>>) {
+    const log: string[] = []
+    const shortcut = (kind: 'smart' | 'bypass') => {
+      const state = states[kind] ?? 'absent'
+      return assertingLocator(kind, log, (expression) => {
+        if (expression === 'to.have.count')
+          return state === 'absent'
+        if (expression === 'to.be.visible')
+          return state !== 'absent'
+        if (expression === 'to.be.disabled')
+          return state === 'disabled'
+        if (expression === 'to.be.enabled')
+          return state === 'offered'
+        throw new Error(`The shortcut fake has no answer for ${expression}.`)
+      })
+    }
+    const popover = opaqueHandle<PlaywrightLocator>({ getByTestId: (testId: string | RegExp) => {
+      const kind = /^composer-(smart|bypass)-permissions$/.exec(String(testId))?.[1]
+      if (kind !== 'smart' && kind !== 'bypass')
+        throw new Error(`The menu has no shortcut ${String(testId)}.`)
+      return shortcut(kind)
+    } }, new (class {
+      readonly _apiName = 'Locator'
+      async _expect() {
+        return { matches: true, received: true, log: [], timedOut: false }
+      }
+    })())
+    return { page: plusMenuPage({ popover, log }), log }
+  }
+
+  it('opens a probe menu first, reads each stated shortcut in the next menu, and closes the menus', async () => {
+    const { page, log } = menuWith({ smart: 'absent', bypass: 'offered' })
+    await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
+    const reads = log.filter(entry => entry.startsWith('smart:') || entry.startsWith('bypass:'))
+    expect(reads).toEqual(['smart:to.have.count=0', 'bypass:to.be.visible', 'bypass:to.be.enabled'])
+    const closes = log.map((entry, index) => entry === 'close-menus' ? index : -1).filter(index => index >= 0)
+    expect(closes.length).toBeGreaterThanOrEqual(3)
+    expect(log.at(-2)).toBe('close-menus')
+  })
+
+  it('requires a disabled shortcut while its preset is active', async () => {
+    const { page, log } = menuWith({ bypass: 'disabled' })
+    await expectPermissionShortcuts(page, { bypass: 'disabled' })
+    expect(log.filter(entry => entry.startsWith('bypass:'))).toEqual(['bypass:to.be.visible', 'bypass:to.be.disabled'])
+  })
+
+  it.each([
+    { label: 'an offered shortcut that the spec states absent', actual: { smart: 'offered' as const }, expected: { smart: 'absent' as const }, error: 'the menu has no smart permission shortcut' },
+    { label: 'an absent shortcut that the spec states offered', actual: {}, expected: { bypass: 'offered' as const }, error: 'the menu offers the bypass permission shortcut' },
+    { label: 'an enabled shortcut that the spec states disabled', actual: { bypass: 'offered' as const }, expected: { bypass: 'disabled' as const }, error: 'the bypass permission shortcut is disabled' },
+    { label: 'a disabled shortcut that the spec states offered', actual: { smart: 'disabled' as const }, expected: { smart: 'offered' as const }, error: 'the smart permission shortcut is enabled' },
+  ])('fails for $label', async ({ actual, expected, error }) => {
+    await expect(expectPermissionShortcuts(menuWith(actual).page, expected)).rejects.toThrow(error)
+  })
+
+  it('refuses a check that states no shortcut', async () => {
+    await expect(expectPermissionShortcuts(opaqueHandle<Page>({}), {})).rejects.toThrow('at least one shortcut')
   })
 })
 

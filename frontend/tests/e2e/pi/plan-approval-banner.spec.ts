@@ -12,7 +12,6 @@ import { currentNativeAgent, nativeAgentById, nativeModelInstructionText } from 
 import { onlyObservedNativeControl, readNativeStoredControlDecision } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { listAgents } from '../helpers/subagentRegistry'
 import { openWorkspace, savedControlAnswer, sendMessage, visibleControlBanner, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 
@@ -22,7 +21,7 @@ piTest('plan-approval-banner: tracks a fresh Pi implementation session after pla
     agentProvider: provider,
     ...agentOpenOptions(agentSettings(provider)),
   })
-  const readSession = async () => (await listAgents(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, [agentId]))?.[0]?.agentSessionId ?? ''
+  const readSession = async () => (await nativeAgentById({ leapmuxServer }, agentId))?.agentSessionId ?? ''
   await expect.poll(readSession).not.toBe('')
   const originalSession = await readSession()
   expect(originalSession).not.toBe('')

@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '../fixtures'
 import { createTestDirectory } from './runDirectory'
-import { expectDecodedImageInBubble, expectMcpToolImage, expectToolRowImage, expectToolRowWithoutImage, imageInBubble, imagesForToolCall, isNamedToolResultFinished, mcpResultImage, toolResultImageForName, toolRows, writeToolImage } from './toolImages'
+import { expectDecodedImageInBubble, expectMcpToolImage, expectToolRowImage, expectToolRowWithoutImage, imageInBubble, imagesForToolCall, isNamedToolResultFinished, mcpResultImage, toolResultImageForName, writeToolImage } from './toolImages'
+import { toolRows } from './ui'
 
 type ToolLayout = 'mcp' | 'merged' | 'split'
 

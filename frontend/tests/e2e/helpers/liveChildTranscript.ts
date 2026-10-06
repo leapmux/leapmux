@@ -7,10 +7,11 @@ import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { finishCleanup, withCleanup } from './cleanup'
-import { expandNativeResultView, nativeResultBubble } from './nativeResultView'
+import { expandNativeResultView } from './nativeResultView'
+import { selectedAgentTabId } from './nativeScenario'
 import { readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import { openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
-import { assistantBubbles, messageContents, sendMessage, tabById, userBubbles } from './ui'
+import { assistantBubbles, messageContents, sendMessage, tabById, toolCallRow, toolRows, userBubbles } from './ui'
 
 /** The final child answer when the spec supplies no native final response. */
 const DEFAULT_CHILD_ANSWER = 'CHILD_LIVE_DONE'
@@ -81,13 +82,10 @@ export async function exerciseLiveChildTranscript(page: Page, modelScript: Model
   const read: MarkerRead | undefined = spec.toolProof
     ? { filePath: join(spec.toolProof.workingDir, `live-child-${spec.provider}.txt`), marker: `CHILDREAD${randomUUID().replaceAll('-', '')}` }
     : undefined
-  const parentTabID = read
-    ? await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().getAttribute('data-tab-id') ?? ''
-    : ''
-  if (read) {
-    expect(parentTabID).not.toBe('')
+  // The parent is the agent on screen before the child spawns.
+  const parentTabID = read ? await selectedAgentTabId(page) : ''
+  if (read)
     writeFileSync(read.filePath, `${read.marker}\n`)
-  }
   await withCleanup(async () => {
     await modelScript.rule(...liveChildRules(spec, gate, read))
     await modelScript.queue(
@@ -108,9 +106,9 @@ export async function exerciseLiveChildTranscript(page: Page, modelScript: Model
     await expect(userBubbles(page).filter({ hasText: spec.childTask }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: DEFAULT_CHILD_ANSWER })).toHaveCount(0)
     if (read) {
-      await expect(page.locator('[data-tool-message]:visible').filter({ hasText: basename(read.filePath) }).first()).toBeVisible()
+      await expect(toolRows(page).filter({ hasText: basename(read.filePath) }).first()).toBeVisible()
       if (spec.toolProof?.expandResult)
-        await expandNativeResultView(nativeResultBubble(page, LIVE_CHILD_READ_CALL_ID))
+        await expandNativeResultView(toolCallRow(page, LIVE_CHILD_READ_CALL_ID))
       await expect(messageContents(page).filter({ hasText: read.marker }).first()).toBeVisible()
       await tabById(page, parentTabID).click()
       await expect(messageContents(page).filter({ hasText: read.marker })).toHaveCount(0)

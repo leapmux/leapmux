@@ -27,9 +27,9 @@
 import type { ServerInfo } from './fixtures'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { cliAgentOpen, mintCLITokenForAdmin, waitForAgentTabs } from './helpers/cli'
+import { cliAgentOpen, mintCLITokenForAdmin } from './helpers/cli'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, openWorkspace, tabById } from './helpers/ui'
+import { expectAgentTabCount, loginViaToken, openWorkspace, tabById } from './helpers/ui'
 
 /**
  * Extract a CLI-token source from `leapmuxServer`. Dev mode splits
@@ -57,7 +57,7 @@ test.describe('control CLI live broadcast', () => {
     try {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
-      await waitForAgentTabs(page, 1)
+      await expectAgentTabCount(page, 1)
 
       // Drive the CLI from outside the browser. The hub broadcasts a
       // canonical-HLC-tagged `CrdtOp` on `/ws/userevents` describing the
@@ -67,7 +67,7 @@ test.describe('control CLI live broadcast', () => {
       // test here.
       const newAgentID = await cliAgentOpen(cli, { workspaceId, workerId })
       await expect(tabById(page, newAgentID)).toBeVisible()
-      await waitForAgentTabs(page, 2)
+      await expectAgentTabCount(page, 2)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -95,7 +95,7 @@ test.describe('control CLI live broadcast', () => {
         openWorkspace(pageA, workspaceId),
         openWorkspace(pageB, workspaceId),
       ])
-      await Promise.all([waitForAgentTabs(pageA, 1), waitForAgentTabs(pageB, 1)])
+      await Promise.all([expectAgentTabCount(pageA, 1), expectAgentTabCount(pageB, 1)])
 
       // CLI creates a tab; both browsers must see it via snapshot
       // reconciliation. Active-tab is purely local under the CRDT
@@ -106,7 +106,7 @@ test.describe('control CLI live broadcast', () => {
         expect(tabById(pageA, newAgentID)).toBeVisible(),
         expect(tabById(pageB, newAgentID)).toBeVisible(),
       ])
-      await Promise.all([waitForAgentTabs(pageA, 2), waitForAgentTabs(pageB, 2)])
+      await Promise.all([expectAgentTabCount(pageA, 2), expectAgentTabCount(pageB, 2)])
     }
     finally {
       await Promise.all([ctxA.close(), ctxB.close()])

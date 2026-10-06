@@ -3,8 +3,8 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { cursorTest } from '../cursor-fixtures'
 import { cursorGenerateImageToolCall } from '../helpers/providerToolCalls'
-import { expectToolRowImage, toolResultImageForName, toolRows, writeToolImage } from '../helpers/toolImages'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { expectToolRowImage, toolResultImageForName, writeToolImage } from '../helpers/toolImages'
+import { sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
 
 cursorTest('draws the native GenerateImage result before and after reload', async ({ authenticatedCursorWorkspace, page, modelScript }) => {
   const workingDir = authenticatedCursorWorkspace.workingDir

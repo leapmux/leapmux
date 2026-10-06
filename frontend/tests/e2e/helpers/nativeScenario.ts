@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
-import type { AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ServerInfo } from '../fixtures'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
@@ -53,13 +53,18 @@ export function nativeTextStep(context: NativeScenarioContext, text: string): Mo
   return context.textStep?.(text) ?? { text }
 }
 
-/** Read one actual Worker agent without using the Hub's optimistic tab list. */
-export async function nativeAgentById(
+/**
+ * Read the actual Worker agents of `agentIds`, without the Hub's optimistic tab list.
+ * The Worker lists the agents that it holds, so an ID that it does not hold is absent from the result.
+ * A failed read throws its error. Inside `expect.poll`, a thrown error starts the next attempt, and the poll reports
+ * the last error when it ends.
+ */
+export async function nativeAgentsByIds(
   context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
-  agentId: string,
-): Promise<AgentInfo | null> {
-  if (!agentId)
-    throw new Error('The native agent read requires an agent ID.')
+  agentIds: readonly string[],
+): Promise<AgentInfo[]> {
+  if (agentIds.length === 0 || agentIds.some(agentId => !agentId))
+    throw new Error('The native agent read requires one or more agent IDs, each nonempty.')
   const server = context.leapmuxServer
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const response = await channel.callWorker(
@@ -67,9 +72,20 @@ export async function nativeAgentById(
     'ListAgents',
     ListAgentsRequestSchema,
     ListAgentsResponseSchema,
-    { tabIds: [agentId] },
+    { tabIds: [...agentIds] },
   )
-  return response.agents.find(agent => agent.id === agentId) ?? null
+  return response.agents
+}
+
+/** Read one actual Worker agent without using the Hub's optimistic tab list. Return null when the Worker holds none. */
+export async function nativeAgentById(
+  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
+  agentId: string,
+): Promise<AgentInfo | null> {
+  if (!agentId)
+    throw new Error('The native agent read requires an agent ID.')
+  const agents = await nativeAgentsByIds(context, [agentId])
+  return agents.find(agent => agent.id === agentId) ?? null
 }
 
 /** Locate the selected agent tab of the visible tab bar. The tab identifies an agent. Its state is not a Worker verdict. */
@@ -77,13 +93,48 @@ export function selectedAgentTab(page: Page): Locator {
   return page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible').first()
 }
 
-/** Resolve the active tab to a successfully started native Worker agent. */
-export async function currentNativeAgent(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<AgentInfo> {
-  const tab = selectedAgentTab(context.page)
+/**
+ * Read the agent ID of the selected agent tab.
+ * The selected tab is the agent on screen. The first tab is the selected one only while the workspace has one agent.
+ */
+export async function selectedAgentTabId(page: Page): Promise<string> {
+  const tab = selectedAgentTab(page)
   await expect(tab).toBeVisible()
   const agentId = await tab.getAttribute('data-tab-id')
   if (!agentId)
-    throw new Error('The active native agent tab has no agent ID.')
+    throw new Error('The selected agent tab has no agent ID in its data-tab-id attribute.')
+  return agentId
+}
+
+/** Return the option group `groupId` of the agent's catalog, or undefined when the catalog has none. */
+export function nativeOptionGroup(agent: Pick<AgentInfo, 'optionGroups'>, groupId: string): AvailableOptionGroup | undefined {
+  return agent.optionGroups.find(group => group.id === groupId)
+}
+
+/** Return the current value of the option group `groupId`, or undefined when the catalog has no such group. */
+export function nativeOptionValue(agent: Pick<AgentInfo, 'optionGroups'>, groupId: string): string | undefined {
+  return nativeOptionGroup(agent, groupId)?.currentValue
+}
+
+/**
+ * Require `value` as the current value of the option group `groupId` of the active native agent.
+ * A catalog without the group fails with a message that states the group, not with "expected undefined".
+ */
+export async function expectNativeOptionValue(
+  context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>,
+  groupId: string,
+  value: string,
+): Promise<void> {
+  const agent = await currentNativeAgent(context)
+  const group = nativeOptionGroup(agent, groupId)
+  if (!group)
+    throw new Error(`The native catalog has no option group ${groupId}. It has ${agent.optionGroups.map(candidate => candidate.id).join(', ') || 'no group'}.`)
+  expect(group.currentValue, `the current value of the native option group ${groupId}`).toBe(value)
+}
+
+/** Resolve the active tab to a successfully started native Worker agent. */
+export async function currentNativeAgent(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<AgentInfo> {
+  const agentId = await selectedAgentTabId(context.page)
   await expect.poll(async () => (await nativeAgentById(context, agentId))?.status).toBe(AgentStatus.ACTIVE)
   const agent = await nativeAgentById(context, agentId)
   if (!agent || agent.status !== AgentStatus.ACTIVE)

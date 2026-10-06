@@ -11,10 +11,11 @@ import { decompressContentToString } from '../../../src/lib/decompress'
 import { agentOpenOptions, agentSettings } from '../agentSettings'
 import { codexTest } from '../codex-fixtures'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
+import { nativeAgentById } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexWaitAgentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { expectNoRegistryRows, listAgents, openChildTabFromRow, waitForRegistryRow } from '../helpers/subagentRegistry'
+import { expectNoRegistryRows, openChildTabFromRow, waitForRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, openWorkspace, sendMessage } from '../helpers/ui'
 
 codexTest.describe('codex subagent lifecycle', () => {
@@ -87,10 +88,7 @@ codexTest.describe('codex subagent lifecycle', () => {
     //    read-only capability. Query the worker directly for the child tab ID
     //    (the child tab propagates to the hub's ListTabs async).
     await expect.poll(async () => {
-      const agents = await listAgents(hubUrl, adminToken, workerId, [childTabId])
-      if (!agents)
-        return null
-      const child = agents.find(a => a.id === childTabId)
+      const child = await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, childTabId)
       return child && !child.acceptsMessages ? 'read-only' : null
     }).toBe('read-only')
 

@@ -8,7 +8,6 @@ kimiTest('shows the actual native completed compaction notice and preserves it a
   await exerciseManualCompaction(page, modelScript, { summaryRequestMarker: 'You are about to run out of context' })
   const notice = compactionNoticeRow(page)
   await expect(notice).toBeVisible()
-  await expect(notice).toContainText('Context compacted')
   await page.reload()
   await expect(notice).toBeVisible()
 })

@@ -1,4 +1,3 @@
-import type { Page } from '@playwright/test'
 /**
  * CLI helpers for end-to-end tests of leapmux control.
  * The launcher verifies the root leapmux binary through task build-backend once per run.
@@ -15,7 +14,6 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { expect } from '@playwright/test'
 import { TEST_ADMIN_PASSWORD } from './api'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
@@ -367,17 +365,6 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
   if (!id || typeof id !== 'string')
     throw new Error(`cliAgentOpen: missing tab_id in response: ${JSON.stringify(data)}`)
   return id
-}
-
-/**
- * Wait for `count` agent tabs to render. Dev mode boots the worker
- * subprocess lazily, so the first render after seeding can take a little
- * longer than an ordinary action; the global expect timeout in
- * `playwright.config.ts` covers it.
- */
-export async function waitForAgentTabs(page: Page, count: number) {
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]'))
-    .toHaveCount(count)
 }
 
 export class CLIError extends Error {

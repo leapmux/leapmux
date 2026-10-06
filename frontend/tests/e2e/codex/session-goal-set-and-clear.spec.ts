@@ -2,8 +2,9 @@ import { expect } from '@playwright/test'
 /** Test acknowledged native goal commands and the Worker goal state. */
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
+import { nativeAgentById } from '../helpers/nativeScenario'
 import { updateTodosToolCall } from '../helpers/providerToolCalls'
-import { countGoalTransitions, expandGoalsAndTodosSection, expectGoalStatus, goalAction, goalCard, listAgents, openGoalMenu } from '../helpers/subagentRegistry'
+import { countGoalTransitions, expandGoalsAndTodosSection, expectGoalStatus, goalAction, goalCard, openGoalMenu } from '../helpers/subagentRegistry'
 import { sendMessage, stableBox, transcriptRows, waitForAgentIdle } from '../helpers/ui'
 
 codexTest.describe('Codex session goal', () => {
@@ -117,8 +118,7 @@ codexTest.describe('Codex session goal', () => {
       .first()
       .getAttribute('data-tab-id') ?? ''
     expect(tabId).not.toBe('')
-    const agents = await listAgents(hubUrl, adminToken, workerId, [tabId])
-    const agentId = agents?.[0]?.id ?? ''
+    const agentId = (await nativeAgentById({ leapmuxServer: { hubUrl, adminToken, workerId } }, tabId))?.id ?? ''
     expect(agentId).not.toBe('')
     const transitions = async () => await countGoalTransitions(hubUrl, adminToken, workerId, agentId)
     // Five actions were performed above.

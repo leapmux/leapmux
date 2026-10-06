@@ -5,7 +5,7 @@ import { AgentGoalAction, AgentStatus, ListAgentMessagesRequestSchema, ListAgent
 import { getTestChannel } from './api'
 import { currentNativeAgent } from './nativeScenario'
 import { expandGoalsAndTodosSection, goalAction, goalsAndTodosSection, openGoalMenu } from './subagentRegistry'
-import { openPlusMenu, settingsGroupTrigger, waitForNativeSettingsHydrated } from './ui'
+import { expectPermissionShortcuts, openPlusMenu, settingsGroupTrigger, waitForNativeSettingsHydrated } from './ui'
 
 interface RelatedNativeProof {
   relatedProof: () => Promise<void>
@@ -44,14 +44,11 @@ export async function expectMissingPermissionShortcut(
   const agent = await currentNativeAgent(context)
   expect(agent.status).toBe(AgentStatus.ACTIVE)
   expect(agent.optionGroups.length).toBeGreaterThan(0)
-  const menu = await openPlusMenu(context.page)
-  await expect(menu.getByTestId(`composer-${options.preset}-permissions`)).toHaveCount(0)
-  await context.page.keyboard.press('Escape')
+  const absent = options.preset === 'smart' ? { smart: 'absent' as const } : { bypass: 'absent' as const }
+  await expectPermissionShortcuts(context.page, absent)
   await context.page.reload()
   await waitForNativeSettingsHydrated(context.page)
-  const restoredMenu = await openPlusMenu(context.page)
-  await expect(restoredMenu.getByTestId(`composer-${options.preset}-permissions`)).toHaveCount(0)
-  await context.page.keyboard.press('Escape')
+  await expectPermissionShortcuts(context.page, absent)
 }
 
 const GOAL_ACTION_WORDS = new Map<AgentGoalAction, 'set' | 'clear' | 'pause' | 'resume'>([

@@ -8,7 +8,7 @@ import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { printfMarkerCommand, quotePosixShellArgument } from '../helpers/shellArguments'
-import { assistantBubbles } from '../helpers/ui'
+import { assistantBubbles, toolCallRow } from '../helpers/ui'
 import { readGeminiToolOutput } from './toolResult'
 
 const INJECTION_REFUSAL = 'Command injection detected: command substitution syntax ($(), backticks, <() or >()) found in command arguments. On PowerShell, @() array subexpressions and $() subexpressions are also blocked. This is a security risk and the command was blocked.'
@@ -54,7 +54,7 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
       expect(output).toMatch(/\nExit Code: 7\nProcess Group PGID: [1-9]\d*\n<\/untrusted_context>$/)
     expect(existsSync(hostileFile)).toBe(false)
     expect(existsSync(join(agent.workingDir, 'command-expanded-marker'))).toBe(false)
-    const result = context.page.locator(`[data-testid="message-bubble"][data-tool-call-id="run_shell_command__${callId}"][data-tool-row-role="result"]:visible`)
+    const result = toolCallRow(context.page, `run_shell_command__${callId}`)
     const proveResult = async () => {
       await expect(result).toHaveCount(1)
       await expect(result).toHaveAttribute('data-tool-status', scenario.status)
