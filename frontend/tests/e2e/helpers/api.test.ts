@@ -26,6 +26,7 @@ import {
   sqliteTextLiteral,
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
+  waitForEmailEnabled,
   waitForNewOnlineWorkerViaAPI,
 } from './api'
 import { createTestChannelManager } from './e2e-channel'
@@ -494,6 +495,50 @@ describe('waitForNewOnlineWorkerViaAPI', () => {
     await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
     await expect(waiting).resolves.toBe('late-worker')
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('waitForEmailEnabled', () => {
+  it('reads again until the hub reports email enabled', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(Response.json({ emailEnabled: false }))
+      .mockImplementation(async () => Response.json({ emailEnabled: true }))
+    vi.stubGlobal('fetch', fetch)
+    const waiting = waitForEmailEnabled(hubUrl)
+    await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
+    await expect(waiting).resolves.toBeUndefined()
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads again after a refused read', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(new Response('settings reload', { status: 503 }))
+      .mockImplementation(async () => Response.json({ emailEnabled: true }))
+    vi.stubGlobal('fetch', fetch)
+    const waiting = waitForEmailEnabled(hubUrl)
+    await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
+    await expect(waiting).resolves.toBeUndefined()
+  })
+
+  it('states the hub reason of the last refused read when email never becomes enabled', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"code":"unavailable","message":"settings store closed"}', { status: 503 })))
+    const outcome = waitForEmailEnabled(hubUrl, API_POLL_INTERVAL_MS * 2).then(() => null, (error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS * 3)
+    const failure = await outcome
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toContain('settings store closed')
+  })
+
+  it('fails at once when a read cannot reach the hub', async () => {
+    const fetch = vi.fn(async () => {
+      throw new TypeError('fetch failed')
+    })
+    vi.stubGlobal('fetch', fetch)
+    await expect(waitForEmailEnabled(hubUrl)).rejects.toThrow('could not reach the hub (AuthService/GetSystemInfo)')
+    expect(fetch).toHaveBeenCalledOnce()
   })
 })
 

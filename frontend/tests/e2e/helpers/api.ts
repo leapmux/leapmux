@@ -90,8 +90,11 @@ export function authedHeaders(cookie: string): Record<string, string> {
 
 // ---- Hub requests ----
 
-/** One RPC of the hub, as `<Service>/<Method>` in the `leapmux.v1` package. */
-export type HubMethod = `${string}Service/${string}`
+/**
+ * One RPC of the hub, as `<Service>/<Method>` in the `leapmux.v1` package. Each service name ends with `Service`,
+ * except `UserCRDT`.
+ */
+export type HubMethod = `${string}Service/${string}` | `UserCRDT/${string}`
 
 export interface HubRequestOptions {
   /** The session cookie. An RPC that needs no session, such as Login, omits it. */
@@ -177,6 +180,57 @@ export async function callHub<T>(
   const res = await hubRequest(hubUrl, method, body, options)
   await requireHubOk(res, method, options.operation)
   return await res.json() as T
+}
+
+/** How {@link pollHub} reads the hub. */
+export interface HubPollOptions {
+  /** The limit of the wait. */
+  timeoutMs: number
+  /** The pause between two reads. The default is {@link API_POLL_INTERVAL_MS}. */
+  intervalMs?: number
+  /** What the wait expected, which the timeout error states, such as `waitForEmailEnabled: no email support`. */
+  failure: string
+  /** End the wait at once, also during a read. */
+  signal?: AbortSignal | undefined
+}
+
+/**
+ * Read the hub until `accept` returns a value that is not undefined, and return that value.
+ *
+ * A refused read does not end the wait, because the hub can refuse one read while it settles. The last refusal is the
+ * cause of the timeout error, and the message states it, so a hub that refuses every read states its reason. A read
+ * that cannot reach the hub ends the wait at once, because such a hub does not settle. An abort of `signal` ends the
+ * wait at once, also during a read.
+ */
+export async function pollHub<Answer, Value>(
+  read: (signal: AbortSignal | undefined) => Promise<Answer>,
+  accept: (answer: Answer) => Value | undefined,
+  options: HubPollOptions,
+): Promise<Value> {
+  const { signal } = options
+  const deadline = Date.now() + options.timeoutMs
+  let lastRefusal: HubCallRefusedError | undefined
+  while (true) {
+    signal?.throwIfAborted()
+    try {
+      const answer = await read(signal)
+      signal?.throwIfAborted()
+      const value = accept(answer)
+      if (value !== undefined)
+        return value
+    }
+    catch (error) {
+      signal?.throwIfAborted()
+      if (!(error instanceof HubCallRefusedError))
+        throw error
+      lastRefusal = error
+    }
+    if (Date.now() >= deadline) {
+      const refusal = lastRefusal ? `; the last refused read: ${lastRefusal.message}` : ''
+      throw new Error(`${options.failure} within ${options.timeoutMs}ms${refusal}`, { cause: lastRefusal })
+    }
+    await sleep(options.intervalMs ?? API_POLL_INTERVAL_MS, signal)
+  }
 }
 
 /** The Connect error of a refused hub response: its code, such as `unauthenticated`, and its message. */
@@ -403,19 +457,16 @@ export async function configureCaptureSmtpViaAPI(
   }))
 }
 
-/** Poll GetSystemInfo until emailEnabled reflects the staged SMTP block. */
+/**
+ * Poll GetSystemInfo until emailEnabled reflects the staged SMTP block. A refused read does not end the wait, and the
+ * timeout states the reason of the last one, as {@link pollHub} states.
+ */
 export async function waitForEmailEnabled(hubUrl: string, timeoutMs = 30_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const res = await hubRequest(hubUrl, 'AuthService/GetSystemInfo', {})
-    if (res.ok) {
-      const data = await res.json() as { emailEnabled?: boolean }
-      if (data.emailEnabled)
-        return
-    }
-    await sleep(API_POLL_INTERVAL_MS)
-  }
-  throw new Error('waitForEmailEnabled: hub never reported emailEnabled=true')
+  await pollHub(
+    () => callHub<{ emailEnabled?: boolean }>(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'waitForEmailEnabled' }),
+    data => data.emailEnabled === true ? true : undefined,
+    { timeoutMs, failure: 'waitForEmailEnabled: the hub did not report emailEnabled=true' },
+  )
 }
 
 export interface PasskeySummary {
@@ -592,10 +643,8 @@ export async function mintRegistrationKeyViaAPI(
  * Poll ListWorkers until an online worker ID appears outside the supplied before set.
  * Return that new worker ID.
  *
- * A refused read does not end the wait, because a worker can register while the hub refuses one read.
- * The last refusal becomes the cause of the timeout error, so a hub that refuses every read states its reason.
- * A read that cannot reach the hub ends the wait at once, because a hub that does not answer registers no worker.
- * An abort of `signal` ends the wait at once, also during a read.
+ * The wait follows {@link pollHub}: a worker can register while the hub refuses one read, and a hub that does not
+ * answer registers no worker. An abort of `signal` ends the wait at once, also during a read.
  */
 export async function waitForNewOnlineWorkerViaAPI(
   hubUrl: string,
@@ -604,27 +653,11 @@ export async function waitForNewOnlineWorkerViaAPI(
   timeoutMs = 30_000,
   signal?: AbortSignal,
 ): Promise<string> {
-  const deadline = Date.now() + timeoutMs
-  let lastError: unknown
-  while (true) {
-    signal?.throwIfAborted()
-    try {
-      const workers = await listWorkersViaAPI(hubUrl, cookie, signal)
-      signal?.throwIfAborted()
-      const fresh = workers.find(worker => worker.online && !before.has(worker.id))
-      if (fresh)
-        return fresh.id
-    }
-    catch (error) {
-      signal?.throwIfAborted()
-      if (!(error instanceof HubCallRefusedError))
-        throw error
-      lastError = error
-    }
-    if (Date.now() >= deadline)
-      throw new Error(`waitForNewOnlineWorkerViaAPI: no new worker came online within ${timeoutMs}ms`, { cause: lastError })
-    await sleep(API_POLL_INTERVAL_MS, signal)
-  }
+  return pollHub(
+    readSignal => listWorkersViaAPI(hubUrl, cookie, readSignal),
+    workers => workers.find(worker => worker.online && !before.has(worker.id))?.id,
+    { timeoutMs, failure: 'waitForNewOnlineWorkerViaAPI: no new worker came online', signal },
+  )
 }
 
 /**

@@ -20,11 +20,17 @@
 import { fromBinary } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
 import { WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
-import { authedHeaders } from './api'
+import { callHub, pollHub } from './api'
 
 const HTTP_TO_WS_RE = /^http/i
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
+/** How long a seeded tab can take to show in ListTabs after its batch committed. */
+const SEEDED_TAB_TIMEOUT_MS = 2_000
+
+/** The pause between two ListTabs reads of a seeded tab. */
+const SEEDED_TAB_POLL_MS = 50
 const nanoid48 = customAlphabet(ALPHABET, 48)
 
 /**
@@ -324,16 +330,13 @@ async function submitSetTabRegisterBatch(args: {
       ops,
     }],
   }
-  const resp = await fetch(`${args.hubUrl}/leapmux.v1.UserCRDT/SubmitOps`, {
-    method: 'POST',
-    headers: authedHeaders(args.cookie),
-    body: JSON.stringify(reqBody),
-  })
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`SubmitOps failed: ${resp.status} ${text}; body=${JSON.stringify(reqBody)}`)
-  }
-  const data = await resp.json() as { results?: Array<{ rejected?: unknown, committed?: unknown }> }
+  // The operation states the batch, because a refusal is about its ops and its epoch.
+  const data = await callHub<{ results?: Array<{ rejected?: unknown, committed?: unknown }> }>(
+    args.hubUrl,
+    'UserCRDT/SubmitOps',
+    reqBody,
+    { cookie: args.cookie, operation: `submitSetTabRegisterBatch(${JSON.stringify(reqBody)})` },
+  )
   if (data.results?.[0]?.rejected) {
     throw new Error(`SubmitOps batch rejected: ${JSON.stringify(data.results[0].rejected)}; body=${JSON.stringify(reqBody)}`)
   }
@@ -392,18 +395,16 @@ export async function seedTabIntoWorkspace(args: {
   // same path the frontend uses on workspace activation). If the
   // batch committed but ListTabs returns empty, projection-repair
   // dropped the tab or the rendered index wasn't written.
-  for (let i = 0; i < 40; i++) {
-    const resp = await fetch(`${args.hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
-      method: 'POST',
-      headers: authedHeaders(args.cookie),
-      body: JSON.stringify({ workspaceIds: [args.workspaceId] }),
-    })
-    if (resp.ok) {
-      const data = await resp.json() as { tabs?: Array<{ tabId: string }> }
-      if (data.tabs?.some(t => t.tabId === args.tabId))
-        return
-    }
-    await new Promise(r => setTimeout(r, 50))
-  }
-  throw new Error(`seedTabIntoWorkspace: tab ${args.tabId} not visible via ListTabs after SubmitOps committed (workspace ${args.workspaceId})`)
+  await pollHub(
+    () => callHub<{ tabs?: Array<{ tabId: string }> }>(args.hubUrl, 'WorkspaceService/ListTabs', { workspaceIds: [args.workspaceId] }, {
+      cookie: args.cookie,
+      operation: `seedTabIntoWorkspace(${args.tabId})`,
+    }),
+    data => data.tabs?.some(tab => tab.tabId === args.tabId) ? true : undefined,
+    {
+      timeoutMs: SEEDED_TAB_TIMEOUT_MS,
+      intervalMs: SEEDED_TAB_POLL_MS,
+      failure: `seedTabIntoWorkspace: tab ${args.tabId} not visible via ListTabs after SubmitOps committed (workspace ${args.workspaceId})`,
+    },
+  )
 }
