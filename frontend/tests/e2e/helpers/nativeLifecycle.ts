@@ -74,29 +74,53 @@ export function heldToolScript(paths: { workingDir: string, startedFile: string,
  */
 export type HeldModelTurnEnd = 'while-held' | 'after-answer'
 
+/** The options that both kinds of interrupted turn take. */
+interface InterruptTurnCommonOptions extends LifecyclePreparation {
+  prompt?: string
+  divider?: RegExp
+  continuation?: { prompt: string, answer: string, contextMarkers?: readonly string[] }
+}
+
+/** Interrupt a held model request. This is the default kind. */
+interface InterruptedModelTurnOptions extends InterruptTurnCommonOptions {
+  kind?: 'model'
+  /**
+   * Where the turn holds: before its response (the default), or after the
+   * first streamed text chunk. Goose 1.53.0 ends a turn on `session/cancel` only
+   * after the response stream starts. A request that still waits for its response
+   * headers runs on, and the session refuses the next prompt.
+   */
+  holdModelTurn?: 'before-response' | 'after-first-chunk'
+  /** When the runtime ends the interrupted turn. The default is `while-held`. */
+  heldModelTurnEnd?: HeldModelTurnEnd
+}
+
+/**
+ * Interrupt a running native tool.
+ * A tool turn holds the tool and not the model response, so the two model options do not apply, and the type refuses
+ * them.
+ */
+interface InterruptedToolTurnOptions extends InterruptTurnCommonOptions {
+  kind: 'tool'
+  holdModelTurn?: never
+  heldModelTurnEnd?: never
+}
+
+/** How `exerciseInterruptTurn` holds the turn that it interrupts. */
+export type InterruptTurnOptions = InterruptedModelTurnOptions | InterruptedToolTurnOptions
+
 /** Verify native interruption and a usable next turn without changing the session. */
 export async function exerciseInterruptTurn(
   context: ManagedNativeScenarioContext,
-  options: LifecyclePreparation & {
-    kind?: 'model' | 'tool'
-    /**
-     * Where a `model` turn holds: before its response (the default), or after the
-     * first streamed text chunk. Goose 1.53.0 ends a turn on `session/cancel` only
-     * after the response stream starts. A request that still waits for its response
-     * headers runs on, and the session refuses the next prompt.
-     * A `tool` turn refuses this option, because it holds the tool and not the response.
-     */
-    holdModelTurn?: 'before-response' | 'after-first-chunk'
-    /** Applies to the `model` kind only. The default is `while-held`. */
-    heldModelTurnEnd?: HeldModelTurnEnd
-    prompt?: string
-    divider?: RegExp
-    continuation?: { prompt: string, answer: string, contextMarkers?: readonly string[] }
-  } = {},
+  options: InterruptTurnOptions = {},
 ): Promise<void> {
-  if (options.heldModelTurnEnd !== undefined && options.kind === 'tool')
+  // The type refuses these combinations. The checks stay for a caller that builds its options as a wider type,
+  // because the tool branch would otherwise ignore the model options with no message. The checks read one view
+  // that is not a union, because the union narrows each comparison of `kind` to a branch that cannot hold it.
+  const requested: { kind?: string, holdModelTurn?: unknown, heldModelTurnEnd?: unknown } = options
+  if (requested.heldModelTurnEnd !== undefined && requested.kind === 'tool')
     throw new Error('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
-  if (options.holdModelTurn !== undefined && options.kind === 'tool')
+  if (requested.holdModelTurn !== undefined && requested.kind === 'tool')
     throw new Error('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
   await options.prepare?.()
   const marker = uniqueMarker()
@@ -154,6 +178,8 @@ export async function exerciseInterruptTurn(
     // already. That answer belongs to a cancelled turn, and no row may draw it.
     if (answerArrivesAfterStop)
       await expect(messageContents(context.page).filter({ hasText: `NEVERCOMPLETED${marker}` })).toHaveCount(0)
+    // The divider states that the turn ended, so the button goes with the turn, and nothing is left to press.
+    await expect(interrupt).toHaveCount(0)
     // A stop always pauses the queue, so the next prompt waits until the queue resumes.
     await resumePausedQueue(context.page)
   }

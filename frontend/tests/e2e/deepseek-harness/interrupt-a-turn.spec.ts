@@ -1,9 +1,7 @@
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
-import { nativeContext } from './scenarios'
 
-deepseekHarnessTest('cancels native model and command turns without replacing the session', async ({ authenticatedDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDeepseekHarnessWorkspace.workspaceId })
-  await exerciseInterruptTurn(context)
-  await exerciseInterruptTurn(context, { kind: 'tool' })
+deepseekHarnessTest('cancels native model and command turns without replacing the session', async ({ native }) => {
+  await exerciseInterruptTurn(native)
+  await exerciseInterruptTurn(native, { kind: 'tool' })
 })

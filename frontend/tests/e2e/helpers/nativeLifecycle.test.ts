@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { NativeResumeEvidence } from './nativeLifecycle'
+import type { InterruptTurnOptions, NativeResumeEvidence } from './nativeLifecycle'
 import type { NativeResumeIdentity, NativeResumeTexts } from './nativeResume'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
 import { stopProcess } from './process'
@@ -594,12 +594,16 @@ describe('heldToolScript', () => {
 })
 
 describe('exerciseInterruptTurn', () => {
+  // Each refused call below carries `@ts-expect-error`, so the type check fails if the option type accepts it again.
+  // The run-time check stays for a caller that builds its options as a wider type.
   it('refuses a held model turn end for an interrupted tool', async () => {
     // The check runs before the helper touches the context.
     const context = {} as ManagedNativeScenarioContext
+    // @ts-expect-error A tool turn holds the tool, so it takes no held model turn end.
     await expect(exerciseInterruptTurn(context, { kind: 'tool', heldModelTurnEnd: 'after-answer' }))
       .rejects
       .toThrow('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
+    // @ts-expect-error A tool turn holds the tool, so it takes no held model turn end.
     await expect(exerciseInterruptTurn(context, { kind: 'tool', heldModelTurnEnd: 'while-held' }))
       .rejects
       .toThrow('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
@@ -608,8 +612,22 @@ describe('exerciseInterruptTurn', () => {
   it.each(['before-response', 'after-first-chunk'] as const)('refuses the held model turn position %s for an interrupted tool', async (holdModelTurn) => {
     // The check runs before the helper touches the context. Without it, the tool branch ignores the position.
     const context = {} as ManagedNativeScenarioContext
+    // @ts-expect-error A tool turn holds the tool, so it takes no held model turn position.
     await expect(exerciseInterruptTurn(context, { kind: 'tool', holdModelTurn }))
       .rejects
       .toThrow('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
+  })
+
+  it('types the model options for a model turn only', () => {
+    // The type checker reads these checks. They do nothing at run time.
+    expectTypeOf<{ kind: 'model', holdModelTurn: 'after-first-chunk', heldModelTurnEnd: 'after-answer' }>().toExtend<InterruptTurnOptions>()
+    expectTypeOf<{ holdModelTurn: 'before-response' }>().toExtend<InterruptTurnOptions>()
+    expectTypeOf<{ kind: 'tool', prompt: string, divider: RegExp }>().toExtend<InterruptTurnOptions>()
+    expectTypeOf<{ kind: 'tool', holdModelTurn: 'after-first-chunk' }>().not.toExtend<InterruptTurnOptions>()
+    expectTypeOf<{ kind: 'tool', heldModelTurnEnd: 'while-held' }>().not.toExtend<InterruptTurnOptions>()
+  })
+
+  it('types a kind that holds either value, as a spec that loops over both kinds passes it', () => {
+    expectTypeOf<{ kind: 'model' | 'tool' }>().toExtend<InterruptTurnOptions>()
   })
 })
