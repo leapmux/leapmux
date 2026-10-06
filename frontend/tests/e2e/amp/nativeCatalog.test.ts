@@ -27,15 +27,28 @@ vi.mock('../helpers/nativeControlWatch', () => ({ watchNativeControls: calls.wat
 vi.mock('../helpers/api', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/api')>(), getTestChannel: calls.channel }))
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
-  const onePoll = new Proxy(actual.expect, {
+  /**
+   * Read until the matcher passes, at most a few times with no pause, as Playwright's poll reads again after a failed
+   * match. A read that throws ends the poll at once, as it does in Playwright.
+   */
+  const settle = async (read: () => unknown | Promise<unknown>, matches: (value: unknown) => boolean, assert: (value: unknown) => void) => {
+    let value: unknown
+    for (let attempt = 0; attempt < 5; attempt++) {
+      value = await read()
+      if (matches(value))
+        return
+    }
+    assert(value)
+  }
+  const shortPoll = new Proxy(actual.expect, {
     get: (target, property) => property === 'poll'
       ? (read: () => unknown | Promise<unknown>) => ({
-          toBe: async (expected: unknown) => expect(await read()).toBe(expected),
-          not: { toBe: async (expected: unknown) => expect(await read()).not.toBe(expected) },
+          toBe: async (expected: unknown) => settle(read, value => Object.is(value, expected), value => expect(value).toBe(expected)),
+          not: { toBe: async (expected: unknown) => settle(read, value => !Object.is(value, expected), value => expect(value).not.toBe(expected)) },
         })
       : Reflect.get(target, property),
   })
-  return { ...actual, expect: onePoll }
+  return { ...actual, expect: shortPoll }
 })
 
 function guardedHandle<T extends object>(methods: Partial<T>): T {

@@ -403,24 +403,24 @@ describe('approveNativeToolsUntil', () => {
 
   it('reads no button when the operation already completed', async () => {
     const flags: boolean[] = []
-    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => true, allowButton(flags, () => true))
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => true, { allow: allowButton(flags, () => true) })
     expect(flags).toEqual([])
   })
 
   it('allows each approval until the operation completes', async () => {
     const flags: boolean[] = []
     let clicks = 0
-    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => clicks >= 3, allowButton(flags, () => {
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => clicks >= 3, { allow: allowButton(flags, () => {
       clicks++
       return true
-    }))
+    }) })
     expect(clicks).toBe(3)
     expect(flags).toEqual([true, true, true])
   })
 
   it(`passes the limit flag after ${NATIVE_APPROVAL_LIMIT} approvals, so a further ready button fails the click`, async () => {
     const flags: boolean[] = []
-    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => flags.length > NATIVE_APPROVAL_LIMIT, allowButton(flags, () => true))
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => flags.length > NATIVE_APPROVAL_LIMIT, { allow: allowButton(flags, () => true) })
     expect(flags).toEqual([...Array.from({ length: NATIVE_APPROVAL_LIMIT }).fill(true), false])
   })
 
@@ -434,6 +434,47 @@ describe('approveNativeToolsUntil', () => {
     const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => first }))
     await approveNativeToolsUntil(page, async () => clicks >= 1)
     expect(flags).toEqual([true])
+  })
+
+  it('clicks only after the readiness check passes, and hands both callbacks the count of approvals', async () => {
+    const flags: boolean[] = []
+    const seen: string[] = []
+    let readyAfter = 2
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async (approvals) => {
+      seen.push(`completed ${approvals}`)
+      return approvals >= 1
+    }, {
+      allow: allowButton(flags, () => true),
+      ready: async (approvals) => {
+        seen.push(`ready ${approvals}`)
+        return --readyAfter <= 0
+      },
+    })
+    expect(flags).toEqual([true])
+    expect(seen.filter(entry => entry.startsWith('ready'))).toEqual(['ready 0', 'ready 0'])
+    expect(seen.at(-1)).toBe('completed 1')
+  })
+
+  it('fails with the error of the readiness check, and clicks nothing', async () => {
+    const flags: boolean[] = []
+    const failure = new Error('The native session changed before its permission decision.')
+    await expect(approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => false, {
+      allow: allowButton(flags, () => true),
+      ready: async () => {
+        throw failure
+      },
+    })).rejects.toThrow('The native session changed before its permission decision.')
+    expect(flags).toEqual([])
+  })
+
+  it('fails with the error of the completion check, such as a start before any approval', async () => {
+    const flags: boolean[] = []
+    await expect(approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async (approvals) => {
+      if (approvals === 0)
+        throw new Error('The tool started before its approval.')
+      return true
+    }, { allow: allowButton(flags, () => true) })).rejects.toThrow('The tool started before its approval.')
+    expect(flags).toEqual([])
   })
 })
 

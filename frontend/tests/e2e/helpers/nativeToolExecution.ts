@@ -55,20 +55,38 @@ export async function processNativeToolApproval(control: NativeToolApprovalOpera
 /** The most native approvals that one wait allows. A turn that asks more often than this has a defect. */
 export const NATIVE_APPROVAL_LIMIT = 16
 
+/** How {@link approveNativeToolsUntil} finds and allows a request. Each field has a default. */
+export interface NativeApprovalOptions {
+  /**
+   * The Allow button. The default is the first visible Allow button of the page: `clickNativeToolApproval` checks and
+   * clicks one button in one browser operation, so the loop reads one button. A page that shows more than one agent
+   * passes a locator that is scoped to the agent.
+   */
+  allow?: Locator
+  /**
+   * Decide before each click whether the request on the page is the one to allow. It receives the count of approvals
+   * so far. False waits and reads again, and a thrown error fails the wait. A provider proves its own facts here, such
+   * as the native session and the request frame. The default allows each request.
+   */
+  ready?: (approvals: number) => Promise<boolean>
+}
+
 /**
- * Allow each actual native approval request until `completed` reports true.
- * `allow` locates the Allow button. The default is the first visible Allow button of the page:
- * `clickNativeToolApproval` checks and clicks one button in one browser operation, so the loop reads one button.
- * A page that shows more than one agent passes a locator that is scoped to the agent.
+ * Allow each actual native approval request until `completed` reports true. `completed` receives the count of
+ * approvals so far, so it can refuse an operation that completed with no approval. A thrown error of either callback
+ * fails the wait.
  * The wait fails when the agent asks for more than {@link NATIVE_APPROVAL_LIMIT} approvals.
  */
-export async function approveNativeToolsUntil(page: Page, completed: () => Promise<boolean>, allow: Locator = controlButton(page, 'allow').first()): Promise<void> {
+export async function approveNativeToolsUntil(page: Page, completed: (approvals: number) => Promise<boolean>, options: NativeApprovalOptions = {}): Promise<void> {
+  const allow = options.allow ?? controlButton(page, 'allow').first()
   let approvals = 0
-  while (!await completed()) {
+  while (!await completed(approvals)) {
     await expect.poll(async () => {
       return processNativeToolApproval({
-        completed,
+        completed: () => completed(approvals),
         clickIfReady: async () => {
+          if (options.ready && !await options.ready(approvals))
+            return false
           const clicked = await allow.evaluateAll(clickNativeToolApproval, approvals < NATIVE_APPROVAL_LIMIT)
           if (clicked)
             approvals++
