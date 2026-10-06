@@ -243,7 +243,7 @@ describe('native build cache check', () => {
 
   it('rejects a missing build log', async () => {
     const dir = fixture()
-    await expect(readBuildLog(join(dir, 'missing.log'))).rejects.toThrow()
+    await expect(readBuildLog(join(dir, 'missing.log'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('reads carriage returns and a final line without a newline', async () => {
