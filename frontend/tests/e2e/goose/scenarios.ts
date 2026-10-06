@@ -21,9 +21,15 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
 }
 
 /**
- * The related proof of a missing-setting cell: a native to-do call fills the sidebar.
- * Goose asks before each native tool runs, so the proof applies the bypass preset first.
+ * Apply the bypass preset, so a native tool runs with no permission request.
+ * Goose asks before each native tool runs. A scenario that runs a tool and answers no request calls this
+ * function first, so this fact of the provider lives here alone.
  */
+export async function bypassToolRequests(context: Pick<ManagedNativeScenarioContext, 'page'>): Promise<void> {
+  await applyPermissionPreset(context.page, 'bypass')
+}
+
+/** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
-  await exerciseRelatedTodo(context, { prepare: () => applyPermissionPreset(context.page, 'bypass') })
+  await exerciseRelatedTodo(context, { prepare: () => bypassToolRequests(context) })
 }

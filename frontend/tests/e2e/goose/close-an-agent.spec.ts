@@ -1,7 +1,7 @@
 import { gooseTest } from '../goose-fixtures'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
-import { applyPermissionPreset } from '../helpers/ui'
+import { bypassToolRequests } from './scenarios'
 
-gooseTest('closes the native agent and its actual owned process tree', async ({ native, page }) => {
-  await exerciseCloseAgent(native, { prepare: () => applyPermissionPreset(page, 'bypass') })
+gooseTest('closes the native agent and its actual owned process tree', async ({ native }) => {
+  await exerciseCloseAgent(native, { prepare: () => bypassToolRequests(native) })
 })

@@ -5,9 +5,10 @@ import { nativeAgentById } from '../helpers/nativeScenario'
 import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { applyPermissionPreset, sendMessage, subagentReportBubble } from '../helpers/ui'
+import { sendMessage, subagentReportBubble } from '../helpers/ui'
 import { expectReadOnlySubagentReason } from '../helpers/unsupportedSubagent'
 import { gooseChildTaskMatcher, readGooseChildTaskId } from './childIdentity'
+import { bypassToolRequests } from './scenarios'
 
 /**
  * The facts of a held Goose child.
@@ -17,7 +18,7 @@ import { gooseChildTaskMatcher, readGooseChildTaskId } from './childIdentity'
 export const GOOSE_CHILD: NativeChildProfile = {
   childTask: gooseChildTaskMatcher,
   rowTitleHoldsDescription: false,
-  prepare: context => applyPermissionPreset(context.page, 'bypass'),
+  prepare: bypassToolRequests,
   resolveTaskId: (context, parentId, child) => readGooseChildTaskId(context, parentId, child.spawn.id, child.prompt),
 }
 

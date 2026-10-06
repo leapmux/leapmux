@@ -3,8 +3,9 @@ import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { applyPermissionPreset, assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { copilotChildTaskMatcher, readCopilotChildTaskId } from './childIdentity'
+import { bypassToolRequests } from './scenarios'
 
 /**
  * The facts of a held Copilot child.
@@ -14,7 +15,7 @@ import { copilotChildTaskMatcher, readCopilotChildTaskId } from './childIdentity
 export const COPILOT_CHILD: NativeChildProfile = {
   childTask: copilotChildTaskMatcher,
   rowTitleHoldsDescription: false,
-  prepare: context => applyPermissionPreset(context.page, 'bypass'),
+  prepare: bypassToolRequests,
   resolveTaskId: (context, parentId, child) => readCopilotChildTaskId(context, parentId, child.spawn.id),
 }
 

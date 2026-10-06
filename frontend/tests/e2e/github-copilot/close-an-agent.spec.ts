@@ -1,7 +1,7 @@
 import { copilotTest } from '../copilot-fixtures'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
-import { applyPermissionPreset } from '../helpers/ui'
+import { bypassToolRequests } from './scenarios'
 
-copilotTest('closes the native agent and its actual owned process tree', async ({ native, page }) => {
-  await exerciseCloseAgent(native, { prepare: () => applyPermissionPreset(page, 'bypass') })
+copilotTest('closes the native agent and its actual owned process tree', async ({ native }) => {
+  await exerciseCloseAgent(native, { prepare: () => bypassToolRequests(native) })
 })

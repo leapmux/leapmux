@@ -1,12 +1,13 @@
 import { copilotTest } from '../copilot-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
-import { applyPermissionPreset, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
+import { waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { copilotChildTaskMatcher } from './childIdentity'
+import { bypassToolRequests } from './scenarios'
 
 copilotTest('shows a child tool before the child finishes', async ({ native }) => {
   const { page } = native
-  await applyPermissionPreset(page, 'bypass')
+  await bypassToolRequests(native)
   await waitForSettingsIdle(page)
   const child = await exerciseLiveChildTranscript(native, {
     childWhen: copilotChildTaskMatcher('Run printf copilot-child-live'),

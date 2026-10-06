@@ -5,11 +5,11 @@ import { copilotTest } from '../copilot-fixtures'
 import { exerciseFileToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { editToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset } from '../helpers/ui'
+import { bypassToolRequests } from './scenarios'
 
 copilotTest('runs native freeform patches and keeps the actual file diff after reload', async ({ native }) => {
   // `writeToolCall` and `editToolCall` (`helpers/providerToolCalls.ts`) build Copilot's freeform apply_patch calls.
-  await exerciseFileToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  await exerciseFileToolExecution(native, { prepare: () => bypassToolRequests(native) })
 })
 
 copilotTest('keeps a scratch file unchanged when its native patch target is absent', async ({ authenticatedCopilotWorkspace, native }) => {
@@ -19,7 +19,7 @@ copilotTest('keeps a scratch file unchanged when its native patch target is abse
   const file = join(directory, 'native-invalid-patch.txt')
   const original = 'Keep these actual file bytes.\n'
   writeFileSync(file, original)
-  await applyPermissionPreset(native.page, 'bypass')
+  await bypassToolRequests(native)
   const { resultRequest } = await runNativeToolTurn(native, {
     toolCalls: [editToolCall(native.provider, 'invalid-native-patch', { path: file, before: 'ABSENT_PATCH_TARGET', after: 'MUST_NOT_BE_WRITTEN' })],
     prompt: 'Apply the scripted patch and report its native result.',

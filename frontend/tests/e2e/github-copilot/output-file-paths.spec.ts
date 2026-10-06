@@ -10,15 +10,15 @@ import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
 import { getGlobalState } from '../helpers/server'
-import { applyPermissionPreset } from '../helpers/ui'
 import { copilotNativeOutputPaths, copilotNativePreview, copilotOutputFileCreatorPid } from './outputFilePaths'
+import { bypassToolRequests } from './scenarios'
 
 copilotTest('keeps the native shell file path, creator owner, and exact preview Copy after reload', async ({ native, leapmuxServer }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   await captureNativeToolOutput(native, testInfo, {
     output,
     callId: 'native-github-copilot-output-path',
-    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+    prepare: () => bypassToolRequests(native),
     proof: async (capture) => {
       // The original rows of the call: their frames, their bytes, and the receipt that the frames give.
       const readCall = (snapshot: NativeMessageSnapshot) => {

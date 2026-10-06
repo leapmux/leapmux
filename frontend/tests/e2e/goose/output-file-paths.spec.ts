@@ -8,7 +8,7 @@ import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { applyPermissionPreset } from '../helpers/ui'
+import { bypassToolRequests } from './scenarios'
 import { gooseTerminalOutputFileLimit } from './terminalOutputLimit'
 
 gooseTest('records the native client terminal output limit and retains its exact output after reload', async ({ native }, testInfo) => {
@@ -16,7 +16,7 @@ gooseTest('records the native client terminal output limit and retains its exact
   await captureNativeToolOutput(native, testInfo, {
     output,
     callId: 'native-goose-output-limit',
-    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+    prepare: () => bypassToolRequests(native),
     proof: async (capture) => {
       const readLimit = (snapshot: NativeMessageSnapshot) => {
         const records = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId)
