@@ -1,16 +1,14 @@
-import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject } from '../../../src/lib/jsonPick'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
-import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { runNativeToolTurn, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
-import { checkNativeOutputReceipt, expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
+import { proveNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { zcodeCreateWorkflowToolCall, zcodeGetWorkflowRunToolCall, zcodeWorkflowSkillToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
@@ -51,22 +49,16 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   })
   const excerpt = nativeToolResult(resultRequest, callId)
   expect(excerpt).not.toContain(output.omittedMarker)
-  const readReceipt = (snapshot: NativeMessageSnapshot) => readZcodeNativeOutput(snapshot, callId, 'GetWorkflowRun')
-  const receipt = readReceipt(await readNativeMessageSnapshot(native, agent.id))
-  await testInfo.attach('zcode-native-output-path-receipt', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, runId: launch.runId, paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })
-  const { path, previewMarkers, absentMarker } = checkNativeOutputReceipt(receipt, output)
-  assertPrivateNativePath(path, getGlobalState().tmpDir)
-  assertPrivateNativePath(path, storageRoot)
-  expect(pickObject(pickObject(receipt.native, 'data'), 'state')?.input).toMatchObject({ run_id: launch.runId })
-  await proveNativeToolOutputFilePaths({
-    context: native,
-    callId,
-    previewText: receipt.previewText,
-    previewMarkers,
-    absentMarkers: [absentMarker],
-    paths: receipt.paths,
-    status: 'completed',
-    prepareView: expandNativeResultView,
-    workerProof: () => expectUnchangedNativeRecord(native, agent, readReceipt, receipt),
-  })
+  // The proof requires the declared path inside the storage directory, and the storage directory must stay inside the
+  // private run directory, so the path stays inside both.
+  assertPrivateNativePath(storageRoot, getGlobalState().tmpDir)
+  await proveNativeOutputReceipt(
+    { context: native, agent, snapshot: await readNativeMessageSnapshot(native, agent.id), nativeCallId: callId, output },
+    testInfo,
+    (snapshot, id) => readZcodeNativeOutput(snapshot, id, 'GetWorkflowRun'),
+    {
+      privateRoot: storageRoot,
+      extraProof: receipt => expect(pickObject(pickObject(receipt.native, 'data'), 'state')?.input).toMatchObject({ run_id: launch.runId }),
+    },
+  )
 })
