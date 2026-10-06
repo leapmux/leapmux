@@ -7,11 +7,17 @@ import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, waitForSettingsIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, toolRows, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * The heartbeat case checks a native CLI tool_progress event in the browser.
- * Backend and component tests cover the handler, storage, transport, and badge separately.
+ * Backend and component tests cover each part of its path separately:
+ *
+ * - The handler.
+ * - The storage.
+ * - The transport.
+ * - The badge.
+ *
  * This case checks their complete path and badge removal after the actual tool ends.
  *
  * Claude emits the first heartbeat after thirty seconds. The command must remain active past that interval.
@@ -68,18 +74,18 @@ setTimeout(() => server.close(), 180000).unref()
 
     // The setting can restart the native process. Require a real model reply after the change.
     // The chip and spinner alone do not prove that the restarted process accepts input.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
+    const answerStep = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
     await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
+    await modelScript.waitForSteps(answerStep + 1)
     await expectAssistantAnswer(page)
 
     // Script the Bash decision. The actual native command supplies the heartbeat.
-    await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'run-server', `node ${quotePosixShellArgument(script)}`)] })
+    const serverStep = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'run-server', `node ${quotePosixShellArgument(script)}`)] })
     await sendMessage(page, modelScript.prompt(`Run the Node.js integration test server at ${script} in the foreground.`))
-    await modelScript.waitForSteps(2)
+    await modelScript.waitForSteps(serverStep + 1)
     // The native tool card proves delivery. An absent failure banner can pass before the send reply arrives.
     // Visible locators exclude hidden premeasure rows.
-    await expect(page.locator('[data-tool-message]:visible').first()).toBeVisible()
+    await expect(toolRows(page).first()).toBeVisible()
 
     // Require the server's actual port file. A tool that fails immediately can still create a card without a heartbeat.
     const port = await waitForBoundPort(portFile)
@@ -89,7 +95,11 @@ setTimeout(() => server.close(), 180000).unref()
     // Use the existing native timer exception described by FIRST_HEARTBEAT_DEADLINE_MS.
     await expect(badge).toBeVisible({ timeout: FIRST_HEARTBEAT_DEADLINE_MS })
     // Keep the anchored duration format. A delayed first event can report a later heartbeat.
-    // Reject NaNs, decimal seconds, and an empty label.
+    // The format rejects each of these labels:
+    //
+    // - A NaN.
+    // - Decimal seconds.
+    // - An empty label.
     await expect(badge).toHaveText(/^\d+[dhms]( \d+[hms])*$/)
 
     // Queue the continuation before the native tool can complete and request its next model turn.
@@ -103,6 +113,6 @@ setTimeout(() => server.close(), 180000).unref()
   })
 })
 
-claudeTest('returns native shell success and failure output to the following model request', async ({ authenticatedClaudeWorkspace, page, modelScript, leapmuxServer }) => {
-  await exerciseShellToolExecution({ page, modelScript, leapmuxServer, workspaceId: authenticatedClaudeWorkspace.workspaceId, provider: AgentProvider.CLAUDE_CODE })
+claudeTest('returns native shell success and failure output to the following model request', async ({ native }) => {
+  await exerciseShellToolExecution(native)
 })

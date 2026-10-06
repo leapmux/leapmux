@@ -1,46 +1,41 @@
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
+import { expectFileDiff, nativeFileReadResult, PARITY_AFTER, PARITY_BEFORE } from '../helpers/nativeToolExecution'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, assistantBubbles, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { kimiTest, occurrences } from '../kimi-fixtures'
-
-const KIMI = AgentProvider.KIMI_CODE
+import { applyPermissionPreset, assistantBubbles, expectSettingsChip, sendMessage, toolRows, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('uses Kimi Code tools', () => {
   // Never Ask skips native tool approvals. The permissions spec tests those approvals.
-  kimiTest.beforeEach(async ({ authenticatedKimiWorkspace, page }) => {
-    void authenticatedKimiWorkspace
-    await waitForSettingsHydrated(page)
-    await applyPermissionPreset(page, 'bypass')
-    await expectSettingsChip(page, 'Never Ask')
+  kimiTest.beforeEach(async ({ native }) => {
+    await waitForSettingsHydrated(native.page)
+    await applyPermissionPreset(native.page, 'bypass')
+    await expectSettingsChip(native.page, 'Never Ask')
   })
 
-  kimiTest('an edit renders its diff, and a read renders the file', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
+  kimiTest('an edit renders its diff, and a read renders the file', async ({ authenticatedKimiWorkspace, native }) => {
+    const { page, modelScript } = native
     const path = join(createNativeToolDirectory(authenticatedKimiWorkspace.workingDir), 'parity.ts')
-    await modelScript.queue(
-      { toolCalls: [writeToolCall(KIMI, 'seed-file', { path, content: 'const parityBefore = 1\n' })] },
-      { toolCalls: [editToolCall(KIMI, 'parity-edit', { path, before: 'const parityBefore = 1', after: 'const parityAfter = 2' })] },
-      { toolCalls: [readToolCall(KIMI, 'parity-read', path)] },
-      { text: 'I changed parity.ts and read it back.' },
+    const start = await modelScript.queue(
+      { toolCalls: [writeToolCall(native.provider, 'seed-file', { path, content: `${PARITY_BEFORE}\n` })] },
+      { toolCalls: [editToolCall(native.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })] },
+      { toolCalls: [readToolCall(native.provider, 'parity-read', path)] },
+      nativeTextStep(native, 'I changed parity.ts and read it back.'),
     )
     await sendMessage(page, modelScript.prompt('Create parity.ts, change it, and read it back.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 4)
     await waitForAgentIdle(page)
 
     // The write's diff holds the old line too, so the EDIT's diff must hold both.
-    const editDiff = page.locator('[data-file-diff]:visible').filter({ hasText: 'const parityAfter = 2' }).first()
-    await expect(editDiff).toBeVisible()
-    await expect(editDiff).toContainText('const parityBefore = 1')
-    await expect(page.locator('[data-tool-message]:visible').filter({ hasText: 'parity.ts' }).first()).toBeVisible()
+    await expectFileDiff(page, { before: PARITY_BEFORE, after: PARITY_AFTER })
+    await expect(toolRows(page).filter({ hasText: 'parity.ts' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I changed parity.ts and read it back.' })).not.toHaveCount(0)
 
-    // The edit's own arguments state the new line in every later request. So the
-    // request after the read states it more often than the request before the
-    // read only when the READ's result holds it.
-    const body = async (step: number) => JSON.stringify((await modelScript.requestAt(step)).body)
-    expect(occurrences(await body(3), 'const parityAfter = 2'), 'the read returned the edited file')
-      .toBeGreaterThan(occurrences(await body(2), 'const parityAfter = 2'))
+    // The edit's own arguments state both lines in every later request, so only
+    // the read's own result can prove what the read returned. The read runs after
+    // the edit, so its result holds the new line and not the old line.
+    await nativeFileReadResult(await modelScript.requestAt(start + 3), 'parity-read', PARITY_AFTER, PARITY_BEFORE)
   })
 })

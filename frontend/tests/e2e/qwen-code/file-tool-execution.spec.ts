@@ -2,15 +2,15 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
+import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
+import { expectFileDiff, nativeFileReadResult } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsChip, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { QWEN_AGENT, qwenTest } from '../qwen-fixtures'
-
-const PROVIDER = AgentProvider.QWEN_CODE
+import { nativeContext } from './scenarios'
 
 qwenTest.describe('Qwen Code tool execution', () => {
   // YOLO, so no permission request stands between the scripted calls and the
@@ -21,26 +21,27 @@ qwenTest.describe('Qwen Code tool execution', () => {
     writeFileSync(note, 'qwen-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'YOLO')
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
     // The read comes first: Qwen refuses to edit a file this session has not read.
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'qwen-shell', 'echo "qwen-$((40 + 2))"')] },
-      { toolCalls: [readToolCall(PROVIDER, 'qwen-read', note)] },
-      { toolCalls: [editToolCall(PROVIDER, 'qwen-edit', { path: note, before: 'qwen-before', after: 'qwen-after' })] },
+    const start = await modelScript.queue(
+      { toolCalls: [bashToolCall(context.provider, 'qwen-shell', 'echo "qwen-$((40 + 2))"')] },
+      { toolCalls: [readToolCall(context.provider, 'qwen-read', note)] },
+      { toolCalls: [editToolCall(context.provider, 'qwen-edit', { path: note, before: 'qwen-before', after: 'qwen-after' })] },
       {
-        toolCalls: [updateTodosToolCall(PROVIDER, 'qwen-todos', [
+        toolCalls: [updateTodosToolCall(context.provider, 'qwen-todos', [
           { step: 'Run the shell command', status: 'completed' },
           { step: 'Edit the note', status: 'completed' },
           { step: 'Report the result', status: 'in_progress' },
         ])],
       },
-      { text: 'All four tools ran.' },
+      nativeTextStep(context, 'All four tools ran.'),
     )
     await sendMessage(page, modelScript.prompt('Run the four scripted tools, then report.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 5)
     await waitForAgentIdle(page)
 
-    const tools = page.locator('[data-tool-message]:visible')
+    const tools = toolRows(page)
     // The command text states no `qwen-42`, so only the command's own output can
     // put it in a tool row. The command body draws the output from Qwen's own
     // record rather than the sentence block Qwen gives the model.
@@ -48,14 +49,12 @@ qwenTest.describe('Qwen Code tool execution', () => {
     await expect(command).toBeVisible()
     await expect(command).not.toContainText('Process Group PGID')
     // The read row heads itself with the file, and the file's text reached the
-    // model as the read's result.
+    // model as the read's result. The read runs before the edit, so its result
+    // holds the old text and not the new text.
     await expect(tools.filter({ hasText: 'note.txt' }).first()).toBeVisible()
-    const afterRead = (await modelScript.status()).requests.find(request => request.stepIndex === 2)
-    expect(JSON.stringify(afterRead?.body)).toContain('qwen-before')
+    await nativeFileReadResult(await modelScript.requestAt(start + 2), 'qwen-read', 'qwen-before', 'qwen-after')
     // The edit's row draws its diff as its result.
-    const diff = messageBubbles(page).locator('[data-file-diff]').filter({ hasText: 'qwen-after' })
-    await expect(diff.first()).toBeVisible()
-    await expect(diff.first()).toContainText('qwen-before')
+    await expectFileDiff(page, { before: 'qwen-before', after: 'qwen-after' })
     expect(readFileSync(note, 'utf8')).toBe('qwen-after\n')
     await expect(assistantBubbles(page).filter({ hasText: 'All four tools ran.' })).toBeVisible()
 

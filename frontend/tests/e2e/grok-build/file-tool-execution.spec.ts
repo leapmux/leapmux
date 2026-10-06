@@ -1,15 +1,15 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { GROK_AGENT, grokTest } from '../grok-fixtures'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
+import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
+import { expectFileDiff, nativeFileReadResult } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-
-const PROVIDER = AgentProvider.GROK_BUILD
+import { nativeContext } from './scenarios'
 
 grokTest.describe('Grok Build tool execution', () => {
   // Always Approve, so no permission request stands between the scripted calls
@@ -24,25 +24,26 @@ grokTest.describe('Grok Build tool execution', () => {
     // The approval mode is LeapMux's own option, which the status bar does not
     // draw, so the menu states it.
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
-    await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'grok-shell', 'echo "grok-$((40 + 2))"; exit 3')] },
-      { toolCalls: [editToolCall(PROVIDER, 'grok-edit', { path: note, before: 'grok-before', after: 'grok-after' })] },
-      { toolCalls: [readToolCall(PROVIDER, 'grok-read', note)] },
+    const start = await modelScript.queue(
+      { toolCalls: [bashToolCall(context.provider, 'grok-shell', 'echo "grok-$((40 + 2))"; exit 3')] },
+      { toolCalls: [editToolCall(context.provider, 'grok-edit', { path: note, before: 'grok-before', after: 'grok-after' })] },
+      { toolCalls: [readToolCall(context.provider, 'grok-read', note)] },
       {
-        toolCalls: [updateTodosToolCall(PROVIDER, 'grok-todos', [
+        toolCalls: [updateTodosToolCall(context.provider, 'grok-todos', [
           { step: 'Run the shell command', status: 'completed' },
           { step: 'Edit the note', status: 'completed' },
           { step: 'Report the result', status: 'in_progress' },
         ])],
       },
-      { text: 'All four tools ran.' },
+      nativeTextStep(context, 'All four tools ran.'),
     )
     await sendMessage(page, modelScript.prompt('Run the four scripted tools, then report.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 5)
     await waitForAgentIdle(page)
 
-    const tools = page.locator('[data-tool-message]:visible')
+    const tools = toolRows(page)
     // The command text states no `grok-42`, so only the command's own output can
     // put it in a tool row. Grok states the exit code in its own record, and the
     // command header reads it.
@@ -50,13 +51,12 @@ grokTest.describe('Grok Build tool execution', () => {
     await expect(command).toBeVisible()
     await expect(tools.filter({ hasText: 'Error (exit 3)' }).first()).toBeVisible()
     // The read row heads itself with the file, and the file's text reached the
-    // model as the read's result.
+    // model as the read's result. The read runs after the edit, so its result
+    // holds the new text and not the old text. The edit call's own arguments
+    // hold the old text, so a check of the whole request cannot prove the read.
     await expect(tools.filter({ hasText: 'note.txt' }).first()).toBeVisible()
-    const afterRead = (await modelScript.status()).requests.find(request => request.stepIndex === 3)
-    expect(JSON.stringify(afterRead?.body)).toContain('grok-before')
-    const diff = messageBubbles(page).locator('[data-file-diff]').filter({ hasText: 'grok-after' })
-    await expect(diff.first()).toBeVisible()
-    await expect(diff.first()).toContainText('grok-before')
+    await nativeFileReadResult(await modelScript.requestAt(start + 3), 'grok-read', 'grok-after', 'grok-before')
+    await expectFileDiff(page, { before: 'grok-before', after: 'grok-after' })
     expect(readFileSync(note, 'utf8')).toBe('grok-after\n')
     await expect(assistantBubbles(page).filter({ hasText: 'All four tools ran.' })).toBeVisible()
 

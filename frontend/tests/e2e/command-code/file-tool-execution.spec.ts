@@ -8,12 +8,11 @@ import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { nativeToolResultAt, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { editToolCall, readToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { messageContents, sendMessage } from '../helpers/ui'
-import { nativeContext } from './scenarios'
+import { messageContents, sendMessage, toolCallRow } from '../helpers/ui'
 
-commandCodeTest('reads and changes actual native files and preserves the native result snippet', async ({ authenticatedCommandCodeWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCommandCodeWorkspace.workspaceId })
-  const agent = await currentNativeAgent(context)
+commandCodeTest('reads and changes actual native files and preserves the native result snippet', async ({ native }) => {
+  const { page, modelScript } = native
+  const agent = await currentNativeAgent(native)
   const directory = createNativeToolDirectory(agent.workingDir)
   const marker = uniqueMarker()
   const cases = [
@@ -26,20 +25,19 @@ commandCodeTest('reads and changes actual native files and preserves the native 
     const written = `CREATED${scenario.id}${marker}\n`
     writeFileSync(file, scenario.before)
     expect(existsSync(created)).toBe(false)
-    const stepIndex = (await modelScript.status()).stepCount
     const beforeId = `read-before-${scenario.id}`
     const editId = `edit-${scenario.id}`
     const afterId = `read-after-${scenario.id}`
     const writeId = `write-${scenario.id}`
-    await modelScript.queue(
-      { toolCalls: [readToolCall(context.provider, beforeId, file)] },
-      { toolCalls: [editToolCall(context.provider, editId, { path: file, before: scenario.requestedBefore, after: scenario.requestedAfter })] },
-      { toolCalls: [readToolCall(context.provider, afterId, file)] },
-      { toolCalls: [writeToolCall(context.provider, writeId, { path: created, content: written })] },
-      nativeTextStep(context, `The native ${scenario.id} file operations ended.`),
+    const stepIndex = await modelScript.queue(
+      { toolCalls: [readToolCall(native.provider, beforeId, file)] },
+      { toolCalls: [editToolCall(native.provider, editId, { path: file, before: scenario.requestedBefore, after: scenario.requestedAfter })] },
+      { toolCalls: [readToolCall(native.provider, afterId, file)] },
+      { toolCalls: [writeToolCall(native.provider, writeId, { path: created, content: written })] },
+      nativeTextStep(native, `The native ${scenario.id} file operations ended.`),
     )
     await sendMessage(page, modelScript.prompt(`Read and edit the ${scenario.id} file, read its current bytes, then create the second file.`))
-    await waitForNativeToolSteps(context, stepIndex + 5)
+    await waitForNativeToolSteps(native, stepIndex + 5)
     const beforeResult = await nativeToolResultAt(modelScript, stepIndex + 1, beforeId)
     expect(beforeResult).toContain(scenario.nativeBefore)
     expect(beforeResult).not.toContain(scenario.nativeAfter)
@@ -54,7 +52,7 @@ commandCodeTest('reads and changes actual native files and preserves the native 
     expect(readFileSync(file)).toEqual(Buffer.from(scenario.after))
     expect(readFileSync(created)).toEqual(Buffer.from(written))
     // The result view shows three rows until it expands, and the snippet follows the header and the blank row.
-    const editBubble = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${editId}"][data-tool-row-role="result"]:visible`)
+    const editBubble = toolCallRow(page, editId)
     for (const reloaded of [false, true]) {
       if (reloaded)
         await page.reload()

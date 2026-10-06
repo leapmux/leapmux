@@ -1,15 +1,15 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
+import { nativeTextStep } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
+import { expectFileDiff, nativeFileReadResult } from '../helpers/nativeToolExecution'
 import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, expectSettingsOptionChosen, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, sendMessage, toolRows, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { KIRO_AGENT, kiroTest } from '../kiro-fixtures'
-
-const PROVIDER = AgentProvider.KIRO
+import { nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro tool execution', () => {
   kiroTest('reads, edits and writes a file, runs a command, and keeps a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
@@ -20,33 +20,33 @@ kiroTest.describe('Kiro tool execution', () => {
     writeFileSync(note, 'kiro-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'policyPreset-allow-all')
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
-    await modelScript.queue(
-      { toolCalls: [readToolCall(PROVIDER, 'kiro-read', note)] },
-      { toolCalls: [editToolCall(PROVIDER, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' })] },
-      { toolCalls: [writeToolCall(PROVIDER, 'kiro-write', { path: created, content: 'kiro-created\n' })] },
-      { toolCalls: [bashToolCall(PROVIDER, 'kiro-shell', 'echo "kiro-$((40 + 2))"; exit 3')] },
+    const start = await modelScript.queue(
+      { toolCalls: [readToolCall(context.provider, 'kiro-read', note)] },
+      { toolCalls: [editToolCall(context.provider, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' })] },
+      { toolCalls: [writeToolCall(context.provider, 'kiro-write', { path: created, content: 'kiro-created\n' })] },
+      { toolCalls: [bashToolCall(context.provider, 'kiro-shell', 'echo "kiro-$((40 + 2))"; exit 3')] },
       {
-        toolCalls: [updateTodosToolCall(PROVIDER, 'kiro-todos', [
+        toolCalls: [updateTodosToolCall(context.provider, 'kiro-todos', [
           { step: 'Edit the note', status: 'pending' },
           { step: 'Report the result', status: 'pending' },
         ])],
       },
-      { text: 'All five tools ran.' },
+      nativeTextStep(context, 'All five tools ran.'),
     )
     await sendMessage(page, modelScript.prompt('Run the five scripted tools, then report.'))
-    await modelScript.waitForSteps()
+    await modelScript.waitForSteps(start + 6)
     await waitForAgentIdle(page)
 
-    const tools = page.locator('[data-tool-message]:visible')
+    const tools = toolRows(page)
     // The read reached the model as the read's result, and the row draws the file.
-    const afterRead = (await modelScript.status()).requests.find(request => request.stepIndex === 1)
-    expect(JSON.stringify(afterRead?.body)).toContain('kiro-before')
+    // The read runs before the edit, so its result holds the old text and not the
+    // new text.
+    await nativeFileReadResult(await modelScript.requestAt(start + 1), 'kiro-read', 'kiro-before', 'kiro-after', context.readToolResult)
     await expect(tools.filter({ hasText: 'note.txt' }).first()).toBeVisible()
     // The edit draws its diff, and the file on disk changed.
-    const diff = messageBubbles(page).locator('[data-file-diff]').filter({ hasText: 'kiro-after' })
-    await expect(diff.first()).toBeVisible()
-    await expect(diff.first()).toContainText('kiro-before')
+    await expectFileDiff(page, { before: 'kiro-before', after: 'kiro-after' })
     expect(readFileSync(note, 'utf8')).toBe('kiro-after\n')
     expect(readFileSync(created, 'utf8')).toBe('kiro-created\n')
     await expect(tools.filter({ hasText: 'created.txt' }).first()).toBeVisible()

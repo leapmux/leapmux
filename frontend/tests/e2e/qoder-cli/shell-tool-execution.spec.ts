@@ -1,59 +1,47 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { cssAttributeValue } from '../helpers/cssAttribute'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { exerciseShellToolExecution, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
+import { exerciseShellToolExecution, runNativeToolTurn, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, railedRows, sendMessage, toolCallRow } from '../helpers/ui'
 import { expect, qoderTest } from '../qoder-fixtures'
-import { nativeContext } from './scenarios'
 
 qoderTest.describe('qoder CLI tool execution', () => {
-  qoderTest('runs a Bash tool and draws its span', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
-    void authenticatedQoderWorkspace
-    const call = bashToolCall(AgentProvider.QODER, 'call-1', 'echo hi')
-    const start = await modelScript.queue({ toolCalls: [call] }, { text: 'The command ran.' })
-    await sendMessage(page, modelScript.prompt('Run echo hi.'))
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
+  qoderTest('runs a Bash tool and draws its span', async ({ native }) => {
+    const { page } = native
+    const call = bashToolCall(native.provider, 'call-1', 'echo hi')
+    await runNativeToolTurn(native, { toolCalls: [call], prompt: 'Run echo hi.', answer: 'The command ran.' })
 
     await expect(assistantBubbles(page).filter({ hasText: 'The command ran.' }).first()).toBeVisible()
-    // A tool call opens a span, and each row of the span draws its rail. data-span-columns states how many rails a
-    // row draws, and a row without a rail states zero. So a row of this call must state a nonzero count.
-    const railedRows = page.locator('[data-span-columns]:not([data-span-columns="0"]):visible')
-    await expect(railedRows.filter({ has: page.locator(`[data-tool-call-id="${cssAttributeValue(call.id)}"]`) }).first()).toBeVisible()
+    // A tool call opens a span, so a row of this call draws a rail.
+    await expect(railedRows(page).filter({ has: page.locator(`[data-tool-call-id="${cssAttributeValue(call.id)}"]`) }).first()).toBeVisible()
   })
 })
 
-qoderTest('runs successful and failed native commands with their actual output', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
-  await exerciseShellToolExecution(context)
+qoderTest('runs successful and failed native commands with their actual output', async ({ native }) => {
+  await exerciseShellToolExecution(native)
 })
 
-qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ authenticatedQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedQoderWorkspace.workspaceId })
+qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ native }) => {
+  const { page, modelScript } = native
   const proofs = [
-    { call: bashToolCall(AgentProvider.QODER, 'native-qoder-first-command', 'node -e "process.stdout.write(\'QODERFIRST\' + (40 + 2))"'), output: 'QODERFIRST42' },
-    { call: bashToolCall(AgentProvider.QODER, 'native-qoder-second-command', 'node -e "process.stdout.write(\'QODERSECOND\' + (70 + 7))"'), output: 'QODERSECOND77' },
+    { call: bashToolCall(native.provider, 'native-qoder-first-command', 'node -e "process.stdout.write(\'QODERFIRST\' + (40 + 2))"'), output: 'QODERFIRST42' },
+    { call: bashToolCall(native.provider, 'native-qoder-second-command', 'node -e "process.stdout.write(\'QODERSECOND\' + (70 + 7))"'), output: 'QODERSECOND77' },
   ]
   const calls = proofs.map(proof => proof.call)
-  const initial = await currentNativeAgent(context)
-  const start = (await modelScript.status()).stepCount
-  await modelScript.queue({ toolCalls: calls }, nativeTextStep(context, 'Both native commands finished.'))
+  const initial = await currentNativeAgent(native)
+  const start = await modelScript.queue({ toolCalls: calls }, nativeTextStep(native, 'Both native commands finished.'))
   await sendMessage(page, modelScript.prompt('Run both native Bash calls in one model response.'))
-  await waitForNativeToolSteps(context, start + 2)
-  const status = await modelScript.status()
-  const request = status.requests.find(item => item.stepIndex === start + 1)
-  expect(request).toBeDefined()
-  if (!request)
-    throw new Error('The two native Qoder calls produced no exact next model request.')
+  await waitForNativeToolSteps(native, start + 2)
+  // requestAt fails when the two calls produced no next model request.
+  const request = await modelScript.requestAt(start + 1)
   expect(request.mockCredential?.accepted).toBe(true)
-  const current = await currentNativeAgent(context)
+  const current = await currentNativeAgent(native)
   expect(current.id).toBe(initial.id)
   expect(current.agentSessionId).toBe(initial.agentSessionId)
-  const snapshot = await readNativeMessageSnapshot(context, current.id)
+  const snapshot = await readNativeMessageSnapshot(native, current.id)
   for (const { call, output } of proofs) {
     if (!isObject(call.arguments) || typeof call.arguments.command !== 'string' || !call.arguments.command.trim())
       throw new Error('The scripted Qoder Bash call requires a nonempty command.')
@@ -70,8 +58,8 @@ qoderTest('keeps two native Bash calls and their different commands and outputs'
     const input = isObject(opener[0]?.input) ? opener[0].input : undefined
     expect(input?.command).toBe(command)
     expect(result[0]?.content).toBe(output)
-    const requestRow = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${call.id}"][data-tool-row-role="request"]:visible`)
-    const resultRow = page.locator(`[data-testid="message-bubble"][data-tool-call-id="${call.id}"][data-tool-row-role="result"]:visible`)
+    const requestRow = toolCallRow(page, call.id, 'request')
+    const resultRow = toolCallRow(page, call.id)
     await expect(requestRow).toHaveCount(1)
     await expect(resultRow).toHaveCount(1)
     await expect(requestRow).toContainText(command)
