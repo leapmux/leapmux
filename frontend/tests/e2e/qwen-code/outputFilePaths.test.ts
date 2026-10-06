@@ -5,6 +5,22 @@ import { qwenModelOutputPath, qwenOutputPathCommand, qwenOutputPathReceipt } fro
 const PATH = '/native/run_shell_command_123456abcdef.output'
 const NOTICE = `Tool output was too large and has been truncated.\nThe full output has been saved to: ${PATH}\nNative preview.`
 
+/** The errors of the receipt reader, one for each check. */
+const RECEIPT_ERROR = {
+  NotFinal: 'The native Qwen receipt requires a completed or failed tool call.',
+  NoContent: 'The native Qwen result requires a content array.',
+  NoNotice: 'The native Qwen background result requires one output path notice.',
+  NoShellResult: 'The native Qwen shell result requires its original paths and preview.',
+} as const
+
+/** The errors of the model result reader, one for each check. */
+const MODEL_ERROR = {
+  InvalidArray: 'The native Qwen model result contains an invalid content array.',
+  NoBlocks: 'The native Qwen model result requires text blocks.',
+  NonText: 'The native Qwen model result contains a non-text block.',
+  NoNotice: 'The native Qwen model result requires its exact output path notice.',
+} as const
+
 function frame(patch: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     sessionUpdate: 'tool_call_update',
@@ -38,17 +54,17 @@ describe('qwenOutputPathReceipt', () => {
     expect(qwenOutputPathReceipt(native)).toEqual({ callId: 'native-path', status: 'completed', paths: [PATH], preview: NOTICE })
   })
 
-  it.each([
-    { sessionUpdate: 'tool_call' },
-    { toolCallId: '' },
-    { status: 'pending' },
-    { content: null },
-    { rawOutput: { type: 'foreign_result' } },
-    { rawOutput: { type: 'shell_result', version: 2 } },
-    { rawOutput: { type: 'shell_result', version: 1, outputFiles: [PATH, 0], output: '', error: null } },
-    { rawOutput: { type: 'shell_result', version: 1, outputFiles: ['/native/invalid\0.output'], output: '', error: null } },
-  ].map((patch, index) => ({ patch, index })))('refuses invalid native receipt $index', ({ patch }) => {
-    expect(() => qwenOutputPathReceipt(frame(patch))).toThrow()
+  it.each(([
+    [{ sessionUpdate: 'tool_call' }, RECEIPT_ERROR.NotFinal],
+    [{ toolCallId: '' }, RECEIPT_ERROR.NotFinal],
+    [{ status: 'pending' }, RECEIPT_ERROR.NotFinal],
+    [{ content: null }, RECEIPT_ERROR.NoContent],
+    [{ rawOutput: { type: 'foreign_result' } }, RECEIPT_ERROR.NoShellResult],
+    [{ rawOutput: { type: 'shell_result', version: 2 } }, RECEIPT_ERROR.NoShellResult],
+    [{ rawOutput: { type: 'shell_result', version: 1, outputFiles: [PATH, 0], output: '', error: null } }, RECEIPT_ERROR.NoShellResult],
+    [{ rawOutput: { type: 'shell_result', version: 1, outputFiles: ['/native/invalid\0.output'], output: '', error: null } }, RECEIPT_ERROR.NoShellResult],
+  ] as const).map(([patch, error], index) => ({ patch, error, index })))('refuses invalid native receipt $index', ({ patch, error }) => {
+    expect(() => qwenOutputPathReceipt(frame(patch))).toThrow(error)
   })
 })
 
@@ -58,8 +74,14 @@ describe('qwenModelOutputPath', () => {
     expect(qwenModelOutputPath(JSON.stringify([{ type: 'text', text: NOTICE }]))).toBe(PATH)
   })
 
-  it.each(['ordinary output', `prefix\n${NOTICE}`, '[]', '[broken', JSON.stringify([{ type: 'image', data: '' }])])('refuses unrelated model output %j', (value) => {
-    expect(() => qwenModelOutputPath(value)).toThrow()
+  it.each([
+    ['ordinary output', MODEL_ERROR.NoNotice],
+    [`prefix\n${NOTICE}`, MODEL_ERROR.NoNotice],
+    ['[]', MODEL_ERROR.NoBlocks],
+    ['[broken', MODEL_ERROR.InvalidArray],
+    [JSON.stringify([{ type: 'image', data: '' }]), MODEL_ERROR.NonText],
+  ])('refuses unrelated model output %j', (value, error) => {
+    expect(() => qwenModelOutputPath(value)).toThrow(error)
   })
 
   it.each([
@@ -85,21 +107,21 @@ describe('qwenModelOutputPath', () => {
     { name: 'NUL pointer', text: 'Tool output was too large and has been truncated.\nThe full output has been saved to: /native/invalid\0.output\nPreview.' },
     { name: 'missing following line', text: `Tool output was too large and has been truncated.\nThe full output has been saved to: ${PATH}` },
   ])('refuses a native $name in both packet shapes', ({ text }) => {
-    expect(() => qwenModelOutputPath(text)).toThrow()
+    expect(() => qwenModelOutputPath(text)).toThrow(MODEL_ERROR.NoNotice)
     const native = frame({ content: [{ type: 'content', content: { type: 'text', text } }] })
     delete native.rawOutput
-    expect(() => qwenOutputPathReceipt(native)).toThrow()
+    expect(() => qwenOutputPathReceipt(native)).toThrow(RECEIPT_ERROR.NoNotice)
   })
 
   it('refuses two native notice blocks in the original model packet', () => {
-    expect(() => qwenModelOutputPath(JSON.stringify([{ type: 'text', text: NOTICE }, { type: 'text', text: NOTICE }]))).toThrow()
+    expect(() => qwenModelOutputPath(JSON.stringify([{ type: 'text', text: NOTICE }, { type: 'text', text: NOTICE }]))).toThrow(MODEL_ERROR.NoNotice)
     const native = frame({ content: [NOTICE, NOTICE].map(text => ({ type: 'content', content: { type: 'text', text } })) })
     delete native.rawOutput
-    expect(() => qwenOutputPathReceipt(native)).toThrow()
+    expect(() => qwenOutputPathReceipt(native)).toThrow(RECEIPT_ERROR.NoNotice)
   })
 
   it('refuses a native notice after an unrelated model block', () => {
-    expect(() => qwenModelOutputPath(JSON.stringify([{ type: 'text', text: 'Ordinary output.' }, { type: 'text', text: NOTICE }]))).toThrow()
+    expect(() => qwenModelOutputPath(JSON.stringify([{ type: 'text', text: 'Ordinary output.' }, { type: 'text', text: NOTICE }]))).toThrow(MODEL_ERROR.NoNotice)
   })
 
   it('keeps a later pointer-shaped preview line outside the native header', () => {
@@ -126,7 +148,7 @@ describe('qwenOutputPathCommand', () => {
   })
 
   it.each([['', 0], ['invalid prefix', 0], ['PREFIX', -1], ['PREFIX', 256], ['PREFIX', 1.5]])('refuses invalid generator input %j', (prefix, code) => {
-    expect(() => qwenOutputPathCommand(String(prefix), Number(code))).toThrow()
+    expect(() => qwenOutputPathCommand(String(prefix), Number(code))).toThrow('The controlled Qwen command requires an ASCII prefix and a valid exit code.')
   })
 })
 
@@ -136,13 +158,13 @@ describe('native filesystem boundaries', () => {
     const structured = frame({ rawOutput: { type: 'shell_result', version: 1, outputFiles: [path], output: 'Native inline preview.', error: null } })
     const background = frame({ content: [{ type: 'content', content: { type: 'text', text: notice } }] })
     delete background.rawOutput
-    expect(() => qwenOutputPathReceipt(structured)).toThrow()
-    expect(() => qwenOutputPathReceipt(background)).toThrow()
-    expect(() => qwenModelOutputPath(notice)).toThrow()
+    expect(() => qwenOutputPathReceipt(structured)).toThrow(RECEIPT_ERROR.NoShellResult)
+    expect(() => qwenOutputPathReceipt(background)).toThrow(RECEIPT_ERROR.NoNotice)
+    expect(() => qwenModelOutputPath(notice)).toThrow(MODEL_ERROR.NoNotice)
   })
 
   it.each(['pending', 'in_progress', 'cancelled', 'timed_out', '', 'foreign', undefined, null])('refuses a non-final native status independently: %j', (status) => {
-    expect(() => qwenOutputPathReceipt(frame({ status }))).toThrow()
+    expect(() => qwenOutputPathReceipt(frame({ status }))).toThrow(RECEIPT_ERROR.NotFinal)
   })
 
   it.each(['cancelled', 'timed_out'])('keeps the failure preview for a native %s shell outcome', (outcome) => {

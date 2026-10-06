@@ -1,13 +1,13 @@
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 
 const path = '/owned/dsh-spill-q1W2e3/session-0123456789ab/0123456789ab-bash.txt'
 const preview = `(Output omitted. Full formatted result stored at: ${path}. Use read_file.)`
 function fixture(text = preview, callId = 'call', sessionId = 'session') {
   const frame = { type: 'tool/result', data: { message: { toolCallId: callId, content: [{ type: 'text', text }], isError: false } } }
-  return { agentId: 'agent', agentSessionId: sessionId, messages: [create(AgentChatMessageSchema, { id: 'result', spanId: callId, spanType: 'bash', agentSessionId: sessionId, content: new TextEncoder().encode(JSON.stringify(frame)), contentCompression: ContentCompression.NONE })] }
+  return nativeOutputSnapshot([{ frame, spanId: callId, spanType: 'bash' }], { agentSessionId: sessionId })
 }
 
 describe('readDeepseekHarnessNativeOutput', () => {
@@ -17,6 +17,7 @@ describe('readDeepseekHarnessNativeOutput', () => {
     const result = readDeepseekHarnessNativeOutput(snapshot, 'call')
     expect(result.paths).toEqual([path])
     expect(result.previewText).toBe(preview)
+    expect(result.blocks).toEqual([{ type: 'text', text: preview }])
     expect(result.supplement).toBeUndefined()
     expect(snapshot.messages[0]!.content).toEqual(before)
   })

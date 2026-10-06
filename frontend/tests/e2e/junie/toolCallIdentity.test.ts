@@ -26,8 +26,16 @@ describe('junieNativeOutputFileCallId', () => {
     expect(junieNativeOutputFileCallId(stored, command, workingDirectory)).toBe(id)
   })
 
-  it.each([{ agentId: '' }, { agentSessionId: '' }, { messages: [] }, { messages: [message({ ...frame, rawInput: { command: 'another-command' } })] }, { messages: [message(frame, 'foreign-span')] }, { messages: [message({ ...frame, toolCallId: '' })] }])('rejects absent or inconsistent native identity in case %#', (change) => {
-    expect(() => junieNativeOutputFileCallId({ ...snapshot(), ...change }, command, workingDirectory)).toThrow()
+  // A row of another command is no candidate, so it leaves no call. A row of the command must carry its call ID in its span.
+  it.each([
+    [{ agentId: '' }, 'requires its started native session and exact command'],
+    [{ agentSessionId: '' }, 'requires its started native session and exact command'],
+    [{ messages: [] }, 'requires one actual ACP call'],
+    [{ messages: [message({ ...frame, rawInput: { command: 'another-command' } })] }, 'requires one actual ACP call'],
+    [{ messages: [message(frame, 'foreign-span')] }, 'has inconsistent native tool identity'],
+    [{ messages: [message({ ...frame, toolCallId: '' })] }, 'has inconsistent native tool identity'],
+  ])('rejects absent or inconsistent native identity in case %#', (change, error) => {
+    expect(() => junieNativeOutputFileCallId({ ...snapshot(), ...change }, command, workingDirectory)).toThrow(error)
   })
 
   it('rejects two actual native calls that both ran the same command', () => {

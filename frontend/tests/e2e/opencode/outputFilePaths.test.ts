@@ -1,76 +1,41 @@
-import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { readOpenCodeNativeOutput } from './outputFilePaths'
+import { READER_CALL_ID, READER_PREVIEW, runNativeOutputReaderCases } from '../helpers/nativeOutputReaderCases'
+import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
+import { checkNativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
+import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from './outputFilePaths'
 
+const path = '/native/tool-output/tool_abc123'
 const frame = {
   sessionUpdate: 'tool_call_update',
-  toolCallId: 'native-call',
+  toolCallId: READER_CALL_ID,
   status: 'completed',
   rawOutput: {
-    output: 'native preview',
+    output: READER_PREVIEW,
     metadata: {
       truncated: true,
-      outputPath: '/native/tool-output/tool_abc123',
+      outputPath: path,
     },
   },
 }
-const path = '/native/tool-output/tool_abc123'
-
-function snapshot(value: unknown = frame): NativeMessageSnapshot {
-  return { agentId: 'agent', agentSessionId: 'native-session', messages: [create(AgentChatMessageSchema, {
-    id: 'native-row',
-    agentSessionId: 'native-session',
-    spanId: 'native-call',
-    contentCompression: ContentCompression.NONE,
-    content: new TextEncoder().encode(JSON.stringify(value)),
-  })] }
-}
 
 describe('readOpenCodeNativeOutput', () => {
-  it('reads the exact native path and preserves the original packet bytes', () => {
-    const input = snapshot()
-    const receipt = readOpenCodeNativeOutput(input, 'native-call')
-    expect(receipt.paths).toEqual([path])
-    expect(receipt.previewText).toContain('native preview')
-    expect(receipt.frame).toEqual(frame)
-    expect(receipt.content).toEqual(input.messages[0]?.content)
+  runNativeOutputReaderCases({ read: readOpenCodeNativeOutput, frame, path, pointerError: 'The native OpenCode result has no exact filesystem output pointer.' })
+})
+
+describe('openCodeTailWindowMarkers', () => {
+  const output = computedNativeToolOutput({ prefix: 'TAIL', lineCount: 10, padding: 0 })
+  const lines = output.text.split('\n')
+  /** The preview that OpenCode writes for a cut output: its notice, then the last lines that it captured. */
+  const preview = (from: number, to: number) => `...output truncated...\nFull output saved to: ${path}\n${lines.slice(from, to).join('\n')}`
+
+  it('accepts every tail window that a cut output can leave, the middle line and a lost end included', () => {
+    for (const [from, to] of [[3, 7], [5, 9], [8, 11], [1, 2]]) {
+      const receipt = { paths: [path], previewText: preview(from!, to!) }
+      expect(checkNativeOutputReceipt(receipt, output, openCodeTailWindowMarkers(output))).toEqual({ path, previewMarkers: ['TAIL-line-'], absentMarker: 'TAIL-line-0:', rowAbsentMarkers: ['TAIL-line-0:'] })
+    }
   })
 
-  it('refuses a different call while the original Worker span stays fixed', () => {
-    const foreign: unknown = JSON.parse(JSON.stringify(frame).replaceAll('native-call', 'foreign-call'))
-    expect(() => readOpenCodeNativeOutput(snapshot(foreign), 'native-call')).toThrow()
-  })
-
-  it.each(['', 'foreign-session'])('refuses a missing or foreign Worker session: %j', (agentSessionId) => {
-    const input = snapshot()
-    if (!input.messages[0])
-      throw new Error('The native fixture requires its original row.')
-    input.messages[0].agentSessionId = agentSessionId
-    expect(() => readOpenCodeNativeOutput(input, 'native-call')).toThrow()
-  })
-
-  it('refuses duplicate native result packets', () => {
-    const input = snapshot()
-    const row = input.messages[0]
-    if (!row)
-      throw new Error('The native fixture requires its original row.')
-    input.messages.push(row)
-    expect(() => readOpenCodeNativeOutput(input, 'native-call')).toThrow()
-  })
-
-  it.each(['https://example.com/output', 'file:///native/output', ' ', '/native/zero\0byte'])('refuses a non-filesystem pointer: %j', (invalid) => {
-    const foreign: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
-    expect(() => readOpenCodeNativeOutput(snapshot(foreign), 'native-call')).toThrow()
-  })
-
-  it('preserves the native preview when a discarded feature supplement supplies other text', () => {
-    const input = snapshot()
-    if (!input.messages[0])
-      throw new Error('The native fixture requires its original row.')
-    input.messages[0].supplementalContentCompression = ContentCompression.NONE
-    input.messages[0].supplementalContent = new TextEncoder().encode(JSON.stringify({ provider: { outputFile: { path, text: 'FORGED_FILE_BODY' } } }))
-    expect(readOpenCodeNativeOutput(input, 'native-call').previewText).not.toContain('FORGED_FILE_BODY')
+  it('refuses a preview that holds the first line, which no cut output keeps', () => {
+    expect(() => checkNativeOutputReceipt({ paths: [path], previewText: preview(0, 4) }, output, openCodeTailWindowMarkers(output))).toThrow('holds the absent line')
   })
 })

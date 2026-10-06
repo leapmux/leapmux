@@ -1,7 +1,10 @@
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression, MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
 import { junieHostTerminalPreview, junieNativeNoticePath, readJunieNativeOutputPaths } from './outputFilePaths'
+
+/** The error of the notice reader for a notice with no log path that Junie writes. */
+const NO_NOTICE_PATH = 'The Junie output notice has no unique native log path.'
 
 describe('junieNativeNoticePath', () => {
   it.each(['truncated', 'summarized'])('reads the exact native %s notice', (kind) => {
@@ -22,10 +25,10 @@ describe('junieNativeNoticePath', () => {
   })
 
   it.each(['/private/native/terminal-output-123.txt', '/private/.junie/sessions/session-current/task-current/terminal-output/foreign.txt', '/private/.junie/sessions/session-current/task-current/terminal-output/terminal-output-abc.txt'])('rejects an unrelated terminal log path %s', (path) => {
-    expect(() => junieNativeNoticePath(`[Command output exceeded the display limit and has been truncated. See full log at: ${path}. Important information]`)).toThrow()
+    expect(() => junieNativeNoticePath(`[Command output exceeded the display limit and has been truncated. See full log at: ${path}. Important information]`)).toThrow(NO_NOTICE_PATH)
   })
   it.each(['plain /private/.output.txt', '[Command output exceeded the display limit and has been truncated. See full log at: relative/.output.txt. Important information]', '[Command output exceeded the display limit and has been truncated. See full log at: /private/foreign.txt. Important information]'])('rejects an invalid native log reference %s', (text) => {
-    expect(() => junieNativeNoticePath(text)).toThrow()
+    expect(() => junieNativeNoticePath(text)).toThrow(NO_NOTICE_PATH)
   })
 })
 
@@ -35,17 +38,7 @@ const nativeFrame = { sessionUpdate: 'tool_call', toolCallId: callId, kind: 'exe
 const retained = { provider: { sessionUpdate: nativeFrame.sessionUpdate, toolCallId: callId, status: nativeFrame.status, terminals: { [callId]: { output, exitCode: 0, truncated: false } } } }
 
 function stored(frame: unknown = nativeFrame, supplement: unknown = retained) {
-  return { agentId: 'agent', agentSessionId: 'session-current', messages: [create(AgentChatMessageSchema, {
-    id: 'native-complete-row',
-    agentSessionId: 'session-current',
-    spanId: callId,
-    spanType: 'execute',
-    completion: MessageCompletion.COMPLETE,
-    contentCompression: ContentCompression.NONE,
-    content: new TextEncoder().encode(JSON.stringify(frame)),
-    supplementalContentCompression: ContentCompression.NONE,
-    supplementalContent: new TextEncoder().encode(JSON.stringify(supplement)),
-  })] }
+  return nativeOutputSnapshot([{ frame, spanId: callId, spanType: 'execute', completion: MessageCompletion.COMPLETE, supplement }], { agentSessionId: 'session-current' })
 }
 
 describe('junieHostTerminalPreview', () => {
@@ -77,15 +70,17 @@ describe('junieHostTerminalPreview', () => {
     expect(junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toBe('')
   })
 
+  // A supplement whose identity differs from the frame, or that is absent, owns no terminal of the row. A terminal of
+  // the row with an unsuccessful field reaches the field check.
   it.each([
-    { provider: { ...retained.provider, toolCallId: 'foreign' } },
-    { provider: { ...retained.provider, status: 'completed' } },
-    { provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 1, truncated: false } } } },
-    { provider: { ...retained.provider, terminals: { [callId]: { output: false, exitCode: 0, truncated: false } } } },
-    { provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0, truncated: false, signal: 'SIGTERM' } } } },
-    {},
-  ])('rejects foreign or unsuccessful native host fields %j', (supplement) => {
-    expect(() => junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toThrow()
+    [{ provider: { ...retained.provider, toolCallId: 'foreign' } }, 'requires one exact retained native terminal'],
+    [{ provider: { ...retained.provider, status: 'completed' } }, 'requires one exact retained native terminal'],
+    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 1, truncated: false } } } }, 'lacks exact successful native terminal fields'],
+    [{ provider: { ...retained.provider, terminals: { [callId]: { output: false, exitCode: 0, truncated: false } } } }, 'lacks exact successful native terminal fields'],
+    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0, truncated: false, signal: 'SIGTERM' } } } }, 'lacks exact successful native terminal fields'],
+    [{}, 'requires one exact retained native terminal'],
+  ])('rejects foreign or unsuccessful native host fields %j', (supplement, error) => {
+    expect(() => junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toThrow(error)
   })
 
   it('rejects a terminal reference that disagrees with the actual call', () => {

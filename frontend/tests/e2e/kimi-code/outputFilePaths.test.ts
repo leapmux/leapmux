@@ -61,6 +61,8 @@ describe('kimiNativeOutputPointer', () => {
     expect(() => kimiNativeOutputPointer(partial, 'native-call')).toThrow('complete output-file pointer')
   })
 
+  // The reader strips one well-formed wall time and one failure line. Text that then does not start with the complete
+  // header must hold exactly one per-line footer, so each of these reaches the error of the footer reader.
   it.each([
     `Wall time: 0.117 seconds\nWall time: 0.117 seconds\n${pointer}`,
     `Wall time: -1.000 seconds\n${pointer}`,
@@ -68,7 +70,7 @@ describe('kimiNativeOutputPointer', () => {
     `Wall time: 0.117 seconds\n<system>SUCCESS: Tool execution passed.</system>\n${pointer}`,
     `${perLinePointer}\n[Per-line truncation occurred; the complete output was saved to a file.\noutput_path: /private/other.txt\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.]`,
   ])('rejects malformed or ambiguous native envelopes and footers: %#', (text) => {
-    expect(() => kimiNativeOutputPointer(text, 'native-call')).toThrow()
+    expect(() => kimiNativeOutputPointer(text, 'native-call')).toThrow('The native Kimi result has no complete output-file pointer.')
   })
   it('reads the captured native model text-block projection', () => {
     const projected = JSON.stringify([{ type: 'text', text: pointer }])
@@ -95,11 +97,11 @@ describe('kimiNativeOutputPointer', () => {
   })
 
   it.each([
-    pointer.replace('output_size_chars: 60000', 'output_size_chars: 060000'),
-    pointer.replace('next_step: Use Read with output_path to page through the saved output, or Grep to search it.', 'next_step: wrong'),
-    pointer.replace('\nnext_step:', '\nunknown_field: printed\nnext_step:'),
-  ])('rejects a malformed complete header even when it contains a plausible path: %#', (text) => {
-    expect(() => kimiNativeOutputPointer(text, 'native-call')).toThrow()
+    [pointer.replace('output_size_chars: 60000', 'output_size_chars: 060000'), 'has an invalid full path or complete character count'],
+    [pointer.replace('next_step: Use Read with output_path to page through the saved output, or Grep to search it.', 'next_step: wrong'), 'requires its complete pointer header'],
+    [pointer.replace('\nnext_step:', '\nunknown_field: printed\nnext_step:'), 'has an unknown pointer field'],
+  ])('rejects a malformed complete header even when it contains a plausible path: %#', (text, error) => {
+    expect(() => kimiNativeOutputPointer(text, 'native-call')).toThrow(error)
   })
 
   it('accepts the optional absent byte count', () => {
@@ -119,8 +121,12 @@ describe('kimiNativeOutputPointer', () => {
     expect(() => kimiNativeOutputPointer(pointer.replace(`${field}\n`, ''), 'native-call')).toThrow('one exact')
   })
 
-  it.each(['output_size_chars: 60000', 'output_path: /private/native/task-output.txt', 'output_size_bytes: 60000'])('rejects a repeated native field %s', (field) => {
-    expect(() => kimiNativeOutputPointer(pointer.replace('\nnext_step:', `\n${field}\nnext_step:`), 'native-call')).toThrow()
+  it.each([
+    ['output_size_chars: 60000', 'requires one exact output_size_chars field'],
+    ['output_path: /private/native/task-output.txt', 'requires one exact output_path field'],
+    ['output_size_bytes: 60000', 'repeats its byte count'],
+  ])('rejects a repeated native field %s', (field, error) => {
+    expect(() => kimiNativeOutputPointer(pointer.replace('\nnext_step:', `\n${field}\nnext_step:`), 'native-call')).toThrow(error)
   })
 
   it.each(['0', '-1', '50000', '10000001', 'NaN', '9007199254740992', '60000 (only the first 50000 characters were preserved)'])('rejects an incomplete or invalid character count %s', (size) => {

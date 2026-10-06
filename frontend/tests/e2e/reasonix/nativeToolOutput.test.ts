@@ -22,7 +22,16 @@ describe('reasonixNativeOutput', () => {
     provider.rawOutput.reasonix.content = original.content[0]?.content.text ?? ''
     expect(reasonixNativeOutput(original, supplemental, 'native-call').text).toBe(text)
   })
-  it.each(['call', 'status', 'native-call', 'tool', 'omitted', 'content'])('rejects a conflicting %s result', (field) => {
+  // The identity fields of the stored record must equal the frame, the record must belong to the call and to bash, and
+  // the excerpt must be the record's text or its truncated prefix with the exact omitted count.
+  it.each([
+    ['call', 'belongs to another result'],
+    ['status', 'belongs to another result'],
+    ['native-call', 'has another tool identity'],
+    ['tool', 'has another tool identity'],
+    ['omitted', 'does not match its actual excerpt'],
+    ['content', 'does not match its actual excerpt'],
+  ])('rejects a conflicting %s result', (field, error) => {
     const { original, supplemental, provider } = fixture()
     if (field === 'call')
       provider.toolCallId = 'other'
@@ -38,7 +47,7 @@ describe('reasonixNativeOutput', () => {
       provider.rawOutput.reasonix.content = 'other content'
       provider.rawOutput.reasonix.raw_content = 'other content'
     }
-    expect(() => reasonixNativeOutput(original, supplemental, 'native-call')).toThrow()
+    expect(() => reasonixNativeOutput(original, supplemental, 'native-call')).toThrow(error)
   })
   it('does not claim a native output for complete inline output', () => {
     const { original, supplemental, text } = fixture()

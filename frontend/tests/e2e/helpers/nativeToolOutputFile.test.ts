@@ -82,7 +82,8 @@ describe('readNativeToolOutputFile', () => {
   it('rejects invalid UTF-8 without replacing its bytes', () => {
     const f = fixture('x')
     f.io.read = () => Uint8Array.from([0xFF])
-    expect(() => readNativeToolOutputFile('/private/native/result.txt', 100, f.io)).toThrow()
+    // The fatal UTF-8 decoder throws a TypeError. Each check of the reader itself throws a plain Error.
+    expect(() => readNativeToolOutputFile('/private/native/result.txt', 100, f.io)).toThrow(TypeError)
     expect(f.io.close).toHaveBeenCalledWith(0)
   })
 

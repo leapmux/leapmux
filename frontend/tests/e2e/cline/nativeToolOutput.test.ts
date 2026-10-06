@@ -10,7 +10,8 @@ describe('clineNativeOutputLimit', () => {
   it('reads the captured authoritative Worker operation when the model projection drops its notice', () => {
     const value = { version: 'v1', event: 'tool.finished', sessionId: 'session', payload: { toolCallId: 'call', toolName: 'run_commands', output: [{ query: 'command', success: true, result }] } }
     expect(clineNativeOutputLimit(JSON.stringify(value))).toBe(result)
-    expect(() => clineNativeOutputLimit(JSON.stringify({ ...value, event: 'tool.started' }))).toThrow()
+    // A frame that is not the finished Worker operation is read as the model projection, which must be the operation list.
+    expect(() => clineNativeOutputLimit(JSON.stringify({ ...value, event: 'tool.started' }))).toThrow('The Cline large command result has no exact successful native operation.')
   })
 
   it('refuses an absent notice, failed operation, or ambiguous command batch', () => {

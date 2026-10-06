@@ -155,7 +155,8 @@ describe('waitForJunieOutputFilePaths', () => {
   it.each([null, false, 0, '', []])('does not retry strict rejection of a present malformed pointer: %j', async (pointer) => {
     const reader = vi.spyOn(outputReaders, 'readJunieNativeOutputPaths')
     const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(completedFrame(), { provider: providerReceipt(pointer) })).mockResolvedValueOnce(snapshot())
-    await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow()
+    // A present pointer ends the wait, and the strict reader then refuses a pointer that is no object.
+    await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow('The Junie path receipt differs from its native command, session, or exit owner.')
     expect(readSnapshot).toHaveBeenCalledOnce()
     expect(reader).toHaveBeenCalledOnce()
   })
@@ -183,14 +184,16 @@ describe('waitForJunieOutputFilePaths', () => {
     expect(readSnapshot).toHaveBeenCalledOnce()
   })
 
+  // The readiness check refuses a row of another call or tool kind. A ready row with a failed exit or no output text
+  // reaches the strict reader.
   it.each([
-    { label: 'call', frame: { ...completedFrame(), toolCallId: 'foreign-call' } },
-    { label: 'tool kind', frame: { ...completedFrame(), kind: 'read' } },
-    { label: 'exit', frame: { ...completedFrame(), _meta: { terminal_exit: { terminal_id: owner.callId, exit_code: 7, signal: null } } } },
-    { label: 'output', frame: { ...completedFrame(), rawOutput: { output: false } } },
-  ])('does not retry malformed completed native $label fields', async ({ frame }) => {
+    { label: 'call', frame: { ...completedFrame(), toolCallId: 'foreign-call' }, error: 'The Junie output path row has a different native call identity.' },
+    { label: 'tool kind', frame: { ...completedFrame(), kind: 'read' }, error: 'The Junie completed row has a different native tool kind.' },
+    { label: 'exit', frame: { ...completedFrame(), _meta: { terminal_exit: { terminal_id: owner.callId, exit_code: 7, signal: null } } }, error: 'The Junie path receipt differs from its native command, session, or exit owner.' },
+    { label: 'output', frame: { ...completedFrame(), rawOutput: { output: false } }, error: 'The Junie path receipt differs from its native command, session, or exit owner.' },
+  ])('does not retry malformed completed native $label fields', async ({ frame, error }) => {
     const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(frame)).mockResolvedValueOnce(snapshot())
-    await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow()
+    await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow(error)
     expect(readSnapshot).toHaveBeenCalledOnce()
   })
 
