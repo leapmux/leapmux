@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { currentNativeAgent, managedNativeContext, nativeModelLastUserText } from '../helpers/nativeScenario'
+import { currentNativeAgent, managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { writeToolCall } from '../helpers/providerToolCalls'
@@ -53,12 +53,12 @@ export async function exerciseGeminiAutoEditWrite(context: ManagedNativeScenario
 
 /**
  * Prove the installed ACP command catalog does not compact this conversation.
- * Gemini CLI sends the command alone as the last user text of its Google model request.
+ * Gemini CLI sends the command alone as the last user text of its Google model request, which the shared scenario
+ * requires.
  */
 export async function exerciseNativeCompactCommandLimit(context: ManagedNativeScenarioContext): Promise<void> {
   const { request } = await exerciseCompactAsModelText(context)
   expect(request.protocol).toBe('google-generative-language')
-  expect(nativeModelLastUserText(request)).toBe('/compact')
 }
 
 /** The related proof of a missing-setting cell: the native model answers one marked prompt. */

@@ -27,7 +27,7 @@ export async function expectNoCompactionNotice(
 export interface CompactAsModelTextOptions {
   /**
    * Send the command with the scenario marker on its last line, so the mock routes the command request by the
-   * command itself and not by the earlier turns. The last user text then holds the command and the marker.
+   * command itself and not by the earlier turns. The last user text must then be the command and the marker, exactly.
    */
   markCommand?: boolean
   /** Read the last user text of a request of the provider. The default reads a generic model API request. */
@@ -62,12 +62,15 @@ export async function exerciseCompactAsModelText(context: NativeScenarioContext,
   const first = await sendNativeAnswer(context, prompt, answer)
   const reply = `The slash command reached the model as text: REPLY${marker}.`
   const start = await modelScript.queue(nativeTextStep(context, reply))
-  await sendMessage(page, options.markCommand ? modelScript.prompt('/compact') : '/compact')
+  const command = options.markCommand ? modelScript.prompt('/compact') : '/compact'
+  await sendMessage(page, command)
   await modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(page)
   // Read the record after the turn, because a native client states more of its request later.
   const request = await modelScript.requestAt(start)
-  expect((options.lastUserText ?? nativeModelLastUserText)(request), 'the last user text of the command request').toContain('/compact')
+  // The whole last user text is the sent command. A substring check would also pass when the command reaches the
+  // model only quoted inside other text.
+  expect((options.lastUserText ?? nativeModelLastUserText)(request), 'the last user text of the command request').toBe(command)
   const modelContext = nativeScenarioModelContextText(context, request)
   expect(modelContext).toContain(prompt)
   expect(modelContext).toContain(answer)

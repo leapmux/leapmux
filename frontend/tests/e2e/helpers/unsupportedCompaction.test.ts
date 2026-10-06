@@ -48,6 +48,8 @@ interface SimulatedAgentOptions {
   nativeCommand?: boolean
   /** The agent starts a new conversation for the command. */
   dropsHistory?: boolean
+  /** The agent sends the command inside more text, as a task envelope does. */
+  wrapsCommand?: boolean
 }
 
 /** A model script and a native agent that sends each message to the model with its whole history. */
@@ -62,7 +64,9 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): ModelScript {
   agent.send = (text) => {
     if (options.dropsHistory && text.startsWith('/compact'))
       history = []
-    const userText = options.nativeCommand && text.startsWith('/compact') ? 'Summarize the conversation.' : text
+    const userText = options.nativeCommand && text.startsWith('/compact')
+      ? 'Summarize the conversation.'
+      : options.wrapsCommand && text.startsWith('/compact') ? `<task>\n${text}\n</task>` : text
     history.push({ role: 'user', content: userText })
     requests.push({ stepIndex: nextStep, protocol: 'openai-chat-completions', body: { messages: [...history] } } as unknown as MockModelRequestRecord)
     const reply = steps[nextStep++]?.text ?? ''
@@ -117,13 +121,26 @@ describe('exerciseCompactAsModelText', () => {
   })
 
   it('reads the last user text through the reader of the provider', async () => {
-    const reader = vi.fn(() => 'the provider prompt holds /compact')
+    const reader = vi.fn(() => '/compact')
     await exerciseCompactAsModelText(context(simulatedAgent()), { lastUserText: reader })
     expect(reader).toHaveBeenCalledTimes(1)
   })
 
   it('fails when the command reaches the model as another text', async () => {
     await expect(exerciseCompactAsModelText(context(simulatedAgent({ nativeCommand: true }))))
+      .rejects
+      .toThrow('the last user text of the command request')
+  })
+
+  it('fails when the last user text holds more than the command', async () => {
+    await expect(exerciseCompactAsModelText(context(simulatedAgent({ wrapsCommand: true }))))
+      .rejects
+      .toThrow('the last user text of the command request')
+  })
+
+  it('fails when the reader of the provider reads more than the marked command', async () => {
+    const reader = vi.fn(() => 'Context: /compact\n\nMARKER')
+    await expect(exerciseCompactAsModelText(context(simulatedAgent()), { markCommand: true, lastUserText: reader }))
       .rejects
       .toThrow('the last user text of the command request')
   })
