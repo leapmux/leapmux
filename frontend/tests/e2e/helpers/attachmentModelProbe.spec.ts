@@ -45,12 +45,15 @@ async function webpFromFixture(probe: Page, source: string): Promise<string> {
   }, readFileSync(source).toString('base64'))
 }
 
+/** The refusal of a request whose current user turn holds no typed PDF part with the source bytes. */
+const NO_PDF_PART = 'carries no typed PDF part with the exact source bytes'
+
 test.describe('expectNativeAttachmentProof', () => {
   test('rejects a PDF marker without exact native PDF handoff', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf', 'marker-only.pdf')
       const status = scriptedStatus({ messages: [{ role: 'user', content: 'LEAPMUX_PDF_PAGE_49' }] })
-      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow()
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow(NO_PDF_PART)
     })
   })
 
@@ -60,7 +63,7 @@ test.describe('expectNativeAttachmentProof', () => {
       const image = writeAttachmentFixture('image', 'unrelated-image.png')
       const raster = `data:image/png;base64,${readFileSync(image).toString('base64')}`
       const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: raster } }] }] })
-      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow()
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow(NO_PDF_PART)
     })
   })
 
@@ -68,7 +71,7 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf', 'plain-text-bytes.pdf')
       const status = scriptedStatus({ messages: [{ role: 'user', content: readFileSync(source).toString('base64') }] })
-      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow()
+      await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow(NO_PDF_PART)
     })
   })
 
@@ -262,9 +265,11 @@ test.describe('expectNoRejectedContent', () => {
     const bytes = readFileSync(source).toString('base64')
     await expectNoRejectedContent(page, scriptedStatus({ messages: [{ role: 'user', content: 'Reply once without attachments.' }] }), [source])
     const hiddenBytes = expectNoRejectedContent(page, scriptedStatus({ messages: [{ role: 'user', content: `Reply once without attachments. ${bytes}` }] }), [source])
-    await expect(hiddenBytes).rejects.toThrow()
+    // Playwright's `expect` fails with the result of the matcher: `not.toContain` failed for the bytes, and then for
+    // the file name.
+    await expect(hiddenBytes).rejects.toMatchObject({ matcherResult: { name: 'toContain', pass: true, message: expect.stringContaining(bytes) } })
     const hiddenName = expectNoRejectedContent(page, scriptedStatus({ messages: [{ role: 'user', content: 'Reply once without attachments. refused.bin' }] }), [source])
-    await expect(hiddenName).rejects.toThrow()
+    await expect(hiddenName).rejects.toMatchObject({ matcherResult: { name: 'toContain', pass: true, message: expect.stringContaining('refused.bin') } })
   })
 
   test('rejects binary bytes hidden in the clean request system field', async ({ page }) => {
