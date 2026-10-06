@@ -13,7 +13,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
 
 // The mock scripts the actual native question tool. The banner must show these exact options.
 
@@ -373,7 +373,7 @@ claudeTest.describe('Control Request Draft Persistence', () => {
     await waitForEditorDraft(page, leapmuxServer.adminUserId, 'conversation draft text')
 
     // Clear the editor and send a message to trigger AskUserQuestion.
-    await page.keyboard.press('Meta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
     await page.keyboard.press('Backspace')
     await askColor(page, modelScript)
 

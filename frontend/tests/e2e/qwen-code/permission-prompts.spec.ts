@@ -6,7 +6,7 @@ import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectDeclinedToolRow } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { answerControl, assistantBubbles, enterControlFeedback, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, toolCallRow, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, assistantBubbles, enterControlFeedback, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, PLATFORM_MOD, sendMessage, toolCallRow, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 import { openProviderAgent } from '../helpers/workspace'
 import { qwenTest } from '../qwen-fixtures'
@@ -42,7 +42,7 @@ qwenTest.describe('Qwen Code control requests', () => {
     // The reason ends the rejected turn and opens the next one, which answers it.
     const next = await modelScript.queue({ text: 'I will not create the second file.' })
     await enterControlFeedback(page, reason)
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(banner).toHaveCount(0)
     await modelScript.waitForSteps(next + 1)
     await waitForAgentIdle(page)

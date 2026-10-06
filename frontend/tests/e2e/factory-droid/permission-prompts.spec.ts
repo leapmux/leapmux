@@ -7,7 +7,7 @@ import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { editToolCall } from '../helpers/providerToolCalls'
-import { answerControl, assistantBubbles, enterControlFeedback, expectNoControlBanner, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, assistantBubbles, enterControlFeedback, expectNoControlBanner, PLATFORM_MOD, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 import { nativeDroidCallId } from './toolResult'
 
@@ -83,7 +83,7 @@ droidTest.describe('Factory Droid control requests', () => {
     await expect(banner).toContainText('Edit')
     // The composer's send is a denial that carries the typed text as its reason.
     await enterControlFeedback(page, reason)
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(banner).toHaveCount(0)
 
     await modelScript.waitForSteps(start + 2)

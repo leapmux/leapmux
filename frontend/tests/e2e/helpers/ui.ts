@@ -260,7 +260,7 @@ export async function sendMessage(page: Page, text: string, entry: MessageEntry 
   const sent = await editor.elementHandle()
   try {
     await enterMessageText(page, text, entry)
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
     await expect.poll(() => sent.evaluate(element => element.textContent ?? ''), {
       message: 'the composer that received the message must clear after the send',

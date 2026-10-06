@@ -18,14 +18,7 @@ function siteKey(path: string, enclosingFunction = ''): string {
  * Windows: press `PLATFORM_MOD` there, and delete the entry. An entry that matches no site fails the guard, so a
  * converted site takes its entry with it.
  */
-const UNCONVERTED: ReadonlySet<string> = new Set([
-  siteKey('helpers/ui.ts', 'sendMessage'),
-  siteKey('helpers/nativePermission.ts', 'exerciseAllowThenFeedbackRejection'),
-  siteKey('claude-code/agent-questions.spec.ts'),
-  siteKey('claude-code/plan-approval-banner.spec.ts'),
-  siteKey('factory-droid/permission-prompts.spec.ts'),
-  siteKey('qwen-code/permission-prompts.spec.ts'),
-])
+const UNCONVERTED: ReadonlySet<string> = new Set()
 
 /** Analyze sources keyed by a path below a fixed root. */
 function analyze(files: Record<string, string>) {

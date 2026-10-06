@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
+import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, PLATFORM_MOD, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
 import { CLAUDE_AGENT } from './scenarios'
 
@@ -165,7 +165,7 @@ claudeTest.describe('plan mode - bypass permissions', () => {
     await expect(control('control-permissions-pill-group')).toHaveCount(0)
 
     // Clear the editor
-    await page.keyboard.press('Meta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
     await page.keyboard.press('Backspace')
 
     // Reject and Approve visible again

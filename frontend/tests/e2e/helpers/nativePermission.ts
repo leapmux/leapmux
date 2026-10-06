@@ -18,7 +18,7 @@ import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { answerControl, assistantBubbles, enterControlFeedback, messageBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, enterControlFeedback, messageBubbles, openWorkspace, PLATFORM_MOD, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
 export interface NativePermissionOperationPlan {
@@ -166,7 +166,7 @@ export async function exerciseAllowThenFeedbackRejection(context: NativeScenario
   expect(existsSync(approved)).toBe(true)
   // Text in the composer turns the decision into a refusal with that text, and the send key answers the request.
   await enterControlFeedback(context.page, reason)
-  await context.page.keyboard.press('Meta+Enter')
+  await context.page.keyboard.press(`${PLATFORM_MOD}+Enter`)
   await expect(banner).toHaveCount(0)
   await context.modelScript.waitForSteps(start + 3)
   await waitForAgentIdle(context.page)
