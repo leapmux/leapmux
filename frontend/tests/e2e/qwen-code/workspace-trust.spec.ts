@@ -1,29 +1,26 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect } from '@playwright/test'
 import { qwenExtractControl } from '../../../src/components/chat/providers/qwen/extractControl'
-import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { nativeModelInstructionText } from '../helpers/nativeScenario'
-import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
+import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration } from '../helpers/nativeWorkspaceTrustLimit'
 import { qwenTest } from '../qwen-fixtures'
 
 qwenTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-default', classify: qwenExtractControl })
 })
 
+/** The context file of the project. Qwen Code reads no file of this name unless its project settings give the name. */
+const PROJECT_CONTEXT = 'native-project-context.md'
+
 qwenTest('loads project context configuration without a workspace trust decision', async ({ native }) => {
+  const context = instructionFileConfiguration(PROJECT_CONTEXT)
   await exerciseNativeWorkspaceTrustLimit(native, {
     projectConfiguration: {
-      prepare: ({ directory, marker }) => {
-        const filename = `context-${marker}.md`
-        mkdirSync(join(directory, '.qwen'), { recursive: true })
-        writeFileSync(join(directory, '.qwen', 'settings.json'), JSON.stringify({ context: { fileName: filename } }))
-        writeFileSync(join(directory, filename), `Project context: ${marker}.\n`)
+      prepare: (project) => {
+        context.prepare(project)
+        mkdirSync(join(project.directory, '.qwen'), { recursive: true })
+        writeFileSync(join(project.directory, '.qwen', 'settings.json'), JSON.stringify({ context: { fileName: PROJECT_CONTEXT } }))
       },
-      prove: async (privateContext, { marker }) => {
-        const request = await sendNativeAnswer(privateContext, 'Reply once under the project context configuration.', 'The project context turn completed.')
-        expect(nativeModelInstructionText(request)).toContain(marker)
-      },
+      prove: context.prove,
     },
   })
 })
