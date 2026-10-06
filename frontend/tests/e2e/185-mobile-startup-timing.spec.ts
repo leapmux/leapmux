@@ -6,12 +6,7 @@
 import type { CDPSession } from '@playwright/test'
 import type { StartupReport } from './helpers/startupTiming'
 import { expect, test } from './fixtures'
-import {
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
-  openAgentViaAPI,
-} from './helpers/api'
-import { finishCleanup, withCleanup } from './helpers/cleanup'
+import { withCleanup } from './helpers/cleanup'
 import {
   attachResponseSizeListener,
   buildPhaseMarks,
@@ -32,15 +27,11 @@ test.describe('mobile LTE cold-start timing', () => {
 
   test.use(COARSE_POINTER_METRICS)
 
-  test('traces phase + byte ranking before shell_visible', async ({ page, leapmuxServer: srv }, testInfo) => {
-    const workspaceId = await createWorkspaceViaAPI(
-      srv.hubUrl,
-      srv.adminToken,
-      `startup-${Date.now()}`,
-    )
+  // The `workspace` fixture gives the app a workspace with an agent to boot into, and deletes it after the test.
+  test('traces phase + byte ranking before shell_visible', async ({ page, leapmuxServer: srv, workspace }, testInfo) => {
+    void workspace
     let cdp: CDPSession | undefined
     await withCleanup(async () => {
-      await openAgentViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
       cdp = await installNetworkThrottle(page, LTE_NETWORK_PROFILE)
       await loginViaToken(page, srv.adminToken)
       await installStartupObservers(page)
@@ -112,9 +103,8 @@ test.describe('mobile LTE cold-start timing', () => {
       // The classifier assigns each URL before the shell to a declared bucket.
       for (const r of resources.filter(x => x.beforeShell))
         expect(STARTUP_BUCKETS, r.url).toContain(r.bucket)
-    }, () => finishCleanup([
-      deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId),
-      cdp?.detach() ?? Promise.resolve(),
-    ]))
+    }, async () => {
+      await cdp?.detach()
+    })
   })
 })

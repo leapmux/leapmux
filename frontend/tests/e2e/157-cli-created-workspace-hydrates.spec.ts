@@ -10,68 +10,51 @@
  */
 
 import { expect, test } from './fixtures'
-import {
-  createWorkspaceViaAPI,
-  deleteWorkspaceViaAPI,
-  openAgentViaAPI,
-} from './helpers/api'
 import { cliAgentOpen, mintCLITokenForAdmin, runCLI } from './helpers/cli'
-import { loginViaToken, openWorkspace, tabById, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
+import { tabById, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './helpers/ui'
 
 /** The label a tab carries only once its agent record has arrived. */
 const HYDRATED_AGENT_LABEL = /^Agent .+/
 
 test.describe('cli-created workspace hydrates', () => {
-  test('an agent the CLI opens in a workspace created after page load still hydrates', async ({ page, leapmuxServer }) => {
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const cli = await mintCLITokenForAdmin(leapmuxServer)
-
+  // The test deletes no workspace. The per-test reset of the fixtures deletes every workspace before the next test,
+  // the one that the CLI creates included, and reports a failed delete.
+  test('an agent the CLI opens in a workspace created after page load still hydrates', async ({ page, leapmuxServer, authenticatedWorkspace }) => {
     // Workspace ONE exists before the browser starts, so the page has somewhere
     // to land and opens its worker channel while only this workspace exists.
-    const first = await createWorkspaceViaAPI(hubUrl, adminToken, `access-first-${Date.now()}`)
-    let second: string | undefined
-    try {
-      const firstAgentId = await openAgentViaAPI(hubUrl, adminToken, workerId, first)
-      await loginViaToken(page, adminToken)
-      await openWorkspace(page, first)
-      // This agent hydrating is what proves the browser holds an OPEN channel to
-      // the worker -- the precondition the whole spec rests on.
-      await expect(tabById(page, firstAgentId)).toHaveText(HYDRATED_AGENT_LABEL)
+    // The fixture creates it with its agent, signs in, and shows it.
+    // This agent hydrating is what proves the browser holds an OPEN channel to
+    // the worker -- the precondition the whole spec rests on.
+    await expect(tabById(page, authenticatedWorkspace.agentId)).toHaveText(HYDRATED_AGENT_LABEL)
 
-      // Workspace TWO comes from the CLI, with the page already up. The
-      // browser's channel was opened before it existed.
-      const created = await runCLI(cli, [
-        'workspace',
-        'create',
-        '--title',
-        `access-cli-${Date.now()}`,
-      ]) as { workspace_id?: string } | null
-      second = created?.workspace_id
-      expect(second, 'the CLI reported the new workspace id').toBeTruthy()
-      const agentId = await cliAgentOpen(cli, { workspaceId: second!, workerId })
+    // Workspace TWO comes from the CLI, with the page already up. The
+    // browser's channel was opened before it existed.
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const created = await runCLI(cli, [
+      'workspace',
+      'create',
+      '--title',
+      `access-cli-${Date.now()}`,
+    ]) as { workspace_id?: string } | null
+    const second = created?.workspace_id
+    if (!second)
+      throw new Error('The CLI reported no ID for the workspace that it created.')
+    const agentId = await cliAgentOpen(cli, { workspaceId: second, workerId: leapmuxServer.workerId })
 
-      // Switch workspaces by clicking the sidebar -- a client-side transition.
-      const row = workspaceRow(page, second!)
-      await expect(row, 'the new workspace reaches the sidebar over /ws/userevents').toBeVisible()
-      await workspaceRowTitle(page, second!).click()
-      await expect(row).toHaveAttribute('data-active', 'true')
-      await waitForWorkspaceReady(page)
+    // Switch workspaces by clicking the sidebar -- a client-side transition.
+    const row = workspaceRow(page, second)
+    await expect(row, 'the new workspace reaches the sidebar over /ws/userevents').toBeVisible()
+    await workspaceRowTitle(page, second).click()
+    await expect(row).toHaveAttribute('data-active', 'true')
+    await waitForWorkspaceReady(page)
 
-      // The tab projects from the CRDT whether or not it can be hydrated, so its
-      // presence proves nothing on its own; its LABEL is the hydration signal.
-      const tab = tabById(page, agentId)
-      await expect(tab).toBeVisible()
-      await expect(
-        tab,
-        'a bare "Agent" here means the already-open channel could not serve the CLI-made workspace',
-      ).toHaveText(HYDRATED_AGENT_LABEL)
-    }
-    finally {
-      for (const id of [first, second]) {
-        if (!id)
-          continue
-        await deleteWorkspaceViaAPI(hubUrl, adminToken, id).catch(() => {})
-      }
-    }
+    // The tab projects from the CRDT whether or not it can be hydrated, so its
+    // presence proves nothing on its own; its LABEL is the hydration signal.
+    const tab = tabById(page, agentId)
+    await expect(tab).toBeVisible()
+    await expect(
+      tab,
+      'a bare "Agent" here means the already-open channel could not serve the CLI-made workspace',
+    ).toHaveText(HYDRATED_AGENT_LABEL)
   })
 })
