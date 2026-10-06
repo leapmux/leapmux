@@ -40,7 +40,7 @@ describe('createNativeToolDirectory', () => {
 
   it('rejects an absent working directory without creating it', () => {
     const absent = join(directory, 'absent')
-    expect(() => createNativeToolDirectory(absent)).toThrow()
+    expect(() => createNativeToolDirectory(absent)).toThrow(expect.objectContaining({ code: 'ENOENT' }))
     expect(existsSync(absent)).toBe(false)
   })
 

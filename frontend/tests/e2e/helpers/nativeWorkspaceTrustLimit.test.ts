@@ -428,7 +428,8 @@ describe('outsideFileWriteOperation', () => {
     expect(file.endsWith('/native-control.txt')).toBe(true)
     await operation.beforeDecision()
     writeFileSync(file, 'NATIVECONTROL42\n')
-    await expect(Promise.resolve().then(() => operation.beforeDecision())).rejects.toThrow()
+    // The file exists, so the check before the decision fails.
+    await expect(Promise.resolve().then(() => operation.beforeDecision())).rejects.toThrow('expected true to be false')
     const request: MockModelRequestRecord = {
       protocol: 'anthropic-messages',
       path: '/v1/messages',
@@ -436,6 +437,7 @@ describe('outsideFileWriteOperation', () => {
     }
     await operation.nativeProof(request)
     writeFileSync(file, 'NATIVECONTROL41\n')
-    await expect(Promise.resolve().then(() => operation.nativeProof(request))).rejects.toThrow()
+    // The file no longer holds the computed bytes, so the check of its content fails.
+    await expect(Promise.resolve().then(() => operation.nativeProof(request))).rejects.toThrow(/expected 'NATIVECONTROL41[^']*' to be 'NATIVECONTROL42/)
   })
 })

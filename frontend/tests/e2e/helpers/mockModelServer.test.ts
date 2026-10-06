@@ -615,7 +615,8 @@ describe('createMockModelServer', () => {
     expect(new TextDecoder().decode(first.value)).toContain('FIRST')
     await waitForGate(server, 'cancel-stream-gate', 'partial')
     const pendingRead = reader.read()
-    const rejection = expect(pendingRead).rejects.toThrow()
+    // The forced removal destroys the stream, so the pending read ends with the `terminated` error of fetch.
+    const rejection = expect(pendingRead).rejects.toThrow('terminated')
     expect((await fetch(`${server.url}/__e2e/scenarios/cancel-stream-gate?force=true`, { method: 'DELETE' })).status).toBe(204)
     await rejection
   })
@@ -702,7 +703,7 @@ describe('createMockModelServer', () => {
     await cursorRun(server, 'cancel-id', first)
     const controller = new AbortController()
     const held = cursorRun(server, 'cancel-id', 'CANCELLED_USER', controller.signal)
-    const rejection = expect(held).rejects.toThrow()
+    const rejection = expect(held).rejects.toMatchObject({ name: 'AbortError' })
     await waitForGate(server, 'cursor-cancelled', 'cancel-turn')
     controller.abort()
     await rejection
@@ -809,7 +810,8 @@ describe('createMockModelServer', () => {
     const server = await startServer()
     await registerScenario(server, 'abandoned-gate', { steps: [{ text: 'Never sent.', gate: 'child-answer' }] })
     const pending = chat(server, mockScenarioPrompt('abandoned-gate', 'Ask the child.'), false)
-    const rejection = expect(pending).rejects.toThrow()
+    // The forced removal destroys the held exchange before its headers, so fetch itself fails.
+    const rejection = expect(pending).rejects.toThrow('fetch failed')
     await waitForGate(server, 'abandoned-gate', 'child-answer')
 
     const normal = await fetch(`${server.url}/__e2e/scenarios/abandoned-gate`, { method: 'DELETE' })
@@ -1381,7 +1383,7 @@ describe('createMockModelServer', () => {
     // waits for the hold itself rather than for an interval.
     await waitForStep(server, 'interrupted', 1)
     controller.abort()
-    await expect(aborted).rejects.toThrow()
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' })
 
     // The step counts as consumed: the agent asked for it and the server chose it.
     expect(await readScenarioStatus(server.url, 'interrupted')).toMatchObject({ complete: true, nextStep: 1 })

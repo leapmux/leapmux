@@ -761,7 +761,8 @@ describe('toggleModeWithShortcut', () => {
   })
 
   it('fails when the press selects another chip', async () => {
-    await expect(toggleModeWithShortcut(modePage('Act').page, 'Plan')).rejects.toThrow()
+    // The chip check fails: the count of the Plan chip stays zero.
+    await expect(toggleModeWithShortcut(modePage('Act').page, 'Plan')).rejects.toThrow('not.toHaveCount')
   })
 })
 

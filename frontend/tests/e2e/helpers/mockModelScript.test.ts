@@ -788,8 +788,22 @@ describe('matchesRequest lastMessage', () => {
     expect(matchesRequest(parsedLastMessageMatcher(), lastMessageRequest({ messages: [completion], input: [] }, 'openai-responses'))).toBe(false)
   })
   it('rejects invalid criteria before a model turn', () => {
-    for (const criteria of [null, [], '', {}, { role: '' }, { role: 'invalid' }, { role: 1 }, { text: '' }, { text: [] }, { text: ['valid', ''] }, { text: '[' }, { text: 2 }, { role: 'system', unknown: true }])
-      expect(() => parsedLastMessageMatcher(criteria)).toThrow()
+    for (const [criteria, error] of [
+      [null, 'lastMessage must contain role or text criteria only'],
+      [[], 'lastMessage must contain role or text criteria only'],
+      ['', 'lastMessage must contain role or text criteria only'],
+      [{}, 'lastMessage must contain role or text criteria only'],
+      [{ role: '' }, 'lastMessage role is invalid'],
+      [{ role: 'invalid' }, 'lastMessage role is invalid'],
+      [{ role: 1 }, 'lastMessage role is invalid'],
+      [{ text: '' }, 'lastMessage text must be a non-empty pattern'],
+      [{ text: [] }, 'lastMessage text must state at least one pattern'],
+      [{ text: ['valid', ''] }, 'lastMessage text must be a non-empty pattern'],
+      [{ text: '[' }, 'lastMessage text is not a valid regular expression'],
+      [{ text: 2 }, 'lastMessage text must be a non-empty pattern'],
+      [{ role: 'system', unknown: true }, 'lastMessage must contain role or text criteria only'],
+    ] as const)
+      expect(() => parsedLastMessageMatcher(criteria), JSON.stringify(criteria)).toThrow(error)
   })
 })
 

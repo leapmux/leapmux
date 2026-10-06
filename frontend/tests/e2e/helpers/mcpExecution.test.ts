@@ -157,13 +157,17 @@ describe('exerciseMcpEcho', () => {
 
   it('fails when the server of the receipt asked for input', async () => {
     run.resultText = 'MCP_ECHO:value'
-    await expect(exerciseMcpEcho(context(), 'value', { receiptLog: writeReceipt([{ id: 3, toolRequestId: 2, params: {} }]) })).rejects.toThrow()
+    // Playwright's `expect` fails with the values that it compared: the receipt must hold no input request.
+    await expect(exerciseMcpEcho(context(), 'value', { receiptLog: writeReceipt([{ id: 3, toolRequestId: 2, params: {} }]) }))
+      .rejects
+      .toMatchObject({ matcherResult: { actual: [{ id: 3, toolRequestId: 2, params: {} }], expected: [] } })
   })
 
   it('fails when the receipt holds another echo result', async () => {
     run.resultText = 'MCP_ECHO:other'
     const receiptLog = writeReceipt()
-    await expect(exerciseMcpEcho(context(), 'other', { receiptLog })).rejects.toThrow()
+    // The check for the echo result of the call fails: the receipt holds no `MCP_ECHO:other`.
+    await expect(exerciseMcpEcho(context(), 'other', { receiptLog })).rejects.toMatchObject({ matcherResult: { actual: false, expected: true } })
   })
 })
 

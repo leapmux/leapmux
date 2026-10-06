@@ -135,7 +135,8 @@ describe('createNativePermissionFileWrite', () => {
   it('rejects an already existing creation target without changing its bytes', async () => {
     const path = join(native.directory, 'exists.txt')
     writeFileSync(path, 'unchanged')
-    await expect(createNativePermissionFileWrite(context, { fileName: 'exists.txt', callId: 'existing-native', outputPrefix: 'EXISTS' })).rejects.toThrow()
+    // Playwright's `expect` fails with the values that it compared: the target must not exist.
+    await expect(createNativePermissionFileWrite(context, { fileName: 'exists.txt', callId: 'existing-native', outputPrefix: 'EXISTS' })).rejects.toMatchObject({ matcherResult: { actual: true, expected: false } })
     expect(readFileSync(path, 'utf8')).toBe('unchanged')
   })
 
@@ -381,7 +382,7 @@ describe('exerciseAllowThenFeedbackRejection', () => {
   })
 
   it('fails when the request after the refusal lacks the reason', async () => {
-    await expect(exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [] }), { workingDir: native.directory })).rejects.toThrow()
+    await expect(exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [] }), { workingDir: native.directory })).rejects.toMatchObject({ matcherResult: { name: 'toContain', message: expect.stringContaining('Do not create the second file.') } })
   })
 
   it.each(['relative/dir', '/path with space', '/path/$(touch marker)', '/path/\'quote\''])('refuses the working directory %j before it touches the model', async (workingDir) => {
@@ -434,7 +435,7 @@ describe('exerciseNativeToolWrite', () => {
 
   it('fails when the native tool did not write the file', async () => {
     runToolTurn({ runsCommand: false })
-    await expect(exerciseNativeToolWrite(writeContext(), { permission: 'native' })).rejects.toThrow()
+    await expect(exerciseNativeToolWrite(writeContext(), { permission: 'native' })).rejects.toMatchObject({ matcherResult: { actual: expect.stringMatching(/^BEFORE/), expected: expect.stringMatching(/^AFTER/) } })
     expect(declinedRow.assertions).toEqual([])
   })
 })

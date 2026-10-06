@@ -204,7 +204,7 @@ describe('native added-file patch encoding', () => {
 
 describe('native Fast Agent label schema', () => {
   it.each(['', 'a'.repeat(33), 'invalid label!', '_first', 'last_', '한글'])('rejects a label that the native subagent refuses: %j', (description) => {
-    expect(() => spawnSubagentToolCall(AgentProvider.FAST_AGENT, 'native-child', { description, prompt: 'Actual child task.' })).toThrow()
+    expect(() => spawnSubagentToolCall(AgentProvider.FAST_AGENT, 'native-child', { description, prompt: 'Actual child task.' })).toThrow('The native Fast Agent label must contain 1 to 32 ASCII characters. It must start and end with a letter or digit.')
   })
   it.each(['a', 'a'.repeat(32), 'native-child_1', ' native child '])('preserves valid native label bytes: %j', (description) => {
     expect(spawnSubagentToolCall(AgentProvider.FAST_AGENT, 'native-child', { description, prompt: 'Actual child task.' }).arguments)
@@ -237,7 +237,7 @@ describe('zcodeReadRangeToolCall', () => {
     { offset: 1, limit: 0.5 },
     { offset: 1, limit: Number.POSITIVE_INFINITY },
   ])('refuses a range outside the native integer schema: %j', (range) => {
-    expect(() => zcodeReadRangeToolCall('native-fresh-read', '/private/native file.txt', range)).toThrow()
+    expect(() => zcodeReadRangeToolCall('native-fresh-read', '/private/native file.txt', range)).toThrow('The native ZCode Read range requires a nonnegative integer offset and a positive integer limit.')
   })
 })
 

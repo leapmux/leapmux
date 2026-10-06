@@ -435,7 +435,8 @@ describe('openChildTabFromRow', () => {
       state.ids.push('unrelated-child')
       state.selectedId = 'unrelated-child'
     })
-    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+    // The poll for the child ID of the row never reads a nonblank value.
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow(/to match \/\\S\//)
     expect(view.click).not.toHaveBeenCalled()
   })
 
@@ -445,19 +446,20 @@ describe('openChildTabFromRow', () => {
       state.ids.push('other-child')
       state.selectedId = 'other-child'
     })
-    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('the row selects only its exact native child tab')
   })
 
   it('requires the exact opened child to become selected', async () => {
     const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
     const view = navigation(state, () => state.ids.push('actual-child'))
-    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+    // The tab of the child opens, but its `aria-selected` stays false.
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('expected \'false\' to be \'true\'')
   })
 
   it('refuses duplicate rendered tab IDs before clicking', async () => {
     const state: NavigationState = { ids: ['parent', 'parent'], selectedId: 'parent', childId: 'actual-child' }
     const view = navigation(state, () => state.ids.push('actual-child'))
-    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow()
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('rendered agent tab IDs are unique')
     expect(view.click).not.toHaveBeenCalled()
   })
 })

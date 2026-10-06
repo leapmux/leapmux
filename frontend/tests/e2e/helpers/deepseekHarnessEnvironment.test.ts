@@ -81,10 +81,10 @@ describe('createDeepseekHarnessEnvironment', () => {
   })
 
   it.each([
-    { mcpServers: [{ name: 'echo', command: '/node', args: [] }, { name: 'echo', command: '/node', args: [] }] },
-    { mcpServers: [{ name: '../escape', command: '/node', args: [] }] },
-    { mcpServers: [{ name: 'echo', command: 'relative-node', args: [] }] },
-  ])('refuses invalid or repeated MCP server values', ({ mcpServers }) => {
-    expect(() => createDeepseekHarnessEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4567', modelKey: 'key', mcpServers })).toThrow()
+    { mcpServers: [{ name: 'echo', command: '/node', args: [] }, { name: 'echo', command: '/node', args: [] }], error: 'The DeepSeek Harness MCP server names must be valid and distinct.' },
+    { mcpServers: [{ name: '../escape', command: '/node', args: [] }], error: 'The DeepSeek Harness MCP server names must be valid and distinct.' },
+    { mcpServers: [{ name: 'echo', command: 'relative-node', args: [] }], error: 'The DeepSeek Harness MCP command must be absolute.' },
+  ])('refuses invalid or repeated MCP server values', ({ mcpServers, error }) => {
+    expect(() => createDeepseekHarnessEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4567', modelKey: 'key', mcpServers })).toThrow(error)
   })
 })

@@ -66,10 +66,10 @@ describe('createGeminiEnvironment', () => {
   })
 
   it.each([
-    { mcpServers: [{ name: 'same', command: '/node', args: [] }, { name: 'same', command: '/node', args: [] }] },
-    { mcpServers: [{ name: '../escape', command: '/node', args: [] }] },
-    { mcpServers: [{ name: 'server', command: 'relative', args: [] }] },
-  ])('refuses invalid MCP names or commands', ({ mcpServers }) => {
-    expect(() => createGeminiEnvironment({ runDirectory: directory(), modelURL: 'http://localhost:4321', modelKey: 'key', modelID: 'model', mcpServers })).toThrow()
+    { mcpServers: [{ name: 'same', command: '/node', args: [] }, { name: 'same', command: '/node', args: [] }], error: 'The Gemini MCP server names must be valid and distinct.' },
+    { mcpServers: [{ name: '../escape', command: '/node', args: [] }], error: 'The Gemini MCP server names must be valid and distinct.' },
+    { mcpServers: [{ name: 'server', command: 'relative', args: [] }], error: 'The Gemini MCP command must be absolute.' },
+  ])('refuses invalid MCP names or commands', ({ mcpServers, error }) => {
+    expect(() => createGeminiEnvironment({ runDirectory: directory(), modelURL: 'http://localhost:4321', modelKey: 'key', modelID: 'model', mcpServers })).toThrow(error)
   })
 })

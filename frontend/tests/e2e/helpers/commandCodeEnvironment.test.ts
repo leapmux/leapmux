@@ -58,18 +58,18 @@ describe('createCommandCodeEnvironment', () => {
   })
 
   it.each([
-    { runDirectory: 'relative' },
-    { modelKey: '' },
-    { modelID: '' },
-    { modelID: '../model' },
-    { alternateModelID: 'another-provider/model' },
-    { alternateModelID: 'leapmux-e2e/command-code-e2e' },
-    { mcpServers: [{ name: 'echo', command: '/node', args: [] }, { name: 'echo', command: '/node', args: [] }] },
-    { mcpServers: [{ name: '../escape', command: '/node', args: [] }] },
-    { mcpServers: [{ name: 'echo', command: 'relative-node', args: [] }] },
-  ])('refuses invalid config before it writes native files', (override) => {
+    [{ runDirectory: 'relative' }, 'The Command Code run directory must be absolute.'],
+    [{ modelKey: '' }, 'The Command Code mock model key must be present.'],
+    [{ modelID: '' }, 'The Command Code mock model ID must contain a provider and a model.'],
+    [{ modelID: '../model' }, 'The Command Code mock model ID must contain a provider and a model.'],
+    [{ alternateModelID: 'another-provider/model' }, 'The Command Code mock models must be distinct models of the same provider.'],
+    [{ alternateModelID: 'leapmux-e2e/command-code-e2e' }, 'The Command Code mock models must be distinct models of the same provider.'],
+    [{ mcpServers: [{ name: 'echo', command: '/node', args: [] }, { name: 'echo', command: '/node', args: [] }] }, 'The Command Code MCP server names must be valid and distinct.'],
+    [{ mcpServers: [{ name: '../escape', command: '/node', args: [] }] }, 'The Command Code MCP server names must be valid and distinct.'],
+    [{ mcpServers: [{ name: 'echo', command: 'relative-node', args: [] }] }, 'The Command Code MCP command must be absolute.'],
+  ])('refuses invalid config before it writes native files', (override, error) => {
     const input = options()
-    expect(() => createCommandCodeEnvironment({ ...input, ...override })).toThrow()
+    expect(() => createCommandCodeEnvironment({ ...input, ...override })).toThrow(error)
     expect(existsSync(join(input.runDirectory, 'agent-home/.commandcode'))).toBe(false)
   })
 })

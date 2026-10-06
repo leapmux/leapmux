@@ -191,7 +191,7 @@ describe('workspace deletion cleanup', () => {
 
   it('reports malformed tab data instead of skipping worker cleanup', async () => {
     deletionResponses([{ workerId: 'worker-a', tabs: [{ tabType: 'TAB_TYPE_UNKNOWN', tabId: 'agent-a' }] }])
-    await expect(deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')).rejects.toThrow()
+    await expect(deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')).rejects.toThrow('cannot decode enum leapmux.v1.TabType from JSON: "TAB_TYPE_UNKNOWN"')
     expect(callWorker).not.toHaveBeenCalled()
   })
 

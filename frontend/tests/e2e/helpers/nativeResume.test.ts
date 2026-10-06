@@ -632,17 +632,18 @@ describe('openSoleSessionRow', () => {
 
   it('refuses a menu that offers a second session', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored'), sessionOption('other')]
-    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow()
+    // The row count fails: the two pinned rows and two sessions, where the menu may hold one session.
+    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow('expected 4 to be 3')
   })
 
   it('refuses a menu whose first row is not the row that starts a new session', async () => {
     dialogState.rows = [sessionOption('stored'), TYPE_A_HANDLE, NEW_SESSION]
-    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow()
+    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow('expected \'Session stored\' to be \'Start a new session\'')
   })
 
   it('refuses a menu whose second row is not the row that opens the text box', async () => {
     dialogState.rows = [NEW_SESSION, sessionOption('other'), sessionOption('stored')]
-    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow()
+    await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow('expected \'Session other\' to match')
   })
 })
 
@@ -655,12 +656,12 @@ describe('openStoredSessionRow', () => {
 
   it('refuses a menu that does not offer the stored session', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other')]
-    await expect(openStoredSessionRow(newAgentDialog(), 'stored')).rejects.toThrow()
+    await expect(openStoredSessionRow(newAgentDialog(), 'stored')).rejects.toThrow('expected undefined to be defined')
   })
 
   it('refuses a sole session that is not the stored session', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other')]
-    await expect(openStoredSessionRow(newAgentDialog(), 'stored', 'sole-session')).rejects.toThrow()
+    await expect(openStoredSessionRow(newAgentDialog(), 'stored', 'sole-session')).rejects.toThrow('expected \'loading-menu-option-other\' to be \'loading-menu-option-stored\'')
   })
 
   it('accepts the stored session as the sole session', async () => {
@@ -687,7 +688,7 @@ describe('createFromSessionRow', () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
     dialogState.clickChooses = 'other'
     const dialog = newAgentDialog()
-    await expect(createFromSessionRow(dialog, await openSoleSessionRow(dialog), 'stored')).rejects.toThrow()
+    await expect(createFromSessionRow(dialog, await openSoleSessionRow(dialog), 'stored')).rejects.toThrow('expected \'other\' to be \'stored\'')
     expect(dialogState.events).not.toContain('click:Create')
   })
 })
@@ -711,7 +712,8 @@ describe('reopenFromSessionPicker', () => {
 
   it('requires the sole session when the list states it', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
-    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored', list: 'sole-session' })).rejects.toThrow()
+    // The row count fails: the two pinned rows and two sessions, where the sole-session list holds one session.
+    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored', list: 'sole-session' })).rejects.toThrow('expected 4 to be 3')
     expect(dialogState.events).not.toContain('click:Create')
   })
 })

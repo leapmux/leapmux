@@ -95,19 +95,19 @@ describe('nativeMcpRefusal', () => {
   })
 
   it.each([
-    { label: 'no initialize', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
-    { label: 'no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
-    { label: 'an unmatched reply ID', change: (value: McpServerReceipt) => { value.elicitationReplies[0]!.id = 'different' } },
-    { label: 'an accepted form', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'accept' } }] } },
-    { label: 'a user decline', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
-    { label: 'a timeout instead of native refusal', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'error', error: { code: -32000, message: 'The operation timed out' } }] } },
-    { label: 'an unrelated tool result', change: (value: McpServerReceipt) => { value.toolResults[0]!.id = 99 } },
-    { label: 'a lost native error flag', change: (value: McpServerReceipt) => { value.toolResults[0]!.isError = false } },
-    { label: 'an altered native refusal reason', change: (value: McpServerReceipt) => { value.toolResults[0]!.text = 'FORM_ROUND_TRIP_REFUSED: other' } },
-  ])('rejects $label as unsupported-feature proof', ({ change }) => {
+    { label: 'no initialize', error: 'has no native initialize capabilities', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
+    { label: 'no actual input request', error: 'has no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
+    { label: 'an unmatched reply ID', error: 'The MCP input request has no matching native reply.', change: (value: McpServerReceipt) => { value.elicitationReplies[0]!.id = 'different' } },
+    { label: 'an accepted form', error: 'A declined or accepted MCP result does not prove an unsupported input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'accept' } }] } },
+    { label: 'a user decline', error: 'A declined or accepted MCP result does not prove an unsupported input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
+    { label: 'a timeout instead of native refusal', error: 'The native MCP error does not prove an unsupported input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'error', error: { code: -32000, message: 'The operation timed out' } }] } },
+    { label: 'an unrelated tool result', error: 'The refused MCP input has no matching native tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.id = 99 } },
+    { label: 'a lost native error flag', error: 'The native MCP error lost its exact refused tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.isError = false } },
+    { label: 'an altered native refusal reason', error: 'The native MCP error lost its exact refused tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.text = 'FORM_ROUND_TRIP_REFUSED: other' } },
+  ])('rejects $label as unsupported-feature proof', ({ change, error }) => {
     const value = refusalReceipt()
     change(value)
-    expect(() => nativeMcpRefusal(value)).toThrow()
+    expect(() => nativeMcpRefusal(value)).toThrow(error)
   })
 })
 
@@ -144,25 +144,25 @@ describe('nativeMcpCancellation', () => {
   })
 
   it.each([
-    { label: 'no initialize', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
-    { label: 'no declared elicitation capability', change: (value: McpServerReceipt) => { value.initializeCapabilities = {} } },
-    { label: 'no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
-    { label: 'an unanswered request', change: (value: McpServerReceipt) => { value.elicitationReplies = [] } },
-    { label: 'an unmatched reply ID', change: (value: McpServerReceipt) => { value.elicitationReplies[0]!.id = 'different' } },
-    { label: 'an accepted form', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'accept', content: { count: 0, enabled: false, color: 'b' } } }] } },
-    { label: 'a user decline', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
-    { label: 'a result without an action', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: {} }] } },
-    { label: 'a cancel that holds form content', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'cancel', content: {} } }] } },
-    { label: 'a native refusal error', change: (value: McpServerReceipt) => { value.elicitationReplies = refusalReceipt().elicitationReplies } },
-    { label: 'a later accept of the same request', change: (value: McpServerReceipt) => { value.elicitationReplies.push({ id: 'probe-form', kind: 'result', result: { action: 'accept', content: {} } }) } },
-    { label: 'an unrelated tool result', change: (value: McpServerReceipt) => { value.toolResults[0]!.id = 99 } },
-    { label: 'a result of another tool', change: (value: McpServerReceipt) => { value.toolResults[0]!.tool = 'echo' } },
-    { label: 'an error flag on the cancelled result', change: (value: McpServerReceipt) => { value.toolResults[0]!.isError = true } },
-    { label: 'an altered cancelled result', change: (value: McpServerReceipt) => { value.toolResults[0]!.text = 'FORM_ROUND_TRIP_DECLINED' } },
-  ])('rejects $label as cancelled-input proof', ({ change }) => {
+    { label: 'no initialize', error: 'has no native initialize capabilities', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
+    { label: 'no declared elicitation capability', error: 'A client that declares no elicitation does not prove a cancelled input request.', change: (value: McpServerReceipt) => { value.initializeCapabilities = {} } },
+    { label: 'no actual input request', error: 'has no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
+    { label: 'an unanswered request', error: 'The MCP input request has no matching native reply.', change: (value: McpServerReceipt) => { value.elicitationReplies = [] } },
+    { label: 'an unmatched reply ID', error: 'The MCP input request has no matching native reply.', change: (value: McpServerReceipt) => { value.elicitationReplies[0]!.id = 'different' } },
+    { label: 'an accepted form', error: 'Only a native cancel result proves a cancelled input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'accept', content: { count: 0, enabled: false, color: 'b' } } }] } },
+    { label: 'a user decline', error: 'Only a native cancel result proves a cancelled input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
+    { label: 'a result without an action', error: 'Only a native cancel result proves a cancelled input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: {} }] } },
+    { label: 'a cancel that holds form content', error: 'A native cancel result must hold no form content.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'cancel', content: {} } }] } },
+    { label: 'a native refusal error', error: 'Only a native cancel result proves a cancelled input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = refusalReceipt().elicitationReplies } },
+    { label: 'a later accept of the same request', error: 'Only a native cancel result proves a cancelled input request.', change: (value: McpServerReceipt) => { value.elicitationReplies.push({ id: 'probe-form', kind: 'result', result: { action: 'accept', content: {} } }) } },
+    { label: 'an unrelated tool result', error: 'The cancelled MCP input has no matching native tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.id = 99 } },
+    { label: 'a result of another tool', error: 'The cancelled MCP input has no matching native tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.tool = 'echo' } },
+    { label: 'an error flag on the cancelled result', error: 'The native MCP cancel lost its exact cancelled tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.isError = true } },
+    { label: 'an altered cancelled result', error: 'The native MCP cancel lost its exact cancelled tool result.', change: (value: McpServerReceipt) => { value.toolResults[0]!.text = 'FORM_ROUND_TRIP_DECLINED' } },
+  ])('rejects $label as cancelled-input proof', ({ change, error }) => {
     const value = cancellationReceipt()
     change(value)
-    expect(() => nativeMcpCancellation(value)).toThrow()
+    expect(() => nativeMcpCancellation(value)).toThrow(error)
   })
 })
 
@@ -185,16 +185,16 @@ describe('nativeMcpUnansweredInput', () => {
   })
 
   it.each([
-    { label: 'no initialize', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
-    { label: 'a declared elicitation capability', change: (value: McpServerReceipt) => { value.initializeCapabilities = { elicitation: {} } } },
-    { label: 'no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
-    { label: 'a native refusal', change: (value: McpServerReceipt) => { value.elicitationReplies = refusalReceipt().elicitationReplies } },
-    { label: 'a declined form', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
-    { label: 'a completed tool call', change: (value: McpServerReceipt) => { value.toolResults = [{ id: 2, tool: 'ask', text: 'FORM_ROUND_TRIP_FAILED', isError: true }] } },
-  ])('rejects $label as unanswered-input proof', ({ change }) => {
+    { label: 'no initialize', error: 'has no native initialize capabilities', change: (value: McpServerReceipt) => { value.initializeCapabilities = null } },
+    { label: 'a declared elicitation capability', error: 'A client that declares elicitation does not prove an unanswered input request.', change: (value: McpServerReceipt) => { value.initializeCapabilities = { elicitation: {} } } },
+    { label: 'no actual input request', error: 'has no actual input request', change: (value: McpServerReceipt) => { value.elicitationRequests = [] } },
+    { label: 'a native refusal', error: 'The native client answered the MCP input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = refusalReceipt().elicitationReplies } },
+    { label: 'a declined form', error: 'The native client answered the MCP input request.', change: (value: McpServerReceipt) => { value.elicitationReplies = [{ id: 'probe-form', kind: 'result', result: { action: 'decline' } }] } },
+    { label: 'a completed tool call', error: 'The MCP server completed the tool call whose input request has no reply.', change: (value: McpServerReceipt) => { value.toolResults = [{ id: 2, tool: 'ask', text: 'FORM_ROUND_TRIP_FAILED', isError: true }] } },
+  ])('rejects $label as unanswered-input proof', ({ change, error }) => {
     const value = unansweredReceipt()
     change(value)
-    expect(() => nativeMcpUnansweredInput(value)).toThrow()
+    expect(() => nativeMcpUnansweredInput(value)).toThrow(error)
   })
 })
 
@@ -252,9 +252,9 @@ describe('readMcpServerReceipt', () => {
   })
 
   it('preserves file-read and malformed-JSON failures', () => {
-    expect(() => readMcpServerReceipt(path)).toThrow()
+    expect(() => readMcpServerReceipt(path)).toThrow(expect.objectContaining({ code: 'ENOENT' }))
     writeFileSync(path, '{')
-    expect(() => readMcpServerReceipt(path)).toThrow()
+    expect(() => readMcpServerReceipt(path)).toThrow(SyntaxError)
   })
 })
 
@@ -385,26 +385,26 @@ describe('mcpCallExchange', () => {
 
   const [call, reply] = nativeExchange() as [McpExchangeEntry, McpExchangeEntry]
   it.each([
-    { label: 'no tools/call', entries: [{ received: { id: 0, method: 'tools/list' } }] },
-    { label: 'a tools/call that the server sent', entries: [{ sent: { id: 0, method: 'tools/call', params: { name: 'inspect', arguments: {} } } }, reply] },
-    { label: 'two tools/call records', entries: [call, reply, call] },
-    { label: 'a missing reply', entries: [call] },
-    { label: 'duplicate matching replies', entries: [call, reply, reply] },
-    { label: 'a foreign reply', entries: [call, { sent: { id: 1, result: {} } }] },
-    { label: 'a different ID type', entries: [call, { sent: { id: '0', result: {} } }] },
-    { label: 'an absent request ID', entries: [{ received: { method: 'tools/call', params: { name: 'inspect', arguments: {} } } }, reply] },
-    { label: 'an unsafe request ID', entries: nativeExchange(Number.MAX_SAFE_INTEGER + 1) },
-    { label: 'an absent params object', entries: [{ received: { id: 0, method: 'tools/call' } }, reply] },
-    { label: 'a blank tool name', entries: [{ received: { id: 0, method: 'tools/call', params: { name: ' ', arguments: {} } } }, reply] },
-    { label: 'null arguments', entries: [{ received: { id: 0, method: 'tools/call', params: { name: 'inspect', arguments: null } } }, reply] },
-    { label: 'array arguments', entries: [{ received: { id: 0, method: 'tools/call', params: { name: 'inspect', arguments: [] } } }, reply] },
-    { label: 'an absent result', entries: [call, { sent: { id: 0 } }] },
-    { label: 'an undefined result', entries: [call, { sent: { id: 0, result: undefined } }] },
-    { label: 'a protocol error', entries: [call, { sent: { id: 0, error: { code: -32602, message: 'Invalid params' } } }] },
-    { label: 'a contradictory result and error', entries: [call, { sent: { id: 0, result: {}, error: { code: -32602, message: 'Invalid params' } } }] },
-    { label: 'an invalid reply ID', entries: [call, { sent: { id: null, result: {} } }] },
-  ] satisfies Array<{ label: string, entries: McpExchangeEntry[] }>)('refuses $label as one actual tool exchange', ({ entries }) => {
-    expect(() => mcpCallExchange(exchangeReceipt(entries))).toThrow()
+    { label: 'no tools/call', error: 'The native MCP receipt must contain exactly one tool call.', entries: [{ received: { id: 0, method: 'tools/list' } }] },
+    { label: 'a tools/call that the server sent', error: 'The native MCP receipt must contain exactly one tool call.', entries: [{ sent: { id: 0, method: 'tools/call', params: { name: 'inspect', arguments: {} } } }, reply] },
+    { label: 'two tools/call records', error: 'The native MCP receipt must contain exactly one tool call.', entries: [call, reply, call] },
+    { label: 'a missing reply', error: 'The native MCP tool call must have exactly one matching reply.', entries: [call] },
+    { label: 'duplicate matching replies', error: 'The native MCP tool call must have exactly one matching reply.', entries: [call, reply, reply] },
+    { label: 'a foreign reply', error: 'The native MCP tool call must have exactly one matching reply.', entries: [call, { sent: { id: 1, result: {} } }] },
+    { label: 'a different ID type', error: 'The native MCP tool call must have exactly one matching reply.', entries: [call, { sent: { id: '0', result: {} } }] },
+    { label: 'an absent request ID', error: 'The MCP receipt tool request ID must be a string or a safe integer.', entries: [{ received: { method: 'tools/call', params: { name: 'inspect', arguments: {} } } }, reply] },
+    { label: 'an unsafe request ID', error: 'The MCP receipt tool request ID must be a string or a safe integer.', entries: nativeExchange(Number.MAX_SAFE_INTEGER + 1) },
+    { label: 'an absent params object', error: 'The native MCP call receipt lacks exact tool arguments.', entries: [{ received: { id: 0, method: 'tools/call' } }, reply] },
+    { label: 'a blank tool name', error: 'The native MCP call receipt lacks exact tool arguments.', entries: [{ received: { id: 0, method: 'tools/call', params: { name: ' ', arguments: {} } } }, reply] },
+    { label: 'null arguments', error: 'The native MCP call receipt lacks exact tool arguments.', entries: [{ received: { id: 0, method: 'tools/call', params: { name: 'inspect', arguments: null } } }, reply] },
+    { label: 'array arguments', error: 'The native MCP call receipt lacks exact tool arguments.', entries: [{ received: { id: 0, method: 'tools/call', params: { name: 'inspect', arguments: [] } } }, reply] },
+    { label: 'an absent result', error: 'The native MCP tool reply contains no result.', entries: [call, { sent: { id: 0 } }] },
+    { label: 'an undefined result', error: 'The native MCP tool reply contains no result.', entries: [call, { sent: { id: 0, result: undefined } }] },
+    { label: 'a protocol error', error: 'The native MCP tool call returned a protocol error.', entries: [call, { sent: { id: 0, error: { code: -32602, message: 'Invalid params' } } }] },
+    { label: 'a contradictory result and error', error: 'The native MCP tool call returned a protocol error.', entries: [call, { sent: { id: 0, result: {}, error: { code: -32602, message: 'Invalid params' } } }] },
+    { label: 'an invalid reply ID', error: 'The MCP receipt reply ID must be a string or a safe integer.', entries: [call, { sent: { id: null, result: {} } }] },
+  ] satisfies Array<{ label: string, error: string, entries: McpExchangeEntry[] }>)('refuses $label as one actual tool exchange', ({ entries, error }) => {
+    expect(() => mcpCallExchange(exchangeReceipt(entries))).toThrow(error)
   })
 
   it('reads the receipt file through readMcpCallExchange', () => {
@@ -414,8 +414,8 @@ describe('mcpCallExchange', () => {
   })
 
   it('preserves file-read and malformed-JSON failures of readMcpCallExchange', () => {
-    expect(() => readMcpCallExchange(path)).toThrow()
+    expect(() => readMcpCallExchange(path)).toThrow(expect.objectContaining({ code: 'ENOENT' }))
     writeFileSync(path, '{')
-    expect(() => readMcpCallExchange(path)).toThrow()
+    expect(() => readMcpCallExchange(path)).toThrow(SyntaxError)
   })
 })

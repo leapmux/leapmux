@@ -48,7 +48,7 @@ describe('selectRunningChildTask', () => {
     expect(selectRunningChildTask([task], selection)).toBeUndefined()
   })
   it('rejects ambiguous native task identities instead of choosing one child', () => {
-    expect(() => selectRunningChildTask([current, { ...current, childAgentId: 'another-worker-child' }], { ...selection, taskId: current.id })).toThrow()
+    expect(() => selectRunningChildTask([current, { ...current, childAgentId: 'another-worker-child' }], { ...selection, taskId: current.id })).toThrow('The native child selection matched more than one running task.')
   })
 })
 

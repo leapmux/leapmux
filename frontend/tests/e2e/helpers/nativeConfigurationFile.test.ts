@@ -54,7 +54,7 @@ describe('withNativeConfigurationFile', () => {
     symlinkSync(target, path)
     const use = vi.fn(async () => {})
     try {
-      await expect(withNativeConfigurationFile({ path, content: '{}', runDir }, use)).rejects.toThrow()
+      await expect(withNativeConfigurationFile({ path, content: '{}', runDir }, use)).rejects.toThrow(/^The private native path .+ does not exist\.$/)
       expect(existsSync(target)).toBe(false)
       expect(use).not.toHaveBeenCalled()
     }

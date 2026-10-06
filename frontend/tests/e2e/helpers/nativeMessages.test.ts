@@ -250,7 +250,7 @@ describe('nativeMessageBody', () => {
 
   it('refuses unsupported compression, damaged compressed bytes, and invalid JSON', () => {
     expect(() => nativeMessageBody(create(AgentChatMessageSchema, { content: text.encode('{}') }))).toThrow('unsupported')
-    expect(() => nativeMessageBody(create(AgentChatMessageSchema, { content: new Uint8Array([0, 1]), contentCompression: ContentCompression.ZSTD }))).toThrow()
+    expect(() => nativeMessageBody(create(AgentChatMessageSchema, { content: new Uint8Array([0, 1]), contentCompression: ContentCompression.ZSTD }))).toThrow('invalid zstd data')
     expect(() => nativeMessageBody(create(AgentChatMessageSchema, { content: text.encode('{broken'), contentCompression: ContentCompression.NONE }))).toThrow('invalid JSON')
   })
 })

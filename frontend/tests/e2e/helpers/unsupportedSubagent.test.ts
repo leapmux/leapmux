@@ -231,14 +231,20 @@ describe('expectUnsupportedSubagent', () => {
 
   it('requires the composer placeholder to state the read-only reason', async () => {
     fake.placeholders = 0
-    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() })).rejects.toThrow()
+    // Playwright's `expect` fails with the result of the matcher: the fake checks the visible placeholder with `toBeGreaterThan`.
+    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() }))
+      .rejects
+      .toMatchObject({ matcherResult: { name: 'toBeGreaterThan', pass: false } })
     expect(fake.refused).toEqual([])
     expect(fake.log.at(-1)).toBe('finish')
   })
 
   it('refuses a second visible copy of the read-only reason', async () => {
     fake.visibleReasons = 1
-    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() })).rejects.toThrow()
+    // The count of visible copies of the reason fails: one where the page may hold none.
+    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() }))
+      .rejects
+      .toMatchObject({ matcherResult: { actual: 1, expected: 0 } })
     expect(fake.refused).toEqual([])
   })
 

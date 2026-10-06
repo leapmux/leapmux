@@ -480,11 +480,11 @@ describe('serveCursorRun', () => {
     await expect(runStreamBody(async () => ({
       toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
       requestContextRules: () => {},
-    }), undefined, requestContextReply(999, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow()
+    }), undefined, requestContextReply(999, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow('fetch failed')
     expect(errors).toEqual(['Cursor replied to request context query 301 with id 999'])
 
     const unhandled: string[] = []
-    await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, requestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow()
+    await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, requestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow('fetch failed')
     expect(unhandled).toEqual(['A native Cursor request context query requires a scenario handler'])
   })
 
@@ -499,14 +499,19 @@ describe('serveCursorRun', () => {
     expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'Cursor question selected: option-red' }])
   })
 
-  for (const id of [undefined, 999]) {
+  for (const [id, reason] of [
+    [undefined, 'Cursor MCP result has no valid execution id'],
+    [999, 'Cursor replied to MCP execution 301 with id 999'],
+  ] as const) {
     it(`adds no completion receipt for a native MCP reply with id ${id}`, async () => {
       const receipts: { prompt: string, text: string }[] = []
+      const errors: string[] = []
       const reply = encodeLengthDelimited(2, Buffer.concat([
         ...(id === undefined ? [] : [Uint8Array.from([0x08, ...encodeVarint(id)])]),
         encodeLengthDelimited(11, encodeLengthDelimited(2, encodeStringField(1, 'failure'))),
       ]))
-      await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'mcp', call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: {} } }] }), receipts, reply)).rejects.toThrow()
+      await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'mcp', call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: {} } }] }), receipts, reply, { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow('fetch failed')
+      expect(errors).toEqual([reason])
       expect(receipts).toEqual([])
     })
   }
@@ -689,7 +694,7 @@ describe('native Cursor request compression', () => {
       prompts.push(prompt)
       return { text: 'An invalid compressed frame must not reach this answer.' }
     }, undefined, undefined, { payload, flags: 1, errors, ...(encoding === undefined ? {} : { encoding }) })
-    await expect(pending).rejects.toThrow()
+    await expect(pending).rejects.toThrow('fetch failed')
     expect(prompts).toEqual([])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatch(reason)
@@ -831,7 +836,7 @@ describe('createCursorSurface', () => {
     const run = owned.run('delayed-conversation', mockScenarioPrompt('surface-delayed', 'Cancel me.'), controller.signal)
     await expect.poll(() => contexts.length).toBe(1)
     controller.abort()
-    await expect(run).rejects.toThrow()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
     await expect.poll(() => owned.settled.length).toBe(1)
     expect(owned.settled[0]).toBe(true)
   })

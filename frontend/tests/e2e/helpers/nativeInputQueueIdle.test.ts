@@ -166,7 +166,7 @@ describe('NativeInputQueueIdleCollector', () => {
   })
 
   it('rejects malformed protobuf data', () => {
-    expect(() => new NativeInputQueueIdleCollector('agent-1').accept(Uint8Array.of(0xFF))).toThrow()
+    expect(() => new NativeInputQueueIdleCollector('agent-1').accept(Uint8Array.of(0xFF))).toThrow('The Worker sent an invalid input queue subscription frame.')
   })
 
   it.each(['', ' \n\t'])('rejects an empty agent ID: %j', (agentId) => {

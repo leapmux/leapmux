@@ -432,7 +432,7 @@ describe('the Kiro surface of the mock', () => {
     // waits for the hold itself rather than for an interval.
     await waitForStep(server, 'kiro-held', 1)
     controller.abort()
-    await expect(aborted).rejects.toThrow()
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' })
 
     expect(await readScenarioStatus(server.url, 'kiro-held')).toMatchObject({ complete: true, nextStep: 1 })
     await registerMockModelScenario(server.url, 'kiro-after-abort', { steps: [{ text: 'Still serving' }] })

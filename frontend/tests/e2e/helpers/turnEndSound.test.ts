@@ -20,8 +20,9 @@ describe('parseSettledReceipt', () => {
   })
 
   it('rejects malformed counts and missing agent or settled state', () => {
-    for (const value of [null, {}, { agentId: '', state: AgentActivityState.IDLE }, { agentId: 'a1', state: AgentActivityState.WORKING }])
-      expect(() => parseSettledReceipt(value)).toThrow()
+    for (const value of [null, {}, { agentId: '', state: AgentActivityState.IDLE }])
+      expect(() => parseSettledReceipt(value)).toThrow('The settled receipt needs an agent ID.')
+    expect(() => parseSettledReceipt({ agentId: 'a1', state: AgentActivityState.WORKING })).toThrow('The settled receipt needs an idle or waiting state.')
     for (const count of [-1, 0.5, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])
       expect(() => parseSettledReceipt({ agentId: 'a1', state: AgentActivityState.IDLE, numToolUses: count })).toThrow('tool count')
   })

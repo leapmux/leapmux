@@ -225,7 +225,7 @@ describe('parseWindowsProcessTable', () => {
   })
 
   it('refuses malformed JSON', () => {
-    expect(() => parseWindowsProcessTable('not-json')).toThrow()
+    expect(() => parseWindowsProcessTable('not-json')).toThrow(SyntaxError)
   })
 })
 

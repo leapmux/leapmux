@@ -112,7 +112,9 @@ describe('expectNativeCodeExecutionAbsent', () => {
   })
 
   it('rejects a native executor that the catalog actually offers', () => {
-    expect(() => expectNativeCodeExecutionAbsent({ protocol: 'anthropic-messages', path: '/v1/messages', body: { tools: [{ name: 'exec' }] } }, ['exec'])).toThrow()
+    // Playwright's `expect` fails with the result of the matcher: `not.toContain` failed, because the catalog holds the name.
+    expect(() => expectNativeCodeExecutionAbsent({ protocol: 'anthropic-messages', path: '/v1/messages', body: { tools: [{ name: 'exec' }] } }, ['exec']))
+      .toThrow(expect.objectContaining({ matcherResult: expect.objectContaining({ name: 'toContain', pass: true }) }))
   })
 
   it('rejects an empty catalog and absent executor definitions', () => {

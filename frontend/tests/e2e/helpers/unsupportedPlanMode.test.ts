@@ -119,7 +119,7 @@ describe('expectNoPlanReview', () => {
 
   it.each(PLAN_REVIEW_BUTTON_TEST_IDS)('fails when the reloaded page holds %s', async (testId) => {
     recorded.counts[testId] = 1
-    await expect(expectNoPlanReview(fakeContext(), { relatedProof: async () => {} })).rejects.toThrow()
+    await expect(expectNoPlanReview(fakeContext(), { relatedProof: async () => {} })).rejects.toThrow(`the reloaded page holds no ${testId}`)
   })
 
   it('does not reload when the proof fails', async () => {

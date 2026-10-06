@@ -156,7 +156,7 @@ describe('nativeToolOutcome', () => {
   })
 
   it('keeps the failure of the generic reader for an absent call', async () => {
-    await expect(nativeToolOutcome({}, request, 'absent')).rejects.toThrow()
+    await expect(nativeToolOutcome({}, request, 'absent')).rejects.toThrow('The native request contains 0 results for absent.')
   })
 
   it('keeps the failure of the provider reader', async () => {

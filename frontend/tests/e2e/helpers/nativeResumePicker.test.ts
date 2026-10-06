@@ -426,7 +426,7 @@ describe('resumePickerScenario', () => {
     const providerAssertion = vi.fn()
     // A request body that never repeats the original answer fails the default proof before the provider assertion.
     picker.historyInBody = false
-    await expect(run({ onResumedRequest: providerAssertion })).rejects.toThrow()
+    await expect(run({ onResumedRequest: providerAssertion })).rejects.toMatchObject({ matcherResult: { name: 'toContain', message: expect.stringContaining('RESUMEANSWER') } })
     expect(picker.events).toContain('request-at:1')
     expect(providerAssertion).not.toHaveBeenCalled()
   })
@@ -486,7 +486,8 @@ describe('resumePickerScenario', () => {
 
     it('fails before the close when the live transcript draws no original answer', async () => {
       picker.bubblesPerAnswer = [0]
-      await expect(run()).rejects.toThrow()
+      // The bubble count of the original answer fails: none where the proof requires one.
+      await expect(run()).rejects.toThrow('expected +0 to be 1')
       expect(picker.events).not.toContain(`close:${SUBJECT_ID}`)
     })
 
@@ -500,7 +501,8 @@ describe('resumePickerScenario', () => {
 
     it('fails when the resumed answer draws another number of bubbles than the original answer', async () => {
       picker.bubblesPerAnswer = [2, 1]
-      await expect(run()).rejects.toThrow()
+      // The bubble count of the resumed answer fails: one where the original answer drew two.
+      await expect(run()).rejects.toThrow('expected 1 to be 2')
       expect(picker.events).not.toContain(`conversation:${REOPENED_ID}`)
     })
 

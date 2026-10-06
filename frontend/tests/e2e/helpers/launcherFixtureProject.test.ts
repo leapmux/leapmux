@@ -349,7 +349,7 @@ describe('readPlaywrightZipEntries', () => {
     const path = join(directory(), 'invalid.zip')
     writeFileSync(path, 'not a ZIP archive')
 
-    await expect(readPlaywrightZipEntries(path)).rejects.toThrow()
+    await expect(readPlaywrightZipEntries(path)).rejects.toThrow('End of central directory record signature not found')
   })
 })
 

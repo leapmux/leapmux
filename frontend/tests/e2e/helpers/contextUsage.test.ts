@@ -170,7 +170,8 @@ describe('exerciseContextUsage', () => {
 
   it('fails when the card states another total', async () => {
     card.text = `Context ${formatTokenCount(1)} / ${formatTokenCount(128_000)}`
-    await expect(exerciseContextUsage(usageContext())).rejects.toThrow()
+    // The card must state the scripted input total, 12.0k.
+    await expect(exerciseContextUsage(usageContext())).rejects.toThrow('to contain \'12.0k\'')
   })
 })
 
