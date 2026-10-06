@@ -96,6 +96,31 @@ export const CURSOR_MCP_TOOL = 'cursorMcp'
  */
 export const CURSOR_REQUEST_CONTEXT_TOOL = 'cursorRequestContext'
 
+/** Cursor's to-do list tool in a Run-stream tool call. */
+export const CURSOR_UPDATE_TODOS_TOOL = 'updateTodos'
+
+/**
+ * Cursor's own to-do status words, by the neutral status that each one carries.
+ * The encoder in `providerToolCalls.ts` writes them, and this surface reads them.
+ */
+export const CURSOR_TODO_STATUS_WORDS = {
+  pending: 'TODO_STATUS_PENDING',
+  in_progress: 'TODO_STATUS_IN_PROGRESS',
+  completed: 'TODO_STATUS_COMPLETED',
+  cancelled: 'TODO_STATUS_CANCELLED',
+} as const satisfies Record<CursorTodoStatus, string>
+
+/**
+ * The tools that Cursor delegates to the local client, by the neutral operation of
+ * each one. Each tool name is also the kind of its `CursorExecutionCall`.
+ */
+export const CURSOR_EXECUTION_TOOLS = {
+  bash: 'shell',
+  read: 'read',
+  write: 'write',
+  edit: 'edit',
+} as const satisfies Record<string, CursorExecutionCall['kind']>
+
 /** The three startup calls that need a real answer; see the note at the top. */
 const CURSOR_AVAILABLE_MODELS_PATH = '/aiserver.v1.AiService/AvailableModels'
 const CURSOR_USABLE_MODELS_PATH = '/aiserver.v1.AiService/GetUsableModels'
@@ -400,13 +425,15 @@ interface CursorScriptedTask extends CursorTaskCall {
 
 /** Decode Cursor's native Todo status words before writing their enum ordinals. */
 function cursorTodoStatus(value: unknown): CursorTodoStatus {
-  switch (value) {
-    case 'TODO_STATUS_PENDING': return 'pending'
-    case 'TODO_STATUS_IN_PROGRESS': return 'in_progress'
-    case 'TODO_STATUS_COMPLETED': return 'completed'
-    case 'TODO_STATUS_CANCELLED': return 'cancelled'
-    default: throw new Error(`Cursor Todo has an unsupported status: ${String(value)}`)
-  }
+  const entry = Object.entries(CURSOR_TODO_STATUS_WORDS).find(([, word]) => word === value)
+  if (!entry)
+    throw new Error(`Cursor Todo has an unsupported status: ${String(value)}`)
+  return entry[0] as CursorTodoStatus
+}
+
+/** The execution kind of a scripted tool name, or undefined for a tool that the client does not run. */
+function cursorExecutionKind(name: string): CursorExecutionCall['kind'] | undefined {
+  return Object.values(CURSOR_EXECUTION_TOOLS).find(kind => kind === name)
 }
 
 /** Keep native calls in their scripted order and refuse unknown tool names. */
@@ -428,8 +455,9 @@ export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | un
     }
     if (call.completionGate !== undefined || call.taskProgress !== undefined || call.nativeExecution !== undefined)
       throw new Error('Only a native Cursor task supports provider-service tool metadata')
-    if (call.name === 'shell' || call.name === 'read' || call.name === 'write' || call.name === 'edit')
-      return [{ kind: 'execution', call: cursorExecutionCallFrom(call, call.name) }]
+    const executionKind = cursorExecutionKind(call.name)
+    if (executionKind)
+      return [{ kind: 'execution', call: cursorExecutionCallFrom(call, executionKind) }]
     if (call.name === CURSOR_GENERATE_IMAGE_TOOL) {
       if (typeof args.description !== 'string' || typeof args.filePath !== 'string' || typeof args.imageData !== 'string')
         throw new Error('Cursor GenerateImage needs a description, file path, and image data')
@@ -470,7 +498,7 @@ export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | un
         throw new Error('Cursor MCP needs a server, tool, and object input')
       return [{ kind: 'mcp', call: { callID: call.id, server: args.server, tool: args.tool, input: args.input } }]
     }
-    if (call.name !== 'updateTodos')
+    if (call.name !== CURSOR_UPDATE_TODOS_TOOL)
       throw new Error(`Cursor mock has no native encoder for ${call.name}`)
     if (!Array.isArray(args.todos))
       throw new Error('Cursor UpdateTodos needs a todos list')

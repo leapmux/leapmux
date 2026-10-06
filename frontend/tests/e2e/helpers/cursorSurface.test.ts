@@ -5,6 +5,7 @@ import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorSubagentFixtures'
 import {
   answerCursorStartup,
@@ -15,6 +16,8 @@ import {
   CURSOR_REQUEST_CONTEXT_TOOL,
   CURSOR_RUN_PATH,
   CURSOR_TASK_TOOL,
+  CURSOR_TODO_STATUS_WORDS,
+  CURSOR_UPDATE_TODOS_TOOL,
   cursorToolCallsFrom,
   isCursorPath,
   serveCursorRun,
@@ -31,6 +34,7 @@ import {
 import { waitUnlessDisconnected } from './mockHttp'
 import { mockScenarioPrompt } from './mockModelScenario'
 import { createModelStream } from './modelStream'
+import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from './providerToolCalls'
 
 /** `AgentServerMessage.interaction_update`, and the updates inside it. */
 const FIELD_INTERACTION_UPDATE = 1
@@ -251,6 +255,35 @@ describe('cursorToolCallsFrom', () => {
     expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: {} }])).toThrow('todos list')
     expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: { todos: [{ status: 'TODO_STATUS_PENDING' }] } }])).toThrow('needs content')
     expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: { todos: [{ content: 'Inspect', status: 'wrong' }] } }])).toThrow('unsupported status')
+  })
+
+  it('decodes each call that the shared Cursor encoders write', () => {
+    expect(cursorToolCallsFrom([
+      bashToolCall(AgentProvider.CURSOR, 'shell-1', 'pwd'),
+      readToolCall(AgentProvider.CURSOR, 'read-1', '/work/a.txt'),
+      writeToolCall(AgentProvider.CURSOR, 'write-1', { path: '/work/b.txt', content: 'B' }),
+      editToolCall(AgentProvider.CURSOR, 'edit-1', { path: '/work/b.txt', before: 'B', after: 'C' }),
+      updateTodosToolCall(AgentProvider.CURSOR, 'todo-1', [
+        { step: 'First', status: 'pending' },
+        { step: 'Second', status: 'in_progress' },
+        { step: 'Third', status: 'completed' },
+      ]),
+    ])).toEqual([
+      { kind: 'execution', call: { kind: 'shell', callID: 'shell-1', command: 'pwd' } },
+      { kind: 'execution', call: { kind: 'read', callID: 'read-1', path: '/work/a.txt' } },
+      { kind: 'execution', call: { kind: 'write', callID: 'write-1', path: '/work/b.txt', content: 'B' } },
+      { kind: 'execution', call: { kind: 'edit', callID: 'edit-1', path: '/work/b.txt', before: 'B', after: 'C' } },
+      { kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [
+        { id: '1', content: 'First', status: 'pending' },
+        { id: '2', content: 'Second', status: 'in_progress' },
+        { id: '3', content: 'Third', status: 'completed' },
+      ] } },
+    ])
+  })
+
+  it('reads the cancelled status word, which no shared encoder writes', () => {
+    const [call] = cursorToolCallsFrom([{ id: 'todo-1', name: CURSOR_UPDATE_TODOS_TOOL, arguments: { todos: [{ content: 'Dropped', status: CURSOR_TODO_STATUS_WORDS.cancelled }] } }])
+    expect(call).toEqual({ kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [{ id: '1', content: 'Dropped', status: 'cancelled' }] } })
   })
 
   it('keeps a native GenerateImage call and its image data', () => {

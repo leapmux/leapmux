@@ -20,7 +20,18 @@ import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { CURSOR_CREATE_PLAN_TOOL, CURSOR_GENERATE_IMAGE_TOOL, CURSOR_MCP_TOOL, CURSOR_QUESTION_TOOL, CURSOR_REQUEST_CONTEXT_TOOL, CURSOR_TASK_TOOL, CURSOR_WEB_FETCH_TOOL } from './cursorSurface'
+import {
+  CURSOR_CREATE_PLAN_TOOL,
+  CURSOR_EXECUTION_TOOLS,
+  CURSOR_GENERATE_IMAGE_TOOL,
+  CURSOR_MCP_TOOL,
+  CURSOR_QUESTION_TOOL,
+  CURSOR_REQUEST_CONTEXT_TOOL,
+  CURSOR_TASK_TOOL,
+  CURSOR_TODO_STATUS_WORDS,
+  CURSOR_UPDATE_TODOS_TOOL,
+  CURSOR_WEB_FETCH_TOOL,
+} from './cursorSurface'
 import { quotePosixShellArgument } from './shellArguments'
 
 /**
@@ -597,10 +608,10 @@ const TOOL_VOCABULARY = {
   [AgentProvider.CURSOR]: {
     // Cursor receives protobuf events through its Connect Run stream.
     // The mock uses provider-owned codecs for each supported call.
-    bash: (id, command) => ({ id, name: 'shell', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, before, after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
+    bash: (id, command) => ({ id, name: CURSOR_EXECUTION_TOOLS.bash, arguments: { command } }),
+    edit: (id, { path, before, after }) => ({ id, name: CURSOR_EXECUTION_TOOLS.edit, arguments: { path, before, after } }),
+    write: (id, { path, content }) => ({ id, name: CURSOR_EXECUTION_TOOLS.write, arguments: { path, content } }),
+    read: (id, path) => ({ id, name: CURSOR_EXECUTION_TOOLS.read, arguments: { path } }),
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
@@ -620,12 +631,9 @@ const TOOL_VOCABULARY = {
     // (`TODO_STATUS_IN_PROGRESS`) fold onto the neutral ones the sidebar draws.
     updateTodos: (id, steps) => ({
       id,
-      name: 'updateTodos',
+      name: CURSOR_UPDATE_TODOS_TOOL,
       arguments: {
-        todos: steps.map(({ step, status }) => ({
-          content: step,
-          status: status === 'in_progress' ? 'TODO_STATUS_IN_PROGRESS' : status === 'completed' ? 'TODO_STATUS_COMPLETED' : 'TODO_STATUS_PENDING',
-        })),
+        todos: steps.map(({ step, status }) => ({ content: step, status: CURSOR_TODO_STATUS_WORDS[status] })),
       },
     }),
     createGoal: null,
