@@ -1,61 +1,28 @@
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { NativeControlFrame } from '../helpers/nativeControlWatch'
 import { diracTest, expect } from '../dirac-fixtures'
-import { getTestChannel } from '../helpers/api'
+import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { controlButton, waitForSettingsHydrated } from '../helpers/ui'
 import { exerciseQuestionReply } from './questionScenarios'
 import { nativeContext } from './scenarios'
+
+/** The controls that a watch saw, as the body of an attachment. A failed watch gives its failure instead. */
+function controlsReport(watch: { controls: () => readonly NativeControlFrame[] }): string {
+  try {
+    return JSON.stringify(watch.controls(), null, 2)
+  }
+  catch (error) {
+    return JSON.stringify({ watchFailure: error instanceof Error ? error.message : String(error) }, null, 2)
+  }
+}
 
 diracTest.describe('dirac agent questions', () => {
   diracTest('returns the selected form answer through the native question tool', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }, testInfo) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
     await waitForSettingsHydrated(page)
     const agentId = await selectedAgentTabId(page)
-
-    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-    const channelId = await channel.getOrOpenChannel(leapmuxServer.workerId)
-    const request = create(WatchEventsRequestSchema, {
-      agents: [{ agentId, mode: WatchMode.FULL, replay: WatchReplayMode.LATEST, cursorSeq: 0n }],
-      updateId: 1n,
-    })
-    const watch = channel.stream(channelId, 'WatchEvents', toBinary(WatchEventsRequestSchema, request))
-    const nativeControls: { requestId: string, payload: unknown, state: number }[] = []
-    let subscribed = false
-    let watchError: Error | undefined
-    watch.onMessage((frame) => {
-      try {
-        const response = fromBinary(WatchEventsResponseSchema, frame.payload)
-        if (response.event.case === 'updateAck') {
-          if (response.event.value.rejectedAgents.length > 0)
-            throw new Error('The Worker refused the Dirac control watch.')
-          subscribed = response.event.value.updateId === 1n
-          return
-        }
-        if (response.event.case !== 'agentEvent' || response.event.value.agentId !== agentId)
-          return
-        const event = response.event.value.event
-        if (event.case !== 'controlRequest' && event.case !== 'controlResponseChanged')
-          return
-        nativeControls.push({
-          requestId: event.value.requestId,
-          payload: JSON.parse(new TextDecoder().decode(event.value.payload)),
-          state: event.value.responseState,
-        })
-      }
-      catch (error) {
-        watchError = new Error('The Worker sent an invalid Dirac control event.', { cause: error })
-      }
-    })
-    watch.onError(error => watchError = error)
-
+    const watch = await watchNativeControls(leapmuxServer, agentId)
     try {
-      await expect.poll(() => {
-        if (watchError)
-          throw watchError
-        return subscribed
-      }).toBe(true)
       const answer = await exerciseQuestionReply(context, async (form) => {
         await testInfo.attach('dirac-question-form', { body: await form.evaluate(element => element.outerHTML), contentType: 'text/html' })
         await form.getByRole('button', { name: 'Choose an option *', exact: true }).click()
@@ -67,12 +34,15 @@ diracTest.describe('dirac agent questions', () => {
       })
       expect(answer).toContain('Red')
       expect(answer).not.toContain('Blue')
-      if (watchError)
-        throw watchError
+      // The read throws the failure of the watch: an invalid control, or a
+      // stream that ended before the answer.
+      watch.controls()
     }
     finally {
+      // Read before the cancel, because the end of the stream fails the watch.
+      const report = controlsReport(watch)
       watch.cancel()
-      await testInfo.attach('dirac-native-question-controls', { body: JSON.stringify(nativeControls, null, 2), contentType: 'application/json' })
+      await testInfo.attach('dirac-native-question-controls', { body: report, contentType: 'application/json' })
     }
   })
 })
