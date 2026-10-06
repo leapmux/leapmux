@@ -4,7 +4,7 @@ import { codebuddyTest, expect } from '../codebuddy-fixtures'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { codebuddyFindWorkflowToolCall, codebuddyWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, tabById, userBubbles } from '../helpers/ui'
+import { assistantBubbles, sendMessage, tabById, toolCallRow, userBubbles } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 
 codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
@@ -75,8 +75,8 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
     // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, child)
     await expect(userBubbles(page).filter({ hasText: 'Read' }).filter({ hasText: 'workflow-child-marker.txt' }).first()).toBeVisible()
-    const childToolRequest = page.locator('[data-testid="message-bubble"]:visible[data-tool-row-role="request"][data-tool-call-id="child-workflow-read"]')
-    const childToolResult = page.locator('[data-testid="message-bubble"]:visible[data-tool-row-role="result"][data-tool-call-id="child-workflow-read"]')
+    const childToolRequest = toolCallRow(page, 'child-workflow-read', 'request')
+    const childToolResult = toolCallRow(page, 'child-workflow-read')
     await expect(childToolRequest).toContainText('workflow-child-marker.txt')
     await expect(childToolResult).toContainText('WORKFLOW_CHILD_FILE_MARKER')
     const requestSeq = await childToolRequest.getAttribute('data-message-seq')
