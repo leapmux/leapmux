@@ -1,17 +1,28 @@
+import type { Page } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { crc32, inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { selectAttachmentFixture, writeAttachmentFixture } from './attachments'
+import { expectAttachmentOutcome, selectAttachmentFixture, writeAttachmentFixture } from './attachments'
 
 let runDir: string
 vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
+
+const ui = vi.hoisted(() => ({ events: [] as string[], hydration: vi.fn<() => Promise<void>>() }))
+vi.mock('./ui', () => ({
+  focusComposer: vi.fn(),
+  waitForNativeSettingsHydrated: ui.hydration,
+}))
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
   mkdirSync(scratch, { recursive: true })
   runDir = mkdtempSync(join(scratch, 'attachment-fixtures-'))
+  ui.events.length = 0
+  ui.hydration.mockReset().mockImplementation(async () => {
+    ui.events.push('hydrated')
+  })
 })
 
 afterEach(() => rmSync(runDir, { recursive: true, force: true }))
@@ -144,5 +155,33 @@ describe('selectAttachmentFixture', () => {
     const path = join(runDir, 'large.png')
     expect(() => selectAttachmentFixture('image', { supported: true, fileName: 'other.png', fixturePath: path }))
       .toThrow('fixture path and file name must agree')
+  })
+})
+
+describe('expectAttachmentOutcome', () => {
+  /** A page whose file input records the attached file, then stops the outcome before its browser assertions. */
+  function attachingPage(stop: Error): Page {
+    const input = {
+      setInputFiles: async (path: string) => {
+        ui.events.push(`attach:${basename(path)}`)
+        throw stop
+      },
+    }
+    return { locator: () => input } as unknown as Page
+  }
+
+  it.each([true, false])('waits for the live native settings catalog before it attaches the file (supported: %s)', async (supported) => {
+    const stop = new Error('The fake composer stops after the attach.')
+    await expect(expectAttachmentOutcome(attachingPage(stop), 'text', { supported, fileName: 'notes.txt' })).rejects.toBe(stop)
+    expect(ui.hydration).toHaveBeenCalledTimes(1)
+    expect(ui.events).toEqual(['hydrated', 'attach:notes.txt'])
+  })
+
+  it('writes and attaches no file when the native settings catalog never hydrates', async () => {
+    const failure = new Error('The live native catalog has no group with an option.')
+    ui.hydration.mockRejectedValueOnce(failure)
+    await expect(expectAttachmentOutcome(attachingPage(new Error('unreachable')), 'pdf', { supported: false })).rejects.toBe(failure)
+    expect(ui.events).toEqual([])
+    expect(readdirSync(runDir)).toEqual([])
   })
 })

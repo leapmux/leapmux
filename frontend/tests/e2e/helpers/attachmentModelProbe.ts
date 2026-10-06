@@ -717,7 +717,7 @@ export async function exerciseAttachmentDelivery(
   modelScript: ModelScript,
   kind: AttachmentKind,
   fileName: string,
-  options: { readyGroup?: string, fixturePath?: string, protocol?: MockModelProtocol } & ImageHandoff = {},
+  options: { fixturePath?: string, protocol?: MockModelProtocol } & ImageHandoff = {},
 ): Promise<void> {
   const { protocol, transcodedImageType, ...outcome } = options
   // The step that this helper queues holds the attachment turn, also when the

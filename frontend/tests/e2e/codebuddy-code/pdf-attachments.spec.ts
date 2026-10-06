@@ -7,7 +7,7 @@ codebuddyTest.describe('CodeBuddy Code attachments and context usage', () => {
   codebuddyTest('the model receives a PDF attachment', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
     void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'Document received.' })
-    const sourcePath = await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: 'codebuddy-doc.pdf', readyGroup: 'permissionMode' })
+    const sourcePath = await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: 'codebuddy-doc.pdf' })
     await sendWithAttachment(page, modelScript.prompt('Read this document.'))
     const status = await modelScript.waitForSteps()
     // CodeBuddy turns the stream-json `document` block into a Chat Completions

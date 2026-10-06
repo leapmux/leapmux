@@ -6,6 +6,6 @@ import { nativeTextStep } from '../helpers/nativeScenario'
 
 ampTest('refuses the attachment kind and excludes its actual bytes from the next native request', async ({ page, modelScript, leapmuxServer, authenticatedAmpWorkspace }) => {
   const context = { page, modelScript, leapmuxServer, workspaceId: authenticatedAmpWorkspace.workspaceId, provider: AgentProvider.AMP }
-  const rejected = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'amp-refused.pdf', readyGroup: 'agent_mode' })
+  const rejected = await expectAttachmentOutcome(page, 'pdf', { supported: false, fileName: 'amp-refused.pdf' })
   await expectRefusedAttachmentsAbsent(context.page, context.modelScript, [rejected], nativeTextStep(context, 'The clean prompt answered.'))
 })

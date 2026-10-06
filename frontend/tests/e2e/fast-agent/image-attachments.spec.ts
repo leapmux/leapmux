@@ -4,6 +4,6 @@ import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
 fastAgentTest.describe('Fast Agent attachments', () => {
   fastAgentTest('delivers image attachment bytes to the model', async ({ authenticatedFastAgentWorkspace, page, modelScript }) => {
     void authenticatedFastAgentWorkspace
-    await exerciseAttachmentDelivery(page, modelScript, 'image', 'fa-shot.png', { protocol: 'openai-chat-completions', readyGroup: 'permissionMode' })
+    await exerciseAttachmentDelivery(page, modelScript, 'image', 'fa-shot.png', { protocol: 'openai-chat-completions' })
   })
 })

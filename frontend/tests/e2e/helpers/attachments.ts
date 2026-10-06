@@ -5,7 +5,7 @@ import { basename, join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 import { createTestDirectory } from './runDirectory'
-import { focusComposer, waitForSettingsHydrated } from './ui'
+import { focusComposer, waitForNativeSettingsHydrated } from './ui'
 
 /**
  * Attachment fixtures and the composer flows that consume them.
@@ -100,7 +100,6 @@ export type AttachmentKind = 'text' | 'image' | 'pdf' | 'binary'
 export interface AttachmentOutcomeOptions {
   supported: boolean
   fileName?: string
-  readyGroup?: string
   fixturePath?: string
 }
 
@@ -169,8 +168,10 @@ export async function expectAttachmentOutcome(
   // The composer refuses a kind from the agent's own capability map. Until the
   // panel receives the agent, it holds the default provider's map, which
   // accepts more kinds than some providers do. The settings menu is offered
-  // from that same configuration, so its readiness is the gate.
-  await waitForSettingsHydrated(page, options.readyGroup)
+  // from that same configuration, so its readiness is the gate. A fixed group
+  // is not a correct gate for every provider (see `waitForNativeSettingsHydrated`),
+  // so the wait reads the groups of the live Worker catalog.
+  await waitForNativeSettingsHydrated(page)
   const path = selectAttachmentFixture(kind, options)
   const name = basename(path)
   await attachFile(page, path)

@@ -6,7 +6,7 @@ codebuddyTest.describe('CodeBuddy Code binary attachments', () => {
   codebuddyTest('carries the bytes of a binary attachment to the model', async ({ authenticatedCodebuddyWorkspace, page, modelScript }) => {
     void authenticatedCodebuddyWorkspace
     await modelScript.queue({ text: 'The binary file reached the model.' })
-    await expectAttachmentOutcome(page, 'binary', { supported: true, fileName: 'codebuddy-blob.bin', readyGroup: 'permissionMode' })
+    await expectAttachmentOutcome(page, 'binary', { supported: true, fileName: 'codebuddy-blob.bin' })
     await sendWithAttachment(page, modelScript.prompt('Inspect the attached binary file.'))
     const status = await modelScript.waitForSteps()
     await waitForAgentIdle(page)
