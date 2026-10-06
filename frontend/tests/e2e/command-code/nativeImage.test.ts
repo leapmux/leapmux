@@ -1,7 +1,6 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { readCommandCodeNativeImage } from './nativeImage'
 
 const image = { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: '/9j/4AAQSkZJRg==' } }
@@ -11,12 +10,11 @@ function completed(result: unknown[], overrides: Record<string, unknown> = {}) {
 }
 
 function snapshot(...frames: unknown[]): NativeMessageSnapshot {
-  return { agentId: 'agent', agentSessionId: 'native-session', messages: frames.map((value, index) => create(AgentChatMessageSchema, {
+  return { agentId: 'agent', agentSessionId: 'native-session', messages: frames.map((value, index) => makeMessage({
     id: `native-row-${index}`,
     agentSessionId: 'native-session',
     spanId: 'native-call',
-    contentCompression: ContentCompression.NONE,
-    content: new TextEncoder().encode(JSON.stringify(value)),
+    content: rawContent(value),
   })) }
 }
 

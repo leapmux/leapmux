@@ -11,8 +11,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { dirname, join, resolve } from 'node:path'
 import { create, fromJsonString } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { makeMessage } from '~/test-support/messageFactory'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
-import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { captureGeminiResumeEvidence, exerciseGeminiResumeWithEvidence } from './resumeEvidence'
 
@@ -121,7 +122,7 @@ function fixture(status = AgentStatus.ACTIVE) {
     { $set: { messages: [] }, nativeMetadata: { zero: 0, enabled: false, absent: null } },
   ].map(record => JSON.stringify(record)).join('\n')}\n`
   writeFileSync(archive, text)
-  const row = create(AgentChatMessageSchema, {
+  const row = makeMessage({
     id: 'worker-native-row',
     seq: 1n,
     agentSessionId: agent.agentSessionId,
@@ -129,9 +130,7 @@ function fixture(status = AgentStatus.ACTIVE) {
     parentSpanId: 'native-parent',
     spanType: 'execute',
     content: Uint8Array.from(Buffer.from(JSON.stringify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Native 漢字', zero: 0, enabled: false, absent: null } }))),
-    contentCompression: ContentCompression.NONE,
     supplementalContent: Uint8Array.from(Buffer.from(JSON.stringify({ provider: { zero: 0, enabled: false, empty: '', absent: null }, metadata: { elapsed_ms: 0 } }))),
-    supplementalContentCompression: ContentCompression.NONE,
   })
   calls.agent.mockResolvedValue(agent)
   calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [row] }))
@@ -181,7 +180,7 @@ describe('captureGeminiResumeEvidence', () => {
 
   it.each([AgentStatus.STARTING, AgentStatus.STARTUP_FAILED])('reads pending Worker pages without an ACTIVE wait for status %s', async (status) => {
     const f = fixture(status)
-    const later = create(AgentChatMessageSchema, { ...f.row, id: 'worker-later', seq: 9007199254740993n })
+    const later = makeMessage({ ...f.row, id: 'worker-later', seq: 9007199254740993n })
     calls.worker.mockReset().mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [f.row], hasMore: true })).mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [later] }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
@@ -197,7 +196,7 @@ describe('captureGeminiResumeEvidence', () => {
   // The pending read pages by the rule of the shared Worker reader, which a started agent's read uses also.
   it('keeps a pending row with sequence zero, as the read of a started agent does', async () => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
-    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [create(AgentChatMessageSchema, { ...f.row, seq: 0n })] }))
+    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [makeMessage({ ...f.row, seq: 0n })] }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
     expect(object(result.workerRead).state).toBe('complete-observation')
@@ -225,7 +224,7 @@ describe('captureGeminiResumeEvidence', () => {
 
   it.each(['absent ID', 'duplicate ID', 'negative sequence', 'same sequence', 'descending sequence', 'empty more page'])('retains returned bytes and rejects a pending page with %s', async (condition) => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
-    const bad = create(AgentChatMessageSchema, { ...f.row, id: 'later-row', seq: 2n })
+    const bad = makeMessage({ ...f.row, id: 'later-row', seq: 2n })
     if (condition === 'absent ID')
       bad.id = ''
     else if (condition === 'duplicate ID')

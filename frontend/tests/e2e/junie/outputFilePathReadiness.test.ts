@@ -1,9 +1,10 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { AgentChatMessageSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { JunieOutputPathOwner } from './outputFilePathReadiness'
-import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression, MessageCompletion, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { MessageCompletion, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { deferred } from '../../../src/test-support/async'
 import { withCleanup } from '../helpers/cleanup'
 import { junieOutputFilePathReady, waitForJunieOutputFilePaths } from './outputFilePathReadiness'
@@ -57,7 +58,7 @@ function snapshot(
   return {
     agentId: owner.agentId,
     agentSessionId: owner.sessionId,
-    messages: [create(AgentChatMessageSchema, {
+    messages: [makeMessage({
       id: 'native-completed-row',
       seq: 1n,
       source: MessageSource.AGENT,
@@ -65,10 +66,8 @@ function snapshot(
       spanId: owner.callId,
       spanType: 'execute',
       completion: MessageCompletion.COMPLETE,
-      content: encoder.encode(JSON.stringify(frame)),
-      contentCompression: ContentCompression.NONE,
-      supplementalContent: encoder.encode(JSON.stringify(supplement)),
-      supplementalContentCompression: ContentCompression.NONE,
+      content: rawContent(frame),
+      supplementalContent: rawContent(supplement),
       ...overrides,
     })],
   }
@@ -115,7 +114,7 @@ describe('junieOutputFilePathReady', () => {
 
   it('refuses duplicate completed rows instead of selecting the latest row', () => {
     const value = snapshot()
-    value.messages.push(create(AgentChatMessageSchema, { id: 'second-completed-row', seq: 2n, source: MessageSource.AGENT, agentSessionId: owner.sessionId, spanId: owner.callId, spanType: 'execute', content: encoder.encode(JSON.stringify(completedFrame())), contentCompression: ContentCompression.NONE }))
+    value.messages.push(makeMessage({ id: 'second-completed-row', seq: 2n, source: MessageSource.AGENT, agentSessionId: owner.sessionId, spanId: owner.callId, spanType: 'execute', content: rawContent(completedFrame()) }))
     expect(() => junieOutputFilePathReady(value, owner)).toThrow('duplicate completed rows')
   })
 

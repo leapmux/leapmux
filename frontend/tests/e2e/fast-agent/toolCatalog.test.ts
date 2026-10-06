@@ -3,8 +3,9 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { FastAgentCompleteCatalog } from './toolCatalog'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ASSEMBLED_MESSAGE } from '../../../src/generated/contracts/worker-vocab'
-import { AgentChatMessageSchema, AgentInputKind, ContentCompression, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { assertFastAgentCatalogNoInference, assertFastAgentShellCatalog, fastAgentCatalogCommandReply, parseFastAgentCatalog, parseFastAgentToolSchema, sendFastAgentCatalogCommand } from './toolCatalog'
 
 const calls = vi.hoisted(() => ({ channel: vi.fn(), enqueue: vi.fn() }))
@@ -125,13 +126,12 @@ describe('parseFastAgentToolSchema', () => {
 })
 
 function nativeMessage(seq: bigint, body: unknown, source = MessageSource.AGENT) {
-  return create(AgentChatMessageSchema, {
+  return makeMessage({
     id: `row-${seq}`,
     seq,
     source,
     agentSessionId: 'native-session',
-    content: new TextEncoder().encode(JSON.stringify(body)),
-    contentCompression: ContentCompression.NONE,
+    content: rawContent(body),
   })
 }
 

@@ -8,7 +8,7 @@
  * This module imports vitest, so only a `*.test.ts` imports it. A `*.spec.ts` must never import it: Playwright runs
  * a spec without the vitest API.
  */
-import type { MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, MessageCompletion } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { NativeMessageSnapshot } from './nativeMessages'
 import type { NativeOutputReceipt } from './nativeToolOutputFilePaths'
 import { expect, it } from 'vitest'
@@ -63,6 +63,23 @@ export function nativeOutputSnapshot(
       ...(row.supplement === undefined ? {} : { supplementalContent: rawContent(row.supplement) }),
     })),
   }
+}
+
+/**
+ * Build the Worker snapshot of the parent agent whose rows hold `frames`, in order, with no span. A reader that scans
+ * every row of a session, such as a child identity reader, reads this snapshot.
+ */
+export function nativeFrameSnapshot(...frames: unknown[]): NativeMessageSnapshot {
+  return nativeOutputSnapshot(frames.map(frame => ({ frame, spanId: '' })), { agentId: 'parent' })
+}
+
+/** The one row of a fixture snapshot. A snapshot with another row count fails the test. */
+export function onlyNativeMessage(snapshot: NativeMessageSnapshot): AgentChatMessage {
+  expect(snapshot.messages).toHaveLength(1)
+  const message = snapshot.messages[0]
+  if (!message)
+    throw new Error('The fixture snapshot holds no row.')
+  return message
 }
 
 /** The facts of one provider reader that the contract cases need. */

@@ -1,7 +1,7 @@
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, nativeMessageSupplement } from '../helpers/nativeMessages'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
@@ -30,15 +30,13 @@ function provider(text = 'Native output'): Record<string, unknown> {
 }
 
 function message(envelope: unknown, original: unknown = frame): AgentChatMessage {
-  return create(AgentChatMessageSchema, {
+  return makeMessage({
     id: 'actual-native-tool-row',
     spanId: callId,
     spanType: 'execute',
     agentSessionId: sessionId,
-    content: encoder.encode(JSON.stringify(original)),
-    contentCompression: ContentCompression.NONE,
-    supplementalContent: encoder.encode(JSON.stringify(envelope)),
-    supplementalContentCompression: ContentCompression.NONE,
+    content: rawContent(original),
+    supplementalContent: rawContent(envelope),
   })
 }
 
@@ -109,19 +107,19 @@ describe('readKiroToolSupplement', () => {
 
   it('rejects invalid original and supplemental bytes without changing them', () => {
     for (const bytes of [encoder.encode('{broken'), new Uint8Array([0xFF, 0xFE])]) {
-      const original = create(AgentChatMessageSchema, { ...message({ provider: provider() }), content: bytes })
+      const original = makeMessage({ ...message({ provider: provider() }), content: bytes })
       expect(readKiroToolSupplement(original)).toBeNull()
       expect(original.content).toEqual(bytes)
-      const supplemental = create(AgentChatMessageSchema, { ...message({ provider: provider() }), supplementalContent: bytes })
+      const supplemental = makeMessage({ ...message({ provider: provider() }), supplementalContent: bytes })
       expect(readKiroToolSupplement(supplemental)).toBeNull()
       expect(supplemental.supplementalContent).toEqual(bytes)
     }
   })
 
   it('rejects unsupported compression without changing retained bytes', () => {
-    const original = create(AgentChatMessageSchema, { ...message({ provider: provider() }), contentCompression: ContentCompression.UNSPECIFIED })
+    const original = makeMessage({ ...message({ provider: provider() }), contentCompression: ContentCompression.UNSPECIFIED })
     expect(readKiroToolSupplement(original)).toBeNull()
-    const supplemental = create(AgentChatMessageSchema, { ...message({ provider: provider() }), supplementalContentCompression: ContentCompression.UNSPECIFIED })
+    const supplemental = makeMessage({ ...message({ provider: provider() }), supplementalContentCompression: ContentCompression.UNSPECIFIED })
     expect(readKiroToolSupplement(supplemental)).toBeNull()
   })
 })

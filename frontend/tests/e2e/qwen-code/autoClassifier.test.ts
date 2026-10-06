@@ -1,9 +1,8 @@
 import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { matchesRequest, systemText } from '../helpers/mockModelScript'
 import { expectQwenCanceledTool, qwenClassifierWithoutVerdict } from './autoClassifier'
 
@@ -13,14 +12,13 @@ vi.mock('@playwright/test', async (importOriginal) => {
 })
 
 const toolCall: MockModelToolCall = { id: 'smart-protected-write', name: 'write_file', arguments: { file_path: '/project/package.json', content: '{}' } }
-const encoder = new TextEncoder()
 
 /** A Worker snapshot whose one row stores `frame` in the span of the tool call. */
 function snapshot(frame: unknown, spanId = toolCall.id): NativeMessageSnapshot {
   return {
     agentId: 'qwen-agent',
     agentSessionId: 'native-session',
-    messages: [create(AgentChatMessageSchema, { id: 'row', seq: 1n, spanId, agentSessionId: 'native-session', content: encoder.encode(JSON.stringify(frame)), contentCompression: ContentCompression.NONE })],
+    messages: [makeMessage({ id: 'row', seq: 1n, spanId, agentSessionId: 'native-session', content: rawContent(frame) })],
   }
 }
 

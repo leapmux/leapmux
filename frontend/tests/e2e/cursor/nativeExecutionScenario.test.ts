@@ -3,7 +3,8 @@ import type { ModelScript } from '../helpers/modelScriptFixture'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { AgentInfoSchema, AgentProvider, AgentStatus, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { cursorNativeToolOutput } from './nativeExecutionScenario'
 
 const calls = vi.hoisted(() => ({ current: vi.fn(), agent: vi.fn(), worker: vi.fn() }))
@@ -19,7 +20,7 @@ const context: ManagedNativeScenarioContext = {
   leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'worker' },
 }
 function result(id = 'current-result', session = 'current-session', rawOutput: unknown = { stdout: 'ACTUAL_OUTPUT' }) {
-  return create(AgentChatMessageSchema, { id, seq: 1n, spanId: 'native-call', agentSessionId: session, contentCompression: ContentCompression.NONE, content: encoder.encode(JSON.stringify({ toolCallId: 'native-call', status: 'completed', rawOutput })) })
+  return makeMessage({ id, seq: 1n, spanId: 'native-call', agentSessionId: session, content: rawContent({ toolCallId: 'native-call', status: 'completed', rawOutput }) })
 }
 beforeEach(() => {
   vi.resetAllMocks()
@@ -60,7 +61,7 @@ describe('cursorNativeToolOutput', () => {
   })
 
   it('reads an earlier result page instead of assuming the latest page contains the call', async () => {
-    const later = create(AgentChatMessageSchema, { id: 'later-message', seq: 500n, agentSessionId: 'current-session', contentCompression: ContentCompression.NONE, content: encoder.encode('{}') })
+    const later = makeMessage({ id: 'later-message', seq: 500n, agentSessionId: 'current-session', content: encoder.encode('{}') })
     calls.worker.mockImplementation(async (_worker, _method, _requestSchema, _responseSchema, request) => {
       return request.anchor === MessagePageAnchor.OLDEST
         ? create(ListAgentMessagesResponseSchema, { messages: [result()], hasMore: true })

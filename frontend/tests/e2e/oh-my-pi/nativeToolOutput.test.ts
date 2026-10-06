@@ -1,12 +1,11 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ohMyPiNativeOutput } from './nativeToolOutput'
 
 const frame = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash', isError: false, result: { content: [{ type: 'text', text: 'preview' }], details: { meta: { truncation: { artifactId: '0' } } } } }
 function snapshot(value: unknown = frame): NativeMessageSnapshot {
-  return { agentId: 'agent', agentSessionId: '/private/session.jsonl', messages: [create(AgentChatMessageSchema, { id: 'row', agentSessionId: '/private/session.jsonl', spanId: 'call', spanType: 'bash', contentCompression: ContentCompression.NONE, content: new TextEncoder().encode(JSON.stringify(value)) })] }
+  return { agentId: 'agent', agentSessionId: '/private/session.jsonl', messages: [makeMessage({ id: 'row', agentSessionId: '/private/session.jsonl', spanId: 'call', spanType: 'bash', content: rawContent(value) })] }
 }
 describe('ohMyPiNativeOutput', () => {
   it('keeps the opaque native identifier zero without a filesystem path', () => {

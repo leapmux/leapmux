@@ -1,17 +1,16 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { openCodeShellOutcome } from './nativeShellOutcome'
 
 const encoder = new TextEncoder()
 function snapshot(exit: unknown = 7, status = 'completed', output = 'ACTUAL_STDERR\n'): NativeMessageSnapshot {
-  return { agentId: 'parent', agentSessionId: 'native-session', messages: [create(AgentChatMessageSchema, {
+  return { agentId: 'parent', agentSessionId: 'native-session', messages: [makeMessage({
     id: 'result',
     agentSessionId: 'native-session',
     spanId: 'shell-1',
-    contentCompression: ContentCompression.NONE,
-    content: encoder.encode(JSON.stringify({ sessionUpdate: 'tool_call_update', toolCallId: 'shell-1', status, rawOutput: { output, metadata: { exit } } })),
+    content: rawContent({ sessionUpdate: 'tool_call_update', toolCallId: 'shell-1', status, rawOutput: { output, metadata: { exit } } }),
   })] }
 }
 
@@ -63,7 +62,7 @@ describe('openCodeShellOutcome', () => {
     const first = source.messages[0]
     if (!first)
       throw new Error('The native outcome fixture contains no initial result.')
-    source.messages.push(create(AgentChatMessageSchema, { ...first, id: 'duplicate' }))
+    source.messages.push(makeMessage({ ...first, id: 'duplicate' }))
     expect(() => openCodeShellOutcome(source, 'shell-1', 'ACTUAL_STDERR\n')).toThrow('one completed')
     expect(() => openCodeShellOutcome(snapshot(), 'shell-1', 'OTHER_BYTES\n')).toThrow('different output bytes')
     expect(() => openCodeShellOutcome(snapshot(7, 'in_progress'), 'shell-1', 'ACTUAL_STDERR\n')).toThrow('one completed')

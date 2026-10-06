@@ -1,11 +1,8 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { COPILOT_EVENT, COPILOT_METHOD } from '../../../src/generated/contracts/copilot-protocol'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { COPILOT_USER_REJECTION, copilotToolCompletion } from './permissionRefusal'
-
-const encoder = new TextEncoder()
 
 /** One stored session event notification, as the Worker keeps it. */
 function eventFrame(type: string, data: Record<string, unknown>, overrides: { sessionId?: string, agentId?: string } = {}) {
@@ -22,12 +19,11 @@ function eventFrame(type: string, data: Record<string, unknown>, overrides: { se
 const rejected = { toolCallId: 'denied-1', success: false, error: { message: 'The user rejected this tool call', code: 'rejected' } }
 
 function message(id: string, frame: unknown, overrides: { agentSessionId?: string, spanId?: string } = {}) {
-  return create(AgentChatMessageSchema, {
+  return makeMessage({
     id,
     agentSessionId: overrides.agentSessionId ?? 'native-session',
     spanId: overrides.spanId ?? 'denied-1',
-    contentCompression: ContentCompression.NONE,
-    content: encoder.encode(JSON.stringify(frame)),
+    content: rawContent(frame),
   })
 }
 

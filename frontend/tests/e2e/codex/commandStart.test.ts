@@ -1,14 +1,14 @@
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { AgentProvider, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexCommandStarted } from './commandStart'
 
 const sessionId = 'native-thread'
 const encoder = new TextEncoder()
 
 function storedMessage(spanType: string, body: unknown, overrides: { agentSessionId?: string } = {}): AgentChatMessage {
-  return create(AgentChatMessageSchema, {
+  return makeMessage({
     id: 'message-1',
     seq: 1n,
     source: MessageSource.AGENT,
@@ -16,8 +16,7 @@ function storedMessage(spanType: string, body: unknown, overrides: { agentSessio
     spanId: 'exec-1',
     spanType,
     agentSessionId: overrides.agentSessionId ?? sessionId,
-    contentCompression: ContentCompression.NONE,
-    content: encoder.encode(JSON.stringify(body)),
+    content: rawContent(body),
   })
 }
 
@@ -50,14 +49,13 @@ describe('codexCommandStarted', () => {
   })
 
   it('refuses a body that is not JSON', () => {
-    const broken = create(AgentChatMessageSchema, {
+    const broken = makeMessage({
       id: 'message-2',
       seq: 2n,
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.CODEX,
       spanType: 'commandExecution',
       agentSessionId: sessionId,
-      contentCompression: ContentCompression.NONE,
       content: encoder.encode('not json'),
     })
     expect(() => codexCommandStarted([broken], sessionId)).toThrow('invalid JSON')

@@ -1,8 +1,6 @@
-import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { matchesRequest } from '../helpers/mockModelScript'
+import { nativeFrameSnapshot, onlyNativeMessage } from '../helpers/nativeOutputReaderCases'
 import { copilotChildTaskId, copilotChildTaskMatcher } from './childIdentity'
 
 describe('copilotChildTaskMatcher', () => {
@@ -32,31 +30,16 @@ const encoder = new TextEncoder()
 function event(agentId: unknown = 'actual_native_child', toolCallId = 'spawn', sessionId = 'native-session') {
   return { method: 'session.event', params: { sessionId, event: { type: 'subagent.started', agentId, data: { toolCallId } } } }
 }
-function snapshot(...bodies: unknown[]): NativeMessageSnapshot {
-  return { agentId: 'parent', agentSessionId: 'native-session', messages: bodies.map((body, index) => create(AgentChatMessageSchema, {
-    id: `frame-${index}`,
-    agentSessionId: 'native-session',
-    contentCompression: ContentCompression.NONE,
-    content: encoder.encode(JSON.stringify(body)),
-  })) }
-}
-function onlyMessage(source: NativeMessageSnapshot) {
-  expect(source.messages).toHaveLength(1)
-  const message = source.messages[0]
-  if (!message)
-    throw new Error('The native Copilot test fixture contains no message.')
-  return message
-}
 
 describe('copilotChildTaskId', () => {
   it('selects the actual native child through the exact spawning call and session', () => {
-    expect(copilotChildTaskId(snapshot(event('other', 'other-call'), event()), 'spawn')).toBe('actual_native_child')
+    expect(copilotChildTaskId(nativeFrameSnapshot(event('other', 'other-call'), event()), 'spawn')).toBe('actual_native_child')
   })
 
   it.each(['', ' '])('refuses an invalid native session before decoding a matching child frame: "%s"', (session) => {
-    const source = snapshot(event('actual_native_child', 'spawn', session))
+    const source = nativeFrameSnapshot(event('actual_native_child', 'spawn', session))
     source.agentSessionId = session
-    const message = onlyMessage(source)
+    const message = onlyNativeMessage(source)
     message.agentSessionId = session
     expect(() => copilotChildTaskId(source, 'spawn')).toThrow('nonempty session ID')
     message.content = encoder.encode('{broken')
@@ -64,36 +47,36 @@ describe('copilotChildTaskId', () => {
   })
 
   it('accepts repeated starts for the same child but refuses conflicting identities', () => {
-    expect(copilotChildTaskId(snapshot(event(), event()), 'spawn')).toBe('actual_native_child')
-    expect(() => copilotChildTaskId(snapshot(event(), event('conflicting-child')), 'spawn')).toThrow('one native child')
+    expect(copilotChildTaskId(nativeFrameSnapshot(event(), event()), 'spawn')).toBe('actual_native_child')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot(event(), event('conflicting-child')), 'spawn')).toThrow('one native child')
   })
 
   it.each([undefined, null, '', '   ', 0, [], {}])('refuses a malformed actual native child ID: %j', (id) => {
     const original = event()
     const body = { ...original, params: { ...original.params, event: { ...original.params.event, agentId: id } } }
-    expect(() => copilotChildTaskId(snapshot(body), 'spawn')).toThrow('no agent ID')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot(body), 'spawn')).toThrow('no agent ID')
   })
 
   it('refuses absent starts, wrong calls, and wrong native sessions', () => {
-    expect(() => copilotChildTaskId(snapshot(), 'spawn')).toThrow('one native child')
-    expect(() => copilotChildTaskId(snapshot(event('other', 'other-call')), 'spawn')).toThrow('one native child')
-    expect(() => copilotChildTaskId(snapshot(event('other', 'spawn', 'other-session')), 'spawn')).toThrow('one native child')
-    const stale = snapshot(event())
-    onlyMessage(stale).agentSessionId = 'old-session'
+    expect(() => copilotChildTaskId(nativeFrameSnapshot(), 'spawn')).toThrow('one native child')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot(event('other', 'other-call')), 'spawn')).toThrow('one native child')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot(event('other', 'spawn', 'other-session')), 'spawn')).toThrow('one native child')
+    const stale = nativeFrameSnapshot(event())
+    onlyNativeMessage(stale).agentSessionId = 'old-session'
     expect(() => copilotChildTaskId(stale, 'spawn')).toThrow('one native child')
   })
 
   it('ignores valid unrelated events but refuses malformed relevant events', () => {
-    expect(copilotChildTaskId(snapshot({ type: 'user' }, { method: 'session.event', params: { sessionId: 'native-session', event: { type: 'assistant.message' } } }, event()), 'spawn')).toBe('actual_native_child')
-    expect(() => copilotChildTaskId(snapshot({ method: 'session.event', params: null }), 'spawn')).toThrow('invalid parameters')
-    expect(() => copilotChildTaskId(snapshot({ method: 'session.event', params: { sessionId: 'native-session', event: null } }), 'spawn')).toThrow('event object')
-    expect(() => copilotChildTaskId(snapshot({ method: 'session.event', params: { sessionId: 'native-session', event: { type: 'subagent.started', data: null } } }), 'spawn')).toThrow('data object')
+    expect(copilotChildTaskId(nativeFrameSnapshot({ type: 'user' }, { method: 'session.event', params: { sessionId: 'native-session', event: { type: 'assistant.message' } } }, event()), 'spawn')).toBe('actual_native_child')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot({ method: 'session.event', params: null }), 'spawn')).toThrow('invalid parameters')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot({ method: 'session.event', params: { sessionId: 'native-session', event: null } }), 'spawn')).toThrow('event object')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot({ method: 'session.event', params: { sessionId: 'native-session', event: { type: 'subagent.started', data: null } } }), 'spawn')).toThrow('data object')
   })
 
   it('preserves native decode failures and refuses an empty call ID', () => {
-    const source = snapshot(event())
-    onlyMessage(source).content = encoder.encode('{broken')
+    const source = nativeFrameSnapshot(event())
+    onlyNativeMessage(source).content = encoder.encode('{broken')
     expect(() => copilotChildTaskId(source, 'spawn')).toThrow('invalid JSON')
-    expect(() => copilotChildTaskId(snapshot(event()), '')).toThrow('spawn call ID')
+    expect(() => copilotChildTaskId(nativeFrameSnapshot(event()), '')).toThrow('spawn call ID')
   })
 })

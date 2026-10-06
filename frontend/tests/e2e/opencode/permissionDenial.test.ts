@@ -1,10 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { OPENCODE_PERMISSION_REJECTION, openCodeToolEnding } from './permissionDenial'
-
-const encoder = new TextEncoder()
 
 /** The failed frame that OpenCode sends for a call whose permission the reader rejected. */
 const rejectedFrame = {
@@ -17,12 +14,11 @@ const rejectedFrame = {
 }
 
 function message(id: string, frame: unknown, overrides: { agentSessionId?: string, spanId?: string } = {}) {
-  return create(AgentChatMessageSchema, {
+  return makeMessage({
     id,
     agentSessionId: overrides.agentSessionId ?? 'native-session',
     spanId: overrides.spanId ?? 'denied-1',
-    contentCompression: ContentCompression.NONE,
-    content: encoder.encode(JSON.stringify(frame)),
+    content: rawContent(frame),
   })
 }
 

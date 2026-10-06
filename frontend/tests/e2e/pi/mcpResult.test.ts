@@ -1,11 +1,10 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { piMcpResultFromSnapshot } from './mcpResult'
 
 function snapshot(frames: unknown[]): NativeMessageSnapshot {
-  return { agentId: 'actual-agent', agentSessionId: 'actual-session', messages: frames.map((frame, index) => create(AgentChatMessageSchema, { id: String(index), spanId: 'call', spanType: 'mcp__probe__inspect', contentCompression: ContentCompression.NONE, content: new TextEncoder().encode(JSON.stringify(frame)) })) }
+  return { agentId: 'actual-agent', agentSessionId: 'actual-session', messages: frames.map((frame, index) => makeMessage({ id: String(index), spanId: 'call', spanType: 'mcp__probe__inspect', content: rawContent(frame) })) }
 }
 const complete = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp__probe__inspect', isError: false, result: { content: [], structuredContent: { structuredContent: { count: 0, enabled: false, text: '' } } } }
 

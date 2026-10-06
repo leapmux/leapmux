@@ -1,16 +1,15 @@
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
+import { AgentProvider, MessageCompletion, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexAppliedFileChange, requireCodexPatchResult } from './appliedFileChange'
 
 const sessionId = 'native-thread'
 const item = { id: 'actual-file-item', type: 'fileChange', status: 'completed', changes: [{ path: '/private/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' }] }
 const payload = (nativeItem: unknown) => ({ threadId: sessionId, turnId: 'native-turn', item: nativeItem })
-const encoder = new TextEncoder()
 function storedMessage(id: string, seq: bigint, body: unknown): AgentChatMessage {
-  return create(AgentChatMessageSchema, {
+  return makeMessage({
     id,
     seq,
     source: MessageSource.AGENT,
@@ -20,8 +19,7 @@ function storedMessage(id: string, seq: bigint, body: unknown): AgentChatMessage
     agentSessionId: sessionId,
     // The Worker stores a native Codex item with no Worker completion.
     completion: MessageCompletion.UNSPECIFIED,
-    contentCompression: ContentCompression.NONE,
-    content: encoder.encode(JSON.stringify(body)),
+    content: rawContent(body),
   })
 }
 const started = storedMessage('native-started', 41n, payload({ ...item, status: 'inProgress', changes: [] }))
@@ -52,11 +50,11 @@ describe('codexAppliedFileChange', () => {
     expect(() => codexAppliedFileChange(messages, sessionId, item.id, '/private/file.txt')).toThrow()
   })
   it.each([MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR])('refuses a completed row that carries the Worker completion %s', (completion) => {
-    const finishedByWorker = create(AgentChatMessageSchema, { ...completed, completion })
+    const finishedByWorker = makeMessage({ ...completed, completion })
     expect(() => codexAppliedFileChange([started, finishedByWorker], sessionId, item.id, '/private/file.txt')).toThrow('did not report a completed applied change')
   })
   it('refuses native completion before the same item starts', () => {
-    const earlyCompleted = create(AgentChatMessageSchema, { ...completed, seq: 40n })
+    const earlyCompleted = makeMessage({ ...completed, seq: 40n })
     expect(() => codexAppliedFileChange([earlyCompleted, started], sessionId, item.id, '/private/file.txt')).toThrow('before its actual start')
   })
   it.each([
@@ -71,7 +69,7 @@ describe('codexAppliedFileChange', () => {
     { label: 'error completion', fields: { completion: MessageCompletion.ERROR } },
     { label: 'interrupted completion', fields: { completion: MessageCompletion.INTERRUPTED } },
   ])('refuses invalid Worker metadata on the exact native file result: $label', ({ fields }) => {
-    expect(() => codexAppliedFileChange([started, create(AgentChatMessageSchema, { ...completed, ...fields })], sessionId, item.id, '/private/file.txt')).toThrow()
+    expect(() => codexAppliedFileChange([started, makeMessage({ ...completed, ...fields })], sessionId, item.id, '/private/file.txt')).toThrow()
   })
   it.each([
     { body: { ...payload(item), threadId: 'another-thread' } },
@@ -82,13 +80,13 @@ describe('codexAppliedFileChange', () => {
     expect(() => codexAppliedFileChange([started, storedMessage('native-completed', 42n, body)], sessionId, item.id, '/private/file.txt')).toThrow()
   })
   it('excludes old-session spans while preserving the exact current session and full sequence values', () => {
-    const old = [started, completed].map(message => create(AgentChatMessageSchema, { ...message, agentSessionId: 'old-session' }))
-    const currentStart = create(AgentChatMessageSchema, { ...started, seq: 9223372036854775806n })
-    const currentEnd = create(AgentChatMessageSchema, { ...completed, seq: 9223372036854775807n })
+    const old = [started, completed].map(message => makeMessage({ ...message, agentSessionId: 'old-session' }))
+    const currentStart = makeMessage({ ...started, seq: 9223372036854775806n })
+    const currentEnd = makeMessage({ ...completed, seq: 9223372036854775807n })
     expect(codexAppliedFileChange([...old, currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual(item.changes[0])
   })
   it('preserves sequence zero and an explicitly empty native diff', () => {
-    const currentStart = create(AgentChatMessageSchema, { ...started, seq: 0n })
+    const currentStart = makeMessage({ ...started, seq: 0n })
     const currentEnd = storedMessage('native-completed', 1n, payload({ ...item, changes: [{ path: '/private/file.txt', kind: 'add', diff: '' }] }))
     expect(codexAppliedFileChange([currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual({ path: '/private/file.txt', kind: 'add', diff: '' })
   })

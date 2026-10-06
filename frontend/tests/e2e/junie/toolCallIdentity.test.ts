@@ -1,6 +1,5 @@
-import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { junieNativeOutputFileCallId } from './toolCallIdentity'
 
 const id = '8b4a1496-1260-4d91-a8bc-4a3a56240fbe'
@@ -8,7 +7,7 @@ const command = 'node actual-computed-script.js'
 const workingDirectory = '/owned/project'
 const frame = { sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', status: 'in_progress', rawInput: { command, cwd: workingDirectory } }
 function message(value: unknown = frame, spanId = id) {
-  return create(AgentChatMessageSchema, { id: 'native-row', spanId, spanType: 'execute', contentCompression: ContentCompression.NONE, content: new TextEncoder().encode(JSON.stringify(value)) })
+  return makeMessage({ id: 'native-row', spanId, spanType: 'execute', content: rawContent(value) })
 }
 function snapshot() {
   return { agentId: 'agent', agentSessionId: 'session-261002-102701-7le2', messages: [message()] }
