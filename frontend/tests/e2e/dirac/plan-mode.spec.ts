@@ -1,9 +1,9 @@
 import { diracTest, expect } from '../dirac-fixtures'
-import { findBinary } from '../helpers/binaryOnPath'
+import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { diracRespondToolCall } from '../helpers/providerToolCalls'
-import { getGlobalState } from '../helpers/server'
+import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { PLAN_REVIEW_BUTTON_TEST_IDS } from '../helpers/unsupportedPlanMode'
 import { closeAgentViaAPI } from '../helpers/workerTabs'
@@ -15,9 +15,11 @@ diracTest.describe('Dirac plan mode', () => {
   diracTest('the plan card resolves at the next prompt and raises no approval', async ({ page, authenticatedEmptyWorkspace, approvalDisabledDiracHome, leapmuxServer, modelScript }, testInfo) => {
     void approvalDisabledDiracHome
     const home = leapmuxServer.agentEnv.HOME
-    const nodePath = findBinary('node', leapmuxServer.agentEnv)
-    if (!home || !nodePath)
-      throw new Error('The Dirac plan test requires a private home and Node executable.')
+    if (!home)
+      throw new Error('The Dirac plan test requires a private home.')
+    // The hook of the agent runs with the search path of the Worker, which `hubSpawnEnv` builds, so the readiness probe
+    // takes the Node.js runtime from that path.
+    const nodePath = requireBinary('node', 'The Dirac plan readiness probe requires the Node.js runtime', hubSpawnEnv(leapmuxServer.agentEnv))
     await withDiracPlanReadiness({ home, nodePath, runDir: getGlobalState().tmpDir }, async (readiness) => {
       const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, { optionValues: { permissionMode: 'plan' } })
       await withCleanup(async () => {
