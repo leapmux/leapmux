@@ -194,13 +194,16 @@ describe('captureGeminiResumeEvidence', () => {
       expect(object(result.workerBefore).startupError).toBe(f.agent.startupError)
   })
 
-  // The pending read pages by the rule of the shared Worker reader, which a started agent's read uses also.
+  // The pending read pages by the rule of the shared Worker reader, which a started agent's read uses also. That rule
+  // refuses sequence 0, which the Worker never allocates. The receipt keeps the row, because the read hands each page to
+  // the receipt before its checks.
   it('keeps a pending row with sequence zero, as the read of a started agent does', async () => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
     calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [makeMessage({ ...f.row, seq: 0n })] }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
-    expect(object(result.workerRead).state).toBe('complete-observation')
+    expect(object(result.workerRead).state).toBe('failed')
+    expect(object(object(result.workerRead).error).message).toContain('sequence below 1')
     expect(objects(result.messages)[0]?.seq).toBe('0')
   })
 

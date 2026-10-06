@@ -52,7 +52,13 @@ export function sameAgentOwnership(first: AgentInfo, second: AgentInfo): boolean
 
 /**
  * Read every stored Worker message of one agent, oldest first, page by page.
- * A page that repeats a message ID, does not advance the cursor, or claims another page with no message fails the read.
+ *
+ * These pages fail the read:
+ * - A page that repeats a message ID.
+ * - A page that does not advance the cursor.
+ * - A page that holds a sequence below 1, which the Worker never allocates.
+ * - A page that claims another page with no message.
+ *
  * The read does not check the agent identity. `readNativeMessageSnapshot` adds that check.
  *
  * `onPage` receives each page as the Worker returned it, before the checks, so a diagnostic caller keeps the bytes
@@ -83,8 +89,12 @@ export async function readAllAgentMessages(
     for (const message of response.messages) {
       if (message.id.trim() === '' || seen.has(message.id))
         throw new Error('The Worker message page contains an absent or duplicate message ID.')
-      if (message.seq < 0n || (cursor !== undefined && message.seq <= cursor))
+      if (cursor !== undefined && message.seq <= cursor)
         throw new Error('The Worker message cursor did not advance.')
+      // The Worker allocates a sequence as `message_seq_hwm + 1` from a high-water that starts at 0, so a stored
+      // sequence is 1 or more. A list response uses 0 only to state "no message".
+      if (message.seq < 1n)
+        throw new Error(`The Worker message page contains sequence ${message.seq}, a sequence below 1. The Worker allocates each sequence from 1.`)
       seen.add(message.id)
       messages.push(message)
       cursor = message.seq

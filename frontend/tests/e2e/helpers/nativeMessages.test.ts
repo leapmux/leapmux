@@ -20,10 +20,10 @@ beforeEach(() => {
 
 describe('readAllAgentMessages', () => {
   it('reads every ascending page and reads no agent identity', async () => {
-    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('zero', 0n), message('one', 1n)], hasMore: true }))
-      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('two', 2n)], hasMore: false }))
-    expect((await readAllAgentMessages(context, 'parent')).map(value => value.id)).toEqual(['zero', 'one', 'two'])
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.AFTER, cursorSeq: 1n, limit: MESSAGE_PAGE_LIMIT })
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('one', 1n), message('two', 2n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('three', 3n)], hasMore: false }))
+    expect((await readAllAgentMessages(context, 'parent')).map(value => value.id)).toEqual(['one', 'two', 'three'])
+    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.AFTER, cursorSeq: 2n, limit: MESSAGE_PAGE_LIMIT })
     expect(calls.agent).not.toHaveBeenCalled()
   })
 
@@ -32,9 +32,14 @@ describe('readAllAgentMessages', () => {
     expect(calls.worker).not.toHaveBeenCalled()
   })
 
+  it.each([0n, -1n])('refuses a first message sequence of %s, because the Worker allocates each sequence from 1', async (seq) => {
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('first', seq)] }))
+    await expect(readAllAgentMessages(context, 'parent')).rejects.toThrow('sequence below 1')
+  })
+
   it('refuses a page that repeats a message ID', async () => {
-    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 0n)], hasMore: true }))
-      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 1n)] }))
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 1n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('same', 2n)] }))
     await expect(readAllAgentMessages(context, 'parent')).rejects.toThrow('duplicate message ID')
   })
 
@@ -88,14 +93,14 @@ describe('sameAgentOwnership', () => {
 })
 
 describe('readNativeMessageSnapshot', () => {
-  it('reads every ascending page and retains sequence zero without latest-only load flags', async () => {
-    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('zero', 0n)], hasMore: true }))
-      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('one', 1n), message('two', 2n)], hasMore: false }))
+  it('reads every ascending page from the first allocated sequence without latest-only load flags', async () => {
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('one', 1n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('two', 2n), message('three', 3n)], hasMore: false }))
     const result = await readNativeMessageSnapshot(context, 'parent')
-    expect(result.messages.map(value => value.id)).toEqual(['zero', 'one', 'two'])
+    expect(result.messages.map(value => value.id)).toEqual(['one', 'two', 'three'])
     expect(result.agentSessionId).toBe('native-session')
     expect(calls.worker.mock.calls[0]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.AFTER, cursorSeq: 0n, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.AFTER, cursorSeq: 1n, limit: MESSAGE_PAGE_LIMIT })
   })
 
   it('retains an actually empty completed history', async () => {
@@ -106,7 +111,7 @@ describe('readNativeMessageSnapshot', () => {
   it('reads every saved page for an active virtual child with stable parent, spawn, and root links', async () => {
     const child = create(AgentInfoSchema, { id: 'child', status: AgentStatus.ACTIVE, parentAgentId: 'parent', spawnSpanId: 'native-spawn', rootAgentId: 'root' })
     calls.agent.mockResolvedValue(child)
-    const first = create(AgentChatMessageSchema, { ...message('child-zero', 0n, { text: 'ACTUAL_CHILD_START' }), agentSessionId: '' })
+    const first = create(AgentChatMessageSchema, { ...message('child-first', 1n, { text: 'ACTUAL_CHILD_START' }), agentSessionId: '' })
     const last = create(AgentChatMessageSchema, { ...message('child-later', 100n, { text: 'ACTUAL_CHILD_END' }), agentSessionId: '' })
     calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [first], hasMore: true }))
       .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [last] }))
@@ -116,7 +121,7 @@ describe('readNativeMessageSnapshot', () => {
     expect(result.messages).toEqual([first, last])
     expect(result.messages.map(nativeMessageBody)).toEqual([{ text: 'ACTUAL_CHILD_START' }, { text: 'ACTUAL_CHILD_END' }])
     expect(calls.worker.mock.calls[0]?.[4]).toEqual({ agentId: 'child', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'child', anchor: MessagePageAnchor.AFTER, cursorSeq: 0n, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: 'child', anchor: MessagePageAnchor.AFTER, cursorSeq: 1n, limit: MESSAGE_PAGE_LIMIT })
     expect(calls.agent.mock.calls).toEqual([[context, 'child'], [context, 'child']])
   })
 
@@ -142,7 +147,7 @@ describe('readNativeMessageSnapshot', () => {
   it('reads an unlinked virtual child through its durable native key', async () => {
     const child = create(AgentInfoSchema, { id: 'child', status: AgentStatus.ACTIVE, parentAgentId: 'parent', rootAgentId: 'root', providerChildKey: 'native-child-key' })
     calls.agent.mockResolvedValue(child)
-    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [message('native-row', 0n)] }))
+    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [message('native-row', 1n)] }))
     const result = await readNativeMessageSnapshot(context, 'child')
     expect(result.messages.map(row => row.id)).toEqual(['native-row'])
     expect(calls.worker).toHaveBeenCalledOnce()
@@ -151,7 +156,7 @@ describe('readNativeMessageSnapshot', () => {
   it('refuses an unlinked child whose native key changes during pagination', async () => {
     const child = create(AgentInfoSchema, { id: 'child', status: AgentStatus.ACTIVE, parentAgentId: 'parent', rootAgentId: 'root', providerChildKey: 'native-child-key' })
     calls.agent.mockResolvedValueOnce(child).mockResolvedValueOnce(create(AgentInfoSchema, { ...child, providerChildKey: 'foreign-child-key' }))
-    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [message('native-row', 0n)] }))
+    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [message('native-row', 1n)] }))
     await expect(readNativeMessageSnapshot(context, 'child')).rejects.toThrow('session changed')
   })
 
@@ -163,8 +168,8 @@ describe('readNativeMessageSnapshot', () => {
     const child = create(AgentInfoSchema, { id: 'child', status: AgentStatus.ACTIVE, parentAgentId: 'parent', spawnSpanId: 'native-spawn', rootAgentId: 'root' })
     calls.agent.mockResolvedValueOnce(child)
       .mockResolvedValueOnce(create(AgentInfoSchema, { ...child, [field]: value }))
-    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('first', 0n)], hasMore: true }))
-      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('last', 1n)] }))
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('first', 1n)], hasMore: true }))
+      .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('last', 2n)] }))
     await expect(readNativeMessageSnapshot(context, 'child')).rejects.toThrow('session changed')
     expect(calls.worker).toHaveBeenCalledTimes(2)
     expect(calls.agent).toHaveBeenCalledTimes(2)
@@ -189,8 +194,9 @@ describe('readNativeMessageSnapshot', () => {
     await expect(readNativeMessageSnapshot(context, 'parent')).rejects.toThrow('empty but claims')
   })
 
+  // Both sequences regress below the cursor of the first page. The observer case of `readAllAgentMessages` repeats one.
   it.each([0n, -1n])('refuses a repeated or regressing page cursor: %s', async (seq) => {
-    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('first', 0n)], hasMore: true }))
+    calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('first', 1n)], hasMore: true }))
       .mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [message('second', seq)] }))
     await expect(readNativeMessageSnapshot(context, 'parent')).rejects.toThrow('did not advance')
   })
