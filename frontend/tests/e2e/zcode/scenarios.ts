@@ -14,9 +14,14 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 }
 
 /**
- * The related proof of a missing-setting cell: a native to-do call fills the sidebar.
- * ZCode asks before each native tool runs, so the proof applies the bypass preset first.
+ * Let each native tool run with no permission request. ZCode asks before each native tool runs, so a scenario that runs
+ * a tool and answers no request applies the bypass preset first.
  */
+export async function bypassToolRequests(context: Pick<ManagedNativeScenarioContext, 'page'>): Promise<void> {
+  await applyPermissionPreset(context.page, 'bypass')
+}
+
+/** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
-  await exerciseRelatedTodo(context, { prepare: () => applyPermissionPreset(context.page, 'bypass') })
+  await exerciseRelatedTodo(context, { prepare: () => bypassToolRequests(context) })
 }

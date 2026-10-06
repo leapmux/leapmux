@@ -1,12 +1,13 @@
 import { exerciseFileEditSequence, exerciseFileToolExecution } from '../helpers/nativeToolExecution'
 import { zcodeReadRangeToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, expectSettingsChip } from '../helpers/ui'
+import { expectSettingsChip } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
+import { bypassToolRequests } from './scenarios'
 
 zcodeTest('renders an applied file edit', async ({ authenticatedZCodeWorkspace, native }) => {
   // Build mode asks before a write.
   // Select Yolo so the scripted write completes and the case can inspect its applied diff.
-  await applyPermissionPreset(native.page, 'bypass')
+  await bypassToolRequests(native)
   await expectSettingsChip(native.page, 'Yolo')
   // ZCode requires an earlier Read before Edit.
   // It otherwise returns "File has not been read yet. Read it first before writing to it."
@@ -15,5 +16,5 @@ zcodeTest('renders an applied file edit', async ({ authenticatedZCodeWorkspace, 
 })
 
 zcodeTest('reads and changes actual scratch bytes through native file tools', async ({ native }) => {
-  await exerciseFileToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass'), readAfterCall: (id, path) => zcodeReadRangeToolCall(id, path, { offset: 1, limit: 1 }) })
+  await exerciseFileToolExecution(native, { prepare: () => bypassToolRequests(native), readAfterCall: (id, path) => zcodeReadRangeToolCall(id, path, { offset: 1, limit: 1 }) })
 })

@@ -4,7 +4,8 @@ import { expect } from '@playwright/test'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
 import { childTaskAnywhere } from '../helpers/runningChildProof'
 import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
-import { applyPermissionPreset, subagentReportBubble, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { subagentReportBubble, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { bypassToolRequests } from './scenarios'
 
 /**
  * The facts of a held ZCode child.
@@ -14,7 +15,7 @@ import { applyPermissionPreset, subagentReportBubble, userBubbles, waitForAgentI
 export const ZCODE_CHILD: NativeChildProfile = {
   childTask: childTaskAnywhere,
   rowTitleHoldsDescription: false,
-  prepare: context => applyPermissionPreset(context.page, 'bypass'),
+  prepare: bypassToolRequests,
 }
 
 /**

@@ -4,8 +4,9 @@ import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { applyPermissionPreset, sendMessage, subagentReportBubble, userBubbles } from '../helpers/ui'
+import { sendMessage, subagentReportBubble, userBubbles } from '../helpers/ui'
 import { readReasonixChildTaskId, reasonixChildTaskMatcher } from './childIdentity'
+import { bypassToolRequests } from './scenarios'
 
 /**
  * The facts of a held Reasonix child.
@@ -15,7 +16,7 @@ import { readReasonixChildTaskId, reasonixChildTaskMatcher } from './childIdenti
 export const REASONIX_CHILD: NativeChildProfile = {
   childTask: reasonixChildTaskMatcher,
   rowTitleHoldsDescription: false,
-  prepare: context => applyPermissionPreset(context.page, 'bypass'),
+  prepare: bypassToolRequests,
   resolveTaskId: (context, parentId, child) => readReasonixChildTaskId(context, parentId, child.spawn.id, child.prompt),
 }
 

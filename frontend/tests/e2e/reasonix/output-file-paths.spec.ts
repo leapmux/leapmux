@@ -12,12 +12,12 @@ import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { applyPermissionPreset } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
 import { reasonixNativeOutput } from './nativeToolOutput'
+import { bypassToolRequests } from './scenarios'
 
 reasonixTest('keeps the native result record and exact inline Copy with no output file path after reload', async ({ native }, testInfo) => {
-  await applyPermissionPreset(native.page, 'bypass')
+  await bypassToolRequests(native)
   const agent = await currentNativeAgent(native)
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   const program = `${output.source}\nprocess.stdout.write(completeOutput);`

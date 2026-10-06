@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, toolRows } from '../helpers/ui'
+import { toolRows } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
+import { bypassToolRequests } from './scenarios'
 
 zcodeTest('a bash command renders as a tool card with its output', async ({ native }) => {
   // No scripted text states `zcode-42`, so only the command's own output can put
@@ -36,5 +37,5 @@ zcodeTest('a bash command renders as a tool card with its output', async ({ nati
 })
 
 zcodeTest('keeps actual native shell output and a failed command result', async ({ native }) => {
-  await exerciseShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  await exerciseShellToolExecution(native, { prepare: () => bypassToolRequests(native) })
 })

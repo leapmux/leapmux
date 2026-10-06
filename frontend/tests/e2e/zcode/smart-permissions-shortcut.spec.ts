@@ -1,7 +1,7 @@
-import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset, expectPermissionShortcuts, expectSettingsChip, waitForSettingsHydrated } from '../helpers/ui'
 import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfiguration'
 import { zcodeTest } from '../zcode-fixtures'
+import { relatedNativeProof } from './scenarios'
 
 zcodeTest('smart-permissions-shortcut: offers only the bypass permission shortcut', async ({ authenticatedZCodeWorkspace, page }) => {
   void authenticatedZCodeWorkspace
@@ -13,6 +13,5 @@ zcodeTest('smart-permissions-shortcut: offers only the bypass permission shortcu
 })
 
 zcodeTest('proves the native smart-permissions-shortcut limit after a real sidebar operation', async ({ native }) => {
-  const relatedProof = () => exerciseRelatedTodo(native, { prepare: () => applyPermissionPreset(native.page, 'bypass') })
-  await expectMissingPermissionShortcut(native, { preset: 'smart', relatedProof })
+  await expectMissingPermissionShortcut(native, { preset: 'smart', relatedProof: () => relatedNativeProof(native) })
 })

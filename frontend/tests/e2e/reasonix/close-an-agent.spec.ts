@@ -1,7 +1,7 @@
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
-import { applyPermissionPreset } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
+import { bypassToolRequests } from './scenarios'
 
-reasonixTest('closes the native agent and its actual owned process tree', async ({ native, page }) => {
-  await exerciseCloseAgent(native, { prepare: () => applyPermissionPreset(page, 'bypass') })
+reasonixTest('closes the native agent and its actual owned process tree', async ({ native }) => {
+  await exerciseCloseAgent(native, { prepare: () => bypassToolRequests(native) })
 })
