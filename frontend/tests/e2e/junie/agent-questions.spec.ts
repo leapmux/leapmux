@@ -1,50 +1,40 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { nativeToolResult } from '../helpers/nativeToolResult'
-import { askUserQuestionToolCall, junieAnswerToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { exerciseQuestionAnswer } from '../helpers/nativeQuestion'
+import { openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { expect, JUNIE_AGENT, junieTest } from '../junie-fixtures'
+import { nativeContext } from './scenarios'
 
 junieTest.describe('Junie questions', () => {
-  const PROVIDER = AgentProvider.JUNIE
-
   junieTest('ask_user raises a permission-shaped choice', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
-
-    await modelScript.queue(
-      {
-        toolCalls: [askUserQuestionToolCall(PROVIDER, 'junie-question', [{
-          question: 'Which one?',
-          header: 'Pick',
-          options: [
-            { label: 'First', description: 'The first choice.' },
-            { label: 'Second', description: 'The second choice.' },
-          ],
-        }])],
-      },
-      { toolCalls: [junieAnswerToolCall('junie-answer', 'You picked.')] },
-    )
-    await sendMessage(page, modelScript.prompt('Ask me which one.'))
-    await waitForAgentIdle(page)
-
-    // The native question creates a control request.
-    // Open its choice menu to read the available answers.
-    await expect(page.getByText('Which one?').first()).toBeVisible()
-    await page.getByRole('button', { name: 'Pick' }).click()
-    await expect(page.getByText('First').filter({ visible: true }).first()).toBeVisible()
-    await expect(page.getByText('Second').filter({ visible: true }).first()).toBeVisible()
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
 
     // The turn waits for approval. The next native model request must carry
     // the selected choice, while the scripted answer stays neutral.
-    await page.getByText('Second').filter({ visible: true }).first().click()
-    await page.getByRole('button', { name: 'Approve' }).click()
-    const status = await modelScript.waitForSteps(2)
-    await waitForAgentIdle(page)
-    const answer = nativeToolResult(status.requests.find(request => request.stepIndex === 1), 'junie-question')
-    expect(answer).toContain('Second')
-    expect(answer).not.toContain('First')
-    await expect(assistantBubbles(page).filter({ hasText: 'You picked.' }).first()).toBeVisible()
+    const { result } = await exerciseQuestionAnswer(context, {
+      questions: [{
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'First', description: 'The first choice.' },
+          { label: 'Second', description: 'The second choice.' },
+        ],
+      }],
+      callId: 'junie-question',
+      prompt: 'Ask me which one.',
+      answer: 'You picked.',
+      // The native question creates a permission request. Its choice menu holds the available answers.
+      reply: async () => {
+        await page.getByRole('button', { name: 'Pick' }).click()
+        await expect(page.getByText('First').filter({ visible: true }).first()).toBeVisible()
+        await expect(page.getByText('Second').filter({ visible: true }).first()).toBeVisible()
+        await page.getByText('Second').filter({ visible: true }).first().click()
+        await page.getByRole('button', { name: 'Approve' }).click()
+      },
+    })
+    expect(result).toContain('Second')
+    expect(result).not.toContain('First')
   })
 })

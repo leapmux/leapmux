@@ -1,9 +1,6 @@
-import { expect } from '@playwright/test'
-
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { clineTest } from '../cline-fixtures'
-import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, controlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { clineTest, expect } from '../cline-fixtures'
+import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
+import { nativeContext } from './scenarios'
 
 /**
  * A real native question tool opens the shared question controls. The selected answer must reach the native model.
@@ -12,51 +9,26 @@ import { assistantBubbles, controlBanner, sendMessage, waitForAgentIdle } from '
  *
  * The Worker answers Cline's native question executor. Its reply must reach the same native call.
  */
-const PROVIDER = AgentProvider.CLINE
-
-/**
- * Read the native tool result from the tool message in the Chat Completions request.
- * The whole body also contains the earlier call arguments. Those arguments include every option label, regardless of the selected answer.
- */
-function toolResult(body: unknown, toolCallId: string): string {
-  const messages = (body as { messages?: { role?: string, tool_call_id?: string, content?: unknown }[] } | undefined)?.messages ?? []
-  const results = messages.filter(message => message.role === 'tool' && message.tool_call_id === toolCallId)
-  expect(results, `the request carries the result of ${toolCallId}`).toHaveLength(1)
-  return JSON.stringify(results[0]!.content)
-}
-
 clineTest.describe('Cline control requests', () => {
-  clineTest('answers a question with the option the reader picks', async ({ askingClineWorkspace, page, modelScript }) => {
-    void askingClineWorkspace
-    await modelScript.queue(
-      {
-        toolCalls: [askUserQuestionToolCall(PROVIDER, 'cline-question', [{
-          question: 'Which database?',
-          header: 'Database',
-          options: [{ label: 'Postgres', description: 'Relational' }, { label: 'Redis', description: 'In-memory' }],
-        }])],
-      },
-      { text: 'Redis it is.' },
-    )
-    await sendMessage(page, modelScript.prompt('Ask me for a database.'))
-    await modelScript.waitForSteps(1)
-    await expect(controlBanner(page)).toContainText('Which database?')
+  clineTest('answers a question with the option the reader picks', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
     // The SECOND option: a result that states the first option, or no option at
     // all, fails the check below.
-    await page.locator('[data-testid="question-option-Redis"]:visible').click()
-    const submit = page.locator('[data-testid="control-submit-btn"]:visible')
-    await expect(submit).toBeEnabled()
-    await submit.click()
-    await expect(controlBanner(page)).toHaveCount(0)
-
-    const status = await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
+    const { result } = await exerciseQuestionAnswer(context, {
+      questions: [{
+        question: 'Which database?',
+        header: 'Database',
+        options: [{ label: 'Postgres', description: 'Relational' }, { label: 'Redis', description: 'In-memory' }],
+      }],
+      callId: 'cline-question',
+      prompt: 'Ask me for a database.',
+      answer: 'Redis it is.',
+      reply: chooseQuestionOption('Redis'),
+    })
     // The worker answered Cline's question executor, and Cline gave the answer to the
-    // model as the question's result.
-    const followUp = status.requests.find(request => request.stepIndex === 1)
-    const result = toolResult(followUp?.body, 'cline-question')
+    // model as the question's result. The whole request also holds the earlier call
+    // arguments, which list every option, so the check reads the result alone.
     expect(result).toContain('Redis')
     expect(result).not.toContain('Postgres')
-    await expect(assistantBubbles(page).filter({ hasText: 'Redis it is.' })).toBeVisible()
   })
 })

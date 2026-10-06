@@ -1,21 +1,18 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { AgentProvider, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { diracTest, expect } from '../dirac-fixtures'
 import { getTestChannel } from '../helpers/api'
-import { nativeToolResult } from '../helpers/nativeToolResult'
-import { askUserQuestionToolCall, diracRespondToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
+import { controlButton, waitForSettingsHydrated } from '../helpers/ui'
 import { exerciseQuestionReply } from './questionScenarios'
 import { nativeContext } from './scenarios'
 
 diracTest.describe('dirac agent questions', () => {
   diracTest('returns the selected form answer through the native question tool', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }, testInfo) => {
-    void askingDiracWorkspace
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
     await waitForSettingsHydrated(page)
-    const agentId = await page.locator('[data-testid="tab"][data-tab-type="agent"]:visible').first().getAttribute('data-tab-id')
-    if (!agentId)
-      throw new Error('The Dirac question test needs an agent ID.')
+    const agentId = await selectedAgentTabId(page)
 
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     const channelId = await channel.getOrOpenChannel(leapmuxServer.workerId)
@@ -59,36 +56,19 @@ diracTest.describe('dirac agent questions', () => {
           throw watchError
         return subscribed
       }).toBe(true)
-      const callId = 'dirac-question'
-      await modelScript.queue(
-        { toolCalls: [askUserQuestionToolCall(AgentProvider.DIRAC, callId, [{
-          question: 'Which color should I use?',
-          header: 'Color',
-          options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Red', description: 'Use red.' }],
-        }])] },
-        { toolCalls: [diracRespondToolCall('dirac-question-complete', 'complete', 'The question result was recorded.')] },
-      )
-      await sendMessage(page, modelScript.prompt('Ask me which color to use, then complete the task.'))
-      await modelScript.waitForSteps(1)
-
-      const banner = page.getByTestId('control-banner').filter({ visible: true })
-      const form = banner.getByTestId('elicitation-form')
-      await expect(banner).toContainText('Which color should I use?')
-      await expect(form).toBeVisible()
-      await testInfo.attach('dirac-question-form', { body: await form.evaluate(element => element.outerHTML), contentType: 'text/html' })
-      await form.getByRole('button', { name: 'Choose an option *', exact: true }).click()
-      await page.getByRole('menuitemradio', { name: 'Red', exact: true }).filter({ visible: true }).click()
-      await page.getByTestId('control-actions').getByRole('button', { name: 'Approve', exact: true }).click()
-
-      const status = await modelScript.waitForSteps(2)
-      const answer = nativeToolResult(status.requests.find(record => record.stepIndex === 1), callId)
+      const answer = await exerciseQuestionReply(context, async (form) => {
+        await testInfo.attach('dirac-question-form', { body: await form.evaluate(element => element.outerHTML), contentType: 'text/html' })
+        await form.getByRole('button', { name: 'Choose an option *', exact: true }).click()
+        await page.getByRole('menuitemradio', { name: 'Red', exact: true }).filter({ visible: true }).click()
+        // A question form names its positive action Approve, and a permission names it Allow.
+        const approve = controlButton(page, 'allow')
+        await expect(approve).toHaveText('Approve')
+        await approve.click()
+      })
       expect(answer).toContain('Red')
       expect(answer).not.toContain('Blue')
       if (watchError)
         throw watchError
-      await waitForAgentIdle(page)
-      await expect(banner).toHaveCount(0)
-      await expect(assistantBubbles(page).filter({ hasText: 'The question result was recorded.' }).first()).toBeVisible()
     }
     finally {
       watch.cancel()
@@ -99,14 +79,13 @@ diracTest.describe('dirac agent questions', () => {
 
 diracTest('returns a typed answer and refuses empty or whitespace-only text', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
-  const result = await exerciseQuestionReply(context, async () => {
-    const form = page.locator('[data-testid="elicitation-form"]:visible')
+  const result = await exerciseQuestionReply(context, async (form) => {
     await form.getByRole('button', { name: 'Choose an option *', exact: true }).click()
     await page.getByRole('menuitemradio', { name: 'Other answer', exact: true }).filter({ visible: true }).click()
-    await page.locator('[data-testid="control-allow-btn"]:visible').click()
+    const approve = controlButton(page, 'allow')
+    await approve.click()
     await expect(form).toContainText('Answer')
     const answer = form.getByLabel('Answer *', { exact: true })
-    const approve = page.locator('[data-testid="control-allow-btn"]:visible')
     await expect(approve).toBeDisabled()
     await answer.fill('   ')
     await expect(approve).toBeDisabled()

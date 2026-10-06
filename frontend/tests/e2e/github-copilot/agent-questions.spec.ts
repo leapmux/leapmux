@@ -1,37 +1,23 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { copilotTest } from '../copilot-fixtures'
-import { nativeToolResult } from '../helpers/nativeToolResult'
-import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
 
-copilotTest('answers one native ask_user choice and resumes the model turn', async ({ authenticatedCopilotWorkspace, page, modelScript }) => {
-  void authenticatedCopilotWorkspace
-  await modelScript.queue(
-    { toolCalls: [askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-question', [{
+copilotTest('answers one native ask_user choice and resumes the model turn', async ({ native }) => {
+  const { result, request } = await exerciseQuestionAnswer(native, {
+    questions: [{
       question: 'Which color should I use?',
       header: 'Color',
       options: [
         { label: 'Blue', description: 'Use blue.' },
         { label: 'Green', description: 'Use green.' },
       ],
-    }])] },
-    { text: 'I used the chosen color.' },
-  )
-  await sendMessage(page, modelScript.prompt('Ask me which color to use, then report that choice.'))
-  await modelScript.waitForSteps(1)
-  const banner = page.getByTestId('control-banner').filter({ visible: true })
-  await expect(banner).toContainText('Which color should I use?')
-  await banner.getByTestId('question-option-Green').click()
-  await page.getByTestId('control-submit-btn').filter({ visible: true }).click()
-
-  const status = await modelScript.waitForSteps(2)
-  await waitForAgentIdle(page)
-  const answerRequest = status.requests.find(request => request.stepIndex === 1)
-  expect(answerRequest?.protocol).toBe('openai-chat-completions')
-  const answer = nativeToolResult(answerRequest, 'copilot-question')
-  expect(answer).toContain('Green')
-  expect(answer).not.toContain('Blue')
-  await expect(assistantBubbles(page).filter({ hasText: 'I used the chosen color.' }).first()).toBeVisible()
-  await expect(banner).toHaveCount(0)
+    }],
+    callId: 'copilot-question',
+    prompt: 'Ask me which color to use, then report that choice.',
+    answer: 'I used the chosen color.',
+    reply: chooseQuestionOption('Green'),
+  })
+  expect(request.protocol).toBe('openai-chat-completions')
+  expect(result).toContain('Green')
+  expect(result).not.toContain('Blue')
 })
