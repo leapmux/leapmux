@@ -1,10 +1,9 @@
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
-import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { kiroTest } from '../kiro-fixtures'
 import { kiroChildTurn } from './childScenario'
-import { KIRO_AGENT } from './scenarios'
+import { nativeContext } from './scenarios'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.
@@ -15,9 +14,9 @@ import { KIRO_AGENT } from './scenarios'
  */
 kiroTest.describe('Kiro subagent registry', () => {
   kiroTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.KIRO }, {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const { workingDir } = await openNativeAgent(context, { overrides: { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll } } })
+    await exerciseLiveChildTranscript(context, {
       childWhen: kiroChildTurn('Reply with CHILD_LIVE_DONE'),
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',

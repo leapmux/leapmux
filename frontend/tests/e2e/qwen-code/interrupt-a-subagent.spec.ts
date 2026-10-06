@@ -1,10 +1,8 @@
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseChildInterrupt, HELD_CHILD_TASK } from '../helpers/subagentRegistry'
-import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
 import { qwenTest } from '../qwen-fixtures'
-import { QWEN_AGENT } from './scenarios'
+import { nativeContext } from './scenarios'
 
 /**
  * The child tab interrupts only its actual native child. The parent must remain operational.
@@ -20,11 +18,11 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await openNativeAgent(context, { overrides: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } } })
     // Qwen asks no session title for a child, so the task alone selects the
     // child's own turn.
-    await exerciseChildInterrupt({ page, modelScript, leapmuxServer, provider: AgentProvider.QWEN_CODE }, {
+    await exerciseChildInterrupt(context, {
       childTurn: { user: HELD_CHILD_TASK },
     })
   })

@@ -1,16 +1,20 @@
+import type { NativeAgentOpenOptions } from '../helpers/nativeAgentOpen'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
+import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { qwenWorkflowToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { expectOpaqueNativeWorkflowResult } from '../helpers/workflowGrouping'
-import { openProviderAgent } from '../helpers/workspace'
 import { qwenTest } from '../qwen-fixtures'
-import { nativeContext, QWEN_AGENT } from './scenarios'
+import { nativeContext } from './scenarios'
+
+/** How the agent of each test opens: in YOLO mode, so its workflow children run with no permission request. */
+const YOLO_OPEN: NativeAgentOpenOptions = { overrides: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } } }
 
 qwenTest.describe('Qwen Code workflow grouping', () => {
   qwenTest('shows one workflow row after its native child answers', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await openNativeAgent(context, YOLO_OPEN)
 
     const childPrompt = modelScript.prompt('Reply with QWEN_WORKFLOW_CHILD.')
     const script = [
@@ -33,17 +37,13 @@ qwenTest.describe('Qwen Code workflow grouping', () => {
     await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'The workflow finished.' }).first()).toBeVisible()
-    await expectOpaqueNativeWorkflowResult(
-      await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }),
-      { ruleNames: ['the workflow child answers'], heading: 'Workflow' },
-    )
+    await expectOpaqueNativeWorkflowResult(context, { ruleNames: ['the workflow child answers'], heading: 'Workflow' })
   })
 })
 
 qwenTest('keeps two actual native workflow units inside one opaque workflow row', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
-  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await openNativeAgent(context, YOLO_OPEN)
   const children = [
     { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.'), answer: 'FIRSTNATIVEWORKUNIT' },
     { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.'), answer: 'SECONDNATIVEWORKUNIT' },

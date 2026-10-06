@@ -1,10 +1,8 @@
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
-import { openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { qwenTest } from '../qwen-fixtures'
-import { QWEN_AGENT } from './scenarios'
+import { nativeContext } from './scenarios'
 
 /**
  * An actual native child publishes messages before it ends. Its separate transcript tab must show those messages.
@@ -15,9 +13,9 @@ import { QWEN_AGENT } from './scenarios'
  */
 qwenTest.describe('Qwen Code subagent registry', () => {
   qwenTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.QWEN_CODE }, {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const { workingDir } = await openNativeAgent(context, { overrides: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } } })
+    await exerciseLiveChildTranscript(context, {
       childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
