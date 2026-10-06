@@ -1,7 +1,7 @@
 /** Test the child prompt and file result before the child finishes. */
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { AgentProvider, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { claudeTest } from '../claude-fixtures'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
@@ -11,6 +11,7 @@ import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { tabById } from '../helpers/ui'
 import { registerClaudeChildReportRules } from './childReportRule'
+import { nativeContext } from './scenarios'
 
 /** Check the actual forwarded child answer and every stored byte after reload. */
 async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>): Promise<void> {
@@ -44,32 +45,31 @@ async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioCo
 
 claudeTest.describe('Claude subagent background tasks', () => {
   claudeTest('shows a child prompt while that child still waits for its model', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedWorkspace
-    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE }, {
+    await exerciseLiveChildTranscript(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId }), {
       childWhen: { user: 'CHILD_LIVE_CLAUDE_MARKER' },
       childTask: 'Report CHILD_LIVE_CLAUDE_MARKER.',
       parentTask: 'Spawn one subagent to report its assigned marker.',
       beforeRelease: async () => {
-        await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-live-child', report: 'CHILD_LIVE_DONE', reply: 'The live child report arrived.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })
+        await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-live-child', report: 'CHILD_LIVE_DONE', reply: 'The live child report arrived.' })
       },
       afterComplete: () => expectNativeChildCompletion({ page, leapmuxServer }),
     })
   })
 
   claudeTest('shows a child file result only in the running child tab', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
-    void authenticatedWorkspace
-    const agent = await currentNativeAgent({ page, leapmuxServer })
-    expect(agent.agentProvider).toBe(AgentProvider.CLAUDE_CODE)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
+    const agent = await currentNativeAgent(context)
+    expect(agent.agentProvider).toBe(context.provider)
     const workingDir = agent.workingDir
     if (!workingDir)
       throw new Error('The live child file proof requires a working directory.')
-    await exerciseLiveChildTranscript({ page, modelScript, leapmuxServer, provider: AgentProvider.CLAUDE_CODE }, {
+    await exerciseLiveChildTranscript(context, {
       childWhen: { user: 'CHILD_LIVE_CLAUDE_READ' },
       childTask: 'Read the assigned file for CHILD_LIVE_CLAUDE_READ.',
       parentTask: 'Start one child to read the assigned file.',
       toolProof: { read: { workingDir } },
       beforeRelease: async () => {
-        await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-live-child', report: 'CHILD_LIVE_DONE', reply: 'The child file report arrived.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })
+        await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-live-child', report: 'CHILD_LIVE_DONE', reply: 'The child file report arrived.' })
       },
       afterComplete: () => expectNativeChildCompletion({ page, leapmuxServer }),
     })

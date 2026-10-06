@@ -52,8 +52,6 @@ claudeTest('refuses an early empty DOM while an actual native task remains in th
       spawnCallId: 'spawn-held-child',
       report: 'One, two, three.',
       reply: 'The real child report arrived after registry hydration.',
-      completionStatus: 'completed',
-      completionReply: 'The native child completion notification arrived.',
     })
     const before = await readNativeSidebarSnapshot(context, child.parentId)
     expect(before.backgroundTasks).toHaveLength(1)

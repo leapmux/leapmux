@@ -3,7 +3,6 @@ import type { ModelScript } from '../helpers/modelScriptFixture'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { SeparateServerInfo } from '../process-control-fixtures'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
@@ -127,8 +126,7 @@ test.describe('Agent Settings', () => {
 
   // Haiku offers no effort axis, so the switch to Haiku drops the tier. The switch back to Sonnet
   // carries no effort either, and the row holds none, so Sonnet reports the level that it selects.
-  test('a model switch to a model without effort resets the effort', async ({ authenticatedWorkspace, page, modelScript }) => {
-    void authenticatedWorkspace // fixture trigger
+  test('a model switch to a model without effort resets the effort', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -149,15 +147,15 @@ test.describe('Agent Settings', () => {
     // The effort menu chooses one level, so Medium also proves that Xhigh is gone.
     await expectSettingsOptionChosen(page, 'effort-medium')
 
-    const request = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLAUDE_CODE }, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
+    const context = await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace })
+    const request = await sendNativeAnswer(context, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
     expect(request.body).toMatchObject({ output_config: { effort: 'medium' } })
   })
 
   // A new session pins no effort: the CLI chooses the level of its model. The menu shows that level, and a
   // model switch must keep it. The CLI would otherwise choose the default of the new model, and the user
   // would see the effort change although only the model changed.
-  test('a model switch keeps the level that the CLI chose for an automatic session', async ({ authenticatedWorkspace, page, modelScript }) => {
-    void authenticatedWorkspace // fixture trigger
+  test('a model switch keeps the level that the CLI chose for an automatic session', async ({ authenticatedWorkspace, separateHubWorker, page, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -176,7 +174,8 @@ test.describe('Agent Settings', () => {
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, 'effort-medium')
 
-    const request = await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLAUDE_CODE }, 'Reply once after the switch to Fable.', 'Claude answered on Fable.')
+    const context = await separateHubContext({ page, modelScript, separateHubWorker, authenticatedWorkspace })
+    const request = await sendNativeAnswer(context, 'Reply once after the switch to Fable.', 'Claude answered on Fable.')
     expect(request.body).toMatchObject({
       model: expect.stringMatching(/^claude-fable-/),
       output_config: { effort: 'medium' },
