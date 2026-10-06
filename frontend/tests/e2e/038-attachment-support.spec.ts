@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeContext } from './claude-code/scenarios'
 import { test } from './fixtures'
 import { attachFile, attachmentPills, attachmentStrip, writeAttachmentFixture } from './helpers/attachments'
 import { sendNativeAnswer } from './helpers/nativeConversation'
@@ -105,7 +105,7 @@ test.describe('Attachment Support', () => {
     await expect(attachmentPills(page)).toContainText('persist.png')
   })
 
-  test('attachments cleared after send', async ({ page, authenticatedWorkspace, modelScript }) => {
+  test('attachments cleared after send', async ({ page, authenticatedWorkspace, modelScript, leapmuxServer }) => {
     await expect(composerEditor(page)).toBeVisible()
 
     // Upload a file.
@@ -113,7 +113,9 @@ test.describe('Attachment Support', () => {
     await expect(attachmentPills(page)).toHaveCount(1)
 
     // Require native prompt delivery and a completed answer before checking the strip reset.
-    await sendNativeAnswer({ page, modelScript, provider: AgentProvider.CLAUDE_CODE }, 'look at this', 'The attached image reached the completed native turn.')
+    // The agent of `authenticatedWorkspace` is a Claude Code agent.
+    const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
+    await sendNativeAnswer(native, 'look at this', 'The attached image reached the completed native turn.')
     await expect(userBubbles(page).filter({ hasText: 'look at this' }).first()).toBeVisible()
 
     // Require removal of the sent attachment.
