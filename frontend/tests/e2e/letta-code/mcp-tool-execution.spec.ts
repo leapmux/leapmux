@@ -9,7 +9,7 @@ import { nativeModelToolNames, nativeTextStep } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { lettaMcpCliToolCall } from '../helpers/providerToolCalls'
 import { writeToolImage } from '../helpers/toolImages'
-import { assistantBubbles, loginViaToken, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { assistantBubbles, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
 import { newProviderWorkingDir, openProviderAgent } from '../helpers/workspace'
 import { expect, lettaTest } from '../letta-fixtures'
 import { mcpLettaTest, withRegisteredLettaMcp } from './fixtures'
@@ -23,7 +23,6 @@ lettaTest.describe('native mcp tool execution', () => {
     const server = writeMcpImageServer(workingDir, imageName)
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
     const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, LETTA_AGENT, { workingDir })
-    await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await tabById(page, agentId).click()
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
