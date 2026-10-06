@@ -9,10 +9,9 @@ import process from 'node:process'
 import { promisify } from 'node:util'
 import { expect } from '@playwright/test'
 import { AMP_PERMISSION_MODE, AMP_PERMISSION_REQUEST_FIELD, AMP_PERMISSION_REQUEST_TYPE, AMP_SHELL_TOOL } from '../../../src/generated/contracts/amp-protocol'
-import { CloseAgentRequestSchema, CloseAgentResponseSchema, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
-import { getTestChannel } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -26,6 +25,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { ampToolResultReader } from './toolResult'
 
 const execFileAsync = promisify(execFile)
@@ -60,18 +60,6 @@ export function ampCatalogPermission(controls: readonly NativeControlFrame[], th
   if (requests.size > 1)
     throw new Error('The native Amp catalog permission request is ambiguous.')
   return requests.values().next().value
-}
-
-async function closeAmpCatalogAgent(context: ManagedNativeScenarioContext, agentId: string): Promise<void> {
-  const server = context.leapmuxServer
-  const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  const response = await channel.callWorker(server.workerId, 'CloseAgent', CloseAgentRequestSchema, CloseAgentResponseSchema, { agentId })
-  if (!response.result || response.result.failureMessage || response.result.failureDetail)
-    throw new Error(`The native Amp catalog could not stop its exact agent: ${response.result?.failureMessage || response.result?.failureDetail || 'The Worker supplied no close verdict.'}`)
-  await expect.poll(async () => {
-    const agent = await nativeAgentById(context, agentId)
-    return agent === null
-  }).toBe(true)
 }
 
 /** Native settings can use a private operating-system directory to satisfy socket path limits. */
@@ -428,7 +416,7 @@ export async function readAmpExecutorCatalog(
         expect(result.text).toContain(`AMP_CATALOG_PID:${receipt.pid}`)
       }
       else if (submitted) {
-        await closeAmpCatalogAgent(context, before.id)
+        await closeNativeAgentAndWait(context, before.id)
         completed = true
       }
       else {

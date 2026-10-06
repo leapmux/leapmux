@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentGoalAction, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalAction } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { WorktreeAction } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import { deepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
 
@@ -81,7 +81,8 @@ describe('withDeepseekHarnessGoalCleanup', () => {
         return { result: {} }
       throw new Error('The fallback cleanup called an unexpected Worker method.')
     })
-    mocks.nativeAgentById.mockResolvedValue({ status: AgentStatus.INACTIVE, closedAt: '2026-10-03T00:00:00Z' })
+    // The Worker lists only rows that are not closed, so a completed close reads as no agent.
+    mocks.nativeAgentById.mockResolvedValue(null)
     native.modelScript.releaseGateIfHeld.mockImplementation(async () => {
       calls.push('release')
       return true
@@ -102,7 +103,7 @@ describe('withDeepseekHarnessGoalCleanup', () => {
         return { result: { failureMessage: 'The native root did not close.' } }
       throw new Error('The cleanup called an unexpected Worker method.')
     })
-    await expect(withDeepseekHarnessGoalCleanup(native, { agentId: 'owned-root', workerId: 'owned-worker' }, ['held-round'], async () => {})).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'The Worker did not confirm removal of the captured native goal.' }), expect.objectContaining({ message: 'The Worker did not confirm closure of the captured native root.' })] })
+    await expect(withDeepseekHarnessGoalCleanup(native, { agentId: 'owned-root', workerId: 'owned-worker' }, ['held-round'], async () => {})).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'The Worker did not confirm removal of the captured native goal.' }), expect.objectContaining({ message: 'The Worker refused to close agent owned-root: The native root did not close.' })] })
     expect(native.modelScript.releaseGateIfHeld).toHaveBeenCalledExactlyOnceWith('held-round')
   })
 })

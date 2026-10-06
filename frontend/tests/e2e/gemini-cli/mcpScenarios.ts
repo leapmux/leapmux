@@ -2,7 +2,6 @@ import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { GEMINI_AGENT } from '../gemini-fixtures'
 import { withCleanup } from '../helpers/cleanup'
@@ -10,7 +9,7 @@ import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { getGlobalState } from '../helpers/server'
 import { tabById } from '../helpers/ui'
-import { closeAgentViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
 
 /** Reload the actual MCP settings in a new native agent and restore their exact bytes. */
@@ -32,8 +31,7 @@ export async function withGeminiMcp(context: ManagedNativeScenarioContext, serve
       await currentNativeAgent(context)
       await use()
     }, async () => {
-      const close = await closeAgentViaAPI(context.leapmuxServer.hubUrl, context.leapmuxServer.adminToken, context.leapmuxServer.workerId, opened.agentId)
-      expect(close.failureMessage).toBe('')
+      await closeNativeAgentAndWait(context, opened.agentId)
       await tabById(context.page, keeper.id).click()
       await currentNativeAgent(context)
     })

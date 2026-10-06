@@ -13,13 +13,12 @@ import { openAgentViaAPI } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { withCleanup } from '../helpers/cleanup'
 import { createMockAgentEnvironment } from '../helpers/mockAgentEnvironment'
-import { currentNativeAgent, nativeAgentById, nativeOptionValue } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeOptionValue } from '../helpers/nativeScenario'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { isAlive } from '../helpers/processTree'
-import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { loginViaToken, openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
-import { closeAgentViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { withTestWorkspace } from '../helpers/workspace'
 import { lettaTest } from '../letta-fixtures'
 import { configureLettaMcp } from './mcpConfiguration'
@@ -115,13 +114,8 @@ export async function withRegisteredLettaMcp(
   expect(before.agentProvider).toBe(AgentProvider.LETTA)
   expect(before.agentSessionId).not.toBe('')
   const server = workspace.server
-  const close = async (agentId: string) => {
-    const closed = await closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, agentId)
-    expect(closed.failureMessage).toBe('')
-    await retryUntilPass(async () => {
-      expect(await nativeAgentById(context, agentId), 'the Worker lists the closed agent no more').toBeNull()
-    })
-  }
+  // The private Worker holds the agent, so the close and its wait both go there.
+  const close = (agentId: string) => closeNativeAgentAndWait({ leapmuxServer: server }, agentId)
   await close(before.id)
   const configuration = configureLettaMcp({ ...workspace, conversationId: before.agentSessionId, servers })
   let reopened = ''

@@ -2,7 +2,6 @@ import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect } from '@playwright/test'
 import { isObject } from '../../../src/lib/jsonPick'
 import { COMMAND_CODE_AGENT } from '../command-code-fixtures'
 import { withCleanup } from '../helpers/cleanup'
@@ -10,7 +9,7 @@ import { withNativeConfigurationFile } from '../helpers/nativeConfigurationFile'
 import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { getGlobalState } from '../helpers/server'
 import { openWorkspace } from '../helpers/ui'
-import { closeAgentViaAPI } from '../helpers/workerTabs'
+import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { openProviderAgent } from '../helpers/workspace'
 
 /**
@@ -46,8 +45,7 @@ export async function withCommandCodeMcp(context: ManagedNativeScenarioContext, 
     }, async () => {
       if (!agentID)
         return
-      const close = await closeAgentViaAPI(context.leapmuxServer.hubUrl, context.leapmuxServer.adminToken, context.leapmuxServer.workerId, agentID)
-      expect(close.failureMessage).toBe('')
+      await closeNativeAgentAndWait(context, agentID)
     })
   })
 }

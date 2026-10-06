@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { callHub, getTestChannel } from './api'
 import {
   agentStatusViaAPI,
+  closeAgentViaAPI,
+  closeNativeAgentAndWait,
   terminalExitedViaAPI,
   waitForAgentStartupViaAPI,
   waitForAgentStatusViaAPI,
@@ -175,5 +178,61 @@ describe('waitForWorkerTabTitle', () => {
     const list = vi.fn(async () => [{ title: '' }])
     await expect(waitForWorkerTabTitle(list, '', 'any')).rejects.toThrow('needs a title')
     expect(list).not.toHaveBeenCalled()
+  })
+})
+
+describe('closeAgentViaAPI', () => {
+  it('sends KEEP by default and returns the Worker verdict', async () => {
+    callWorker.mockResolvedValue({ result: { worktreePath: '/work/tree', worktreeId: 'wt-1', failureMessage: '', failureDetail: '' } })
+    await expect(closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, 'a-1'))
+      .resolves
+      .toEqual({ worktreePath: '/work/tree', worktreeId: 'wt-1', failureMessage: '', failureDetail: '' })
+    expect(callWorker).toHaveBeenCalledWith('worker', 'CloseAgent', expect.anything(), expect.anything(), { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
+  })
+
+  it('refuses a response that states no verdict', async () => {
+    callWorker.mockResolvedValue({})
+    await expect(closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, 'a-1')).rejects.toThrow('The Worker sent no close verdict for agent a-1.')
+  })
+})
+
+describe('closeNativeAgentAndWait', () => {
+  const context = { leapmuxServer: server } as unknown as Parameters<typeof closeNativeAgentAndWait>[0]
+  const verdict = { result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' } }
+
+  it('closes the agent and waits until the Worker no longer lists it', async () => {
+    const listed = vi.fn()
+      .mockResolvedValueOnce({ agents: [{ id: 'a-1', status: AgentStatus.INACTIVE }] })
+      .mockResolvedValue({ agents: [] })
+    callWorker.mockImplementation(async (_workerId: string, method: string) => method === 'CloseAgent' ? verdict : listed())
+    await closeNativeAgentAndWait(context, 'a-1')
+    expect(callWorker).toHaveBeenNthCalledWith(1, 'worker', 'CloseAgent', expect.anything(), expect.anything(), { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
+    expect(callWorker).toHaveBeenCalledWith('worker', 'ListAgents', expect.anything(), expect.anything(), { tabIds: ['a-1'] })
+    expect(listed).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads again after a Worker read that fails', async () => {
+    const listed = vi.fn()
+      .mockRejectedValueOnce(new Error('The Worker channel reconnects.'))
+      .mockResolvedValue({ agents: [] })
+    callWorker.mockImplementation(async (_workerId: string, method: string) => method === 'CloseAgent' ? verdict : listed())
+    await closeNativeAgentAndWait(context, 'a-1')
+    expect(listed).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws the Worker refusal with its message and detail, and does not wait', async () => {
+    callWorker.mockResolvedValue({ result: { worktreePath: '', worktreeId: '', failureMessage: 'Failed to close agent', failureDetail: 'database is locked' } })
+    await expect(closeNativeAgentAndWait(context, 'a-1')).rejects.toThrow('The Worker refused to close agent a-1: Failed to close agent (database is locked)')
+    expect(callWorker).toHaveBeenCalledOnce()
+  })
+
+  it('reports the agent that the Worker still lists when the deadline ends', async () => {
+    callWorker.mockImplementation(async (_workerId: string, method: string) => method === 'CloseAgent' ? verdict : { agents: [{ id: 'a-1', status: AgentStatus.ACTIVE }] })
+    await expect(closeNativeAgentAndWait(context, 'a-1')).rejects.toThrow('The Worker still lists the closed agent a-1.')
+  })
+
+  it('refuses an empty agent ID before it calls the Worker', async () => {
+    await expect(closeNativeAgentAndWait(context, '')).rejects.toThrow('requires an agent ID')
+    expect(callWorker).not.toHaveBeenCalled()
   })
 })

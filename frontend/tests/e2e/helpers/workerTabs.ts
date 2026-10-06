@@ -1,3 +1,4 @@
+import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { AgentServer } from './workspace'
 import { expect } from '@playwright/test'
 import {
@@ -21,6 +22,7 @@ import {
   ListTerminalsResponseSchema,
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
 import { API_POLL_INTERVAL_MS, callHub, getTestChannel } from './api'
+import { nativeAgentById } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
 import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 
@@ -110,6 +112,9 @@ export async function closeTerminalViaAPI(
  * Close an agent via E2EE channel. Pass `worktreeAction` to atomically
  * remove the worktree after the process/DB cleanup (REMOVE) or keep it
  * (KEEP).
+ *
+ * The Worker answers every close with a result, which is empty for a clean
+ * close. A response without one throws, because it states no verdict.
  */
 export async function closeAgentViaAPI(
   hubUrl: string,
@@ -127,12 +132,38 @@ export async function closeAgentViaAPI(
     { agentId, worktreeAction },
   )
   const result = resp.result
+  if (!result)
+    throw new Error(`The Worker sent no close verdict for agent ${agentId}.`)
   return {
-    worktreePath: result?.worktreePath ?? '',
-    worktreeId: result?.worktreeId ?? '',
-    failureMessage: result?.failureMessage ?? '',
-    failureDetail: result?.failureDetail ?? '',
+    worktreePath: result.worktreePath,
+    worktreeId: result.worktreeId,
+    failureMessage: result.failureMessage,
+    failureDetail: result.failureDetail,
   }
+}
+
+/**
+ * Close one agent through its Worker, and wait until the Worker's `ListAgents`
+ * omits it. The Worker lists only rows that are not closed, so the omission
+ * shows that it recorded the completed close. A close that the Worker refuses
+ * throws with the Worker's message and detail.
+ */
+export async function closeNativeAgentAndWait(
+  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
+  agentId: string,
+): Promise<void> {
+  if (!agentId)
+    throw new Error('The native agent close requires an agent ID.')
+  const server = context.leapmuxServer
+  const closed = await closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, agentId)
+  if (closed.failureMessage || closed.failureDetail) {
+    const detail = closed.failureDetail ? ` (${closed.failureDetail})` : ''
+    throw new Error(`The Worker refused to close agent ${agentId}: ${closed.failureMessage || 'no message'}${detail}`)
+  }
+  // A Worker read can fail for a moment during a reconnect, so the wait retries the read and the match together.
+  await retryUntilPass(async () => {
+    expect(await nativeAgentById(context, agentId), `The Worker still lists the closed agent ${agentId}.`).toBeNull()
+  })
 }
 
 /**
