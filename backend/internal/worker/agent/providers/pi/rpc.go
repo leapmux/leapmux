@@ -17,6 +17,7 @@ import (
 // and routed by id, so this struct only carries the fields AwaitResponse
 // needs to interpret the result.
 type piResponseEnvelope struct {
+	Command string          `json:"command"`
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data"`
 	Error   string          `json:"error"`
@@ -94,6 +95,9 @@ func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, 
 	var env piResponseEnvelope
 	if err := json.Unmarshal(respLine, &env); err != nil {
 		return nil, fmt.Errorf("parse %s response: %w", method, err)
+	}
+	if env.Command != method {
+		return nil, fmt.Errorf("parse %s response: command %q does not match %q", method, env.Command, method)
 	}
 	if !env.Success {
 		if env.Error != "" {

@@ -130,6 +130,22 @@ type piAgentEndMessage struct {
 	ErrorMessage string `json:"errorMessage"`
 }
 
+// piAgentEndMessages requires an array when the native field is present.
+// An omitted field keeps the supported empty-message outcome.
+type piAgentEndMessages []piAgentEndMessage
+
+func (messages *piAgentEndMessages) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("the Pi messages field must be an array")
+	}
+	var decoded []piAgentEndMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*messages = decoded
+	return nil
+}
+
 // piRetryFlag accepts an optional native boolean. An absent field keeps false.
 // JSON null is not a boolean and must not clear an active turn.
 type piRetryFlag bool
@@ -154,8 +170,8 @@ func (flag *piRetryFlag) UnmarshalJSON(raw []byte) error {
 // the last assistant message failed with a transient error. An older Pi omits
 // the field, which decodes to false -- how LeapMux behaved before it read it.
 type piAgentEndEnvelope struct {
-	Messages  []piAgentEndMessage `json:"messages"`
-	WillRetry piRetryFlag         `json:"willRetry"`
+	Messages  piAgentEndMessages `json:"messages"`
+	WillRetry piRetryFlag        `json:"willRetry"`
 }
 
 // piRetryableWebSocketError is the exact errorMessage Pi emits for transient
@@ -354,8 +370,8 @@ func (a *Agent) handlePiAgentEndObserved(raw []byte, endedAt time.Time) {
 		a.sink.ReportProgress(agent.ResetProgress())
 	} else {
 		completion := env.retainedCompletion()
-		// The stop LeapMux asked for outranks the stop reason Pi reports, which
-		// spells one interruption as an error. See Interrupt.
+		// Delivered stop intent distinguishes an ambiguous native error from a failure.
+		// Native stop and length reasons still keep normal completion. See Interrupt.
 		if interrupted {
 			completion = agent.MessageCompletionInterrupted
 		}

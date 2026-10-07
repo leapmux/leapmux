@@ -350,3 +350,42 @@ func TestPiMalformedAgentEndKeepsStateUntilAValidEnd(t *testing.T) {
 		})
 	}
 }
+
+func TestPiNullMessagesKeepsTheActiveQuestionAndContinuation(t *testing.T) {
+	t.Parallel()
+	a, sink, output := piQuestionResponseFixture()
+	setPiInterruptWriter(a, func(data []byte) (int, error) { return output.Write(data) })
+	a.Mu.Lock()
+	a.currentTurnActive = true
+	a.turnStartedAt = time.Unix(100, 0)
+	a.Mu.Unlock()
+	a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":null}`))
+	a.Mu.Lock()
+	assert.True(t, a.currentTurnActive)
+	assert.Equal(t, time.Unix(100, 0), a.turnStartedAt)
+	assert.Contains(t, a.questionDialogs, "select", "a malformed end must retain native answer correlation")
+	assert.Contains(t, a.openDialogs, "select")
+	a.Mu.Unlock()
+	assert.Equal(t, 1, sink.MessageCount(), "only the original question tool row remains")
+	assert.Zero(t, sink.AutoCancelCount())
+	assert.Zero(t, sink.AutoScheduleCount())
+	assert.Empty(t, sink.CanceledControls())
+	a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[]}`))
+	a.Mu.Lock()
+	assert.False(t, a.currentTurnActive)
+	assert.Empty(t, a.questionDialogs)
+	a.Mu.Unlock()
+	assert.Equal(t, 3, sink.MessageCount(), "the valid end keeps the unfinished tool and its native divider")
+}
+
+func TestPiOmittedMessagesStillEndsTheObservedTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	a.HandleOutput([]byte(`{"type":"agent_end"}`))
+	a.Mu.Lock()
+	assert.False(t, a.currentTurnActive)
+	a.Mu.Unlock()
+	assert.Equal(t, 1, sink.MessageCount())
+}
