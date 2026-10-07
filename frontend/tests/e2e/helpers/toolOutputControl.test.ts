@@ -1,13 +1,79 @@
+import type { FSWatcher } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { COLLAPSED_LINE_CHAR_CAP } from '../../../src/components/chat/results/useCollapsedLines'
 import { stopProcess } from './process'
-import { createToolOutputControl, waitForFileSignal } from './toolOutputControl'
+import { createToolOutputControl, RELEASE_POLL_MS, waitForFileSignal } from './toolOutputControl'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
+
+describe('waitForFileSignal', () => {
+  let directory: string
+  let signalPath: string
+  let watcher: FSWatcher
+  let watchDirectory: ReturnType<typeof vi.fn<(directory: string) => FSWatcher>>
+
+  beforeEach(() => {
+    mkdirSync(SCRATCH_ROOT, { recursive: true })
+    directory = mkdtempSync(join(SCRATCH_ROOT, 'file-signal-'))
+    signalPath = join(directory, 'ready')
+    watcher = Object.assign(new EventEmitter(), { close: vi.fn() }) as unknown as FSWatcher
+    watchDirectory = vi.fn(() => watcher)
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.clearAllMocks()
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('finds a file even when the directory watcher sends no event', async () => {
+    let finished = false
+    const wait = waitForFileSignal(signalPath, watchDirectory).then(() => {
+      finished = true
+    })
+    try {
+      writeFileSync(signalPath, 'ready')
+      await vi.advanceTimersByTimeAsync(RELEASE_POLL_MS)
+      expect(finished).toBe(true)
+      expect(watcher.close).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+    finally {
+      watcher.emit('change')
+      await wait
+    }
+  })
+
+  it('accepts a signal that exists before subscription without creating a watcher', async () => {
+    writeFileSync(signalPath, 'ready')
+    await waitForFileSignal(signalPath, watchDirectory)
+    expect(watchDirectory).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('releases both timers when a watcher reports an error', async () => {
+    const error = new Error('The directory watch failed.')
+    const rejected = expect(waitForFileSignal(signalPath, watchDirectory)).rejects.toBe(error)
+    watcher.emit('error', error)
+    await rejected
+    expect(watcher.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('fails at the deadline and releases its watcher and check timer when no signal arrives', async () => {
+    const rejected = expect(waitForFileSignal(signalPath, watchDirectory)).rejects.toThrow('The native output signal did not arrive.')
+    await vi.runAllTimersAsync()
+    await rejected
+    expect(watcher.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
 
 describe('createToolOutputControl', () => {
   it('holds each output segment until its explicit release', async () => {

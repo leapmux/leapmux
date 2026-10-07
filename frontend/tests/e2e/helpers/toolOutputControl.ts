@@ -1,3 +1,4 @@
+import type { FSWatcher } from 'node:fs'
 import { Buffer } from 'node:buffer'
 import { existsSync, mkdtempSync, statSync, watch, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
@@ -69,26 +70,30 @@ export interface ToolOutputOptions {
   holdFirstOutput?: boolean
 }
 
-/** Wait for an actual filesystem signal, including one that arrived before subscription. */
-export async function waitForFileSignal(path: string): Promise<void> {
+/** Wait for a file signal. A test can supply a watcher that sends controlled notifications. */
+export async function waitForFileSignal(path: string, watchDirectory: (directory: string) => Pick<FSWatcher, 'on' | 'close'> = watch): Promise<void> {
   if (existsSync(path))
     return
   await new Promise<void>((resolve, reject) => {
-    const subscription = watch(dirname(path))
+    const subscription = watchDirectory(dirname(path))
     const deadline = setTimeout(() => finish(new Error('The native output signal did not arrive.')), FILE_SIGNAL_DEADLINE_MS)
+    // macOS starts the FSEvents stream after watch() returns. A file in that interval can produce no event.
+    // Check the file also, so a missed event cannot hold the wait until its deadline.
+    const checkTimer = setInterval(inspect, RELEASE_POLL_MS)
     let finished = false
     function finish(error?: Error) {
       if (finished)
         return
       finished = true
       clearTimeout(deadline)
+      clearInterval(checkTimer)
       subscription.close()
       if (error)
         reject(error)
       else
         resolve()
     }
-    const inspect = () => {
+    function inspect() {
       if (existsSync(path))
         finish()
     }
