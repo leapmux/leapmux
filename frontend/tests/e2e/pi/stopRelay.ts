@@ -152,6 +152,7 @@ export async function withPiRetrySignal<T>(
         catch (error) {
           failure = error instanceof Error ? error : new Error(String(error))
           socket.destroy()
+          return
         }
       }
     })

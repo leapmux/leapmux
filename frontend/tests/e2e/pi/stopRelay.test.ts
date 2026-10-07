@@ -209,6 +209,21 @@ describe('createPiStopRelay', () => {
 })
 
 describe('withPiRetrySignal', () => {
+  it('rejects every later packet in the same chunk after malformed json', async () => {
+    let calls = 0
+    await expect(withPiRetrySignal(() => {
+      calls++
+    }, async (signal) => {
+      await new Promise<void>((resolveClosed, reject) => {
+        const socket = connect(signal.port, '127.0.0.1')
+        socket.once('error', reject)
+        socket.once('connect', () => socket.end(`invalid\n${JSON.stringify({ nonce: signal.nonce, bytes: Buffer.from('{"type":"auto_retry_start"}\n').toString('base64') })}\n`))
+        socket.once('close', () => resolveClosed())
+      })
+    })).rejects.toThrow(SyntaxError)
+    expect(calls).toBe(0)
+  })
+
   it.each([
     { packet: 'null', expected: 'invalid identity or payload' },
     { packet: '{}', expected: 'invalid identity or payload' },
