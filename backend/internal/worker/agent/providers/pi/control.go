@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -15,29 +16,28 @@ func (a *Agent) rememberOpenDialog(id string) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if a.openDialogs == nil {
-		a.openDialogs = make(map[string]struct{})
+		a.openDialogs = make(map[string]uint64)
 	}
-	a.openDialogs[id] = struct{}{}
+	a.dialogRevision++
+	a.openDialogs[id] = a.dialogRevision
 }
 
-// forgetOpenDialog drops a dialog that Pi no longer waits on: the reader answered it,
-// Pi answered it at its own deadline, or LeapMux cancelled it.
+// forgetOpenDialog retires a dialog after the reader answers or Pi's deadline passes.
+// A LeapMux cancellation also retires the dialog.
 func (a *Agent) forgetOpenDialog(id string) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	delete(a.openDialogs, id)
 }
 
-// settleOpenDialogs answers each dialog that Pi still waits on with a cancellation,
-// and withdraws its card.
+// settleOpenDialogs cancels each dialog that the stop still owns and withdraws its card.
 //
-// Interrupt calls it. Pi's own abort settles no dialog: the RPC host of Pi 1.0.0
-// settles a dialog at an abort only through the signal that the extension passes
-// with it, and the rpiv-ask-user-question extension passes none to `ui.select` and
-// `ui.input`. Pi's abort then waits until the agent is idle, and the agent waits on
-// the extension's tool, which waits on the dialog. Without this answer the turn never
-// ends, and the extension waits for ever.
-func (a *Agent) settleOpenDialogs(stop agent.StopContext) error {
+// Pi 1.0.0 cancels a dialog only through the extension's abort signal.
+// The rpiv-ask-user-question extension passes no signal to ui.select or ui.input.
+// Pi waits for idle before it acknowledges an abort.
+// The extension's tool waits on its dialog, so the agent cannot become idle.
+// This cancellation releases the tool. Without it, the turn and extension wait indefinitely.
+func (a *Agent) settleOpenDialogs(scope piInterruptScope, stop agent.StopContext) error {
 	a.dialogCancelMu.Lock()
 	defer a.dialogCancelMu.Unlock()
 	a.Mu.Lock()
@@ -46,22 +46,47 @@ func (a *Agent) settleOpenDialogs(stop agent.StopContext) error {
 		a.Mu.Unlock()
 		return nil
 	}
-	ids := make([]string, 0, len(a.openDialogs))
-	for id := range a.openDialogs {
-		ids = append(ids, id)
+	type dialog struct {
+		id       string
+		revision uint64
+	}
+	ids := make([]dialog, 0, len(a.openDialogs))
+	for id, revision := range a.openDialogs {
+		ids = append(ids, dialog{id, revision})
 	}
 	a.Mu.Unlock()
 	// Answer in a stable order, so one interrupt always writes the same lines.
-	slices.Sort(ids)
+	slices.SortFunc(ids, func(first, second dialog) int { return strings.Compare(first.id, second.id) })
 	var failures []error
-	for _, id := range ids {
-		if err := a.cancelOpenDialog(id, stop); err != nil {
+	for _, entry := range ids {
+		a.Mu.Lock()
+		current := a.piInterruptScopeCurrentLocked(scope)
+		open := a.openDialogs[entry.id] == entry.revision
+		a.Mu.Unlock()
+		if !current {
+			break
+		}
+		if !open {
+			continue
+		}
+		if err := a.cancelOpenDialog(entry.id, stop); err != nil {
 			failures = append(failures, err)
 			continue
 		}
-		a.dialogDeadlines.Disarm(id)
-		a.forgetOpenDialog(id)
-		a.sink.CancelControlRequest(id)
+		a.Mu.Lock()
+		retired := a.openDialogs[entry.id] == entry.revision
+		if retired {
+			delete(a.openDialogs, entry.id)
+			if question := a.questionDialogs[entry.id]; question != nil {
+				delete(a.customQuestionAnswers, question.Key)
+				delete(a.questionDialogs, entry.id)
+			}
+		}
+		a.Mu.Unlock()
+		if retired {
+			a.dialogDeadlines.Disarm(entry.id)
+			a.sink.CancelControlRequest(entry.id)
+		}
 	}
 	return errors.Join(failures...)
 }

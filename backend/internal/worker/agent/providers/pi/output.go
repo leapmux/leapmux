@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -122,9 +123,30 @@ type piQueueUpdateEnvelope struct {
 	FollowUp []json.RawMessage `json:"followUp"`
 }
 
-// piAgentEndEnvelope captures the per-message stop info on agent_end so we
-// can inspect the final assistant turn's outcome and decide whether to
-// auto-continue.
+// piAgentEndMessage holds the native outcome fields of one assistant message.
+type piAgentEndMessage struct {
+	Role         string `json:"role"`
+	StopReason   string `json:"stopReason"`
+	ErrorMessage string `json:"errorMessage"`
+}
+
+// piRetryFlag accepts an optional native boolean. An absent field keeps false.
+// JSON null is not a boolean and must not clear an active turn.
+type piRetryFlag bool
+
+func (flag *piRetryFlag) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("the Pi willRetry field must be a boolean")
+	}
+	var retry bool
+	if err := json.Unmarshal(raw, &retry); err != nil {
+		return err
+	}
+	*flag = piRetryFlag(retry)
+	return nil
+}
+
+// piAgentEndEnvelope supplies the final assistant outcome and the retry decision.
 //
 // WillRetry is Pi's own statement that it restarts this run itself. Pi's
 // session layer stamps it on every agent_end. It is true only for three
@@ -132,12 +154,8 @@ type piQueueUpdateEnvelope struct {
 // the last assistant message failed with a transient error. An older Pi omits
 // the field, which decodes to false -- how LeapMux behaved before it read it.
 type piAgentEndEnvelope struct {
-	Messages []struct {
-		Role         string `json:"role"`
-		StopReason   string `json:"stopReason"`
-		ErrorMessage string `json:"errorMessage"`
-	} `json:"messages"`
-	WillRetry bool `json:"willRetry"`
+	Messages  []piAgentEndMessage `json:"messages"`
+	WillRetry piRetryFlag         `json:"willRetry"`
 }
 
 // piRetryableWebSocketError is the exact errorMessage Pi emits for transient
@@ -156,18 +174,27 @@ var piDialogMethods = map[string]struct{}{
 
 // handlePiOutput dispatches a single parsed Pi event line.
 func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
+	var observedAt time.Time
+	if line.Type == contracts.PiEventAgentStart || line.Type == contracts.PiEventAgentEnd {
+		// Read the clock before enqueue and outside Mu. Replay keeps this time.
+		observedAt = a.now()
+	}
+	a.interruptOutput.enqueue(line, observedAt, a.dispatchPiOutput)
+}
+
+func handlePiOutputObserved(a *Agent, line *providerkit.ParsedLine, observedAt time.Time) {
 	slog.Debug("pi HandleOutput", "agent_id", a.AgentID(), "type", line.Type, "len", len(line.Raw))
 
 	switch line.Type {
 	case contracts.PiEventAgentStart:
-		a.handlePiAgentStart()
+		a.handlePiAgentStartObserved(observedAt)
 	case contracts.PiEventAgentEnd:
-		a.handlePiAgentEnd(line.Raw)
+		a.handlePiAgentEndObserved(line.Raw, observedAt)
+	case contracts.PiEventAgentSettled:
+		a.handlePiAgentSettled(line.Raw)
 	case contracts.PiEventTurnStart, contracts.PiEventTurnEnd,
-		contracts.PiEventMessageStart, contracts.PiEventAgentSettled:
-		// Lifecycle markers; no UI state change required. `agent_settled` says
-		// only that Pi will not continue on its own after the agent_end that
-		// already drew the divider, so it adds nothing to the transcript.
+		contracts.PiEventMessageStart:
+		// These native lifecycle markers require no UI state change.
 	case contracts.PiEventMessageUpdate:
 		a.handlePiMessageUpdate(line.Raw)
 	case contracts.PiEventMessageEnd:
@@ -180,8 +207,10 @@ func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
 		a.handlePiToolExecutionEnd(line.Raw)
 	case contracts.PiEventQueueUpdate:
 		a.handlePiQueueUpdate(line.Raw)
+	case contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd:
+		a.handlePiRetryEvent(line.Type, line.Raw)
+		fallthrough
 	case contracts.PiEventCompactionStart, contracts.PiEventCompactionEnd,
-		contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd,
 		contracts.PiEventExtensionError,
 		contracts.PiEventSummarizationRetryScheduled,
 		contracts.PiEventSummarizationRetryAttemptStart,
@@ -189,9 +218,9 @@ func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
 		// Pi-emitted lifecycle / extension events — AGENT source per the
 		// proto rule (LEAPMUX is reserved for worker-synthesized envelopes).
 		//
-		// The three summarization-retry events belong here for the same reason the
-		// auto-retry pair does: each states that a summary failed and that Pi waits
-		// before it tries again, which is a stall the reader must be able to explain.
+		// The three summarization-retry events follow the same rule as the auto-retry pair.
+		// Each states that a summary failed and Pi waits before another attempt.
+		// The reader needs that explanation for the delay.
 		// They reached the `default` branch before, so each one drew a raw JSON row.
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("pi persist notification", "agent_id", a.AgentID(), "type", line.Type, "error", err)
@@ -213,10 +242,10 @@ func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
 		// in protocol.go, and none of them is `bash`. The other stdin path,
 		// SendRawInput, carries an ANSWER to a request Pi published.
 		//
-		// Nothing could attribute the text either. A Pi tool span is keyed by the
-		// `toolCallId` that tool_execution_start supplies, and contracts/pi-protocol.json
-		// holds bash_execution_update as the ONLY bash_execution_* event -- there is no
-		// start or end frame that pairs a shell with a tool call.
+		// No record can attribute the text to a tool call either.
+		// A Pi tool span uses the toolCallId from tool_execution_start.
+		// contracts/pi-protocol.json holds only bash_execution_update for shell output.
+		// No start or end frame pairs that shell with a tool call.
 	case contracts.PiEventExtensionUIRequest:
 		a.handlePiExtensionUIRequest(line.Raw)
 	case contracts.PiEventEntryAppended:
@@ -242,11 +271,9 @@ func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
 // Never called with a.Mu held: the sink broadcasts, and a broadcast can block on
 // a slow transport.
 //
-// Pi keeps the turn OPEN across a retry it drives itself (agent_end with
-// willRetry), so the state stays busy for the whole backoff -- a stretch where
-// nothing streams and no envelope arrives, and where a client that inferred
-// idleness would drop the spinner and hide the Interrupt button on a run that is
-// still going.
+// An agent_end with willRetry keeps the turn open across Pi's own retry.
+// The state stays busy during the full backoff, even when no output or envelope arrives.
+// Inferring idle would hide the spinner and Interrupt button while the run still remains active.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	active := a.currentTurnActive
@@ -255,20 +282,22 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
 }
 
-func (a *Agent) handlePiAgentStart() {
-	// Read the clock before the lock, so an injected clock never runs under Mu.
-	startedAt := a.now()
+func (a *Agent) handlePiAgentStartObserved(startedAt time.Time) {
 	a.Mu.Lock()
 	a.currentTurnActive = true
-	// A retried run continues the turn that the first agent_start began, so the
-	// mark survives it and the divider reports the whole elapsed time instead of
-	// the last attempt alone. handlePiAgentEnd clears it when the turn ends.
-	firstAttempt := a.turnStartedAt.IsZero()
+	// A retried run continues the turn that the first agent_start began.
+	// Keep that mark so the divider reports the full duration, including earlier attempts.
+	// handlePiAgentEndObserved clears the mark when the turn ends.
+	firstAttempt := a.turnStartedAt.IsZero() || a.retryState.cancelled(a.turnGeneration)
 	if firstAttempt {
 		a.turnStartedAt = startedAt
 		// A NEW turn begins here, so an interrupt note that no agent_end spent is
 		// stale. A retried run keeps the mark, and keeps the note with it.
-		a.interruptRequested = false
+		a.interruptRequests = nil
+		a.turnGeneration++
+		a.retryState.turn = nil
+	} else if turn := a.retryState.turn; turn != nil && turn.generation == a.turnGeneration {
+		turn.backoff = false
 	}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
@@ -284,24 +313,30 @@ func (a *Agent) handlePiAgentStart() {
 	}
 }
 
-func (a *Agent) handlePiAgentEnd(raw []byte) {
+func (a *Agent) handlePiAgentEndObserved(raw []byte, endedAt time.Time) {
 	// Decode once. The retry decision, the willRetry routing, and the auto-
 	// continue decision all read this same envelope.
 	var env piAgentEndEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		slog.Warn("pi agent_end unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
 	}
+	willRetry := bool(env.WillRetry)
 
-	endedAt := a.now()
 	a.Mu.Lock()
 	// A retry keeps the turn open: Pi restarts the run itself, so Interrupt must
 	// still send an abort and a user message must still steer the running turn.
-	a.currentTurnActive = env.WillRetry
+	a.currentTurnActive = willRetry
+	if willRetry {
+		a.retryState.turn = &piRetryTurn{generation: a.turnGeneration}
+	} else {
+		a.retryState.turn = nil
+	}
 	// Read the mark BEFORE the clear below consumes it, or every turn that
 	// really ends measures from the zero time and reports no duration at all.
 	startedAt := a.turnStartedAt
 	toolUses := a.TurnToolUses
-	if !env.WillRetry {
+	if !willRetry {
 		// Retries retain the count until the complete turn ends.
 		a.TurnToolUses = 0
 		a.turnStartedAt = time.Time{}
@@ -312,15 +347,15 @@ func (a *Agent) handlePiAgentEnd(raw []byte) {
 	defer a.PublishTurnActive()
 	// A retried run keeps the turn open, so the note must survive to the
 	// agent_end that really ends it.
-	interrupted := !env.WillRetry && a.takeInterruptRequest()
-	if env.WillRetry {
+	interrupted := !willRetry && a.takePiInterruptOutcome(env)
+	if willRetry {
 		a.generationBuffer.Reset()
 		a.discardIncompletePiTools()
 		a.sink.ReportProgress(agent.ResetProgress())
 	} else {
 		completion := env.retainedCompletion()
 		// The stop LeapMux asked for outranks the stop reason Pi reports, which
-		// spells one interruption as an error. See noteInterruptRequested.
+		// spells one interruption as an error. See Interrupt.
 		if interrupted {
 			completion = agent.MessageCompletionInterrupted
 		}
@@ -341,12 +376,12 @@ func (a *Agent) handlePiAgentEnd(raw []byte) {
 	if interrupted {
 		content.Completion = agent.MessageCompletionInterrupted
 	}
-	a.persistPiAgentEnd(agent.WithToolUseCount(content, toolUses), env.WillRetry)
+	a.persistPiAgentEnd(agent.WithToolUseCount(content, toolUses), willRetry)
 	// Pi retries the run itself when it says willRetry, so LeapMux must not send
 	// a second continuation for the same failure. Pi reports false once its own
 	// retry budget is spent, which is where LeapMux's auto-continue takes over
 	// as the last resort.
-	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, !env.WillRetry && env.isRetryableFailure(), raw)
+	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, !willRetry && env.isRetryableFailure(), raw)
 	// The failed attempt's spans are dead either way: a retried run reopens its
 	// own, so the reset is unconditional.
 	a.sink.ResetSpans()
@@ -355,6 +390,41 @@ func (a *Agent) handlePiAgentEnd(raw []byte) {
 			_, _ = a.refreshPiSessionStats(piSessionStatsTimeout(a.APITimeout()))
 		}()
 	}
+}
+
+// Only Pi's explicit aborted stop reason resolves an uncertain write.
+// A generic error or a normal completion does not prove that the abort reached Pi.
+func (env piAgentEndEnvelope) statesNativeAbort() bool {
+	last := env.lastAssistantMessage()
+	return last != nil && last.StopReason == contracts.PiStopReasonAborted
+}
+
+func (env piAgentEndEnvelope) lastAssistantMessage() *piAgentEndMessage {
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		if env.Messages[i].Role == contracts.PiRoleAssistant {
+			return &env.Messages[i]
+		}
+	}
+	return nil
+}
+
+func (env piAgentEndEnvelope) statesNativeCompletion() bool {
+	last := env.lastAssistantMessage()
+	// A tool-use message precedes a running tool and does not prove turn completion.
+	return last != nil && (last.StopReason == contracts.PiStopReasonStop || last.StopReason == contracts.PiStopReasonLength)
+}
+
+func (a *Agent) takePiInterruptOutcome(env piAgentEndEnvelope) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	interrupted := env.statesNativeAbort() || a.piInterruptDeliveredLocked()
+	if env.statesNativeCompletion() {
+		interrupted = false
+	}
+	// A write or acknowledgement can reach Pi after it naturally completed.
+	// The native completion therefore wins over every local delivery state.
+	a.interruptRequests = nil
+	return interrupted
 }
 
 // piTurnDurationMs measures one Pi turn in milliseconds. Pi's agent_end carries
@@ -377,25 +447,14 @@ func piTurnDurationMs(startedAt, endedAt time.Time) *int64 {
 func (env piAgentEndEnvelope) isRetryableFailure() bool {
 	// Walk from the end: only the final assistant message reflects the
 	// turn's final outcome; earlier assistant entries are intra-turn.
-	for i := len(env.Messages) - 1; i >= 0; i-- {
-		msg := env.Messages[i]
-		if msg.Role != contracts.PiRoleAssistant {
-			continue
-		}
-		return msg.StopReason == contracts.PiStopReasonError && msg.ErrorMessage == piRetryableWebSocketError
-	}
-	return false
+	last := env.lastAssistantMessage()
+	return last != nil && last.StopReason == contracts.PiStopReasonError && last.ErrorMessage == piRetryableWebSocketError
 }
 
 func (env piAgentEndEnvelope) retainedCompletion() agent.MessageCompletion {
-	for i := len(env.Messages) - 1; i >= 0; i-- {
-		if env.Messages[i].Role != contracts.PiRoleAssistant {
-			continue
-		}
-		if env.Messages[i].StopReason == contracts.PiStopReasonError {
-			return agent.MessageCompletionError
-		}
-		break
+	last := env.lastAssistantMessage()
+	if last != nil && last.StopReason == contracts.PiStopReasonError {
+		return agent.MessageCompletionError
 	}
 	return agent.MessageCompletionInterrupted
 }
@@ -421,7 +480,7 @@ func (a *Agent) handlePiMessageEnd(raw []byte) {
 //
 // Pi ends a message that a stop cut with its partial text, so the row draws that text,
 // and its completion states the stop. Pi spells the stop two ways (see
-// noteInterruptRequested): `aborted`, and `error` while a tool still ran, which only
+// Interrupt): `aborted`, and `error` while a tool still ran, which only
 // LeapMux's own note tells apart from a failure. A message with no visible text keeps
 // no completion: the marker states truncated text, and its row draws none.
 func (a *Agent) piMessageTextCut(raw []byte) bool {
@@ -439,7 +498,7 @@ func (a *Agent) piMessageTextCut(raw []byte) bool {
 	case contracts.PiStopReasonAborted:
 	case contracts.PiStopReasonError:
 		a.Mu.Lock()
-		noted := a.interruptRequested
+		noted := a.piInterruptDeliveredLocked()
 		a.Mu.Unlock()
 		if !noted {
 			return false
@@ -585,9 +644,9 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 	// subagent's output lands in its own child transcript, so a rail held open
 	// for the whole run only pushes every concurrent tool one column right.
 	//
-	// Pi never reads the recorded span type back -- tool_execution_end carries
-	// its own toolName -- but providerkit.OpenToolSpan records it for every provider, so a
-	// closing message that DOES read it (Claude, ACP) finds it.
+	// Pi does not read the recorded span type. tool_execution_end carries its own toolName.
+	// providerkit.OpenToolSpan records the type for every provider.
+	// Closing messages from Claude and Agent Client Protocol (ACP) providers read that recorded type.
 	spawns := env.ToolName == contracts.PiToolAgent || env.ToolName == contracts.PiToolSubagentWorkflow
 	if err := providerkit.OpenToolSpan(a.sink, agent.MessageContent{Original: raw}, env.ToolCallID, env.ToolName, spawns); err != nil {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.AgentID(), "error", err)
@@ -618,12 +677,12 @@ const piLiveOutputLimit = 8192
 // already declares the total to be.
 const piCountedWindowBytes = 64 << 10
 
-// piJoinOutputTail joins the text blocks of one Pi partial result, and keeps at most
-// the LAST limit bytes. A limit of zero or less keeps every byte.
+// piJoinOutputTail joins one partial result's text blocks and keeps at most the last limit bytes.
+// A limit of zero or less keeps every byte.
 //
-// total is the summed length of those blocks, which the caller already walked them
-// for, so the builder allocates exactly what it keeps. A capped join therefore costs
-// the cap rather than the whole accumulated output.
+// total is the summed length that the caller calculated from those blocks.
+// The builder allocates exactly what it keeps.
+// A capped join therefore allocates only the cap, rather than the full accumulated output.
 //
 // It reports whether the cap dropped earlier bytes.
 func piJoinOutputTail(blocks []piContentBlock, total, limit int) (string, bool) {
@@ -684,9 +743,9 @@ func (a *Agent) handlePiToolExecutionUpdate(raw []byte) {
 
 	// Pi re-sends the WHOLE partial result on every update, so a join of every text
 	// block costs the accumulated output each time and the cost grows with the call.
-	// Sum the lengths instead, and join only what a report reads: the tail takes the
-	// last bytes alone, and the byte counter -- the one reader that can need more --
-	// runs on one of the two paths below.
+	// Sum the lengths and join only the text that a report reads.
+	// The tail takes only the last bytes. The byte counter can need more text.
+	// It uses one of the two paths below.
 	textBytes := 0
 	for _, block := range partial.Content {
 		if block.Type == ContentBlockText {
@@ -700,9 +759,9 @@ func (a *Agent) handlePiToolExecutionUpdate(raw []byte) {
 		} `json:"truncation"`
 	}
 	decoded := json.Unmarshal(partial.Details, &details) == nil
-	// One flag for both reports. The counter used to take a hard-coded false while
-	// the tail took the real value, so a truncated Pi output broadcast an EXACT byte
-	// total for a window that was missing its head.
+	// Use one truncation flag for both reports.
+	// The counter previously used false while the tail used the real value.
+	// That difference reported an exact total for a truncated window that lacked its first bytes.
 	truncated := decoded && details.Truncation != nil && details.Truncation.Truncated
 	if decoded && details.Truncation != nil && details.Truncation.TotalBytes > 0 {
 		// totalBytes counts the full output even when the retained content is truncated.
@@ -720,10 +779,9 @@ func (a *Agent) handlePiToolExecutionUpdate(raw []byte) {
 		observed := a.ObserveCumulativeOutput(env.ToolCallID, counted, truncated)
 		a.sink.ReportProgress(agent.OutputTotalProgress(env.ToolCallID, observed.Total, observed.Minimum))
 	}
-	// Pi sends the partial result WHOLE on every update, so its last bytes are the
-	// tail. Pi's own truncation flag says whether earlier bytes are missing from it,
-	// and the cap here drops more of the head when the retained output is longer than
-	// a live tail needs.
+	// Pi sends the full partial result on each update. Its last bytes form the tail.
+	// Pi's truncation flag states whether earlier bytes are absent.
+	// This cap removes more earlier bytes when the retained output exceeds the live tail's limit.
 	if textBytes > 0 {
 		tail, clipped := piJoinOutputTail(partial.Content, textBytes, piLiveOutputLimit)
 		a.sink.ReportProgress(agent.OutputTailProgress(env.ToolCallID, tail, truncated || clipped))
@@ -840,11 +898,10 @@ func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
 
 	for _, toolCallID := range toolCallIDs {
 		tool := tools[toolCallID]
-		// The cumulative text and the live counter belong to the CALL, not to the row.
-		// tool_execution_partial observes output for a call whose start frame this
-		// worker never saw, and CumulativeOutputCounter then retains the whole text --
-		// so the release must run before the row guard below, or that text stays for
-		// the life of the process on every path that does not end in agent_end.
+		// The cumulative text and live counter belong to the call.
+		// tool_execution_update can arrive without a start frame, and CumulativeOutputCounter retains its full text.
+		// Release that text before the row guard below.
+		// Otherwise, paths without agent_end retain it for the full process lifetime.
 		a.ClearCumulativeOutput(toolCallID)
 		a.sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
 		// An agent that never announced the call opened no row and reserved no span.
@@ -856,10 +913,9 @@ func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
 			slog.Warn("marshal incomplete pi tool", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "error", err)
 			continue
 		}
-		// The row is the agent's own start frame. The partial result Pi did report is
-		// recovered provider data, and LeapMux's completion column states that the
-		// call did not finish -- an earlier build declared `isError: true` instead,
-		// which claimed a failure no event reported.
+		// The row retains the agent's native start frame and the partial result that Pi reported.
+		// LeapMux's completion column states that the call did not finish.
+		// The previous isError:true field claimed a failure that no native event reported.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
 			Original: tool.StartFrame, Supplemental: supplement, Completion: completion,
 		}, agent.SpanInfo{
@@ -871,14 +927,12 @@ func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
 	}
 }
 
-// handlePiThinkingLevelChanged folds Pi's own thinking level back into the agent's
-// settings.
+// handlePiThinkingLevelChanged copies Pi's confirmed thinking level into the agent settings.
 //
-// Pi CLAMPS the level to what the model offers, so a model switch alone can move it:
-// `setModel` calls `setThinkingLevel`, which lowers a level the new model does not
-// support and then announces the value it settled on. LeapMux asked for neither the
-// switch nor the new level, and it kept its own `thinkingLevel` field, so the effort
-// segment went on showing a level the running agent had already left.
+// Pi restricts the level to the model's supported levels.
+// setModel calls setThinkingLevel, which lowers an unsupported level and announces the new value.
+// A native model switch can therefore change the level without a LeapMux request.
+// Keeping the old thinkingLevel would show a value that the active model no longer uses.
 //
 // The row itself stays out of the transcript. `PersistSettingsRefresh` announces the
 // change through the same settings pipeline every other axis uses, and a raw event row
@@ -915,19 +969,17 @@ func (a *Agent) publishPiSettings(apply func() map[string]string) {
 	a.sink.PersistSettingsRefresh(refresh)
 }
 
-// The session-file entry types Pi appends. Go reads them and the browser never
-// does -- an entry that a reader must see leaves this agent as a message or as a
-// settings refresh, in the shape every provider already writes -- so they stay
-// here rather than in `pi-protocol.json`.
+// These session-file entry types stay in Go because the browser does not read them.
+// The provider sends each visible entry as a neutral message or settings refresh.
+// Each provider uses that shared shape. The native entry types do not need pi-protocol.json.
 const (
 	// piEntryCustom and piEntryCustomMessage are an extension's own rows. The
 	// browser knows which of them it can draw; the worker keeps them all.
 	piEntryCustom        = "custom"
 	piEntryCustomMessage = "custom_message"
-	// piEntryModelChange states the model Pi settled on, which LeapMux did not
-	// necessarily ask for. pi 0.85.1 appends it inside setModel and emits no event
-	// for it, so applyModel reads get_state back instead; see
-	// handlePiModelChangeEntry.
+	// piEntryModelChange states the confirmed model, even when LeapMux did not request it.
+	// Pi 0.85.1 appends it inside setModel without an event.
+	// applyModel therefore reads get_state. See handlePiModelChangeEntry.
 	piEntryModelChange = "model_change"
 	// The session-file entries this worker DROPS. Each one states a fact the event
 	// stream already states, so a row for it would draw raw JSON beside the row
@@ -981,10 +1033,9 @@ func (a *Agent) handlePiEntryAppended(raw []byte) {
 		} `json:"entry"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		// The row still reaches the transcript. A Pi build that reshapes this
-		// envelope makes the struct above stop decoding, and returning here dropped
-		// EVERY session entry silently -- the only evidence a worker log line the
-		// reader never sees. The raw frame at least draws as an inspectable card.
+		// Keep the raw frame in the transcript when a changed envelope cannot decode.
+		// Returning without a row hid every entry and left only a worker log.
+		// The reader cannot see that log but can inspect the raw frame's card.
 		slog.Warn("pi entry_appended unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
 			slog.Error("persist an unreadable Pi session entry", "agent_id", a.AgentID(), "error", err)
@@ -1019,18 +1070,15 @@ func (a *Agent) handlePiEntryAppended(raw []byte) {
 	}
 }
 
-// handlePiModelChangeEntry folds the model Pi settled on back into the settings.
+// handlePiModelChangeEntry copies Pi's confirmed model into the settings.
 //
-// It is the FORWARD-COMPATIBILITY path and it does not run against pi 0.85.1:
-// `entry_appended` carries a `custom` entry alone there, so the `model_change`
-// entry that setModel appends never arrives. applyModel reads Pi's state back
-// after the set_model round trip for exactly that reason, and this branch answers
-// a build that broadens the event.
+// Pi 0.85.1 sends only custom entries through entry_appended.
+// The model_change entry from setModel never arrives through that event.
+// applyModel therefore reads Pi's state after set_model replies.
+// This handler processes a native build that also sends model_change entries.
 //
-// handlePiThinkingLevelChanged is the sibling, and it DOES run, because
-// `thinking_level_changed` is a real top-level event. That contrast is the whole
-// reason the two look different. Both fold back a value the running agent settled
-// on, and LeapMux asked for neither the switch nor the value.
+// handlePiThinkingLevelChanged processes the top-level thinking_level_changed event, which that build does send.
+// Both handlers copy confirmed native values that can change without a LeapMux request.
 func (a *Agent) handlePiModelChangeEntry(provider, modelID string) {
 	if modelID == "" {
 		return

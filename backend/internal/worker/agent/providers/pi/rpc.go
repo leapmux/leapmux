@@ -2,11 +2,13 @@ package pi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -38,6 +40,10 @@ func (a *Agent) sendPiCommand(method string, payload map[string]any, timeout tim
 // beginPiCommand writes the command before returning its response waiter.
 // Call the waiter exactly once to release the response registration.
 func (a *Agent) beginPiCommand(method string, payload map[string]any) (func(time.Duration) (json.RawMessage, error), error) {
+	return a.beginPiCommandObserved(method, payload, nil)
+}
+
+func (a *Agent) beginPiCommandObserved(method string, payload map[string]any, observe func(json.RawMessage)) (func(time.Duration) (json.RawMessage, error), error) {
 	id := "leapmux-" + strconv.FormatInt(a.nextReqID.Add(1), 10)
 
 	envelope := make(map[string]any, len(payload)+2)
@@ -53,9 +59,9 @@ func (a *Agent) beginPiCommand(method string, payload map[string]any) (func(time
 	}
 	data = append(data, '\n')
 
-	ch, release, registerErr := a.Register(id)
-	if registerErr != nil {
-		return nil, fmt.Errorf("register %s: %w", method, registerErr)
+	ch, release, registrationError := a.RegisterObserved(id, observe)
+	if registrationError != nil {
+		return nil, fmt.Errorf("register %s: %w", method, registrationError)
 	}
 
 	a.Mu.Lock()
@@ -66,19 +72,22 @@ func (a *Agent) beginPiCommand(method string, payload map[string]any) (func(time
 		return nil, fmt.Errorf("agent is stopped")
 	}
 
-	if err := a.WriteStdin(data); err != nil {
-		release()
-		return nil, fmt.Errorf("write %s: %w", method, err)
-	}
-
-	return func(timeout time.Duration) (json.RawMessage, error) {
+	wait := func(timeout time.Duration) (json.RawMessage, error) {
 		defer release()
 		respLine, err := a.AwaitResponse(ch, method, timeout)
 		if err != nil {
 			return nil, err
 		}
 		return parsePiResponse(method, respLine)
-	}, nil
+	}
+	if err := a.WriteStdin(data); err != nil {
+		if observe != nil && errors.Is(err, agent.ErrDeliveryUncertain) {
+			return wait, fmt.Errorf("write %s: %w", method, err)
+		}
+		release()
+		return nil, fmt.Errorf("write %s: %w", method, err)
+	}
+	return wait, nil
 }
 
 func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, error) {
@@ -131,5 +140,8 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 // and out-of-band feed paths; the production read loop calls handleOutput
 // directly via ReadOutput.
 func (a *Agent) HandleOutput(content []byte) {
-	handlePiOutput(a, providerkit.ParseLine(content))
+	line := providerkit.ParseLine(content)
+	if !a.handlePiResponse(line) {
+		handlePiOutput(a, line)
+	}
 }

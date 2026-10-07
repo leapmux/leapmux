@@ -30,17 +30,18 @@ type piRecordedRequest struct {
 // echoes responses for the requests it sees. The peer also records every
 // request so tests can assert wire format.
 type piTestRig struct {
-	agent      *Agent
-	requests   func() []piRecordedRequest
-	cleanup    func()
-	cancel     context.CancelFunc
-	readPipe   *os.File
-	writePipe  *os.File
-	respondMu  sync.Mutex
-	responder  func(req piRecordedRequest) (data json.RawMessage, success bool, errMsg string)
-	holdMethod string
-	holdReply  <-chan struct{}
-	stdoutPipe *os.File
+	agent         *Agent
+	requests      func() []piRecordedRequest
+	cleanup       func()
+	cancel        context.CancelFunc
+	readPipe      *os.File
+	writePipe     *os.File
+	respondMu     sync.Mutex
+	responder     func(req piRecordedRequest) (data json.RawMessage, success bool, errMsg string)
+	holdMethod    string
+	holdReply     <-chan struct{}
+	stdoutPipe    *os.File
+	recordingDone chan struct{}
 }
 
 // newPiTestRig sets up an Agent suitable for unit tests. The agent's stdin is
@@ -74,11 +75,12 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 	a.SkipStderr()
 
 	rig := &piTestRig{
-		agent:      a,
-		cancel:     cancel,
-		readPipe:   stdinReader,
-		writePipe:  stdinWriter,
-		stdoutPipe: stdoutWriter,
+		agent:         a,
+		cancel:        cancel,
+		readPipe:      stdinReader,
+		writePipe:     stdinWriter,
+		stdoutPipe:    stdoutWriter,
+		recordingDone: make(chan struct{}),
 	}
 
 	var (
@@ -88,6 +90,7 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 	)
 
 	go func() {
+		defer close(rig.recordingDone)
 		scanner := bufio.NewScanner(stdinReader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
@@ -795,14 +798,9 @@ func TestPi_Stop_SendsAbortBeforeClosingStdin(t *testing.T) {
 	rig.agent.currentTurnActive = true
 	rig.agent.Mu.Unlock()
 
-	// Process.Stop blocks until processDone closes — without a real
-	// subprocess, simulate the post-stdin-close exit by closing processDone
-	// from a helper goroutine. This isolates the "abort RPC was sent on the
-	// way out" assertion.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		rig.agent.SimulateExitForTest()
-	}()
+	// The fake process exits when Stop closes stdin.
+	// The native abort acknowledgement must arrive before that close.
+	rig.agent.SetStdinForTest(&piExitOnCloseWriter{WriteCloser: rig.writePipe, exit: rig.agent.SimulateExitForTest})
 	rig.agent.Stop()
 
 	select {
@@ -835,17 +833,10 @@ func TestPi_Stop_SkipsAbortWhenIdle(t *testing.T) {
 
 	// currentTurnActive defaults to false; Stop should skip abort entirely so
 	// idle agents tear down without burning a 1s timeout each.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		rig.agent.SimulateExitForTest()
-	}()
+	rig.agent.SetStdinForTest(&piExitOnCloseWriter{WriteCloser: rig.writePipe, exit: rig.agent.SimulateExitForTest})
 	rig.agent.Stop()
-
-	select {
-	case <-abortSeen:
-		t.Fatal("Stop sent abort despite no turn being active")
-	case <-time.After(50 * time.Millisecond):
-	}
+	awaitPiWrite(t, rig.recordingDone)
+	assert.Empty(t, rig.requests(), "an idle stop closes the recorder without an abort command")
 }
 
 func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {

@@ -3,7 +3,6 @@ package pi
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -18,20 +17,19 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Agent manages a single `pi --mode rpc` process.
+// Agent manages a single pi --mode rpc process and its remote procedure call (RPC) transport.
 //
-// Pi's wire format is JSONL with strict LF framing but it is NOT JSON-RPC 2.0:
-// commands carry an opaque string `id`, and responses echo it on a flat
-// {type:"response", command, success, data, error} envelope. Agent does
-// not embed JSONRPCProcess because the marshal/decode shape diverges; it
-// shares only the pending-map mechanics via Correlator[string].
+// Pi uses JSON Lines (JSONL) with strict line feed (LF) framing.
+// It does not use JSON-RPC 2.0. Commands carry an opaque string id.
+// Responses echo that id in a flat {type:"response", command, success, data, error} envelope.
+// Agent does not embed JSONRPCProcess because the marshal/decode shape differs.
+// It shares only the pending-map mechanics through Correlator[string].
 type Agent struct {
 	providerkit.Process
 	providerkit.Correlator[string]
 
-	// Pi's underlying LLM provider (e.g. "openai-codex"). Persisted via
-	// options[OptionProvider] so model-switch RPCs round-trip with the
-	// correct provider field across restarts.
+	// Pi's underlying model provider, for example, "openai-codex".
+	// options[OptionProvider] saves it so model-switch RPCs retain the correct provider across restarts.
 	provider string
 
 	model         string
@@ -42,15 +40,18 @@ type Agent struct {
 	sessionID   string // Pi's runtime sessionId (rotates on new_session)
 	sessionFile string // Pi's persistent session file path (durable identifier)
 	sessionMu   sync.Mutex
-	// currentTurnActive is true while the turn is open. A run that Pi will
-	// auto-retry (agent_end with willRetry) keeps it true, because Pi restarts
-	// that run itself: Interrupt must still send an abort, and a user message
-	// must still steer rather than queue.
+	// currentTurnActive is true while the turn is open.
+	// An agent_end with willRetry keeps it true because Pi restarts that run itself.
+	// Interrupt must still send an abort. A user message must still steer rather than queue.
 	currentTurnActive bool
-	// interruptRequested records that the user stopped the running turn, so the
-	// agent_end that ends it reads as an interruption rather than as the failure
-	// its stop reason claims. Guarded by a.Mu. See noteInterruptRequested.
-	interruptRequested bool
+	// Each write attempt retains its own delivery outcome. A failed write removes
+	// only that attempt. Attempt IDs continue across turns.
+	// Mu protects the ledger and counters. interruptOutput uses its own mutex.
+	interruptRequests map[uint64]piInterruptDelivery
+	interruptAttempt  uint64
+	turnGeneration    uint64
+	interruptOutput   piInterruptOutput
+	retryState        piRetryState
 	// turnStartedAt marks when the turn's FIRST agent_start arrived, so
 	// agent_end can report the turn's wall time. Pi's agent_end carries no
 	// duration of its own. Zero between turns, and zero for a turn whose start
@@ -72,7 +73,8 @@ type Agent struct {
 	questionGeneration    uint64
 	// openDialogs is the published dialogs that Pi still waits on, so an interrupt
 	// can answer each one (see settleOpenDialogs). Guarded by a.Mu.
-	openDialogs    map[string]struct{}
+	openDialogs    map[string]uint64
+	dialogRevision uint64
 	dialogCancelMu sync.Mutex
 	// freshImplementationPending records that a plan menu was answered with
 	// the fresh-implementation choice, so the settings dialog that follows is
@@ -183,10 +185,10 @@ func (a *Agent) applyStateResponse(raw json.RawMessage) {
 // The caller holds a.Mu and goal.publishMu.
 func (a *Agent) applyPiSessionIdentityLocked(sessionID, sessionFile string) bool {
 	changed := (sessionID != "" && sessionID != a.sessionID) || (sessionFile != "" && sessionFile != a.sessionFile)
-	// The ID and the path identify ONE session, so a new ID replaces both. Guarding
-	// them apart retained the previous session's path whenever the reply carried a new
-	// ID and no path: UpdateSessionID then persisted a resume handle for the session
-	// that Pi replaced, and the goal reader's header check refused that file forever.
+	// The ID and path identify one session, so a new ID replaces both.
+	// Separate guards retained the old path when a reply carried a new ID without a path.
+	// UpdateSessionID then saved the old session's resume handle.
+	// The goal reader's header check rejected that old file indefinitely.
 	switch {
 	case sessionID != "" && sessionID != a.sessionID:
 		a.sessionID = sessionID
@@ -352,115 +354,6 @@ func (a *Agent) handlePiPromptFailure(err error, steer bool) {
 	})
 }
 
-// Stop sends an abort to the running turn (when one is in flight), then tears
-// down the process via Process.Stop. Abort is issued synchronously (with a
-// short timeout) before Process.Stop sets stopped=true and closes stdin —
-// running it on a goroutine instead would race the stopped-check inside
-// sendPiCommand and drop the abort in the common case.
-func (a *Agent) Stop() {
-	a.NoteIntentionalStop()
-	a.stopPiGoalRefresh()
-	a.dialogDeadlines.StopAll()
-	a.Mu.Lock()
-	stopped := a.StoppedLocked()
-	turnActive := a.currentTurnActive
-	a.clearPiQuestionStateLocked()
-	a.Mu.Unlock()
-	if !stopped && turnActive {
-		// Best-effort. Failures (timeout, write error, server-side false)
-		// fall through to the hard tear-down below.
-		_, _ = a.sendPiCommand(CommandAbort, nil, 1*time.Second)
-	}
-	a.Process.Stop()
-	a.flushPiGeneration(agent.MessageCompletionInterrupted)
-	a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
-	a.sink.ReportProgress(agent.ResetProgress())
-}
-
-// Wait retains unfinished model output after an unexpected process exit.
-func (a *Agent) Wait() error {
-	err := a.Process.Wait()
-	a.stopPiGoalRefresh()
-	a.dialogDeadlines.StopAll()
-	completion := a.ProcessExitCompletion()
-	a.flushPiGeneration(completion)
-	a.persistIncompletePiTools(completion)
-	a.sink.ReportProgress(agent.ResetProgress())
-	return err
-}
-
-// Interrupt aborts the running Pi turn by sending the `abort`
-// command, then answers each dialog that Pi still waits on (see
-// settleOpenDialogs). Pi's wire format uses {type:"abort"} per the
-// piProvider.IsInterrupt classifier; beginPiCommand applies the
-// envelope.
-//
-// The dialogs are answered AFTER the abort is written and BEFORE its
-// answer is awaited. Pi answers the abort only when the agent is idle,
-// and an open dialog keeps it busy. Pi handles each stdin line as it
-// arrives, so the abort marks the run aborted first, and the tool that
-// a cancelled dialog releases then ends a run that Pi already stopped.
-// A dialog answered before the abort would let the run go on to its
-// next model request.
-//
-// With no turn active it sends no abort, so scripts can invoke it without
-// probing currentTurnActive first. It still answers each open dialog,
-// because no abort settles a dialog that waits outside a turn.
-func (a *Agent) Interrupt(stop agent.StopContext) error {
-	a.noteInterruptRequested()
-	a.Mu.Lock()
-	stopped := a.StoppedLocked()
-	turnActive := a.currentTurnActive
-	a.clearPiQuestionStateLocked()
-	a.Mu.Unlock()
-	if stopped {
-		return fmt.Errorf("agent is stopped")
-	}
-	if !turnActive {
-		return a.settleOpenDialogs(stop)
-	}
-	wait, err := a.beginPiCommand(CommandAbort, nil)
-	if err != nil {
-		return err
-	}
-	settleErr := a.settleOpenDialogs(stop)
-	// Short timeout — Pi acks aborts quickly; longer waits would just
-	// extend the apparent latency of a user-driven interrupt.
-	_, err = wait(1 * time.Second)
-	return errors.Join(settleErr, err)
-}
-
-// noteInterruptRequested records that the user stopped the RUNNING turn.
-//
-// Pi spells one stop two ways. A turn it aborts cleanly reports
-// `stopReason: "aborted"`, and a turn whose tool was still running reports
-// `stopReason: "error"` with `errorMessage: "This operation was aborted"` -- the
-// same shape as a genuine failure. The frame therefore cannot tell an
-// interruption from a failure, and the second read as "Turn failed" in the
-// danger color for a stop the reader asked for. LeapMux can tell them apart,
-// because it sent the abort.
-//
-// The note is taken only while a turn runs. Pi acknowledges an abort sent
-// outside a turn and ends no turn for it, so a note taken there would wait and
-// then mislabel the NEXT turn.
-func (a *Agent) noteInterruptRequested() {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if a.currentTurnActive {
-		a.interruptRequested = true
-	}
-}
-
-// takeInterruptRequest reports whether the turn that is ending was interrupted,
-// and clears the note. One agent_end ends one turn, so the note is spent there.
-func (a *Agent) takeInterruptRequest() bool {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	interrupted := a.interruptRequested
-	a.interruptRequested = false
-	return interrupted
-}
-
 // ClearContext starts a fresh Pi session in-place.
 //
 // Pi's new_session response only includes a cancellation flag; we follow it
@@ -493,6 +386,9 @@ func (a *Agent) ClearContext() (string, error) {
 	a.applyStateResponse(stateRaw)
 	a.Mu.Lock()
 	a.currentTurnActive = false
+	a.interruptRequests = nil
+	a.retryState.turn = nil
+	a.turnGeneration++
 	// Drop the turn's start mark with the session. agent_start takes a mark only
 	// when the agent holds none, so that a retried run keeps the turn's original
 	// start. A mark that survived the turn this clear replaced would then make
@@ -502,12 +398,11 @@ func (a *Agent) ClearContext() (string, error) {
 	a.sessionCostKnown = false
 	a.latestContextUsage = nil
 	a.usageGeneration++
-	// Drop the per-tool-call side tables with the session. tool_execution_end is
-	// their only other removal, and it never arrives for a call the replaced
-	// session was still running -- so without this a spawn prompt is retained for
-	// the life of the process, and a reused tool-call id would open the next
-	// transcript on the previous session's instruction (mirrors
-	// Base.ClearContext).
+	// Drop the per-tool-call side tables with the session.
+	// Only tool_execution_end also removes those records.
+	// It never arrives for a call that the replaced session still ran.
+	// Without this reset, the process retains that spawn prompt indefinitely.
+	// A reused tool-call ID would also open the new transcript with the old instruction.
 	clear(a.toolStates)
 	a.clearPiQuestionStateLocked()
 	// The plan menu this mark refers to died with the replaced session.

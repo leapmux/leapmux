@@ -59,7 +59,7 @@ export function piResultDivider(parsed: unknown, completion?: MessageCompletion)
   return {
     label: turnEndLabel('ended', {
       durationMs,
-      qualifiers: [stopReason === 'length' && 'length limit', willRetry && 'auto-retry'],
+      qualifiers: [stopReason === PI_STOP_REASON.Length && 'length limit', willRetry && 'auto-retry'],
     }),
   }
 }

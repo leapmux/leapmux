@@ -47,6 +47,11 @@ describe('pi result divider', () => {
       .toEqual({ label: 'Turn ended' })
   })
 
+  it('keeps the native length limit qualifier after a normal completion', () => {
+    expect(plugin.transcript.extractDivider({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'length' }] }))
+      .toEqual({ label: 'Turn ended (length limit)' })
+  })
+
   // An aborted turn is not an error: the reader asked for it, and every provider
   // states an interruption in the same words.
   it('maps an aborted stopReason to the shared interruption label', () => {

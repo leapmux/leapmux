@@ -581,7 +581,7 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 
 // Pi ends the assistant message that a stop cut with its partial text and a stop
 // reason: `aborted` for a clean abort, and `error` while a tool still ran (see
-// noteInterruptRequested). The row keeps Pi's frame and states the stop.
+// Interrupt). The row keeps Pi's frame and states the stop.
 func TestHandlePiOutput_MessageEnd_MarksTheTextThatAStopCut(t *testing.T) {
 	t.Parallel()
 
@@ -601,7 +601,7 @@ func TestHandlePiOutput_MessageEnd_MarksTheTextThatAStopCut(t *testing.T) {
 			a.currentTurnActive = true
 			a.Mu.Unlock()
 			if tc.noted {
-				a.noteInterruptRequested()
+				noteDeliveredPiInterrupt(a)
 			}
 
 			raw := []byte(`{"type":"message_end","message":{"role":"assistant","stopReason":"` + tc.stopReason + `","content":[{"type":"text","text":"Half a sen"}]}}`)
@@ -636,7 +636,7 @@ func TestHandlePiOutput_MessageEnd_LeavesAMessageThatNoStopCut(t *testing.T) {
 			a.currentTurnActive = true
 			a.Mu.Unlock()
 			if tc.noted {
-				a.noteInterruptRequested()
+				noteDeliveredPiInterrupt(a)
 			}
 
 			handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_end","message":`+tc.message+`}`)))
@@ -857,20 +857,19 @@ func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
-func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeCancelsAutoContinue(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeLeavesAutoContinueUnchanged(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	// messages contains a string instead of an array.
-	// handlePiAgentEnd cannot decode the envelope.
-	// The retry check sees no messages and must cancel continuation.
+	// handlePiAgentEndObserved cannot decode the envelope.
+	// An invalid envelope must not change continuation state.
 	raw := []byte(`{"type":"agent_end","messages":"unexpected"}`)
 
 	handlePiOutput(a, providerkit.ParseLine(raw))
 
-	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Zero(t, sink.AutoCancelCount())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
@@ -1560,7 +1559,7 @@ func TestHandlePiOutput_AgentEnd_AfterInterrupt_MarksTheTurnInterrupted(t *testi
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	a.currentTurnActive = true
-	a.noteInterruptRequested()
+	noteDeliveredPiInterrupt(a)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(piInterruptedAgentEnd)))
 
@@ -1595,7 +1594,7 @@ func TestHandlePiOutput_AgentStart_DropsAStaleInterruptNote(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	a.currentTurnActive = true
-	a.noteInterruptRequested()
+	noteDeliveredPiInterrupt(a)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant",`+
@@ -1613,7 +1612,7 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTheInterruptNote(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	a.currentTurnActive = true
-	a.noteInterruptRequested()
+	noteDeliveredPiInterrupt(a)
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant",`+
 		`"stopReason":"error","errorMessage":"WebSocket error"}]}`)))
