@@ -6,13 +6,20 @@ import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 import { CONTROL_DECISION_WORDS, feedbackOrLabel, joinAnswerLines, label } from '../../persistedControlResponse'
 import { deepseekHarnessQuestionRecords } from './askUserQuestion'
 
-/** Read the exact saved native choices through their original question IDs. */
+/**
+ * Read the exact saved native choices through their original question IDs.
+ *
+ * An approval reads the native option that the decision selected.
+ * A denial reads the decision alone, with or without a typed reason.
+ * The native approval reply carries no reason. The browser sends the reason as the
+ * reader's next message. The transcript draws that message as a separate row.
+ */
 export function deepseekHarnessControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const decision = decodeControlBehaviorEnvelope(cr.response)
   if (!decision || !cr.request || decision.requestId !== cr.requestId)
     return null
   if (cr.request.event === DEEPSEEK_HARNESS_CONTROL_EVENT.Approval)
-    return decision.behavior === 'allow' ? label('Allow once') : feedbackOrLabel(decision.message, CONTROL_DECISION_WORDS.permission.deny)
+    return label(decision.behavior === 'allow' ? 'Allow once' : CONTROL_DECISION_WORDS.permission.deny)
   if (cr.request.event !== DEEPSEEK_HARNESS_CONTROL_EVENT.UserQuestions)
     return null
   const questions = deepseekHarnessQuestionRecords(cr.request)
