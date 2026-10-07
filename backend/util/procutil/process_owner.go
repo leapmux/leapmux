@@ -16,18 +16,27 @@ const processCaptureTimeout = 2 * time.Second
 // It retains children only after their live ancestry and creation identities agree.
 // A dead parent cannot grant ownership of an unobserved detached child.
 type ProcessOwner struct {
-	mu           sync.Mutex
-	cmd          processCommand
-	root         ProcessIdentity
-	children     map[ProcessIdentity]struct{}
-	platform     processOwnerPlatform
-	started      bool
-	closed       bool
-	result       error
-	waitStarted  bool
-	waitFinished bool
-	waitDone     chan struct{}
-	waitResult   error
+	mu                 sync.Mutex
+	cmd                processCommand
+	root               ProcessIdentity
+	children           map[ProcessIdentity]struct{}
+	platform           processOwnerPlatform
+	started            bool
+	closed             bool
+	result             error
+	waitStarted        bool
+	waitFinished       bool
+	waitDone           chan struct{}
+	waitResult         error
+	exitReceiptForTest func(context.Context, ProcessIdentity) error
+}
+
+// SetExitReceiptForTest delays the completion receipt of an exact owned process.
+// Tests set it before shutdown. Production always uses the native exit watch.
+func (o *ProcessOwner) SetExitReceiptForTest(receipt func(context.Context, ProcessIdentity) error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.exitReceiptForTest = receipt
 }
 
 // PrepareProcess owns cancellation before Start can create a child.
@@ -238,7 +247,8 @@ func (o *ProcessOwner) Cancel() error {
 	return err
 }
 
-// Terminate stops verified descendants before the original group loses its root.
+// Terminate waits for verified processes to exit after it stops the owned tree.
+// Concurrent callers receive the same completed result under the owner mutex.
 func (o *ProcessOwner) Terminate() error {
 	if o == nil {
 		return nil
@@ -251,7 +261,40 @@ func (o *ProcessOwner) Terminate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), processCaptureTimeout)
 	err := o.captureLocked(ctx)
 	cancel()
+	exitCtx, cancelExit := context.WithTimeout(context.Background(), processTreeExitTimeout)
+	defer cancelExit()
+	var watches []*processExitWatch
+	identities := make([]ProcessIdentity, 0, len(o.children)+1)
+	if !o.root.IsZero() {
+		identities = append(identities, o.root)
+	}
+	for child := range o.children {
+		if child != o.root {
+			identities = append(identities, child)
+		}
+	}
+	for _, identity := range identities {
+		watch, watchErr := openProcessExitWatch(exitCtx, identity)
+		if watchErr != nil {
+			err = errors.Join(err, fmt.Errorf("observe owned process %d: %w", identity.PID, watchErr))
+			continue
+		}
+		watches = append(watches, watch)
+	}
 	err = errors.Join(err, o.killChildrenLocked(), o.platform.terminate(o.root))
+	for _, watch := range watches {
+		var waitErr error
+		if o.exitReceiptForTest != nil {
+			waitErr = o.exitReceiptForTest(exitCtx, watch.identity)
+		}
+		if waitErr == nil {
+			waitErr = watch.wait(exitCtx)
+		}
+		if waitErr != nil {
+			err = errors.Join(err, fmt.Errorf("wait for owned process %d: %w", watch.identity.PID, waitErr))
+		}
+		err = errors.Join(err, watch.close())
+	}
 	o.closed = true
 	o.result = errors.Join(o.result, err)
 	return o.result

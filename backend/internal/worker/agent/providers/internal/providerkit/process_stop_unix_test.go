@@ -274,3 +274,85 @@ func TestProcessStopSignalEndsTheDetachedEngineThatItsRelayLeaves(t *testing.T) 
 	first.requireClosed(t)
 	second.requirePong(t)
 }
+
+func TestProcessStopWaitsForItsKilledDescendantCompletion(t *testing.T) {
+	home := t.TempDir()
+	first := startDetachedLifetimeFixture(t, home, syscall.SIGTERM)
+	second := startDetachedLifetimeFixture(t, home, 0)
+	first.requirePong(t)
+	second.requirePong(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	var deadlines []time.Time
+	defer releaseOnce.Do(func() { close(release) })
+	first.process.owner.SetExitReceiptForTest(func(ctx context.Context, identity procutil.ProcessIdentity) error {
+		deadline, present := ctx.Deadline()
+		if !present {
+			return errors.New("the process tree completion has no deadline")
+		}
+		deadlines = append(deadlines, deadline)
+		if identity != first.engine {
+			return nil
+		}
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	finished := make(chan struct{})
+	go func() { defer close(finished); first.process.Stop() }()
+	select {
+	case <-entered:
+	case <-finished:
+		t.Fatal("Stop returned before the exact descendant supplied its completion receipt")
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("Stop did not observe the exact descendant completion")
+	}
+	select {
+	case <-finished:
+		t.Fatal("Stop returned while the exact descendant completion remained pending")
+	default:
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-finished:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("Stop did not finish after the exact descendant completion")
+	}
+	first.requireClosed(t)
+	second.requirePong(t)
+	require.GreaterOrEqual(t, len(deadlines), 2, "the root and child must share one completion deadline")
+	for _, deadline := range deadlines[1:] {
+		require.True(t, deadlines[0].Equal(deadline), "each owned process must use the same deadline")
+	}
+}
+
+func TestProcessWaitReportsCleanupOnceAndKeepsTheNativeExitCode(t *testing.T) {
+	fixture := startDetachedLifetimeFixture(t, t.TempDir(), 0)
+	require.NoError(t, fixture.process.owner.Capture(t.Context()))
+	cleanupErr := errors.New("the owned child completion failed")
+	fixture.process.owner.SetExitReceiptForTest(func(_ context.Context, identity procutil.ProcessIdentity) error {
+		if identity == fixture.engine {
+			return cleanupErr
+		}
+		return nil
+	})
+	sent, err := fixture.engine.Kill()
+	require.NoError(t, err)
+	require.True(t, sent)
+	require.NoError(t, fixture.process.stdin.Close())
+	done := make(chan error, 1)
+	go func() { done <- fixture.process.Wait() }()
+	select {
+	case err = <-done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("Wait did not report the native exit and child cleanup failure")
+	}
+	require.ErrorIs(t, err, cleanupErr)
+	require.Equal(t, 1, strings.Count(err.Error(), cleanupErr.Error()))
+	require.EqualError(t, fixture.process.ProcessExitError(), "agent process exited with code 7")
+	require.Equal(t, agent.MessageCompletionError, fixture.process.ProcessExitCompletion())
+}
