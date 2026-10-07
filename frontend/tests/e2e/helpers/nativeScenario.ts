@@ -29,6 +29,14 @@ export type NativeToolResultReader = (request: MockModelRequestRecord, callId: s
 
 export type NativeModelContextReader = (request: MockModelRequestRecord) => string
 
+/** A model call and the selected Worker transcript whose browser row the provider resolves. */
+export interface NativeToolRowIdQuery {
+  callId: string
+  agentId: string
+}
+
+export type NativeToolRowIdResolver = (query: NativeToolRowIdQuery) => Promise<string>
+
 /** A native browser scenario with a scripted model and provider-owned tool vocabulary. */
 export interface NativeScenarioContext {
   page: Page
@@ -36,18 +44,19 @@ export interface NativeScenarioContext {
   provider: AgentProvider
   textStep?: NativeTextStep
   /**
-   * The names of the model tool calls that deliver the provider's final answer
-   * and that its transcript shows as no tool row (Junie's `answer`). A turn
-   * that holds only such a call has no tool activity.
+   * The names of model tool calls that deliver the provider's final answer without a transcript tool row, such as Junie's `answer`.
+   * A turn that holds only such a call has no tool activity.
    */
   answerToolNames?: readonly string[]
   readToolResult?: NativeToolResultReader
   readModelContext?: NativeModelContextReader
   /**
-   * Read the user and assistant turns of a native model request, for a provider whose request does not state its
-   * history in the generic shape that `nativeModelConversationTurns` reads.
+   * Read the user and assistant turns of a native model request.
+   * Supply this reader when the provider's request history differs from the generic shape that `nativeModelConversationTurns` reads.
    */
   readConversationTurns?: (request: MockModelRequestRecord) => NativeModelTurn[]
+  /** Resolve browser row identity from actual Worker frames. Model receipts keep their original call IDs. */
+  resolveToolRowId?: NativeToolRowIdResolver
 }
 
 /** A scenario that can inspect the Worker and manage the current native session. */
@@ -56,18 +65,18 @@ export interface ManagedNativeScenarioContext extends NativeScenarioContext {
     & Partial<Pick<ServerInfo, 'agentEnv' | 'adminUserId' | 'mockModelUrl'>>
   workspaceId: string
   /**
-   * How an agent of `provider` opens: its prefix, and the rule that creates its working directory. Its own `provider`
-   * field holds the same value as `provider`. A helper that opens a new native agent creates the working directory by
-   * this rule (`newNativeWorkingDir` in `./nativeAgentOpen.ts`). A provider that reads configuration from the git
-   * repository around its directory then opens in a repository of its own.
+   * How an agent of `provider` opens: its prefix and the rule that creates its working directory.
+   * Its own `provider` field holds the same value as this context's `provider`.
+   * `newNativeWorkingDir` in `./nativeAgentOpen.ts` creates each new native agent's working directory by this rule.
+   * A provider that reads configuration from the surrounding git repository opens in a repository of its own.
    */
   providerAgent: ProviderAgent
 }
 
 /**
  * The fixtures that the `nativeContext` of a provider directory builds its context from.
- * The provider supplies every other field through {@link managedNativeContext}: its `ProviderAgent`, and the fields
- * of {@link NativeProtocol} that its native protocol needs.
+ * The provider supplies its `ProviderAgent` through {@link managedNativeContext}.
+ * It also supplies the fields of {@link NativeProtocol} that its native protocol needs.
  */
 export type NativeContextFixtures = Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'leapmuxServer' | 'workspaceId'>
 
@@ -79,14 +88,15 @@ export type NativeContextFixtures = Pick<ManagedNativeScenarioContext, 'page' | 
  * - `readToolResult`.
  * - `readModelContext`.
  * - `readConversationTurns`.
+ * - `resolveToolRowId`.
  *
  * A provider states only the fields that its protocol needs.
  */
 export type NativeProtocol = Omit<NativeScenarioContext, 'page' | 'modelScript' | 'provider'>
 
 /**
- * Build the managed scenario context of the provider of `providerAgent`, for the `nativeContext` of a provider
- * directory. The context takes its `provider` from `providerAgent`, so the two cannot differ.
+ * Build the managed scenario context for the provider directory's `nativeContext`.
+ * The context takes its `provider` from `providerAgent`, so the two cannot differ.
  */
 export function managedNativeContext(
   fixtures: NativeContextFixtures,
@@ -104,15 +114,14 @@ export function nativeTextStep(context: NativeScenarioContext, text: string): Mo
 /**
  * Where a native turn states its answer after its tool calls:
  *
- * - `next-step`: in the model step after the one that calls the tools, which reads their results. This is the usual
- *   exchange.
- * - `same-step`: in the step that calls the tools. A provider that streams the tool calls and the answer of one turn in
- *   one response states it, such as Cursor, whose Run exchange holds the whole turn.
+ * - `next-step`: in the model step after the tool calls. That step reads the results. This is the usual exchange.
+ * - `same-step`: in the step that calls the tools. Use this when one response streams both tool calls and the answer.
+ *   Cursor's Run exchange holds the whole turn in this way.
  */
 export type NativeAnswerStep = 'next-step' | 'same-step'
 
 /**
- * Build the model steps of one turn that calls `toolCalls` and then answers with `answer`, by the place of the answer.
+ * Build the model steps of one turn that calls `toolCalls` and answers with `answer`. Use the stated place of the answer.
  * An answer that holds tool calls of its own, such as an answer tool, keeps them after `toolCalls` in one step.
  */
 export function toolTurnSteps(toolCalls: readonly MockModelToolCall[], answer: MockModelStep, answerStep: NativeAnswerStep = 'next-step'): MockModelStep[] {
@@ -129,9 +138,9 @@ export function toolTurnSteps(toolCalls: readonly MockModelToolCall[], answer: M
  * A failed read throws its error, for example while the Worker reconnects.
  *
  * Wait on this read with `retryUntilPass` (`./retryUntilPass.ts`), and put the assertion inside the attempt.
- * `expect.poll` is not a correct wait here: Playwright calls the poll function outside the `try` that retries a failed
- * matcher, so the first thrown read ends the poll at once. `retryUntilPass` retries a thrown read and a failed
- * assertion the same way, and its final failure states the last error.
+ * `expect.poll` is not a correct wait here. Playwright calls the poll function outside the `try` that retries a failed matcher.
+ * Thus the first thrown read ends the poll at once.
+ * `retryUntilPass` retries a thrown read and a failed assertion the same way. Its final failure states the last error.
  */
 export async function nativeAgentsByIds(
   context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
@@ -218,13 +227,24 @@ export async function currentNativeAgent(context: Pick<ManagedNativeScenarioCont
   })
 }
 
-/** The identity of one native session: the Worker agent, its native session, and its working directory. */
+/**
+ * The identity of one native session:
+ *
+ * - The Worker agent.
+ * - Its native session.
+ * - Its working directory.
+ */
 export type NativeSessionIdentity = Pick<AgentInfo, 'id' | 'agentSessionId' | 'workingDir'>
 
 /**
- * Require that `after` is the native session of `before`: the same Worker agent, the same native session, and the same
- * working directory. An operation that reads a native catalog or metadata of the provider must not start another
- * agent or another session. `operation` names the operation in the failure, such as `The native Cline catalog read`.
+ * Require that `after` keeps the identity of `before`:
+ *
+ * - The same Worker agent.
+ * - The same native session.
+ * - The same working directory.
+ *
+ * An operation that reads a provider's native catalog or metadata must not start another agent or session.
+ * `operation` identifies the operation in the failure, such as `The native Cline catalog read`.
  */
 export function expectSameNativeSession(before: NativeSessionIdentity, after: NativeSessionIdentity, operation: string): void {
   const identity = (agent: NativeSessionIdentity) => ({ id: agent.id, agentSessionId: agent.agentSessionId, workingDir: agent.workingDir })
@@ -232,11 +252,11 @@ export function expectSameNativeSession(before: NativeSessionIdentity, after: Na
 }
 
 /**
- * Read submitted or server-held native context from a recorded model request: each string value of the body and of
- * the server-held context, in document order, one per line.
+ * Read submitted or server-held native context from a recorded model request.
+ * Read each string value of the body and the server-held context, in document order, one per line.
  *
- * The text keeps each string literal. A JSON encoding escapes a quote, a backslash, and a line break, so a marker that
- * holds one never matched the encoded text, and a negative check on it passed whatever the model received.
+ * The text keeps each string literal. JSON encoding escapes quotes and backslashes. It also escapes line breaks.
+ * A literal marker with those characters cannot match encoded text. A negative check against encoded text cannot prove the model lacked that marker.
  */
 export function nativeModelContextText(
   request: MockModelRequestRecord & { serverContext?: unknown },
@@ -277,7 +297,13 @@ export function nativeModelBodiesAfter(status: { requests: readonly Pick<MockMod
   return status.requests.filter(request => (request.stepIndex ?? -1) >= from).map(request => JSON.stringify(request.body)).join('\n')
 }
 
-/** One tool that a native model request offers: its name, its description, and its argument schema. */
+/**
+ * One tool that a native model request offers:
+ *
+ * - Its name.
+ * - Its description.
+ * - Its argument schema.
+ */
 export interface NativeToolDescriptor {
   name: string
   description: string
@@ -285,8 +311,8 @@ export interface NativeToolDescriptor {
 }
 
 /**
- * Read the tool descriptors of a generic native model API, each out of its envelope, without accepting a missing or
- * empty catalog. The descriptors stay raw, so a provider reader applies its own checks to each field.
+ * Read each tool descriptor of a generic native model API out of its envelope.
+ * Reject a missing or empty catalog. The descriptors stay raw, so a provider reader applies its own checks to each field.
  */
 export function nativeModelToolDescriptors(request: Pick<MockModelRequestRecord, 'protocol' | 'body'>): Record<string, unknown>[] {
   const tools = requestToolDescriptors(request.protocol, request.body)
@@ -356,10 +382,13 @@ export function nativeModelLastUserText(request: MockModelRequestRecord): string
 }
 
 /**
- * Read generic model instructions without tool schemas, results, or assistant answers: the system fields outside the
- * rows, then the text of each system row and each user row in conversation order, in the places that
- * ./modelRequestBody.ts states for the protocol. A Responses `input` string is user text. A Google part has no block
- * type, so the text of each text part counts.
+ * Read generic model instructions from the protocol fields that ./modelRequestBody.ts states:
+ *
+ * - The system fields outside the rows.
+ * - The text of each system row and user row, in conversation order.
+ *
+ * Exclude tool schemas and tool results. Exclude assistant answers also.
+ * A Responses `input` string is user text. A Google part has no block type, so each text part counts.
  */
 export function nativeModelInstructionText(request: MockModelRequestRecord): string {
   const { protocol, body } = request
@@ -388,9 +417,9 @@ export function nativeModelInstructionText(request: MockModelRequestRecord): str
 export interface NativeModelTurn {
   readonly role: 'user' | 'assistant'
   /**
-   * The text blocks of the turn, joined with newlines. An assistant turn also holds the string values of its
-   * tool-call arguments, because a provider can deliver its final answer through a tool. A tool result is not
-   * user text, and reasoning is not assistant text.
+   * The text blocks of the turn, joined with newlines.
+   * An assistant turn also holds string values from its tool-call arguments because a provider can deliver its final answer through a tool.
+   * A tool result is not user text, and reasoning is not assistant text.
    */
   readonly text: string
 }

@@ -65,6 +65,13 @@ describe('managedNativeContext', () => {
   it('adds no protocol field that the provider does not state', () => {
     expect(Object.keys(managedNativeContext(fixtures, kiro)).sort()).toEqual(['leapmuxServer', 'modelScript', 'page', 'provider', 'providerAgent', 'workspaceId'])
   })
+
+  it('keeps the provider row resolver without invoking it during context construction', () => {
+    const resolveToolRowId = vi.fn(async () => 'native-part')
+    const context = managedNativeContext(fixtures, kiro, { resolveToolRowId })
+    expect(context.resolveToolRowId).toBe(resolveToolRowId)
+    expect(resolveToolRowId).not.toHaveBeenCalled()
+  })
 })
 
 describe('expectSameNativeSession', () => {
@@ -79,7 +86,7 @@ describe('expectSameNativeSession', () => {
     { field: 'native session', after: { ...before, agentSessionId: 'another-session' } },
     { field: 'empty native session', after: { ...before, agentSessionId: '' } },
     { field: 'working directory', after: { ...before, workingDir: '/private/other' } },
-  ])('refuses another $field, and names the operation', ({ after }) => {
+  ])('refuses another $field and identifies the operation', ({ after }) => {
     expect(() => expectSameNativeSession(before, after, 'The catalog read')).toThrow('The catalog read keeps the native agent, its session, and its working directory')
   })
 })
