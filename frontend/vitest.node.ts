@@ -280,6 +280,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/kimi-install.test.ts',
   'tests/e2e/letta-code/toolReturnRows.test.ts',
   'tests/e2e/pi/scriptedModel.test.ts',
+  'tests/e2e/pi/stopRelay.test.ts',
   'tests/e2e/process-control-fixtures.test.ts',
   'tests/e2e/provider-fixture-factory.test.ts',
   'tests/e2e/zcode-install.test.ts',
