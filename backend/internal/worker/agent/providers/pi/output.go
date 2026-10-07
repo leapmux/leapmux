@@ -847,42 +847,31 @@ func (a *Agent) handlePiThinkingLevelChanged(raw []byte) {
 		Level string `json:"level"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil || env.Level == "" {
-		slog.Warn("pi thinking_level_changed unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		slog.Warn("The Pi thinking_level_changed event is invalid.", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.publishPiSettings(func() bool {
+	a.publishPiSettings(func() map[string]string {
 		if a.thinkingLevel == env.Level {
-			return false
+			return nil
 		}
 		a.thinkingLevel = env.Level
-		return true
+		return map[string]string{agent.OptionIDEffort: env.Level}
 	})
 }
 
-// publishPiSettings states the three axes Pi reports, whenever a value the running
-// agent settled on differs from the one this worker holds.
-//
-// Two events reach it, and neither is a change LeapMux asked for: Pi clamps the
-// thinking level itself, and `setModel` can move the model with it. The snapshot and
-// the publish are shared because they MUST be -- the settings pipeline takes all three
-// axes at once, so a handler that published its own axis alone would blank the other
-// two.
-//
-// `apply` runs under Mu and reports whether anything moved. Nothing publishes when
-// nothing moved, so a repeated event does not restate a setting.
-func (a *Agent) publishPiSettings(apply func() bool) {
+// publishPiSettings applies one event and publishes only the axes that the event confirms.
+// The settings pipeline preserves each absent axis.
+// Pi can send a thinking event before set_model replies, while the local model still holds
+// the previous model. A complete local snapshot would overwrite the requested model during startup.
+// apply runs under Mu and returns nil when the event changes nothing.
+func (a *Agent) publishPiSettings(apply func() map[string]string) {
 	a.Mu.Lock()
-	changed := apply()
-	model, level, provider := a.model, a.thinkingLevel, a.provider
+	refresh := apply()
 	a.Mu.Unlock()
-	if !changed {
+	if len(refresh) == 0 {
 		return
 	}
-	a.sink.PersistSettingsRefresh(map[string]string{
-		agent.OptionIDModel:  model,
-		agent.OptionIDEffort: level,
-		OptionProvider:       provider,
-	})
+	a.sink.PersistSettingsRefresh(refresh)
 }
 
 // The session-file entry types Pi appends. Go reads them and the browser never
@@ -1005,15 +994,17 @@ func (a *Agent) handlePiModelChangeEntry(provider, modelID string) {
 	if modelID == "" {
 		return
 	}
-	a.publishPiSettings(func() bool {
+	a.publishPiSettings(func() map[string]string {
 		if a.model == modelID && (provider == "" || a.provider == provider) {
-			return false
+			return nil
 		}
 		a.model = modelID
+		refresh := map[string]string{agent.OptionIDModel: modelID}
 		if provider != "" {
 			a.provider = provider
+			refresh[OptionProvider] = provider
 		}
-		return true
+		return refresh
 	})
 }
 

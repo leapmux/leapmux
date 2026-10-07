@@ -1645,9 +1645,53 @@ func TestHandlePiOutput_ThinkingLevelChanged_RefreshesTheEffortSetting(t *testin
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "low", refresh.Effort)
-	assert.Equal(t, "gpt-5", refresh.Model)
-	assert.Equal(t, "openai", refresh.Options[OptionProvider])
+	assert.Empty(t, refresh.Model)
+	assert.NotContains(t, refresh.Options, OptionProvider)
 	assert.Empty(t, sink.Messages(), "the settings notification states the change; a raw row would repeat it")
+}
+
+// Pi sends a thinking event before set_model replies. The local model still holds
+// the previous model. An effort event must not overwrite the requested model.
+func TestHandlePiOutput_ThinkingLevelChanged_ReportsOnlyTheConfirmedAxis(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.model, a.provider, a.thinkingLevel = "previous-model", "previous-provider", "low"
+
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"thinking_level_changed","level":"off"}`)))
+
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "off", refresh.Effort)
+	assert.Empty(t, refresh.Model, "an effort event confirms no model")
+	assert.NotContains(t, refresh.Options, OptionProvider, "an effort event confirms no provider")
+}
+
+// A model event confirms no thinking level. Keep a concurrent effort selection.
+func TestHandlePiOutput_ModelChange_ReportsOnlyTheConfirmedAxes(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []string{"", "openai"} {
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			a.model, a.provider, a.thinkingLevel = "old-model", "anthropic", "medium"
+
+			a.handlePiModelChangeEntry(provider, "new-model")
+
+			require.Equal(t, 1, sink.SettingsRefreshCount())
+			refresh := sink.LastSettingsRefresh()
+			assert.Equal(t, "new-model", refresh.Model)
+			assert.Empty(t, refresh.Effort, "a model event confirms no effort")
+			expected := map[string]string{}
+			if provider != "" {
+				expected[OptionProvider] = provider
+			}
+			assert.Equal(t, expected, refresh.Options)
+		})
+	}
 }
 
 // TestHandlePiOutput_ThinkingLevelChanged_IgnoresTheEchoOfItsOwnRequest checks Pi's reply to a selected effort.
@@ -1891,7 +1935,7 @@ func TestHandlePiOutput_EntryAppendedDrawsOnlyWhatTheStreamDoesNotState(t *testi
 		require.Equal(t, 1, sink.SettingsRefreshCount())
 		refresh := sink.LastSettingsRefresh()
 		assert.Equal(t, "gpt-5", refresh.Model)
-		assert.Equal(t, "medium", refresh.Effort)
+		assert.Empty(t, refresh.Effort)
 		assert.Equal(t, "openai", refresh.Options[OptionProvider])
 	})
 
