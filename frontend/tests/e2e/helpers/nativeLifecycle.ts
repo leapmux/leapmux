@@ -255,6 +255,8 @@ export async function exerciseCloseAgent(
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: 'Close anyway', exact: true }).click()
     await dialog.getByRole('button', { name: 'Confirm?', exact: true }).click()
+    // What the user sees: the tab leaves the tab bar. Unscoped, so a hidden copy of the tab fails the check too.
+    await expect(tabById(context.page, agent.id), 'the closed agent leaves the tab bar').toHaveCount(0)
     await expect.poll(() => owned.filter(isAlive)).toEqual([])
     expect(isAlive(ownership.workerPid)).toBe(true)
     // ListAgents omits a row only after the Worker records its completed close.
