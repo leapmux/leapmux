@@ -17,8 +17,8 @@ import { turnEndLabel } from '../../../turnEndLabel'
  * it as the detail block. After a stream failure, `errors` is the only place
  * where the provider's own words reach the transcript.
  *
- * `total_cost_usd` is always 0. The worker measures the turn and adds
- * `duration_ms`.
+ * `total_cost_usd` is always 0. The native `result` row states the turn
+ * duration in `duration_ms`. The Worker adds no duration.
  */
 export function qoderResultDivider(parsed: unknown, completion?: MessageCompletion): TurnEnd | null {
   if (!isObject(parsed) || pickString(parsed, 'type') !== 'result')

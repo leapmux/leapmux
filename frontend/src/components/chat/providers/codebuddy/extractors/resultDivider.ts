@@ -8,8 +8,8 @@ import { turnEndLabel } from '../../../turnEndLabel'
  * row.
  *
  * CodeBuddy reports a terminal abort as `subtype:"success"` with `is_error:false`
- * and an empty result, and its `total_cost_usd` is always 0. The worker measures
- * the turn and adds `duration_ms`.
+ * and an empty result, and its `total_cost_usd` is always 0. The native `result`
+ * row states the turn duration in `duration_ms`. The Worker adds no duration.
  */
 export function codebuddyResultDivider(parsed: unknown, completion?: MessageCompletion): TurnEnd | null {
   if (!isObject(parsed) || pickString(parsed, 'type') !== 'result')
