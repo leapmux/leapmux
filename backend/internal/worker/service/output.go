@@ -1096,6 +1096,15 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if err != nil {
 		return fmt.Errorf("store control request: %w", err)
 	}
+	if !s.ownsControlPublisher() {
+		_, retireErr := s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
+			AgentID: s.agentID, RequestID: requestID, ClaimToken: stored.ClaimToken,
+		})
+		if retireErr != nil && !errors.Is(retireErr, sql.ErrNoRows) {
+			return fmt.Errorf("retire the obsolete control instance: %w", retireErr)
+		}
+		return nil
+	}
 	st.mu.Lock()
 	if st.pendingControl == nil {
 		st.pendingControl = make(map[string]ownedControlRequest)
@@ -1119,6 +1128,9 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 func (s *agentOutputSink) CancelControlRequest(requestID string) {
 	_, _, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
 	defer release()
+	if !s.ownsControlPublisher() {
+		return
+	}
 	request, err := s.h.queries.CancelControlRequest(bgCtx(), db.CancelControlRequestParams{AgentID: s.agentID, RequestID: requestID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return

@@ -477,3 +477,81 @@ func TestActivityRetirementKeepsATurnThatStartsDuringTheBroadcast(t *testing.T) 
 		assert.Same(t, st, current)
 	}
 }
+
+func TestRetiredSinkCancellationKeepsTheReplacementInstance(t *testing.T) {
+	t.Parallel()
+	svc, _, oldSink, _ := stopOwnershipFixture(t)
+	publishStopControl(t, oldSink, "request")
+	newSink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted("agent-1")
+	newSink.SetTurnState(agent.TurnState{Active: true}, 1)
+	publishStopControl(t, newSink, "request")
+	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	oldSink.CancelControlRequest("request")
+	after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err, "the retired sink cannot withdraw the replacement control")
+	assert.Equal(t, before.ClaimToken, after.ClaimToken)
+}
+
+func TestRetiredStoreCompletionPublishesNoControl(t *testing.T) {
+	t.Parallel()
+	svc, _, oldSink, _ := stopOwnershipFixture(t)
+	svc.Output.WaitActivityRefreshes()
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "retired-store"}}
+	registerAgentWatch(svc, "retired-store", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	entered, release := make(chan struct{}), make(chan struct{})
+	svc.Output.queries = db.New(observedControlStore{DBTX: svc.DB, store: func(ctx context.Context, query string, args ...any) *sql.Row {
+		close(entered)
+		<-release
+		return svc.DB.QueryRowContext(ctx, query, args...)
+	}})
+	done := make(chan error, 1)
+	go func() {
+		done <- oldSink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"question":"old question"}`)})
+	}()
+	<-entered
+	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted("agent-1")
+	close(release)
+	require.NoError(t, <-done)
+	requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, requests, "the retired store must retire its exact token before any replacement publication")
+	assert.Empty(t, writer.snapshot(), "the retired question must never reach the replacement process's UI")
+}
+
+type observedControlCancellation struct {
+	db.DBTX
+	cancels *atomic.Int32
+}
+
+func (q observedControlCancellation) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "-- name: CancelControlRequest :one") {
+		q.cancels.Add(1)
+	}
+	return q.DBTX.QueryRowContext(ctx, query, args...)
+}
+
+func TestWaitingCancellationRechecksTheNativePublisherAfterAdmission(t *testing.T) {
+	t.Parallel()
+	svc, _, oldSink, _ := stopOwnershipFixture(t)
+	publishStopControl(t, oldSink, "request")
+	svc.Output.WaitActivityRefreshes()
+	var cancellations atomic.Int32
+	svc.Output.queries = db.New(observedControlCancellation{DBTX: svc.DB, cancels: &cancellations})
+	st, _, release := svc.Output.lockControlMutation("agent-1", "agent-1")
+	done := make(chan struct{})
+	go func() { defer close(done); oldSink.CancelControlRequest("request") }()
+	admitted := assert.Eventually(t, func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.controlMutations == 2
+	}, 30*time.Second, 5*time.Millisecond)
+	svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted("agent-1")
+	release()
+	<-done
+	require.True(t, admitted)
+	assert.Zero(t, cancellations.Load(), "the retired cancellation must not reach SQL after its mutex wait")
+}
