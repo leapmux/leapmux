@@ -38,7 +38,7 @@ const START_SUITE_SERVER_TEST_TIMEOUT_MS = 60_000
 describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, () => {
   it('rejects when the binary does not exist', async () => {
     const root = scratchRoot()
-    await expect(startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }))
+    await expect(startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root, runRoot: root }))
       .rejects
       .toThrow(/ENOENT|no-such-leapmux/)
   })
@@ -46,7 +46,7 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
   it('removes the data directory it created when the start fails', async () => {
     // Startup creates this directory before it executes the binary. Failure must remove it.
     const root = scratchRoot()
-    await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }).catch(() => {})
+    await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root, runRoot: root }).catch(() => {})
     expect(readdirSync(root).filter(entry => entry.startsWith('leapmux-e2e-dev-'))).toEqual([])
   })
 
@@ -54,7 +54,7 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
     // Startup opens the mock listener before it executes the binary. Failure must close it.
     const root = scratchRoot()
     const before = activeServers()
-    await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root }).catch(() => {})
+    await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root, runRoot: root }).catch(() => {})
     expect(await settledNewServerCount(before)).toBe(0)
   })
 
@@ -64,7 +64,7 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
     const root = scratchRoot()
     const { binary, recorded } = writeRecordingFakeBinary(root)
 
-    await startSuiteServer({ binaryPath: binary, tmpDir: root }).catch(() => {})
+    await startSuiteServer({ binaryPath: binary, tmpDir: root, runRoot: root }).catch(() => {})
     const record = JSON.parse(readFileSync(recorded, 'utf8')) as FakeRunRecord
 
     const sockets = record.argv.filter(entry => entry.startsWith('unix:'))
@@ -88,7 +88,7 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
     const root = scratchRoot()
     const { binary } = writeRecordingFakeBinary(root)
 
-    const failure = await startSuiteServer({ binaryPath: binary, tmpDir: root }).then(
+    const failure = await startSuiteServer({ binaryPath: binary, tmpDir: root, runRoot: root }).then(
       () => null,
       (error: unknown) => error,
     )
@@ -197,9 +197,9 @@ describe('ancestorInstructionsReport', () => {
   })
 
   it.each([
-    [1, 'The mock refused 1 model request that held'],
-    [3, 'The mock refused 3 model requests that held'],
+    [1, 'The mock refused 1 request that held'],
+    [3, 'The mock refused 3 requests that held'],
   ])('states the count of %i refused requests', (count, start) => {
-    expect(ancestorInstructionsReport(count)).toMatch(new RegExp(`^${start} the text of an instruction file above the working directory of an agent\\.`))
+    expect(ancestorInstructionsReport(count)).toMatch(new RegExp(`^${start} an instruction file above the working directory of an agent\\.`))
   })
 })

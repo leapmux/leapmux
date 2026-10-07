@@ -16,6 +16,19 @@ export function clientMessageWithPrompt(text: string): Uint8Array {
 }
 
 /**
+ * The CLI's answer to request context query `id`, with the rules that it states:
+ * `ExecClientMessage.request_context_result` (field 10), whose success holds a
+ * `RequestContext` with one `CursorRule` for each rule.
+ */
+export function cursorRequestContextReply(id: number, rules: readonly { path: string, content: string }[]): Uint8Array {
+  const context = concatBytes(rules.map(rule => encodeLengthDelimited(2, concatBytes([encodeStringField(1, rule.path), encodeStringField(2, rule.content)]))))
+  return encodeLengthDelimited(2, concatBytes([
+    encodeVarintField(1, id),
+    encodeLengthDelimited(10, encodeLengthDelimited(1, encodeLengthDelimited(1, context))),
+  ]))
+}
+
+/**
  * The `ExecClientMessage` that answers execution `id`: the result message at
  * `field`, which holds one outcome message at `outcome`.
  */

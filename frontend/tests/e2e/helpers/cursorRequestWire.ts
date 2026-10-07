@@ -17,7 +17,8 @@ export interface CursorRunRequestWitness {
   cursorRules?: Array<{ path: string, content: string }>
   /**
    * The rules that the CLI stated in its answer to a request context query, which is
-   * where it states the project rules it loaded. Absent until a spec asks for them.
+   * where it states the project rules it loaded. The mock asks at the start of each
+   * turn (`cursorSurface.ts`), so the field is absent only until the CLI answers.
    */
   contextRules?: CursorContextRule[]
 }

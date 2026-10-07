@@ -64,6 +64,8 @@ export interface StartedSuiteServer {
 interface SuiteServerOptions {
   binaryPath: string
   tmpDir: string
+  /** The run root of the launcher (./runRoot.ts), which the model server's instruction-file check reads. */
+  runRoot: string
 }
 
 const execFileAsync = promisify(execFile)
@@ -82,18 +84,19 @@ export function refusedHostsReport(refused: ReadonlyMap<string, number>): string
 }
 
 /**
- * The failure that states how many model requests held the text of a sentinel instruction file, or '' when none did.
- * See ./ancestorInstructions.ts.
+ * The failure that states how many requests held an instruction file above the working directory of an agent, or ''
+ * when none did: a model request that held the text of a sentinel file, or the instruction files that Cursor or Amp
+ * sent to its own service. See ./ancestorInstructions.ts.
  */
 export function ancestorInstructionsReport(count: number): string {
   if (count === 0)
     return ''
-  return `The mock refused ${count} model ${count === 1 ? 'request' : 'requests'} that held the text of an instruction file above the working directory of an agent. The failed tests state each request; a request with no scenario marker is in the model server log.`
+  return `The mock refused ${count} ${count === 1 ? 'request' : 'requests'} that held an instruction file above the working directory of an agent. The failed tests state each request; a request with no scenario marker is in the model server log.`
 }
 
 /** Start the LeapMux process and the model server that one test run shares. */
 export async function startSuiteServer(options: SuiteServerOptions): Promise<StartedSuiteServer> {
-  const mockModel = await createMockModelServer({ models: MOCK_MODEL_IDS })
+  const mockModel = await createMockModelServer({ models: MOCK_MODEL_IDS, runRoot: options.runRoot })
   // A provider names its own session at a moment no test controls. The ambient
   // scenario answers that housekeeping turn and nothing else, so a content turn
   // that no test scripted fails with its request recorded.

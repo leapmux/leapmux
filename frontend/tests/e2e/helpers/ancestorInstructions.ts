@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { isInsideDirectory } from './runRoot'
 
 /**
  * The guard against instruction files above the working directory of a native agent.
@@ -7,22 +8,34 @@ import { dirname, join } from 'node:path'
  * Many agent CLIs read instruction files from each directory above their working directory: Claude Code, CodeBuddy and
  * Pi read up to the root of the file system, and other CLIs read up to the root of the git repository around them. A
  * test must control everything that an agent reads, so an agent may read no instruction file above its working
- * directory. The launcher writes a sentinel file of each known name into the run root, which is above every working
- * directory of the run, and the mock model server refuses a request that holds the sentinel. A provider that reads
- * above its working directory therefore fails its test, and it needs either a working directory that is the root of a
- * git repository of its own (`gitRepositoryWorkingDir`) or a setting or flag that turns off the files above it.
+ * directory. The launcher writes a sentinel file of each known name into the run root (`./runRoot.ts`), which is above
+ * every working directory of the run, and the mock model server refuses a request that holds the sentinel. A provider
+ * that reads above its working directory therefore fails its test, and it needs either a working directory that is the
+ * root of a git repository of its own (`gitRepositoryWorkingDir`) or a setting or flag that turns off the files above
+ * it.
  *
  * The list holds each name that one of the providers reads above its working directory, a name that another name of
  * the same directory shadows included: a setting that excludes the first name by its name would expose the next one.
  * It holds no case variant, such as `Agents.md` beside `AGENTS.md`. A case-insensitive file system holds the two as
  * one file, and each provider that reads a case variant reads the listed spelling from the same directory too.
  *
- * The guard has limits:
+ * Cursor and Amp send their instruction files to their own services, not in a model request body, so the body check
+ * cannot see them:
  *
- * - It reads the request body that the mock checks. Cursor sends its rules, ancestor AGENTS.md and CLAUDE.md included,
- *   in a later frame of the run (`cursorSurface.ts`), and Amp sends its guidance files to the Amp service in a frame of
- *   their own (`ampSurface.ts`). Neither reaches the check.
- * - It holds no file in the directories above the run root, such as `/tmp`, which no test owns.
+ * - Cursor states its rules, an ancestor AGENTS.md and CLAUDE.md included, in its answer to the request context query
+ *   of each turn (`cursorSurface.ts`).
+ * - Amp sends its guidance files in an `executor_guidance_snapshot` frame (`ampSurface.ts`).
+ *
+ * Both read the instruction files of each directory up to the root of the file system, and no setting stops Cursor.
+ * Each of the two surfaces therefore checks the files themselves ({@link refusedInstructionFiles}), and the mock counts
+ * a refusal there as it counts a refused request body. A file outside the run root refuses its request for both
+ * providers. The sentinel files of the run root stay a known escape of Cursor: Cursor reads them, and the check lets
+ * them through. Amp reads none, because its environment ignores each file directly in a run root
+ * (`AMP_IGNORE_GUIDANCE_FILES` in `ampEnvironment.ts`), so a guidance file of Amp that holds the sentinel refuses its
+ * request.
+ *
+ * The guard holds no file in the directories above the run root, such as `/tmp`, which no test owns. A provider whose
+ * request body quotes such a file passes the body check. Only the file check of Cursor and Amp sees such a file.
  */
 
 /**
@@ -179,4 +192,36 @@ export function writeAncestorInstructionSentinels(runRoot: string): void {
 /** Whether a model request body holds the text of a sentinel instruction file. */
 export function holdsAncestorInstructions(body: unknown): boolean {
   return JSON.stringify(body ?? null).includes(ANCESTOR_INSTRUCTION_SENTINEL)
+}
+
+/** One instruction file that a native agent sent to its own service rather than to the model. */
+export interface NativeInstructionFile {
+  /** The path of the file, as the agent states it. */
+  readonly path: string
+  readonly content: string
+}
+
+/**
+ * How the file check treats the sentinel files of the run root, for a provider that sends its instruction files to its
+ * own service.
+ *
+ * - `refuse`: the environment of the provider keeps it from the sentinel files, so a file that holds the sentinel
+ *   refuses its request, as the body check refuses a request body. Amp.
+ * - `known-escape`: no setting keeps the provider from the sentinel files, so the check lets each file of the run root
+ *   through. Cursor.
+ */
+export type RunRootSentinelPolicy = 'refuse' | 'known-escape'
+
+/**
+ * The instruction files that refuse their request: each file outside `runRoot`, and with the `refuse` policy, each file
+ * that holds the sentinel. A server with no run root, such as one of a unit test, checks the sentinel alone.
+ */
+export function refusedInstructionFiles(
+  files: readonly NativeInstructionFile[],
+  runRoot: string | undefined,
+  policy: RunRootSentinelPolicy,
+): NativeInstructionFile[] {
+  return files.filter(file =>
+    (runRoot !== undefined && !isInsideDirectory(file.path, runRoot))
+    || (policy === 'refuse' && file.content.includes(ANCESTOR_INSTRUCTION_SENTINEL)))
 }

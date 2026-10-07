@@ -22,8 +22,9 @@
  * createDualVersionListener serves both protocols.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { CursorRunRequestWitness } from './cursorRequestWire'
 import type { CursorContextRule, CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
-import type { MockModelScriptHost, MockSurface, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
+import type { InstructionFileGuard, MockModelScriptHost, MockSurface, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelDeliveredError, MockModelError, MockModelServerContext, MockModelToolCall, MockModelUsage } from './mockModelScript'
 import type { ModelStream } from './modelStream'
 import { Buffer } from 'node:buffer'
@@ -91,10 +92,11 @@ export const CURSOR_WEB_FETCH_TOOL = 'webFetch'
 export const CURSOR_MCP_TOOL = 'cursorMcp'
 
 /**
- * Cursor's request context query in a Run stream.
+ * A scripted request context query in a Run stream.
  *
- * The backend asks the CLI for the rules that it loaded from the project, and the
- * CLI states them in its answer. The mock records them in the Run request witness.
+ * The backend asks the CLI for the rules that it loaded from the project, and the CLI states them in its answer. The
+ * surface asks once at the start of each turn and records the rules in the Run request witness. A scripted query asks
+ * again before the turn ends, and its answer replaces the recorded rules.
  */
 export const CURSOR_REQUEST_CONTEXT_TOOL = 'cursorRequestContext'
 
@@ -188,8 +190,14 @@ export interface CursorSurface extends MockSurface {
   close: () => void
 }
 
-/** Own Cursor's native Run route and its retained remote conversation context. */
-export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
+/**
+ * Own Cursor's native Run route and its retained remote conversation context.
+ *
+ * Each turn asks the CLI for its request context, and `instructionFiles` checks the rules that the CLI states
+ * (./ancestorInstructions.ts). No setting keeps Cursor from the sentinel files of the run root, so they stay a known
+ * escape.
+ */
+export function createCursorSurface(host: MockModelScriptHost, instructionFiles: InstructionFileGuard): CursorSurface {
   const conversations = new Map<string, CursorConversationState>()
   return {
     clearScenario: (id) => {
@@ -209,7 +217,17 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
       let completedTurn: ((text: string) => void) | undefined
       let activeAnswer: Extract<SelectedModelAnswer, { kind: 'step' }> | undefined
       let nativeError: MockModelDeliveredError | undefined
+      // The request of the turn, and the witness that its record keeps. The rules that the CLI states later reach both.
+      let turnContext: ModelRequestContext | undefined
+      let runWitness: CursorRunRequestWitness | undefined
       await serveCursorRun(request, response, {
+        contextRules: (rules) => {
+          if (!turnContext)
+            throw new Error('The native Cursor request context arrived before its turn.')
+          if (runWitness)
+            runWitness.contextRules = rules.map(rule => ({ ...rule }))
+          instructionFiles.check(turnContext, rules, 'known-escape')
+        },
         answer: async (prompt, requestFrame) => {
           const conversationID = cursorConversationIdOf(requestFrame)
           const currentScenarioID = scenarioIDFromTexts([prompt])
@@ -225,7 +243,8 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
             }
           }
           // The record keeps this object, so the rules that a later query states reach it.
-          const runWitness = cursorRunRequestWitness(requestFrame)
+          runWitness = cursorRunRequestWitness(requestFrame)
+          const witness = runWitness
           const context: ModelRequestContext = {
             // The matcher category is OpenAI Responses. The native request remains protobuf.
             protocol: 'openai-responses',
@@ -235,9 +254,10 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
             userText: prompt,
             scenarioID,
             mockCredential: mockCredentialReceipt(request.headers),
-            nativeRequest: runWitness,
+            nativeRequest: witness,
             ...(conversationID && conversation ? { serverContext: { conversationId: conversationID, messages: conversation.messages.map(message => ({ ...message })) } } : {}),
           }
+          turnContext = context
           const answer = host.select(context, { allowServiceToolMetadata: true })
           if (answer.kind !== 'step')
             return undefined
@@ -264,7 +284,7 @@ export function createCursorSurface(host: MockModelScriptHost): CursorSurface {
             reasoning: step.reasoning,
             toolCalls,
             usage: step.usage,
-            ...(runWitness ? { requestContextRules: (rules: readonly CursorContextRule[]) => { runWitness.contextRules = rules.map(rule => ({ ...rule })) } } : {}),
+            ...(witness ? { requestContextRules: (rules: readonly CursorContextRule[]) => { witness.contextRules = rules.map(rule => ({ ...rule })) } } : {}),
             ...(step.stream ? { stream: answer.stream(response, request) } : {}),
           }
         },
@@ -530,6 +550,17 @@ export interface CursorRunHandlers {
   /** The native error encoder supplies the code that this response sends. */
   errorResponse?: (error: MockModelDeliveredError) => void
   holdToolCompletion?: (callId: string, gate: string) => Promise<boolean>
+  /**
+   * Receive the rules that the CLI loaded for the turn. With this handler, the Run asks the CLI for its request context
+   * at the start of each turn, after the user record and before the first tool call, as Cursor's own backend asks
+   * before it builds the model's prompt.
+   */
+  contextRules?: (rules: readonly CursorContextRule[]) => void
+}
+
+/** The ID of the tool call that a turn's own request context query states. No scripted tool call takes this form. */
+function turnContextCallID(id: number): string {
+  return `leapmux-e2e-request-context-${id}`
 }
 
 /**
@@ -600,7 +631,8 @@ export async function serveCursorRun(
   let nextInteractionId = 299
   let pendingInteraction: { id: number, call: CursorInteractionCall } | undefined
   let pendingMcp: { id: number } | undefined
-  let pendingContext: { id: number } | undefined
+  // The request context query that waits for its answer: the turn's own query, or a scripted one.
+  let pendingContext: { id: number, deliver: (rules: readonly CursorContextRule[]) => void } | undefined
   let pendingExecution: CursorExecution | undefined
   let pendingSubagent: { execution: CursorSubagentExecution, callID: string, completionGate?: string } | undefined
   const replies: string[] = []
@@ -649,7 +681,14 @@ export async function serveCursorRun(
           response.write(Buffer.from(connectFrame(pendingExecution.request())))
           return 'waiting'
         case 'requestContext':
-          pendingContext = { id: ++nextExecutionId }
+          pendingContext = {
+            id: ++nextExecutionId,
+            deliver: (rules) => {
+              if (!answer?.requestContextRules)
+                throw new Error('A native Cursor request context query requires a scenario handler')
+              answer.requestContextRules(rules)
+            },
+          }
           response.write(Buffer.from(connectFrame(cursorRequestContextExec(pendingContext.id, tool.callID))))
           return 'waiting'
         case 'mcp':
@@ -724,9 +763,7 @@ export async function serveCursorRun(
           continue
         if (reply.id !== pendingContext.id)
           throw new Error(`Cursor replied to request context query ${pendingContext.id} with id ${reply.id}`)
-        if (!answer?.requestContextRules)
-          throw new Error('A native Cursor request context query requires a scenario handler')
-        answer.requestContextRules(reply.rules)
+        pendingContext.deliver(reply.rules)
         pendingContext = undefined
         if (await advance() === 'finished')
           return
@@ -774,6 +811,13 @@ export async function serveCursorRun(
       }
       // The native store needs the user blob before any tool or text update.
       blobMessageID = writeTranscriptRecords(response, [textTranscriptRecord('user', prompt)], 1)
+      if (handlers.contextRules) {
+        // The turn goes on when the CLI answers. The answer reaches the handler through the same path as a scripted query.
+        const id = ++nextExecutionId
+        pendingContext = { id, deliver: handlers.contextRules }
+        response.write(Buffer.from(connectFrame(cursorRequestContextExec(id, turnContextCallID(id)))))
+        continue
+      }
       if (await advance() === 'finished')
         return
     }

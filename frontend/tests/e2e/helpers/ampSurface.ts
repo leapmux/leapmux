@@ -20,10 +20,12 @@
 import type { Buffer } from 'node:buffer'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
-import type { MockModelScriptHost, MockSurface, SelectedModelAnswer } from './mockModelRequest'
+import type { NativeInstructionFile } from './ancestorInstructions'
+import type { InstructionFileGuard, MockModelScriptHost, MockSurface, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelCredential, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { WebSocketConnection } from './webSocketServer'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 // RELATIVE imports, not `~/...`. See the note in `../agentSettings.ts`.
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
@@ -105,21 +107,34 @@ export interface AmpSurfaceOptions {
   answer: (inference: AmpInference, signal: AbortSignal) => Promise<MockModelStep | undefined>
   errorSent?: (inference: AmpInference, error: { code: string, message: string }) => void
   holdGeneration?: (inference: AmpInference, step: MockModelStep, signal: AbortSignal) => Promise<boolean>
+  /**
+   * Check the guidance files of one `executor_guidance_snapshot` frame, against the conversation of the thread when
+   * the frame arrived (./ancestorInstructions.ts). The executor sends the frame after the first user message, while
+   * the first inference can already run, so the check cannot join the selection of an inference.
+   */
+  checkGuidanceFiles: (inference: AmpInference, files: readonly NativeInstructionFile[]) => void
+}
+
+/** The model request context of one Amp inference, which the shared script matches. */
+function ampRequestContext(inference: AmpInference): ModelRequestContext {
+  return {
+    protocol: 'anthropic-messages',
+    path: AMP_ACTOR_PATH_PREFIX,
+    body: inference.body,
+    systemText: '',
+    userText: inference.userText,
+    ...(inference.mockCredential ? { mockCredential: inference.mockCredential } : {}),
+  }
 }
 
 /** Project Amp actor inference into the shared script without exposing its accounting state. */
-export function ampScriptOptions(host: MockModelScriptHost): AmpSurfaceOptions {
+export function ampScriptOptions(host: MockModelScriptHost, instructionFiles: InstructionFileGuard): AmpSurfaceOptions {
   const requests = new WeakMap<AmpInference, Extract<SelectedModelAnswer, { kind: 'step' }>>()
   return {
+    // Amp reads no sentinel file of the run root, because its environment ignores each file there (./ampEnvironment.ts).
+    checkGuidanceFiles: (inference, files) => instructionFiles.check(ampRequestContext(inference), files, 'refuse'),
     answer: async (inference, signal) => {
-      const answer = host.select({
-        protocol: 'anthropic-messages',
-        path: AMP_ACTOR_PATH_PREFIX,
-        body: inference.body,
-        systemText: '',
-        userText: inference.userText,
-        ...(inference.mockCredential ? { mockCredential: inference.mockCredential } : {}),
-      })
+      const answer = host.select(ampRequestContext(inference))
       if (answer.kind !== 'step')
         return undefined
       requests.set(inference, answer)
@@ -433,6 +448,12 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         reply({ ok: true })
         notify(thread, 'executor_connected', { executorId: params.clientId, registeredToolCount: 0, guidanceInventory: [], resumeBootstrap: false, executorSystemInfo: true })
         return
+      case 'executor_guidance_snapshot':
+        // The executor reads the guidance files of each directory from its working directory up to the root of the
+        // file system, and it sends each one that it found.
+        reply({ ok: true })
+        options.checkGuidanceFiles(inferenceOf(thread), guidanceFilesOf(params))
+        return
       case 'executor_environment_snapshot': {
         const environment = isObject(params.environment) ? params.environment : {}
         const trees = Array.isArray(environment.trees) ? environment.trees : []
@@ -675,6 +696,40 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
           member.connection.close()
       }
     },
+  }
+}
+
+/**
+ * The guidance files of one `executor_guidance_snapshot` frame.
+ *
+ * Amp 0.0.1791074829 states each file as `{ uri, content, lineCount, hash }`, with a `file://` URI. A URI that is not
+ * a local file URL keeps its text as the path. That text is not an absolute path, so the check refuses it rather than
+ * skip a file that it cannot place.
+ */
+export function guidanceFilesOf(params: Record<string, unknown>): NativeInstructionFile[] {
+  const files = params.files === undefined ? [] : Array.isArray(params.files) ? params.files : [params.files]
+  return files.map((file) => {
+    // An invalid entry has no verifiable path. Keep it so the instruction guard refuses the snapshot.
+    if (!isObject(file))
+      return { path: '', content: '' }
+    const uri = typeof file.uri === 'string' ? file.uri : ''
+    return { path: localFilePath(uri), content: typeof file.content === 'string' ? file.content : '' }
+  })
+}
+
+/** The local path of a `file:` URI, or the URI text itself for any other URI. */
+function localFilePath(uri: string): string {
+  if (!uri.startsWith('file:'))
+    return uri
+  try {
+    const parsed = new URL(uri)
+    if (parsed.hostname !== '')
+      return uri
+    return fileURLToPath(parsed)
+  }
+  catch {
+    // A file URL with a remote host, or a malformed one, identifies no local file.
+    return uri
   }
 }
 

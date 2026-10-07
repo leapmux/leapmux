@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import globalSetup from './global-setup'
+import { RUN_ROOT_ENV } from './helpers/runRoot'
 
 const suiteServer = vi.hoisted(() => ({
   start: vi.fn(),
@@ -12,14 +13,19 @@ const suiteServer = vi.hoisted(() => ({
 vi.mock('./helpers/suiteServer', () => ({ startSuiteServer: suiteServer.start }))
 
 let directory: string
+/** The run root of the test, which holds the private directory as a shard directory. */
+let runRoot: string
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../..', '.tmp')
   mkdirSync(scratch, { recursive: true })
-  directory = mkdtempSync(join(scratch, 'global-setup-test-'))
+  runRoot = mkdtempSync(join(scratch, 'global-setup-test-'))
+  directory = join(runRoot, '1')
+  mkdirSync(directory)
   vi.stubEnv('E2E_STATE_PATH', undefined)
   vi.stubEnv('LEAPMUX_E2E_NONCE_PATH', join(directory, 'nonce'))
   vi.stubEnv('LEAPMUX_E2E_NONCE', 'expected-nonce')
+  vi.stubEnv(RUN_ROOT_ENV, runRoot)
   suiteServer.stop.mockResolvedValue(undefined)
   suiteServer.start.mockResolvedValue({
     state: {
@@ -40,7 +46,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.clearAllMocks()
-  rmSync(directory, { recursive: true, force: true })
+  rmSync(runRoot, { recursive: true, force: true })
 })
 
 describe('end-to-end global setup', () => {
@@ -60,7 +66,8 @@ describe('end-to-end global setup', () => {
       mockModelUrl: 'http://127.0.0.1:5678',
     })
     expect(process.env.PI_CODING_AGENT_DIR).toBe(state.piAgentDir)
-    expect(suiteServer.start).toHaveBeenCalledWith({ binaryPath: state.binaryPath, tmpDir: directory })
+    expect(suiteServer.start).toHaveBeenCalledWith({ binaryPath: state.binaryPath, tmpDir: directory, runRoot })
+    expect(state.runRoot).toBe(runRoot)
     await teardown?.()
     expect(suiteServer.stop).toHaveBeenCalledOnce()
   })
@@ -72,6 +79,19 @@ describe('end-to-end global setup', () => {
       vi.stubEnv('LEAPMUX_E2E_NONCE_PATH', undefined)
     if (failure === 'missing nonce')
       vi.stubEnv('LEAPMUX_E2E_NONCE', undefined)
+    await expect(globalSetup()).rejects.toThrow('Run end-to-end tests with')
+    expect(process.env.E2E_STATE_PATH).toBeUndefined()
+    expect(existsSync(join(directory, 'e2e-state.json'))).toBe(false)
+    expect(suiteServer.start).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['no run root', undefined],
+    ['a relative run root', 'relative/run-root'],
+    ['a run root that does not hold the private directory', 'SIBLING'],
+  ])('rejects %s without publishing state', async (_label, value) => {
+    writeFileSync(join(directory, 'nonce'), 'expected-nonce\n')
+    vi.stubEnv(RUN_ROOT_ENV, value === 'SIBLING' ? join(runRoot, '2') : value)
     await expect(globalSetup()).rejects.toThrow('Run end-to-end tests with')
     expect(process.env.E2E_STATE_PATH).toBeUndefined()
     expect(existsSync(join(directory, 'e2e-state.json'))).toBe(false)

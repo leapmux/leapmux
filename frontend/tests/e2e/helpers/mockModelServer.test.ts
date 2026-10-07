@@ -2,14 +2,18 @@ import type { MockModelScenarioInput } from './mockModelScenario'
 import type { MockModelCredential, MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import { Buffer } from 'node:buffer'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { connect as connectHttp2 } from 'node:http2'
 import { connect as connectTcp } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { isObject } from '../../../src/lib/jsonPick'
 import { ANCESTOR_INSTRUCTION_SENTINEL } from './ancestorInstructions'
 import { encodeLengthDelimited, encodeStringField } from './cursorProtobuf'
 import { CURSOR_RUN_PATH, CURSOR_TASK_TOOL } from './cursorSurface'
+import { cursorRequestContextReply } from './cursorTestFrames'
 import { connectFrame, takeConnectFrames } from './cursorWire'
 import { MOCK_COPILOT_GITHUB_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MODEL_KEY } from './mockAgentEnvironment'
 import { mockScenarioPrompt, readScenarioStatus } from './mockModelScenario'
@@ -85,20 +89,24 @@ function chat(server: MockModelServer, content: string, stream = true): Promise<
   })
 }
 
-/** Send the native Cursor Run frame with the conversation that owns the prompt. */
-async function cursorRun(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal): Promise<void> {
-  const response = await cursorResponse(server, conversationID, prompt, signal)
+/** Send the native Cursor Run frame with the conversation that owns the prompt, and read the whole answer. */
+async function cursorRun(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = []): Promise<void> {
+  const response = await cursorResponse(server, conversationID, prompt, signal, rules)
   expect(response.status).toBe(200)
   await response.arrayBuffer()
 }
 
-function cursorResponse(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal): Promise<Response> {
+/**
+ * Open a native Cursor turn, and answer the request context query that the surface sends at the start of the turn
+ * with `rules`. The surface numbers that query 301.
+ */
+function cursorResponse(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = []): Promise<Response> {
   const action = encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, encodeStringField(1, prompt))))
   const frame = encodeLengthDelimited(1, Buffer.concat([Buffer.from(action), Buffer.from(encodeStringField(5, conversationID))]))
   return fetch(`${server.url}${CURSOR_RUN_PATH}`, {
     method: 'POST',
     headers: { 'content-type': 'application/connect+proto' },
-    body: Buffer.from(connectFrame(frame)),
+    body: Buffer.concat([Buffer.from(connectFrame(frame)), Buffer.from(connectFrame(cursorRequestContextReply(301, rules)))]),
     ...(signal ? { signal } : {}),
   })
 }
@@ -663,7 +671,7 @@ describe('createMockModelServer', () => {
       ] },
     })
     expect(requests[1]?.body).toEqual({ prompt: 'SECOND_USER', attachments: [], conversationId: 'history-id' })
-    expect(requests[1]?.nativeRequest).toEqual({ mode: 0 })
+    expect(requests[1]?.nativeRequest).toEqual({ mode: 0, contextRules: [] })
     expect(requests[2]).toHaveProperty('serverContext', { conversationId: 'history-id', messages: [
       { role: 'user', content: first },
       { role: 'assistant', content: 'FIRST_ASSISTANT' },
@@ -755,7 +763,7 @@ describe('createMockModelServer', () => {
     const scripted = await readScenarioStatus(server.url, 'cursor-conversation')
     expect(scripted.nextStep).toBe(2)
     expect(scripted.requests[1]?.body).toEqual({ prompt: '/compact', attachments: [], conversationId: 'conversation-1' })
-    expect(scripted.requests[1]?.nativeRequest).toEqual({ mode: 0 })
+    expect(scripted.requests[1]?.nativeRequest).toEqual({ mode: 0, contextRules: [] })
 
     const removed = await fetch(`${server.url}/__e2e/scenarios/cursor-conversation`, { method: 'DELETE' })
     expect(removed.status).toBe(204)
@@ -1656,6 +1664,92 @@ describe('createMockModelServer Amp service', () => {
     expect(status).toMatchObject({ complete: true, nextStep: 1 })
     expect(status.requests[0]).toMatchObject({ protocol: 'anthropic-messages', stepIndex: 0 })
     socket.close()
+  })
+
+  describe('with a run root', () => {
+    let runRoot: string
+
+    beforeEach(() => {
+      const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+      mkdirSync(scratch, { recursive: true })
+      runRoot = mkdtempSync(join(scratch, 'mock-run-root-'))
+    })
+
+    afterEach(() => rmSync(runRoot, { recursive: true, force: true }))
+
+    /** Send one guidance snapshot to a thread whose first message marks `scenario`, after the scenario answered it. */
+    async function sendGuidance(server: MockModelServer, scenario: string, files: unknown) {
+      const created = await (await fetch(`${server.url}/api/thread-actors`, { method: 'POST', body: '{}' })).json() as { threadId: string }
+      const { socket, frames } = await actorSocket(server, created.threadId)
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'client_append_user_msg', params: { content: [{ type: 'text', text: mockScenarioPrompt(scenario, 'Read the guidance.') }] } }))
+      await expect.poll(() => frames.some(frame => JSON.stringify(frame).includes('Guidance answer'))).toBe(true)
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'executor_guidance_snapshot', params: { snapshotId: 'snapshot', files, isLast: true } }))
+      await expect.poll(() => frames.some(frame => isObject(frame) && frame.id === 2)).toBe(true)
+      socket.close()
+    }
+
+    it('refuses a run root that is not an absolute path to a directory', async () => {
+      await expect(createMockModelServer({ models: MOCK_MODEL_IDS, runRoot: 'relative/root' })).rejects.toThrow('must be an absolute path to a directory')
+      await expect(createMockModelServer({ models: MOCK_MODEL_IDS, runRoot: join(runRoot, 'absent') })).rejects.toThrow('must be an absolute path to a directory')
+      writeFileSync(join(runRoot, 'file'), '')
+      await expect(createMockModelServer({ models: MOCK_MODEL_IDS, runRoot: join(runRoot, 'file') })).rejects.toThrow('must be an absolute path to a directory')
+    })
+
+    it('refuses an Amp guidance file outside the run root, or one that holds the sentinel, in the scenario of its thread, and counts it', async () => {
+      const server = await createMockModelServer({ models: MOCK_MODEL_IDS, runRoot })
+      servers.push(server)
+      for (const id of ['amp-outside', 'amp-sentinel', 'amp-project'])
+        await registerScenario(server, id, { steps: [{ text: 'Guidance answer' }] })
+      await sendGuidance(server, 'amp-outside', [{ uri: pathToFileURL(join(dirname(runRoot), 'AGENTS.md')).href, content: 'A file above the run root.' }])
+      await sendGuidance(server, 'amp-sentinel', [{ uri: pathToFileURL(join(runRoot, 'AGENTS.md')).href, content: ANCESTOR_INSTRUCTION_SENTINEL }])
+      await sendGuidance(server, 'amp-project', [{ uri: pathToFileURL(join(runRoot, '1', 'work', 'AGENTS.md')).href, content: 'Project guidance.' }])
+      await expect.poll(() => server.ancestorInstructionRequests()).toBe(2)
+      expect((await readScenarioStatus(server.url, 'amp-outside')).unexpectedRequests).toMatchObject([{ reason: expect.stringContaining(join(dirname(runRoot), 'AGENTS.md')) }])
+      expect((await readScenarioStatus(server.url, 'amp-sentinel')).unexpectedRequests).toMatchObject([{ reason: expect.stringContaining(ANCESTOR_INSTRUCTION_SENTINEL) }])
+      expect((await readScenarioStatus(server.url, 'amp-project')).unexpectedRequests).toEqual([])
+    })
+
+    it.each([
+      { label: 'an invalid entry', files: [null] },
+      { label: 'an invalid list', files: 'file:///outside/AGENTS.md' },
+    ])('refuses $label in an Amp guidance snapshot and counts the refusal', async ({ files }) => {
+      const server = await createMockModelServer({ models: MOCK_MODEL_IDS, runRoot })
+      servers.push(server)
+      await registerScenario(server, 'amp-invalid-guidance', { steps: [{ text: 'Guidance answer' }] })
+      await sendGuidance(server, 'amp-invalid-guidance', files)
+      expect(server.ancestorInstructionRequests()).toBe(1)
+      const status = await readScenarioStatus(server.url, 'amp-invalid-guidance')
+      expect(status.unexpectedRequests).toHaveLength(1)
+      expect(status.unexpectedRequests[0]?.reason).toContain('instruction files that its test does not control')
+    })
+
+    it('refuses a Cursor rule outside the run root in the scenario of its turn, and lets the sentinel files of the run root through', async () => {
+      const server = await createMockModelServer({ models: MOCK_MODEL_IDS, runRoot })
+      servers.push(server)
+      for (const id of ['cursor-outside', 'cursor-escape'])
+        await registerScenario(server, id, { steps: [{ text: 'Rules answer' }] })
+      const outside = join(dirname(runRoot), '.cursor', 'rules', 'outside.mdc')
+      await cursorRun(server, 'outside-conversation', mockScenarioPrompt('cursor-outside', 'Load the rules.'), undefined, [{ path: outside, content: 'An outside rule.' }])
+      await cursorRun(server, 'escape-conversation', mockScenarioPrompt('cursor-escape', 'Load the rules.'), undefined, [{ path: join(runRoot, 'AGENTS.md'), content: ANCESTOR_INSTRUCTION_SENTINEL }])
+      expect(server.ancestorInstructionRequests()).toBe(1)
+      expect((await readScenarioStatus(server.url, 'cursor-outside')).unexpectedRequests).toMatchObject([{ reason: expect.stringContaining(outside) }])
+      const escape = await readScenarioStatus(server.url, 'cursor-escape')
+      expect(escape.unexpectedRequests).toEqual([])
+      expect(escape.requests[0]?.nativeRequest?.contextRules).toEqual([{ path: join(runRoot, 'AGENTS.md'), content: ANCESTOR_INSTRUCTION_SENTINEL }])
+    })
+
+    it('logs a refused guidance file of a thread that no scenario marks', async () => {
+      const server = await createMockModelServer({ models: MOCK_MODEL_IDS, runRoot })
+      servers.push(server)
+      const created = await (await fetch(`${server.url}/api/thread-actors`, { method: 'POST', body: '{}' })).json() as { threadId: string }
+      const { socket, frames } = await actorSocket(server, created.threadId)
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'executor_guidance_snapshot', params: { files: [{ uri: 'file:///AGENTS.md', content: 'The root of the file system.' }] } }))
+      await expect.poll(() => frames.some(frame => isObject(frame) && frame.id === 1)).toBe(true)
+      socket.close()
+      expect(server.ancestorInstructionRequests()).toBe(1)
+      const log = await (await fetch(`${server.url}/__e2e/requests`)).json() as { unmatched: { scenarioID: string, reason: string }[] }
+      expect(log.unmatched).toMatchObject([{ scenarioID: AMBIENT_SCENARIO_ID, reason: expect.stringContaining('/AGENTS.md') }])
+    })
   })
 
   it('records an inference whose scenario is not registered', async () => {

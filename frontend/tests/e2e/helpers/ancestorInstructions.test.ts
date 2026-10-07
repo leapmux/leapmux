@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ANCESTOR_INSTRUCTION_FILES, ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, writeAncestorInstructionSentinels } from './ancestorInstructions'
+import { ANCESTOR_INSTRUCTION_FILES, ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, refusedInstructionFiles, writeAncestorInstructionSentinels } from './ancestorInstructions'
 
 let runRoot: string
 
@@ -113,5 +113,43 @@ describe('holdsAncestorInstructions', () => {
     ['a null body', null],
   ])('finds no sentinel in %s', (_label, body) => {
     expect(holdsAncestorInstructions(body)).toBe(false)
+  })
+})
+
+describe('refusedInstructionFiles', () => {
+  const sentinelFile = (path: string) => ({ path, content: `${ANCESTOR_INSTRUCTION_SENTINEL}\n` })
+
+  it('refuses each file outside the run root, for both policies', () => {
+    const outside = [{ path: join(dirname(runRoot), 'AGENTS.md'), content: 'A file above the run root.' }, { path: '/AGENTS.md', content: 'The root of the file system.' }]
+    for (const policy of ['refuse', 'known-escape'] as const)
+      expect(refusedInstructionFiles(outside, runRoot, policy), policy).toEqual(outside)
+  })
+
+  it('keeps a file of a working directory inside the run root, for both policies', () => {
+    const project = [{ path: join(runRoot, '1', 'work', 'AGENTS.md'), content: 'Project guidance.' }]
+    for (const policy of ['refuse', 'known-escape'] as const)
+      expect(refusedInstructionFiles(project, runRoot, policy), policy).toEqual([])
+  })
+
+  it('refuses a sentinel file of the run root for a provider that reads none, and lets it through as a known escape', () => {
+    const sentinel = sentinelFile(join(runRoot, 'AGENTS.md'))
+    expect(refusedInstructionFiles([sentinel], runRoot, 'refuse')).toEqual([sentinel])
+    expect(refusedInstructionFiles([sentinel], runRoot, 'known-escape')).toEqual([])
+  })
+
+  it('refuses a relative path, which no caller can place', () => {
+    const relative = [{ path: 'AGENTS.md', content: 'Somewhere.' }, { path: '', content: 'Nowhere.' }]
+    expect(refusedInstructionFiles(relative, runRoot, 'known-escape')).toEqual(relative)
+  })
+
+  it('checks the sentinel alone without a run root', () => {
+    const anywhere = { path: '/AGENTS.md', content: 'Plain guidance.' }
+    const sentinel = sentinelFile('/elsewhere/AGENTS.md')
+    expect(refusedInstructionFiles([anywhere, sentinel], undefined, 'refuse')).toEqual([sentinel])
+    expect(refusedInstructionFiles([anywhere, sentinel], undefined, 'known-escape')).toEqual([])
+  })
+
+  it('refuses nothing for an empty list', () => {
+    expect(refusedInstructionFiles([], runRoot, 'refuse')).toEqual([])
   })
 })

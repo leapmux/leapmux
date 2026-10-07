@@ -11,6 +11,7 @@ import { writeAncestorInstructionSentinels } from '../tests/e2e/helpers/ancestor
 import { finishCleanup } from '../tests/e2e/helpers/cleanup'
 import { stopTrackedProcesses } from '../tests/e2e/helpers/processRegistry'
 import { copyRunBinary, LEAPMUX_BINARY_NAME } from '../tests/e2e/helpers/runBinary'
+import { RUN_ROOT_ENV, RUN_ROOT_PREFIX } from '../tests/e2e/helpers/runRoot'
 import { runCommand } from './e2eCommand'
 import { lastRunStatePath, readLastFailedState } from './e2eLastRunReporter'
 import { discoveryRunArgs, parseE2EOptions, serialRunArgs, shardRunArgs, shardSelectionArgs } from './e2eOptions'
@@ -23,9 +24,6 @@ const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const playwrightCli = require.resolve('@playwright/test/cli')
 const lastRunReporter = fileURLToPath(new URL('./e2eLastRunReporter.ts', import.meta.url))
-
-/** The start of the name of each run root. The artifact directory of the run takes the rest of the name. */
-export const RUN_ROOT_PREFIX = 'leapmux-e2e-'
 
 /**
  * The directory that holds the run root of each E2E run.
@@ -46,8 +44,12 @@ export function runRootParent(env: NodeJS.ProcessEnv = process.env, platform: No
   return realpathSync(platform === 'win32' ? tmpdir() : '/tmp')
 }
 
-/** Build the environment of a Playwright test run that owns the private run directory. */
-function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.ProcessEnv {
+/**
+ * Build the environment of a Playwright test run that owns the private run directory `runDir`, which is the run root
+ * itself or a shard directory in it. The run states `runRoot` to the mock model server, whose guard refuses an
+ * instruction file outside it (`tests/e2e/helpers/ancestorInstructions.ts`).
+ */
+function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string, runRoot: string): NodeJS.ProcessEnv {
   const noncePath = join(runDir, 'nonce')
   const nonce = crypto.randomUUID()
   // Global setup verifies this nonce before it starts any fixture.
@@ -58,6 +60,7 @@ function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string): NodeJS.P
     LEAPMUX_E2E_OUTPUT_FILE_DIR: undefined,
     LEAPMUX_E2E_NONCE_PATH: noncePath,
     LEAPMUX_E2E_NONCE: nonce,
+    [RUN_ROOT_ENV]: runRoot,
     // No private directory of the run may inherit a Git repository from above the run root.
     GIT_CEILING_DIRECTORIES: [runDir, env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(delimiter),
   }
@@ -203,6 +206,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       LEAPMUX_E2E_OUTPUT_FILE_DIR: undefined,
       LEAPMUX_E2E_NONCE_PATH: undefined,
       LEAPMUX_E2E_NONCE: undefined,
+      [RUN_ROOT_ENV]: undefined,
     }
     const buildCode = await command(resolveTaskBin(), ['build-backend'], { cwd: projectRoot, env }, { ownership: { ownTree: true } })
     if (interrupted || buildCode !== 0)
@@ -226,7 +230,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     if (options.serial) {
       runDirs.push(runDir)
       const serialEnv: NodeJS.ProcessEnv = {
-        ...privateRunEnvironment(env, runDir),
+        ...privateRunEnvironment(env, runDir, runDir),
         LEAPMUX_E2E_OUTPUT_FILE_DIR: outputFileDir,
         // The Playwright CLI gives --last-failed-file precedence over this environment value.
         PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE || parentLastRun,
@@ -292,7 +296,7 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
         copyFileSync(lastFailedSnapshot, lastFailedFile, constants.COPYFILE_EXCL)
         shardSelection = { ...shardSelection, lastFailedFile }
       }
-      const testEnv = shardReporterEnvironment(privateRunEnvironment(env, shardDir), shardArtifacts)
+      const testEnv = shardReporterEnvironment(privateRunEnvironment(env, shardDir, runDir), shardArtifacts)
       const shardArgs = shardRunArgs(shardSelection, plan.kind === 'static' ? { index, total } : undefined)
       commands.push(command('node', [playwrightCli, 'test', ...shardArgs], { cwd, env: testEnv }, { logPath: join(shardArtifacts, 'console.log'), label: `shard ${index}/${total}` }))
     }

@@ -1,5 +1,7 @@
 import type { AddressInfo } from 'node:net'
-import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
+import type { NativeInstructionFile, RunRootSentinelPolicy } from './ancestorInstructions'
+import type { CursorRunHandlers } from './cursorSurface'
+import type { InstructionFileGuard, MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelStep } from './mockModelScript'
 import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
@@ -22,7 +24,7 @@ import {
   isCursorPath,
   serveCursorRun,
 } from './cursorSurface'
-import { clientMessageWithPrompt, cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorTestFrames'
+import { clientMessageWithPrompt, cursorRequestContextReply, cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorTestFrames'
 import { connectFrame, takeConnectFrames } from './cursorWire'
 import { waitUnlessDisconnected } from './mockHttp'
 import { mockScenarioPrompt } from './mockModelScenario'
@@ -89,15 +91,21 @@ afterEach(async () => {
     await stop()
 })
 
-/** A server that answers `/agent.v1.AgentService/Run` with one scripted turn. */
+/**
+ * A server that answers `/agent.v1.AgentService/Run` with one scripted turn.
+ * The client sends the opening frame, then each reply frame, in one body.
+ */
 async function runStreamBody(
   answer: Parameters<typeof serveCursorRun>[2]['answer'],
   receipts?: { prompt: string, text: string }[],
-  reply?: Uint8Array,
+  reply?: Uint8Array | readonly Uint8Array[],
   opening?: { payload: Uint8Array, flags: number, encoding?: string, errors?: string[] },
+  extraHandlers?: Pick<CursorRunHandlers, 'contextRules'>,
 ): Promise<Buffer> {
+  const replies = reply === undefined ? [] : reply instanceof Uint8Array ? [reply] : reply
   const server = createServer((request, response) => {
-    const handlers = {
+    const handlers: CursorRunHandlers = {
+      ...extraHandlers,
       answer,
       completed: (prompt: string, _frame: Uint8Array, text: string) => receipts?.push({ prompt, text }),
     }
@@ -117,7 +125,7 @@ async function runStreamBody(
     headers: { 'content-type': 'application/connect+proto', ...(opening?.encoding === undefined ? {} : { 'connect-content-encoding': opening.encoding }) },
     body: Buffer.concat([
       Buffer.from(connectFrame(opening?.payload ?? clientMessageWithPrompt('Say the mock word.'), opening?.flags ?? 0)),
-      ...(reply ? [Buffer.from(connectFrame(reply))] : []),
+      ...replies.map(frame => Buffer.from(connectFrame(frame))),
     ]),
   })
   return Buffer.from(await response.arrayBuffer())
@@ -469,19 +477,10 @@ describe('serveCursorRun', () => {
     expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER\nREAL_MCP_REPLY' }])
   })
 
-  /** The CLI's answer to a request context query, with the rules that it states. */
-  function requestContextReply(id: number, rules: readonly { path: string, content: string }[]): Uint8Array {
-    const context = Buffer.concat(rules.map(rule => encodeLengthDelimited(2, Buffer.concat([encodeStringField(1, rule.path), encodeStringField(2, rule.content)]))))
-    return encodeLengthDelimited(2, Buffer.concat([
-      Uint8Array.from([0x08, ...encodeVarint(id)]),
-      encodeLengthDelimited(10, encodeLengthDelimited(1, encodeLengthDelimited(1, context))),
-    ]))
-  }
-
   it('asks for the request context and hands the stated rules to the turn before its text', async () => {
     const receipts: { prompt: string, text: string }[] = []
     const stated: { path: string, content: string }[][] = []
-    const reply = requestContextReply(301, [{ path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }])
+    const reply = cursorRequestContextReply(301, [{ path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }])
     const body = await runStreamBody(async () => ({
       text: 'ROOT_ANSWER',
       toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
@@ -502,7 +501,7 @@ describe('serveCursorRun', () => {
       text: 'ROOT_ANSWER',
       toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
       requestContextRules: rules => stated.push([...rules]),
-    }), undefined, requestContextReply(301, []))
+    }), undefined, cursorRequestContextReply(301, []))
     expect(stated).toEqual([[]])
   })
 
@@ -523,12 +522,68 @@ describe('serveCursorRun', () => {
     await expect(runStreamBody(async () => ({
       toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
       requestContextRules: () => {},
-    }), undefined, requestContextReply(999, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow('fetch failed')
+    }), undefined, cursorRequestContextReply(999, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow('fetch failed')
     expect(errors).toEqual(['Cursor replied to request context query 301 with id 999'])
 
     const unhandled: string[] = []
-    await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, requestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow('fetch failed')
+    await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, cursorRequestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow('fetch failed')
     expect(unhandled).toEqual(['A native Cursor request context query requires a scenario handler'])
+  })
+
+  describe('with a handler for the rules of each turn', () => {
+    const rules = [{ path: '/run-root/work/AGENTS.md', content: 'PROJECT_RULE' }]
+
+    it('asks for the request context after the user record and before the first tool call, and states the rules once', async () => {
+      const receipts: { prompt: string, text: string }[] = []
+      const stated: { path: string, content: string }[][] = []
+      const body = await runStreamBody(async () => ({ text: 'ROOT_ANSWER', toolCalls: [{ kind: 'todo', call: { callID: 'todo-1', todos: [{ id: '1', content: 'One', status: 'pending' }], merge: false } }] }), receipts, cursorRequestContextReply(301, rules), undefined, { contextRules: given => stated.push(given.map(rule => ({ ...rule }))) })
+      expect(stated).toEqual([rules])
+      expect(updateKinds(body)).toEqual(['setBlob', 'execRequest', 'toolStarted', 'toolCompleted', 'setBlob', 'textDelta', 'turnEnded', 'endOfStream'])
+      // The rules belong to the request, not to the answer text.
+      expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER' }])
+    })
+
+    it('asks also for a turn that no scripted step answers, and then ends it with no text', async () => {
+      const stated: unknown[][] = []
+      const body = await runStreamBody(async () => undefined, undefined, cursorRequestContextReply(301, rules), undefined, { contextRules: given => stated.push([...given]) })
+      expect(stated).toEqual([rules])
+      expect(updateKinds(body)).toEqual(['setBlob', 'execRequest', 'turnEnded', 'endOfStream'])
+    })
+
+    it('holds the turn while the CLI leaves the query unanswered', async () => {
+      const receipts: { prompt: string, text: string }[] = []
+      const body = await runStreamBody(async () => ({ text: 'ROOT_ANSWER' }), receipts, undefined, undefined, { contextRules: () => {} })
+      expect(updateKinds(body)).toEqual(['setBlob', 'execRequest', 'endOfStream'])
+      expect(receipts).toEqual([])
+    })
+
+    it('refuses an answer to the turn query with another id', async () => {
+      const errors: string[] = []
+      await expect(runStreamBody(async () => ({ text: 'ROOT_ANSWER' }), undefined, cursorRequestContextReply(999, rules), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors }, { contextRules: () => {} })).rejects.toThrow('fetch failed')
+      expect(errors).toEqual(['Cursor replied to request context query 301 with id 999'])
+    })
+
+    it('hands a later scripted query to the scenario handler, apart from the turn query', async () => {
+      const turn: unknown[][] = []
+      const scripted: unknown[][] = []
+      const later = [{ path: '/run-root/work/CLAUDE.md', content: 'LATER_RULE' }]
+      await runStreamBody(async () => ({
+        text: 'ROOT_ANSWER',
+        toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+        requestContextRules: given => scripted.push([...given]),
+      }), undefined, [cursorRequestContextReply(301, rules), cursorRequestContextReply(302, later)], undefined, { contextRules: given => turn.push([...given]) })
+      expect(turn).toEqual([rules])
+      expect(scripted).toEqual([later])
+    })
+
+    it('asks nothing for an answer that ends in a native error', async () => {
+      const body = await runStreamBody(async () => ({ error: { message: 'The model failed.', status: 500 } }), undefined, undefined, undefined, { contextRules: () => {} })
+      expect(updateKinds(body)).not.toContain('execRequest')
+    })
+  })
+
+  it('asks for no request context without a handler for the rules of each turn', async () => {
+    expect(await runStream(async () => ({ text: 'ROOT_ANSWER' }))).toBe('setBlob,setBlob,textDelta,turnEnded,endOfStream')
   })
 
   it('states the typed text of each answer beside the selected options', async () => {
@@ -761,8 +816,24 @@ describe('native Cursor request compression', () => {
   })
 })
 
-async function startOwnedCursor(host: MockModelScriptHost) {
-  const surface = createCursorSurface(host)
+/** One check of the instruction files that a surface asked its guard for. */
+interface InstructionFileCheck {
+  context: ModelRequestContext
+  files: NativeInstructionFile[]
+  policy: RunRootSentinelPolicy
+}
+
+/** A guard that records each check and refuses nothing. */
+function recordingGuard(checks: InstructionFileCheck[] = []): InstructionFileGuard {
+  return { check: (context, files, policy) => checks.push({ context, files: files.map(file => ({ ...file })), policy }) }
+}
+
+/**
+ * A Cursor surface on a server of its own. Each run sends the opening frame and the CLI's answer to the request context
+ * query that the surface sends at the start of each turn, with `rules`.
+ */
+async function startOwnedCursor(host: MockModelScriptHost, guard: InstructionFileGuard = recordingGuard()) {
+  const surface = createCursorSurface(host, guard)
   /** One entry for each request whose handling ended: true when the surface owned it. */
   const settled: boolean[] = []
   const server = createServer((request, response) => {
@@ -784,7 +855,7 @@ async function startOwnedCursor(host: MockModelScriptHost) {
     surface,
     url,
     settled,
-    run: async (conversationID: string, prompt: string, signal?: AbortSignal) => {
+    run: async (conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = []) => {
       const opening = clientMessageWithPrompt(prompt)
       const runRequest = descend(opening, [1])
       if (!runRequest)
@@ -796,7 +867,8 @@ async function startOwnedCursor(host: MockModelScriptHost) {
       const response = await fetch(`${url}${CURSOR_RUN_PATH}`, {
         method: 'POST',
         headers: { 'content-type': 'application/connect+proto' },
-        body: Buffer.from(connectFrame(nativeRun)),
+        // The surface numbers its first query of the turn 301.
+        body: Buffer.concat([Buffer.from(connectFrame(nativeRun)), Buffer.from(connectFrame(cursorRequestContextReply(301, rules)))]),
         ...(signal ? { signal } : {}),
       })
       return Buffer.from(await response.arrayBuffer())
@@ -899,6 +971,31 @@ describe('createCursorSurface', () => {
     await expect(run).rejects.toMatchObject({ name: 'AbortError' })
     await expect.poll(() => owned.settled.length).toBe(1)
     expect(owned.settled[0]).toBe(true)
+  })
+
+  it('checks the rules of each turn as a known escape, and records them on the witness of the turn', async () => {
+    const contexts: ModelRequestContext[] = []
+    const checks: InstructionFileCheck[] = []
+    const owned = await startOwnedCursor(cursorScriptHost(new Set(['surface-rules']), contexts), recordingGuard(checks))
+    const rules = [
+      { path: '/run-root/AGENTS.md', content: 'LEAPMUXE2EANCESTORINSTRUCTIONS' },
+      { path: '/run-root/1/work/AGENTS.md', content: 'PROJECT_RULE' },
+    ]
+    const prompt = mockScenarioPrompt('surface-rules', 'Read the project rules.')
+    expect(updateKinds(await owned.run('rules-conversation', prompt, undefined, rules))).toContain('textDelta')
+    expect(checks).toEqual([{ context: contexts[0], files: rules, policy: 'known-escape' }])
+    expect(checks[0]?.context).toMatchObject({ scenarioID: 'surface-rules', userText: prompt })
+    expect(contexts[0]?.nativeRequest?.contextRules).toEqual(rules)
+  })
+
+  it('checks the rules also of a turn that no scenario answers', async () => {
+    const contexts: ModelRequestContext[] = []
+    const checks: InstructionFileCheck[] = []
+    const owned = await startOwnedCursor(cursorScriptHost(new Set(), contexts), recordingGuard(checks))
+    const rules = [{ path: '/elsewhere/AGENTS.md', content: 'OUTSIDE' }]
+    const bytes = await owned.run('unmatched-conversation', 'A bare prompt with no marker.', undefined, rules)
+    expect(updateKinds(bytes)).not.toContain('textDelta')
+    expect(checks.map(check => ({ files: check.files, scenarioID: check.context.scenarioID }))).toEqual([{ files: rules, scenarioID: 'ambient' }])
   })
 
   it('leaves unrelated paths unanswered and never selects a script for startup calls', async () => {

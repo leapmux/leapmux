@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
 import { ANCESTOR_INSTRUCTION_FILES, ANCESTOR_INSTRUCTION_SENTINEL } from '../tests/e2e/helpers/ancestorInstructions'
 import { copyRunBinary, LEAPMUX_BINARY_NAME, runBinaryPath } from '../tests/e2e/helpers/runBinary'
+import { RUN_ROOT_ENV } from '../tests/e2e/helpers/runRoot'
 import { runE2E, runRootParent } from './run-e2e'
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -69,6 +70,30 @@ it('writes each sentinel instruction file into the run root before a shard start
   expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
   const paths = ANCESTOR_INSTRUCTION_FILES.map(file => file.path)
   expect(sentinels).toEqual([paths, paths])
+})
+
+it('states the run root that holds each shard directory, and none to the build or the discovery run', async () => {
+  vi.stubEnv(RUN_ROOT_ENV, '/stale/run-root/of/a/caller')
+  const stated: { runtime: string, runRoot: string | undefined }[] = []
+  processes([0, 0], (env) => {
+    if (env.LEAPMUX_E2E_NONCE_PATH && env.LEAPMUX_E2E_OUTPUT_FILE_DIR?.includes('shard-'))
+      stated.push({ runtime: dirname(env.LEAPMUX_E2E_NONCE_PATH), runRoot: env[RUN_ROOT_ENV] })
+  })
+  expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
+  expect(stated).toHaveLength(2)
+  for (const { runtime, runRoot } of stated)
+    expect(runRoot).toBe(dirname(runtime))
+  for (const call of calls.filter(call => !call.env.LEAPMUX_E2E_NONCE_PATH))
+    expect(call.env[RUN_ROOT_ENV], `${call.command} ${call.args.join(' ')}`).toBeUndefined()
+})
+
+it('states the run root of a serial run, which is its own private directory', async () => {
+  processes()
+  expect(await runE2E(['--workers=1'], projectRoot)).toBe(0)
+  const child = calls.find(call => call.command === 'node' && call.args.includes('test') && !call.args.includes('--list'))
+  if (!child?.env.LEAPMUX_E2E_NONCE_PATH)
+    throw new Error('The serial Playwright fixture has no owned runtime.')
+  expect(child.env[RUN_ROOT_ENV]).toBe(dirname(child.env.LEAPMUX_E2E_NONCE_PATH))
 })
 
 describe('runRootParent', () => {

@@ -1,6 +1,7 @@
 import type { Buffer } from 'node:buffer'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
+import type { NativeInstructionFile, RunRootSentinelPolicy } from './ancestorInstructions'
 import type { DisconnectSignals } from './mockHttp'
 import type { MockModelCredential, MockModelDeliveredError, MockModelProtocol, MockModelRequestRecord, MockModelServerContext, MockModelStep } from './mockModelScript'
 import type { ModelStream } from './modelStream'
@@ -44,6 +45,15 @@ export type SelectedModelAnswer
 export interface MockModelScriptHost {
   hasScenario: (id: string) => boolean
   select: (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }) => SelectedModelAnswer
+}
+
+/**
+ * Check the instruction files that a native agent sent to its own service, outside any model request body
+ * (./ancestorInstructions.ts). The mock counts each refusal as it counts a request body that holds the sentinel, so
+ * the run fails at shutdown, and the scenario of `context` records the refusal as an unexpected request.
+ */
+export interface InstructionFileGuard {
+  check: (context: ModelRequestContext, files: readonly NativeInstructionFile[], policy: RunRootSentinelPolicy) => void
 }
 
 /**

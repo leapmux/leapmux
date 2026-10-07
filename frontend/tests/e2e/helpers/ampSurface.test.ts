@@ -1,20 +1,26 @@
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { AmpInference, AmpSurface, AmpSurfaceOptions } from './ampSurface'
+import type { NativeInstructionFile, RunRootSentinelPolicy } from './ancestorInstructions'
 import type { DisconnectSignals } from './mockHttp'
-import type { MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
+import type { InstructionFileGuard, MockModelScriptHost, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
 import type { MockModelStep } from './mockModelScript'
 import { Buffer } from 'node:buffer'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
+import { resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AMP_E2E_THREADS_PATH, ampInferenceOf, ampMessageID, ampScriptOptions, ampToolUseID, createAmpSurface } from './ampSurface'
+import { AMP_E2E_THREADS_PATH, ampInferenceOf, ampMessageID, ampScriptOptions, ampToolUseID, createAmpSurface, guidanceFilesOf } from './ampSurface'
 import { MODEL_KEY } from './mockAgentEnvironment'
 import { MAX_MOCK_REQUEST_BYTES } from './mockHttp'
 import { createBufferedModelStream } from './modelStream'
 
 const ID_PATTERN = { message: /^M-[0-9A-Z]{22}$/i, toolUse: /^TU-[0-9A-Z]{22}$/i }
+
+/** A guard for a test that checks no guidance file. */
+const IGNORED_GUIDANCE: InstructionFileGuard = { check: () => {} }
 
 /** A request with a complete body, for a call that goes to the surface with no server. */
 function bodyRequest(method: string, chunks: readonly Buffer[]): IncomingMessage {
@@ -41,6 +47,7 @@ function heldAnswer() {
  */
 async function startMock(answers: (MockModelStep | undefined | Promise<MockModelStep | undefined>)[], hooks: Partial<Pick<AmpSurfaceOptions, 'answer' | 'errorSent' | 'holdGeneration'>> = {}) {
   const inferences: AmpInference[] = []
+  const guidance: { inference: AmpInference, files: NativeInstructionFile[] }[] = []
   const surface: AmpSurface = createAmpSurface({
     ...hooks,
     answer: async (inference, signal) => {
@@ -49,6 +56,7 @@ async function startMock(answers: (MockModelStep | undefined | Promise<MockModel
         return hooks.answer(inference, signal)
       return answers.shift()
     },
+    checkGuidanceFiles: (inference, files) => guidance.push({ inference, files: [...files] }),
   })
   const sockets: Duplex[] = []
   // The mock model server refuses a request or an upgrade that no surface claims, and so does this server.
@@ -69,6 +77,7 @@ async function startMock(answers: (MockModelStep | undefined | Promise<MockModel
   return {
     origin,
     inferences,
+    guidance,
     post: async (path: string, body: unknown, headers?: Record<string, string>) => (await fetch(`${origin}${path}`, { method: 'POST', body: JSON.stringify(body), ...(headers ? { headers } : {}) })).json() as Promise<Record<string, unknown>>,
     close: async () => {
       surface.close()
@@ -176,7 +185,7 @@ describe('amp ids', () => {
 
 describe('the Amp surface claim', () => {
   it('claims Amp\'s REST routes, the actor gateway and the test route, and nothing of a model API', async () => {
-    const surface = createAmpSurface({ answer: async () => undefined })
+    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
     try {
       for (const path of ['/api/internal?loadPlugins', '/api/thread-actors', '/api/unknown', '/actors/gateway/threadActor/websocket/', AMP_E2E_THREADS_PATH]) {
         const response = new ServerResponse(bodyRequest('POST', []))
@@ -196,7 +205,7 @@ describe('the Amp surface claim', () => {
   })
 
   it('leaves an upgrade outside the actor gateway untouched, and refuses one with no thread key', () => {
-    const surface = createAmpSurface({ answer: async () => undefined })
+    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
     try {
       const outside = new PassThrough()
       const outsideEnd = vi.spyOn(outside, 'end')
@@ -303,7 +312,7 @@ describe('the Amp REST surface', () => {
     const internal = await fetch(`${mock.origin}/api/internal?loadPlugins`, { method: 'POST', body: '{broken' })
     expect(internal.status).toBe(200)
     expect(await internal.json()).toEqual({ ok: true, result: [] })
-    const surface = createAmpSurface({ answer: async () => undefined })
+    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
     try {
       const response = new ServerResponse(bodyRequest('POST', [Buffer.from('{broken')]))
       await expect(surface.handleHttp(bodyRequest('POST', [Buffer.from('{broken')]), response, new URL('http://127.0.0.1/api/thread-actors')))
@@ -317,7 +326,7 @@ describe('the Amp REST surface', () => {
   })
 
   it.each(['/api/thread-actors', '/api/internal?loadPlugins', AMP_E2E_THREADS_PATH])('fails a body over the size limit on %s, and writes no answer', async (path) => {
-    const surface = createAmpSurface({ answer: async () => undefined })
+    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
     try {
       const exact = Buffer.alloc(MAX_MOCK_REQUEST_BYTES, 32)
       const response = new ServerResponse(bodyRequest('POST', []))
@@ -402,6 +411,31 @@ describe('the Amp actor', () => {
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     expect(mock.inferences[0]?.mockCredential).toEqual({ kind: 'service', accepted: true })
     expect(JSON.stringify(mock.inferences)).not.toContain(MODEL_KEY)
+  })
+
+  it('checks the guidance files of each snapshot against the conversation of its thread, and acknowledges the frame', async () => {
+    mock = await startMock([{ text: 'Guidance answer.' }])
+    const { client, executor } = await openThread(mock)
+    client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:guidance read the guidance'))
+    await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
+    // Amp 0.0.1791074829 sends this frame after the first user message, and the run root's sentinel among its files.
+    const snapshot = executor.request('executor_guidance_snapshot', {
+      snapshotId: 'snapshot-1',
+      files: [
+        { uri: pathToFileURL(resolve('run-root/work/AGENTS.md')).href, content: 'PROJECT_GUIDANCE', lineCount: 1, hash: 'a' },
+        { uri: pathToFileURL(resolve('run-root/AGENTS.md')).href, content: 'LEAPMUXE2EANCESTORINSTRUCTIONS', lineCount: 1, hash: 'b' },
+      ],
+      isLast: true,
+      userConfigDir: 'file:///run-root/home/.config',
+    })
+    await expect.poll(() => executor.reply(snapshot)).toEqual({ ok: true })
+    expect(mock.guidance).toHaveLength(1)
+    expect(mock.guidance[0]?.files).toEqual([
+      { path: resolve('run-root/work/AGENTS.md'), content: 'PROJECT_GUIDANCE' },
+      { path: resolve('run-root/AGENTS.md'), content: 'LEAPMUXE2EANCESTORINSTRUCTIONS' },
+    ])
+    // The check reads the conversation that the frame joins, whose marker selects the scenario.
+    expect(mock.guidance[0]?.inference.body.messages.at(0)).toEqual({ role: 'user', content: [{ type: 'text', text: 'LEAPMUXE2ESCENARIO:guidance read the guidance' }] })
   })
 
   it('buffers native actor text until internal generation releases', async () => {
@@ -849,6 +883,51 @@ function selectedAmpAnswer(step: MockModelStep) {
   } satisfies SelectedModelAnswer
 }
 
+describe('guidanceFilesOf', () => {
+  it('reads the path of each local file URI and the content of each file', () => {
+    expect(guidanceFilesOf({ files: [
+      { uri: pathToFileURL(resolve('run-root/work/AGENTS.md')).href, content: 'A' },
+      { uri: pathToFileURL(resolve('run-root/with space/AGENTS.md')).href, content: 'B' },
+    ] })).toEqual([
+      { path: resolve('run-root/work/AGENTS.md'), content: 'A' },
+      { path: resolve('run-root/with space/AGENTS.md'), content: 'B' },
+    ])
+  })
+
+  it('keeps the text of a URI that identifies no local file, which no run root holds', () => {
+    expect(guidanceFilesOf({ files: [
+      { uri: 'file://remote-host/share/AGENTS.md', content: 'remote' },
+      { uri: 'https://example.invalid/AGENTS.md', content: 'web' },
+      { content: 'no uri' },
+    ] })).toEqual([
+      { path: 'file://remote-host/share/AGENTS.md', content: 'remote' },
+      { path: 'https://example.invalid/AGENTS.md', content: 'web' },
+      { path: '', content: 'no uri' },
+    ])
+  })
+
+  it('keeps an invalid entry visible to the instruction guard', () => {
+    expect(guidanceFilesOf({ files: ['file:///b/AGENTS.md', null] })).toEqual([
+      { path: '', content: '' },
+      { path: '', content: '' },
+    ])
+  })
+
+  it('reads absent content as an empty file', () => {
+    const path = resolve('run-root/work/AGENTS.md')
+    expect(guidanceFilesOf({ files: [{ uri: pathToFileURL(path).href }] })).toEqual([{ path, content: '' }])
+  })
+
+  it('reads no file from a frame with no file list', () => {
+    expect(guidanceFilesOf({})).toEqual([])
+    expect(guidanceFilesOf({ files: [] })).toEqual([])
+  })
+
+  it('keeps an invalid file list visible to the instruction guard', () => {
+    expect(guidanceFilesOf({ files: 'file:///a/AGENTS.md' })).toEqual([{ path: '', content: '' }])
+  })
+})
+
 describe('ampScriptOptions', () => {
   it('projects the actual inference body and credential without an HTTP transport', async () => {
     const answer = selectedAmpAnswer({ text: 'Native actor answer.', gate: 'actor-answer' })
@@ -860,7 +939,7 @@ describe('ampScriptOptions', () => {
       mockCredential: { kind: 'service', accepted: true },
     }
     const signal = new AbortController().signal
-    expect(await ampScriptOptions(host).answer(inference, signal)).toBe(answer.step)
+    expect(await ampScriptOptions(host, IGNORED_GUIDANCE).answer(inference, signal)).toBe(answer.step)
     expect(select).toHaveBeenCalledExactlyOnceWith({
       protocol: 'anthropic-messages',
       path: '/actors/',
@@ -874,14 +953,32 @@ describe('ampScriptOptions', () => {
     expect(answer.recordHttpResponse).not.toHaveBeenCalled()
   })
 
+  it('checks the guidance files against the request of the inference, and refuses the sentinel files of the run root', () => {
+    const checks: { context: ModelRequestContext, files: readonly NativeInstructionFile[], policy: RunRootSentinelPolicy }[] = []
+    const guard: InstructionFileGuard = { check: (context, files, policy) => checks.push({ context, files, policy }) }
+    const host: MockModelScriptHost = { hasScenario: () => true, select: () => ({ kind: 'missing', message: 'Unused.' }) }
+    const inference: AmpInference = {
+      body: { model: 'mock-model', system: '', messages: [{ role: 'user', content: [{ type: 'text', text: 'Native prompt.' }] }] },
+      userText: 'Native prompt.',
+      mockCredential: { kind: 'service', accepted: true },
+    }
+    const files = [{ path: '/run-root/work/AGENTS.md', content: 'PROJECT_GUIDANCE' }]
+    ampScriptOptions(host, guard).checkGuidanceFiles(inference, files)
+    expect(checks).toEqual([{
+      context: { protocol: 'anthropic-messages', path: '/actors/', body: inference.body, systemText: '', userText: 'Native prompt.', mockCredential: { kind: 'service', accepted: true } },
+      files,
+      policy: 'refuse',
+    }])
+  })
+
   it('leaves an unscripted or cancelled inference unanswered', async () => {
     const missing: MockModelScriptHost = { hasScenario: () => false, select: () => ({ kind: 'missing', message: 'No actual scenario.' }) }
     const inference: AmpInference = { body: { model: '', system: '', messages: [] }, userText: '' }
     const signal = new AbortController().signal
-    expect(await ampScriptOptions(missing).answer(inference, signal)).toBeUndefined()
+    expect(await ampScriptOptions(missing, IGNORED_GUIDANCE).answer(inference, signal)).toBeUndefined()
     const answer = selectedAmpAnswer({ text: 'Never deliver.', gate: 'cancelled-answer' })
     answer.holdGate.mockResolvedValue(false)
-    expect(await ampScriptOptions({ hasScenario: () => true, select: () => answer }).answer(inference, signal)).toBeUndefined()
+    expect(await ampScriptOptions({ hasScenario: () => true, select: () => answer }, IGNORED_GUIDANCE).answer(inference, signal)).toBeUndefined()
   })
 
   it('keeps native error and buffered-generation receipts attached to their own inference', async () => {
@@ -894,7 +991,7 @@ describe('ampScriptOptions', () => {
         throw new Error('The test supplied too few native answers.')
       return answer
     } }
-    const options = ampScriptOptions(host)
+    const options = ampScriptOptions(host, IGNORED_GUIDANCE)
     const one: AmpInference = { body: { model: '', system: '', messages: [] }, userText: 'One.' }
     const two: AmpInference = { body: { model: '', system: '', messages: [] }, userText: 'Two.' }
     const signal = new AbortController().signal

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { DisconnectSignals } from './mockHttp'
-import type { MockModelScriptHost, MockSurface, ModelRequestContext } from './mockModelRequest'
+import type { InstructionFileGuard, MockModelScriptHost, MockSurface, ModelRequestContext } from './mockModelRequest'
 import type {
   MockModelDeliveredError,
   MockModelError,
@@ -16,12 +16,14 @@ import type {
   MockModelUnexpectedRequest,
 } from './mockModelScript'
 import type { ModelStream } from './modelStream'
+import { statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createServer as createHttp2Server } from 'node:http2'
+import { isAbsolute } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
 import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
 import { ampScriptOptions, createAmpSurface } from './ampSurface'
-import { ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions } from './ancestorInstructions'
+import { ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, refusedInstructionFiles } from './ancestorInstructions'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
 import { createCursorSurface } from './cursorSurface'
@@ -92,6 +94,12 @@ export interface MockModelRequestLog {
 export interface MockModelServerOptions {
   /** The model identifiers the catalog routes advertise. */
   models: readonly string[]
+  /**
+   * The run root of the E2E run that the server serves (./runRoot.ts). The check of the instruction files that Cursor
+   * and Amp send to their own services refuses each file outside it (./ancestorInstructions.ts). A server that serves
+   * no run, such as one of a unit test, states none, and then that check refuses only a file that holds the sentinel.
+   */
+  runRoot?: string
 }
 
 export interface MockModelServer {
@@ -105,8 +113,9 @@ export interface MockModelServer {
    */
   refusedHosts: () => ReadonlyMap<string, number>
   /**
-   * The number of model requests that held the text of a sentinel instruction file (./ancestorInstructions.ts). The
-   * mock refuses each one, and the suite fails at shutdown when any arrived, because a request with no scenario marker
+   * The number of requests that the guard of ./ancestorInstructions.ts refused: each model request that held the text
+   * of a sentinel instruction file, and each set of instruction files that Cursor or Amp sent to its own service and
+   * the file check refused. The suite fails at shutdown when any arrived, because a request with no scenario marker
    * fails no test of its own.
    */
   ancestorInstructionRequests: () => number
@@ -176,6 +185,9 @@ type ScenarioAnswer
 export async function createMockModelServer(options: MockModelServerOptions): Promise<MockModelServer> {
   if (options.models.length === 0)
     throw new Error('The mock model server needs at least one model identifier.')
+  const { runRoot } = options
+  if (runRoot !== undefined && (!isAbsolute(runRoot) || statSync(runRoot, { throwIfNoEntry: false })?.isDirectory() !== true))
+    throw new Error(`The run root of the mock model server must be an absolute path to a directory: ${runRoot}`)
   const models = [...options.models]
   const scenarios = new Map<string, ScenarioState>()
   const http: MockModelHTTPRequestRecord[] = []
@@ -194,21 +206,37 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     refusedHosts.set(host, (refusedHosts.get(host) ?? 0) + 1)
   }
 
-  // Record unregistered scenario requests consistently across all supported model routes.
-  const answerFor = (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }): ScenarioAnswer => {
+  // Count one refusal of the guard of ./ancestorInstructions.ts, and record it where a reader finds it: in the scenario
+  // of the request, which fails its test, or in the unmatched log, which the shutdown report points at.
+  const refuseAncestorInstructions = (context: ModelRequestContext, reason: string): void => {
+    ancestorInstructionRequests++
     const scenarioID = context.scenarioID ?? selectScenarioID(context.protocol, context.body)
     const scenario = scenarios.get(scenarioID)
+    if (scenario)
+      scenario.unexpectedRequests.push({ protocol: context.protocol, path: context.path, body: context.body, reason })
+    else
+      recordUnmatched(unmatched, { ...context, scenarioID, reason })
+  }
+
+  const instructionFiles: InstructionFileGuard = {
+    check: (context, files, policy) => {
+      const refused = refusedInstructionFiles(files, runRoot, policy)
+      if (refused.length > 0)
+        refuseAncestorInstructions(context, `The agent sent instruction files that its test does not control to its own service: ${refused.map(file => file.path).join(', ')}. Each one lies outside the run root, or holds ${ANCESTOR_INSTRUCTION_SENTINEL}: the agent read an instruction file above its working directory (./ancestorInstructions.ts).`)
+    },
+  }
+
+  // Record unregistered scenario requests consistently across all supported model routes.
+  const answerFor = (context: ModelRequestContext, capabilities?: { allowServiceToolMetadata?: boolean }): ScenarioAnswer => {
     // An agent that read an instruction file above its working directory sent that text to the model. The test does
     // not control that text, so the request fails its scenario rather than reach a scripted answer.
     if (holdsAncestorInstructions(context.body)) {
-      ancestorInstructionRequests++
       const reason = `The request holds ${ANCESTOR_INSTRUCTION_SENTINEL}: the agent read an instruction file above its working directory. Give the provider a working directory that is the root of a git repository of its own, or exclude the files above it (./ancestorInstructions.ts).`
-      if (scenario)
-        scenario.unexpectedRequests.push({ protocol: context.protocol, path: context.path, body: context.body, reason })
-      else
-        recordUnmatched(unmatched, { ...context, scenarioID, reason })
+      refuseAncestorInstructions(context, reason)
       return { kind: 'missing', message: reason }
     }
+    const scenarioID = context.scenarioID ?? selectScenarioID(context.protocol, context.body)
+    const scenario = scenarios.get(scenarioID)
     if (!scenario) {
       recordUnmatched(unmatched, { ...context, scenarioID, reason: 'The scenario is not registered.' })
       return { kind: 'missing', message: `The model scenario ${scenarioID} is not registered.` }
@@ -258,8 +286,8 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     { handleHttp: (request, response, url) => handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }) },
     { handleHttp: (request, response, url) => handleCopilotHttp(request, response, url, copilotOptions) },
     { handleHttp: (request, response, url) => handleQoderHttp(request, response, url, qoderOptions) },
-    createAmpSurface(ampScriptOptions(scriptHost)),
-    createCursorSurface(scriptHost),
+    createAmpSurface(ampScriptOptions(scriptHost, instructionFiles)),
+    createCursorSurface(scriptHost, instructionFiles),
     { handleHttp: (request, response, url) => handleKiroHttp(request, response, url, scriptHost) },
     { handleHttp: (request, response, url) => handleGoogleModelHttp(request, response, url, scriptHost) },
   ]
