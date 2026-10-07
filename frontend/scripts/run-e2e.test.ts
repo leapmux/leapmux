@@ -64,10 +64,11 @@ it('writes each sentinel instruction file into the run root before a shard start
     if (!env.LEAPMUX_E2E_NONCE_PATH || !env.LEAPMUX_E2E_OUTPUT_FILE_DIR?.includes('shard-'))
       return
     const runRoot = dirname(dirname(env.LEAPMUX_E2E_NONCE_PATH))
-    sentinels.push(ANCESTOR_INSTRUCTION_FILES.filter(file => readFileSync(join(runRoot, file), 'utf8').includes(ANCESTOR_INSTRUCTION_SENTINEL)))
+    sentinels.push(ANCESTOR_INSTRUCTION_FILES.map(file => file.path).filter(path => readFileSync(join(runRoot, path), 'utf8').includes(ANCESTOR_INSTRUCTION_SENTINEL)))
   })
   expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
-  expect(sentinels).toEqual([[...ANCESTOR_INSTRUCTION_FILES], [...ANCESTOR_INSTRUCTION_FILES]])
+  const paths = ANCESTOR_INSTRUCTION_FILES.map(file => file.path)
+  expect(sentinels).toEqual([paths, paths])
 })
 
 describe('runRootParent', () => {

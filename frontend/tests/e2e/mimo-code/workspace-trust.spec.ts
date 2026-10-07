@@ -19,7 +19,9 @@ mimoTest('classifies real native controls and proves the missing workspace-trust
 const PROJECT_INSTRUCTIONS = 'native-project-instructions.md'
 
 mimoTest('loads project instructions without a workspace trust decision', async ({ native, leapmuxServer }) => {
-  const instructions = instructionFileConfiguration(PROJECT_INSTRUCTIONS)
+  // With its project configuration on, MiMo Code reads AGENTS.md from the working directory up to the root of its git
+  // repository, and up to the root of the file system when no repository holds the directory.
+  const instructions = instructionFileConfiguration(PROJECT_INSTRUCTIONS, { gitRoot: true })
   await exerciseNativeWorkspaceTrustLimit(native, {
     worker: projectConfigurationWorker(leapmuxServer.agentEnv, nativeLaunch(native), 'MIMOCODE_DISABLE_PROJECT_CONFIG'),
     projectConfiguration: {

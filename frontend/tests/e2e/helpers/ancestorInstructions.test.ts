@@ -13,17 +13,80 @@ beforeEach(() => {
 
 afterEach(() => rmSync(runRoot, { recursive: true, force: true }))
 
+/** The text of the sentinel file at `path` after `writeAncestorInstructionSentinels` ran. */
+function sentinelText(path: string): string {
+  return readFileSync(join(runRoot, path), 'utf8')
+}
+
 describe('writeAncestorInstructionSentinels', () => {
   it('writes each instruction file with the sentinel, its parent directories included', () => {
     writeAncestorInstructionSentinels(runRoot)
-    for (const file of ANCESTOR_INSTRUCTION_FILES)
-      expect(readFileSync(join(runRoot, file), 'utf8'), file).toContain(ANCESTOR_INSTRUCTION_SENTINEL)
+    for (const { path } of ANCESTOR_INSTRUCTION_FILES)
+      expect(sentinelText(path), path).toContain(ANCESTOR_INSTRUCTION_SENTINEL)
   })
 
   it('refuses to replace a file that the run root already holds', () => {
     writeFileSync(join(runRoot, 'AGENTS.md'), 'an earlier file\n')
     expect(() => writeAncestorInstructionSentinels(runRoot)).toThrow(expect.objectContaining({ code: 'EEXIST' }))
     expect(readFileSync(join(runRoot, 'AGENTS.md'), 'utf8')).toBe('an earlier file\n')
+  })
+
+  // Cursor drops a .mdc rule without a frontmatter block, and Oh My Pi drops a rule that states no `alwaysApply`.
+  // GitHub Copilot applies an .instructions.md file to the paths in `applyTo`.
+  it('opens each rule with a frontmatter block that applies it to every request', () => {
+    writeAncestorInstructionSentinels(runRoot)
+    const rules = ANCESTOR_INSTRUCTION_FILES.filter(file => file.form === 'rule')
+    expect(rules.map(file => file.path)).toEqual(expect.arrayContaining(['.clinerules', `.cursor/rules/${ANCESTOR_INSTRUCTION_SENTINEL}.mdc`]))
+    for (const { path } of rules)
+      expect(sentinelText(path), path).toMatch(/^---\nalwaysApply: true\napplyTo: "\*\*"\n---\n\n/)
+  })
+
+  // Codewhale renders the `authority` list of a constitution into its prompt, and ignores a file that does not parse.
+  it('writes each constitution as JSON whose authority list holds the sentinel', () => {
+    writeAncestorInstructionSentinels(runRoot)
+    const constitutions = ANCESTOR_INSTRUCTION_FILES.filter(file => file.form === 'constitution')
+    expect(constitutions.map(file => file.path)).toEqual(['.codewhale/constitution.json'])
+    for (const { path } of constitutions)
+      expect(JSON.parse(sentinelText(path)).authority).toContain(ANCESTOR_INSTRUCTION_SENTINEL)
+  })
+
+  it('writes each document as the sentinel, with no frontmatter', () => {
+    writeAncestorInstructionSentinels(runRoot)
+    for (const { path } of ANCESTOR_INSTRUCTION_FILES.filter(file => file.form === 'document'))
+      expect(sentinelText(path), path).toMatch(new RegExp(`^${ANCESTOR_INSTRUCTION_SENTINEL}\n`))
+  })
+})
+
+describe('ANCESTOR_INSTRUCTION_FILES', () => {
+  // A case-insensitive file system holds `AGENTS.md` and `agents.md` as one file, and the second write would fail.
+  it('holds no two paths that differ only in case', () => {
+    const paths = ANCESTOR_INSTRUCTION_FILES.map(file => file.path.toLowerCase())
+    expect(new Set(paths).size).toBe(paths.length)
+  })
+
+  it('holds only relative paths that stay inside the run root', () => {
+    for (const { path } of ANCESTOR_INSTRUCTION_FILES) {
+      expect(path, path).not.toMatch(/^\//)
+      expect(path.split('/'), path).not.toContain('..')
+    }
+  })
+
+  // Each of these names escaped the guard once: a provider read it above its working directory, and the list lacked it.
+  it.each([
+    ['Claude Code', '.claude/AGENTS.md'],
+    ['Claude Code', `.claude/rules/${ANCESTOR_INSTRUCTION_SENTINEL}.md`],
+    ['CodeBuddy Code', '.codebuddy/CODEBUDDY.md'],
+    ['Oh My Pi', '.omp/AGENTS.md'],
+    ['Oh My Pi', '.agents/AGENTS.md'],
+    ['GitHub Copilot', `.github/instructions/${ANCESTOR_INSTRUCTION_SENTINEL}.instructions.md`],
+    ['Cursor', `.cursor/rules/${ANCESTOR_INSTRUCTION_SENTINEL}.mdc`],
+    ['Codewhale', '.codewhale/constitution.json'],
+    ['OpenCode', 'CONTEXT.md'],
+    ['DeepSeek Harness', 'AGENTS.local.md'],
+    ['Reasonix', 'REASONIX.md'],
+    ['Factory Droid', 'DESIGN.md'],
+  ])('holds a name that %s reads above its working directory: %s', (_provider, path) => {
+    expect(ANCESTOR_INSTRUCTION_FILES.map(file => file.path)).toContain(path)
   })
 })
 
