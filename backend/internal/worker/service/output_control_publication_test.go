@@ -275,6 +275,7 @@ func TestControlPublicationReadFailureKeepsTheCurrentInstance(t *testing.T) {
 	require.NoError(t, err)
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "failed-read"}}
 	registerAgentWatch(svc, "failed-read", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	svc.Output.WaitActivityRefreshes()
 	svc.Output.queries = db.New(observedControlRead{DBTX: svc.DB, read: func(ctx context.Context, _ string, _ ...any) *sql.Row {
 		return svc.DB.QueryRowContext(ctx, "SELECT missing_control_column")
 	}})
@@ -346,6 +347,7 @@ func TestControlPublicationKeepsOwnershipDuringATurnOrProcessChange(t *testing.T
 			require.NoError(t, err)
 			entered, release := make(chan struct{}), make(chan struct{})
 			var reads atomic.Int32
+			svc.Output.WaitActivityRefreshes()
 			svc.Output.queries = db.New(observedControlRead{DBTX: svc.DB, read: func(ctx context.Context, query string, args ...any) *sql.Row {
 				if reads.Add(1) == 1 {
 					close(entered)
@@ -387,6 +389,7 @@ func TestControlPublicationKeepsItsActivityEntryUntilTheStoreCompletes(t *testin
 	sink := root.ChildSink(childID)
 	st := svc.Output.activityFor(childID, rootID)
 	entered, release := make(chan struct{}), make(chan struct{})
+	svc.Output.WaitActivityRefreshes()
 	svc.Output.queries = db.New(observedControlStore{DBTX: svc.DB, store: func(ctx context.Context, query string, args ...any) *sql.Row {
 		close(entered)
 		<-release
@@ -416,6 +419,7 @@ func TestControlFinalizationWaitsForAnInFlightRepeatedPublication(t *testing.T) 
 	row := requireAgentRow(t, svc, "agent-1")
 	entered, release := make(chan struct{}), make(chan struct{})
 	var stores atomic.Int32
+	svc.Output.WaitActivityRefreshes()
 	svc.Output.queries = db.New(observedControlStore{DBTX: svc.DB, store: func(ctx context.Context, query string, args ...any) *sql.Row {
 		if stores.Add(1) == 1 {
 			close(entered)
@@ -497,10 +501,10 @@ func TestRetiredSinkCancellationKeepsTheReplacementInstance(t *testing.T) {
 func TestRetiredStoreCompletionPublishesNoControl(t *testing.T) {
 	t.Parallel()
 	svc, _, oldSink, _ := stopOwnershipFixture(t)
-	svc.Output.WaitActivityRefreshes()
 	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "retired-store"}}
 	registerAgentWatch(svc, "retired-store", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	entered, release := make(chan struct{}), make(chan struct{})
+	svc.Output.WaitActivityRefreshes()
 	svc.Output.queries = db.New(observedControlStore{DBTX: svc.DB, store: func(ctx context.Context, query string, args ...any) *sql.Row {
 		close(entered)
 		<-release
@@ -537,8 +541,8 @@ func TestWaitingCancellationRechecksTheNativePublisherAfterAdmission(t *testing.
 	t.Parallel()
 	svc, _, oldSink, _ := stopOwnershipFixture(t)
 	publishStopControl(t, oldSink, "request")
-	svc.Output.WaitActivityRefreshes()
 	var cancellations atomic.Int32
+	svc.Output.WaitActivityRefreshes()
 	svc.Output.queries = db.New(observedControlCancellation{DBTX: svc.DB, cancels: &cancellations})
 	st, _, release := svc.Output.lockControlMutation("agent-1", "agent-1")
 	done := make(chan struct{})
