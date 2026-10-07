@@ -399,8 +399,8 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 	if tool != nil {
 		spanID = tool.spanID
 	}
-	target.sink.CloseSpan(spanID)
 	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, Closing: true}, target)
+	target.sink.CloseSpan(spanID)
 }
 
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so

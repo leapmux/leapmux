@@ -258,8 +258,8 @@ func (a *Agent) onToolReturn(payload []byte, delta *lettaDelta, target agent.Pro
 		spanID = tool.spanID
 	}
 	target.ReportProgress(agent.CompleteOutputProgress(spanID))
-	target.CloseSpan(spanID)
 	a.persistRowTo(target, payload, agent.SpanInfo{SpanID: spanID, Closing: true})
+	target.CloseSpan(spanID)
 	// A subagent runs headless, so no client answers its questions.
 	if subagentID == "" {
 		a.postQuestionRequest(tool, delta)

@@ -311,6 +311,19 @@ func TestTurnFinishedToolCountResetsAndExcludesChildCalls(t *testing.T) {
 	assert.Equal(t, []int{1, 0, 1}, agenttest.TurnToolUseCounts(t, sink.Messages()), "the root count excludes children and resets between turns")
 }
 
+func TestToolReturnPersistsBeforeItsSpanCloses(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{sink: agent.NewProviderServices(sink)}
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"client_tool_start","run_id":"rail-run","tool_call_id":"shell-rail","tool_name":"Bash","tool_input":{"command":"printf result"}}}`))
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"tool_return_message","run_id":"rail-run","tool_call_id":"shell-rail","tool_return":"result"}}`))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.True(t, rows[1].Closing)
+	assert.Contains(t, rows[1].SpansOpenAtPersist, agenttest.SpanOpen{SpanID: "letta-tool-shell-rail"})
+	assert.Equal(t, []string{"letta-tool-shell-rail"}, sink.ClosedSpans())
+}
+
 func TestTurnFinishedRejectsIncompleteToolStarts(t *testing.T) {
 	t.Parallel()
 	for _, frame := range []string{

@@ -63,6 +63,18 @@ func TestTurnEndCountsEachNativeToolResultOnce(t *testing.T) {
 	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, sink.Messages()), "a duplicate native result must not increase the count")
 }
 
+func TestToolResultPersistsBeforeItsSpanCloses(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"shell-rail","name":"Execute","input":{"command":"printf result"}}}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"shell-rail","content":"result","isError":false}}}`))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.True(t, rows[1].Closing)
+	assert.Contains(t, rows[1].SpansOpenAtPersist, agenttest.SpanOpen{SpanID: "droid-tool-shell-rail"})
+	assert.Equal(t, []string{"droid-tool-shell-rail"}, sink.ClosedSpans())
+}
+
 func TestTurnEndToolCountResetsAndExcludesChildCalls(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
