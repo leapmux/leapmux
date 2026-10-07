@@ -10,13 +10,14 @@ export interface CopilotSurfaceOptions {
 
 /** Preserve the native CAPI capability fields in the shared model catalog. */
 export function copilotModelCapabilities(id: string, options: Pick<CopilotSurfaceOptions, 'defaultModelId' | 'reasoningModelId'>): Record<string, unknown> {
+  // The second ladder lacks Medium. Its reported automatic tier must differ from the first model's Medium default.
   return {
     supports: {
       vision: true,
       ...(id === options.defaultModelId
         ? { reasoning_effort: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] }
         : id === options.reasoningModelId
-          ? { reasoning_effort: ['low', 'medium', 'high'] }
+          ? { reasoning_effort: ['low', 'high'] }
           : {}),
     },
     limits: { max_context_window_tokens: 128_000 },

@@ -73,7 +73,7 @@ describe('copilotCatalogMetadata', () => {
   it('keeps the native reasoning-model endpoint and effort vocabulary', () => {
     expect(copilotCatalogMetadata('model-reasoning', options)).toEqual({
       supported_endpoints: ['/responses'],
-      capabilities: { supports: { vision: true, reasoning_effort: ['low', 'medium', 'high'] }, limits: { max_context_window_tokens: 128_000 } },
+      capabilities: { supports: { vision: true, reasoning_effort: ['low', 'high'] }, limits: { max_context_window_tokens: 128_000 } },
     })
   })
 

@@ -846,7 +846,7 @@ describe('createMockModelServer', () => {
     const reasoningModel = models.data.find((model: { id: string }) => model.id === MOCK_MODELS.gooseReasoning)
     expect(reasoningModel).toMatchObject({
       supported_endpoints: ['/responses'],
-      capabilities: { supports: { reasoning_effort: ['low', 'medium', 'high'] } },
+      capabilities: { supports: { reasoning_effort: ['low', 'high'] } },
     })
     const piModel = models.data.find((model: { id: string }) => model.id === MOCK_MODELS.pi)
     expect(piModel.capabilities.supports).not.toHaveProperty('reasoning_effort')
