@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
-import type { NativeToolStep, ShellRowProof } from './nativeToolExecution'
+import type { NativeToolStep, ShellCommand, ShellResultEvidence } from './nativeToolExecution'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -15,7 +15,7 @@ import { stepRequest } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
 import { startModelScript } from './modelScriptFixture'
 import { createNativeToolDirectory } from './nativeToolDirectory'
-import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseNativeFileEdit, exerciseNativeFileRead, exerciseNativeFileWrite, exerciseShellToolExecution, expectFileDiff, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolSteps, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
+import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseNativeFileEdit, exerciseNativeFileRead, exerciseNativeFileWrite, exerciseShellToolExecution, expectFileDiff, expectShellToolRows, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolSteps, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
 const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn(), noBanner: vi.fn(), chat: vi.fn() }))
@@ -368,6 +368,30 @@ describe('runNativeToolSteps', () => {
     expect(shell?.toolCalls).not.toBe(threeSteps[0]?.toolCalls)
     expect(read?.captures).not.toBe(threeSteps[1]?.captures)
     expect(shell).not.toHaveProperty('captures')
+  })
+
+  it('passes the thinking of a step to the model step, and states none for a step without it', async () => {
+    const { context, queued } = recordingContext()
+    const thinking: NativeToolStep = { toolCalls: [{ id: 'unit-shell', name: 'Bash' }], reasoning: 'Run the shell first.' }
+    await runNativeToolSteps(context, { steps: [thinking, threeSteps[1]!], prompt: 'Run.', answer: 'Done.', permissions: 'none' })
+    const [first, second] = queued[0] ?? []
+    expect(first).toEqual({ reasoning: 'Run the shell first.', toolCalls: [{ id: 'unit-shell', name: 'Bash' }] })
+    expect(second).not.toHaveProperty('reasoning')
+  })
+
+  it('passes the thinking of a one-step turn to its tool step', async () => {
+    const { context, queued } = recordingContext()
+    // The recording script holds no request, so the turn stops when it reads the two requests back.
+    await expect(runNativeToolTurn(context, { toolCalls: [{ id: 'unit-shell', name: 'Bash' }], reasoning: 'Think first.', prompt: 'Run.', answer: 'Done.', permissions: 'none' }))
+      .rejects
+      .toThrow('lacks requestAt')
+    expect(queued[0]?.[0]).toEqual({ reasoning: 'Think first.', toolCalls: [{ id: 'unit-shell', name: 'Bash' }] })
+  })
+
+  it('passes an empty thinking through, because the step states it', async () => {
+    const { context, queued } = recordingContext()
+    await runNativeToolSteps(context, { steps: [{ toolCalls: [{ id: 'unit-shell', name: 'Bash' }], reasoning: '' }], prompt: 'Run.', answer: 'Done.', permissions: 'none' })
+    expect(queued[0]?.[0]).toHaveProperty('reasoning', '')
   })
 
   it('fails with the banner check when a banner stays after the turn', async () => {
@@ -969,22 +993,26 @@ describe('native file sequence paths', () => {
 })
 
 describe('exerciseShellToolExecution', () => {
-  const stop = new Error('The unit scenario stops after it queues the first command.')
+  const stop = new Error('The unit scenario stops after it queues the commands.')
 
-  /** Run the scenario until it sends its first prompt, and return the first command that it queued. */
-  async function firstQueuedCommand(options: Parameters<typeof exerciseShellToolExecution>[1]): Promise<string> {
+  /** Run the scenario until it sends its prompt, and return the shell commands of the one step that it queued. */
+  async function queuedCommands(options: Parameters<typeof exerciseShellToolExecution>[1], provider = AgentProvider.MIMO_CODE): Promise<{ commands: string[], steps: MockModelStep[][] }> {
     const status: MockModelScenarioStatus = { complete: false, nextStep: 0, stepCount: 0, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const steps: MockModelStep[][] = []
     const context: ManagedNativeScenarioContext = {
       page: guardedBrowserHandle<Page>({}),
-      provider: AgentProvider.MIMO_CODE,
-      providerAgent: { provider: AgentProvider.MIMO_CODE, prefix: 'native-e2e' },
+      provider,
+      providerAgent: { provider, prefix: 'native-e2e' },
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
       workspaceId: 'shell-unit',
       modelScript: {
         id: 'queued-shell-command',
         testDeadline: () => undefined,
         prompt: text => text,
-        queue: async () => 0,
+        queue: async (...queued) => {
+          steps.push(queued)
+          return 0
+        },
         requestAt: async () => {
           throw new Error('The shell scenario stops before it reads a request.')
         },
@@ -1001,117 +1029,337 @@ describe('exerciseShellToolExecution', () => {
     calls.agent.mockResolvedValue({ workingDir: directory })
     calls.send.mockRejectedValue(stop)
     await expect(exerciseShellToolExecution(context, options)).rejects.toBe(stop)
-    const command: unknown = calls.shell.mock.calls[0]?.[2]
-    if (typeof command !== 'string')
-      throw new Error('The shell scenario queued no shell command.')
-    return command
-  }
-
-  it('queues the command as it is when no output gate is set', async () => {
-    const command = await firstQueuedCommand({ includeFailure: false })
-    expect(command).toMatch(/^printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
-    expect(command).not.toContain('trap')
-  })
-
-  it('queues the command behind an output gate when the option is set', async () => {
-    const command = await firstQueuedCommand({ includeFailure: false, outputGate: true })
-    expect(command).toContain('trap')
-    expect(command).toMatch(/; printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
-  })
-
-  /**
-   * Run the whole scenario: each sent prompt runs the queued command in a shell, as the native tool does, and the
-   * provider reader returns its output. The page answers each check as passed and logs it.
-   */
-  async function runScenario(options: Parameters<typeof exerciseShellToolExecution>[1], log: string[] = []) {
-    const { page } = fakeLocatorTree({ log })
-    const status: MockModelScenarioStatus = { complete: true, nextStep: 1_000, stepCount: 1_000, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
-    const queued: Array<{ callId: string, command: string }> = []
-    const outcomes = new Map<string, { text: string, exitCode: number }>()
-    calls.shell.mockImplementation((_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-shell', arguments: { command } }))
-    calls.agent.mockResolvedValue({ workingDir: directory })
-    calls.send.mockImplementation(async () => {
-      const call = queued.at(-1)
-      if (!call)
-        throw new Error('The scenario sent a prompt before it queued a command.')
-      try {
-        outcomes.set(call.callId, { text: execFileSync('/bin/sh', ['-c', call.command], { encoding: 'utf8', stdio: 'pipe' }), exitCode: 0 })
-      }
-      catch (error) {
-        const failed = error as { stderr: string, status: number }
-        outcomes.set(call.callId, { text: failed.stderr, exitCode: failed.status })
-      }
+    const commands = calls.shell.mock.calls.map(([, , command]: unknown[]) => {
+      if (typeof command !== 'string')
+        throw new Error('The shell scenario queued no shell command.')
+      return command
     })
-    const context: ManagedNativeScenarioContext = {
-      page,
-      provider: AgentProvider.CODEX,
-      providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
-      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
-      workspaceId: 'shell-unit',
-      readToolResult: (_request, callId) => {
-        const outcome = outcomes.get(callId)
-        if (!outcome)
-          throw new Error(`The native tool has no result for ${callId}.`)
-        return outcome
-      },
-      modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({
-        prompt: text => text,
-        queue: async (...steps: MockModelStep[]) => {
-          const call = steps[0]?.toolCalls?.[0]
-          if (!call || typeof call.arguments?.command !== 'string')
-            throw new Error('The scenario queued no shell call.')
-          queued.push({ callId: call.id, command: call.arguments.command })
-          return (queued.length - 1) * 2
-        },
-        status: async () => status,
-        waitForSteps: async () => status,
-        requestAt: async stepIndex => ({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }),
-      }),
-    }
-    await exerciseShellToolExecution(context, options)
-    return { page, queued }
+    return { commands, steps }
   }
 
-  it.runIf(existsSync('/bin/sh'))('hands the row proof each command, its output, its printed prefix, and its outcome, after the shared checks', async () => {
-    const proofs: ShellRowProof[] = []
-    const log: string[] = []
-    const { page, queued } = await runScenario({
-      rowProof: async (proof) => {
-        log.push('row proof')
-        proofs.push(proof)
-      },
-    }, log)
-    expect(proofs.map(proof => ({ ...proof, page: proof.page === page }))).toEqual([
-      { page: true, command: queued[0]?.command, output: expect.stringMatching(/^SHELL[0-9a-f]{32}42$/), printedPrefix: expect.stringMatching(/^SHELL[0-9a-f]{32}$/), failed: false },
-      { page: true, command: queued[1]?.command, output: expect.stringMatching(/^SHELLERR[0-9a-f]{32}77$/), printedPrefix: expect.stringMatching(/^SHELLERR[0-9a-f]{32}$/), failed: true },
-    ])
-    for (const proof of proofs) {
-      expect(proof.output.startsWith(proof.printedPrefix)).toBe(true)
-      expect(proof.command).toContain(proof.printedPrefix)
-      expect(proof.command).not.toContain(proof.output)
-    }
-    // Each proof runs after the shared output row check of its command, and before the answer of its turn.
-    const proofIndexes = log.flatMap((entry, index) => entry === 'row proof' ? [index] : [])
-    expect(proofIndexes).toHaveLength(2)
-    for (const index of proofIndexes)
-      expect(log.slice(index + 1).some(entry => entry.startsWith('to.be.visible'))).toBe(true)
+  it('queues the successful and the failed command in one model step, then the answer', async () => {
+    const { commands, steps } = await queuedCommands({})
+    expect(commands).toHaveLength(2)
+    expect(commands[0]).toMatch(/^printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
+    expect(commands[1]).toMatch(/^printf 'SHELLERR[0-9a-f]{32}%s\\n' 77 >&2; exit 7$/)
+    expect(steps).toHaveLength(1)
+    expect(steps[0]).toHaveLength(2)
+    expect(steps[0]?.[0]?.toolCalls?.map(call => call.id)).toEqual([expect.stringMatching(/^shell-[0-9a-f]{32}-0$/), expect.stringMatching(/^shell-[0-9a-f]{32}-1$/)])
   })
 
-  it.runIf(existsSync('/bin/sh'))('keeps a failed row proof as the failure of the scenario', async () => {
-    const failure = new Error('The row draws the native record.')
-    await expect(runScenario({ includeFailure: false, rowProof: async () => {
-      throw failure
-    } })).rejects.toBe(failure)
+  it('gives each command a model answer of its own for a provider that runs one call of an answer', async () => {
+    const { commands, steps } = await queuedCommands({}, AgentProvider.JUNIE)
+    expect(commands).toHaveLength(2)
+    expect(steps).toHaveLength(1)
+    expect(steps[0]).toHaveLength(3)
+    expect(steps[0]?.slice(0, 2).map(step => step.toolCalls?.map(call => call.id))).toEqual([[expect.stringMatching(/-0$/)], [expect.stringMatching(/-1$/)]])
+  })
+
+  it('queues the successful command alone when the failure is left out', async () => {
+    const { commands, steps } = await queuedCommands({ includeFailure: false })
+    expect(commands).toHaveLength(1)
+    expect(commands[0]).not.toContain('trap')
+    expect(steps[0]?.[0]?.toolCalls).toHaveLength(1)
+  })
+
+  it('holds each command behind a gate of its own when the option is set', async () => {
+    const { commands } = await queuedCommands({ outputGate: true })
+    expect(commands).toHaveLength(2)
+    for (const command of commands)
+      expect(command).toContain('trap')
+    expect(commands[0]).toMatch(/; printf 'SHELL[0-9a-f]{32}%s\\n' 42 > .*; cat /)
+    const releases = commands.map(command => /\[ ! -e (.+?) \]/.exec(command)?.[1])
+    expect(releases[0]).toBeDefined()
+    expect(releases[0]).not.toBe(releases[1])
   })
 
   it('keeps the gate file inside the literal private tool directory', async () => {
-    const command = await firstQueuedCommand({ includeFailure: false, outputGate: true })
+    const { commands } = await queuedCommands({ includeFailure: false, outputGate: true })
     const toolDirectory = readdirSync(directory).find(name => name.startsWith('native path $(touch command-expanded-marker)'))
     if (!toolDirectory)
       throw new Error('The shell scenario created no private tool directory.')
     // The directory name holds shell metacharacters, so the hold must quote the release path. An unquoted path runs the marker command.
-    const quotedRelease = /\[ ! -e (.+?) \]/.exec(command)?.[1]
+    const quotedRelease = /\[ ! -e (.+?) \]/.exec(commands[0] ?? '')?.[1]
     expect(quotedRelease?.startsWith(quotePosixShellArgument(join(directory, toolDirectory)).slice(0, -1))).toBe(true)
     expect(existsSync(join(directory, 'command-expanded-marker'))).toBe(false)
+  })
+
+  /**
+   * Run the whole scenario: the sent prompt runs each queued command in a shell, as the native tool does, and the
+   * provider reader returns its output with `exitCode` from `outcome`. The page answers each check as passed and logs it.
+   */
+  async function runScenario(
+    options: Parameters<typeof exerciseShellToolExecution>[1],
+    setup: { log?: string[], provider?: AgentProvider, outcome?: (stdout: string, stderr: string, status: number) => { text: string, exitCode?: number }, evidence?: (outcome: { text: string, exitCode?: number }, command: Readonly<ShellCommand>) => ShellResultEvidence } = {},
+  ) {
+    const log = setup.log ?? []
+    const { page } = fakeLocatorTree({ log, page: { reload: async () => {
+      log.push('reload')
+    } } })
+    const status: MockModelScenarioStatus = { complete: true, nextStep: 1_000, stepCount: 1_000, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const queued: Array<{ callId: string, command: string }> = []
+    const requested: number[] = []
+    const outcomes = new Map<string, { text: string, exitCode?: number }>()
+    const outcome = setup.outcome ?? ((stdout, stderr, code) => ({ text: `${stdout}${stderr}`, exitCode: code }))
+    calls.shell.mockImplementation((_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-shell', arguments: { command } }))
+    calls.agent.mockResolvedValue({ workingDir: directory })
+    calls.send.mockImplementation(async () => {
+      if (queued.length === 0)
+        throw new Error('The scenario sent a prompt before it queued a command.')
+      for (const call of queued) {
+        try {
+          outcomes.set(call.callId, outcome(execFileSync('/bin/sh', ['-c', call.command], { encoding: 'utf8', stdio: 'pipe' }), '', 0))
+        }
+        catch (error) {
+          const failed = error as { stdout: string, stderr: string, status: number }
+          outcomes.set(call.callId, outcome(failed.stdout, failed.stderr, failed.status))
+        }
+      }
+    })
+    const context: ManagedNativeScenarioContext = {
+      page,
+      provider: setup.provider ?? AgentProvider.CODEX,
+      providerAgent: { provider: setup.provider ?? AgentProvider.CODEX, prefix: 'native-e2e' },
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+      workspaceId: 'shell-unit',
+      readToolResult: (_request, callId) => {
+        const result = outcomes.get(callId)
+        if (!result)
+          throw new Error(`The native tool has no result for ${callId}.`)
+        return result
+      },
+      modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({
+        prompt: text => text,
+        queue: async (...steps: MockModelStep[]) => {
+          for (const call of steps.flatMap(step => step.toolCalls ?? [])) {
+            if (typeof call.arguments?.command !== 'string')
+              throw new Error('The scenario queued a shell call without a command.')
+            queued.push({ callId: call.id, command: call.arguments.command })
+          }
+          return 0
+        },
+        status: async () => status,
+        waitForSteps: async () => status,
+        requestAt: async (stepIndex) => {
+          requested.push(stepIndex)
+          return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }
+        },
+      }),
+    }
+    await exerciseShellToolExecution(context, {
+      ...options,
+      ...(setup.evidence
+        ? { readResult: (_request: MockModelRequestRecord, command: Readonly<ShellCommand>) => {
+            const outcome = outcomes.get(command.callId)
+            if (!outcome)
+              throw new Error('The executed command has no captured native result.')
+            return setup.evidence!(outcome, command)
+          } }
+        : {}),
+    })
+    return { log, queued, requested }
+  }
+
+  it.runIf(existsSync('/bin/sh'))('reads both results from the one request after the shared answer', async () => {
+    expect((await runScenario({})).requested).toEqual([1, 1])
+  })
+
+  it.runIf(existsSync('/bin/sh'))('reads each result from the request after its own answer for a provider that runs one call of an answer', async () => {
+    expect((await runScenario({}, { provider: AgentProvider.JUNIE })).requested).toEqual([1, 2])
+  })
+
+  it.runIf(existsSync('/bin/sh'))('runs both commands and proves the rows of both after the answer', async () => {
+    const { log, queued } = await runScenario({})
+    expect(queued).toHaveLength(2)
+    const answer = log.findIndex(entry => entry.includes('hasText=The native shell scenario ended.'))
+    const firstRow = log.findIndex(entry => entry.startsWith('to.be.visible') && entry.includes('[data-tool-message]'))
+    expect(answer).toBeGreaterThanOrEqual(0)
+    expect(firstRow).toBeGreaterThan(answer)
+    expect(log.some(entry => entry.includes('hasText=Error (exit 7)'))).toBe(true)
+    expect(log).not.toContain('reload')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('proves the rows again after a reload when the option is set', async () => {
+    const { log } = await runScenario({ includeFailure: false, reload: true })
+    const reload = log.indexOf('reload')
+    expect(reload).toBeGreaterThan(0)
+    const rowChecks = (entries: string[]) => entries.filter(entry => entry.startsWith('to.be.visible') && entry.includes('[data-tool-message]'))
+    expect(rowChecks(log.slice(reload + 1))).toEqual(rowChecks(log.slice(0, reload)))
+    expect(rowChecks(log.slice(reload + 1)).length).toBeGreaterThan(0)
+  })
+
+  it.runIf(existsSync('/bin/sh'))('fails when the native exit code of the failed command is another code', async () => {
+    await expect(runScenario({}, { outcome: (stdout, stderr, code) => ({ text: `${stdout}${stderr}`, exitCode: code === 7 ? 3 : code }) }))
+      .rejects
+      .toThrow('the native exit code reaches LeapMux')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('reads the exit code from the model text when the reader states none', async () => {
+    await runScenario({}, { outcome: (stdout, stderr, code) => ({ text: `${stdout}${stderr}${code ? `\nCommand exited with code ${code}` : ''}` }) })
+    await expect(runScenario({}, { outcome: (stdout, stderr) => ({ text: `${stdout}${stderr}` }) }))
+      .rejects
+      .toThrow('the next model request states the native exit code')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('fails when the next model request lacks the output of a command', async () => {
+    await expect(runScenario({ includeFailure: false }, { outcome: () => ({ text: 'other words', exitCode: 0 }) }))
+      .rejects
+      .toThrow('the next model request holds the output of the command')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('keeps the full marker assertion for a provider result hook', async () => {
+    await expect(runScenario({}, { evidence: () => ({ kind: 'output', outcome: { text: 'no captured marker', exitCode: 0 } }) }))
+      .rejects
+      .toThrow('the next model request holds the output of the command')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('refuses an exact record exception for a successful command', async () => {
+    await expect(runScenario({}, { evidence: outcome => ({ kind: 'record', record: outcome.text, outcome: { ...outcome, exitCode: 7, failed: true } }) }))
+      .rejects
+      .toThrow('exact nonempty failed result')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('refuses a failure record that differs from the native result', async () => {
+    await expect(runScenario({}, { evidence: (outcome, command) => command.exitCode === 0
+      ? { kind: 'output', outcome }
+      : { kind: 'record', record: 'another record', outcome: { ...outcome, exitCode: 7, failed: true } } }))
+      .rejects
+      .toThrow('exact nonempty failed result')
+  })
+
+  it.runIf(existsSync('/bin/sh'))('refuses a blank failure record', async () => {
+    await expect(runScenario({}, { evidence: (outcome, command) => command.exitCode === 0
+      ? { kind: 'output', outcome }
+      : { kind: 'record', record: '', outcome: { text: '', exitCode: 7, failed: true } } }))
+      .rejects
+      .toThrow('exact nonempty failed result')
+  })
+})
+
+describe('expectShellToolRows', () => {
+  const commands = [
+    { output: 'SHELL1a42', printedPrefix: 'SHELL1a', exitCode: 0 },
+    { output: 'SHELLERR1a77', printedPrefix: 'SHELLERR1a', exitCode: 7 },
+  ] as const
+
+  async function checks(provider: AgentProvider, answer: (expression: string, path: string) => boolean = () => true) {
+    const log: string[] = []
+    const { page } = fakeLocatorTree({ log, answer })
+    await expectShellToolRows({ page, provider }, commands)
+    return log
+  }
+
+  it('proves the output, the command, the rail, the final status, the exit code, the absent path and the separate rows', async () => {
+    const log = await checks(AgentProvider.CODEX)
+    expect(log).toContain('to.be.visible page >> [data-tool-message]:visible[hasText=SHELL1a42].first')
+    expect(log).toContain('to.be.visible page >> [data-tool-message]:visible[hasText=printf][hasText=SHELL1a].first')
+    expect(log).toContain('to.be.visible page >> [data-span-columns]:not([data-span-columns="0"]):visible[hasText=SHELL1a42].first')
+    expect(log).toContain('to.have.attribute.value page >> [data-testid="message-bubble"][data-tool-row-role="result"]:visible[hasText=SHELL1a42].first')
+    expect(log).toContain('to.be.visible page >> [data-tool-message]:visible[hasText=SHELLERR1a77][hasText=Error (exit 7)].first')
+    expect(log).toContain('to.have.count page >> [data-testid="message-bubble"][data-tool-row-role="result"]:visible[hasText=SHELL1a42] >> testid=tool-output-file-paths')
+    expect(log).toContain('to.have.count page >> [data-testid="message-bubble"][data-tool-row-role]:visible[hasText=SHELL1a][hasText=SHELLERR1a]')
+    // A successful command states no exit code in its header.
+    expect(log.some(entry => entry.includes('hasText=Error (exit 0)'))).toBe(false)
+  })
+
+  it('leaves out the output path of Grok Build, which shows the path of every command', async () => {
+    const log = await checks(AgentProvider.GROK_BUILD)
+    expect(log.some(entry => entry.includes('tool-output-file-paths'))).toBe(false)
+  })
+
+  it('requires the output-row rail for Factory Droid', async () => {
+    const log = await checks(AgentProvider.DROID)
+    expect(log).toContain('to.be.visible page >> [data-span-columns]:not([data-span-columns="0"]):visible[hasText=SHELL1a42].first')
+  })
+
+  it('fails with the message of the first part that the row does not draw', async () => {
+    await expect(checks(AgentProvider.CODEX, (_expression, path) => !path.includes('Error (exit 7)')))
+      .rejects
+      .toThrow('the header of the failed row states the exit code')
+  })
+
+  /** A page whose result rows report `collapsed` expand controls, and which records each action. */
+  function expandablePage(collapsed: boolean, text = '') {
+    const log: string[] = []
+    const node = (path: string): Locator => fakeLocator(() => true, {
+      locator: (selector: string) => node(`${path} >> ${selector}`),
+      filter: (filter: { hasText?: string }) => node(`${path}[${String(filter.hasText)}]`),
+      first: () => node(`${path}.first`),
+      getByTestId: (testId: string) => node(`${path} >> testid=${testId}`),
+      getByRole: (role: string, options: { name?: string | RegExp }) => node(`${path} >> role=${role}[${String(options.name)}]`),
+      all: async () => [node(`${path}#0`)],
+      textContent: async () => text,
+      allTextContents: async () => [text],
+      count: async () => collapsed && path.endsWith('role=button[/^Expand(?: output)?$/]') ? 1 : 0,
+      hover: async () => {
+        log.push(`hover ${path}`)
+      },
+      click: async () => {
+        log.push(`click ${path}`)
+      },
+    })
+    return { page: node('page') as unknown as Page, log }
+  }
+
+  it('expands a collapsed output row before it reads the text of the chat', async () => {
+    const { page, log } = expandablePage(true)
+    calls.chat.mockResolvedValue('SHELL1a42 Error (exit 7) SHELLERR1a77')
+    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands, { absentRowText: ['Command exited with code'] })
+    expect(log.filter(entry => entry.startsWith('click'))).toHaveLength(2)
+    expect(calls.chat).toHaveBeenCalledOnce()
+  })
+
+  it('clicks nothing on a row that shows all of its text', async () => {
+    const { page, log } = expandablePage(false)
+    calls.chat.mockResolvedValue('SHELL1a42')
+    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, [commands[0]], { absentRowText: ['Exit code'] })
+    expect(log.filter(entry => entry.startsWith('click'))).toEqual([])
+  })
+
+  it('fails when a row draws a text that the provider adds for its model', async () => {
+    const { page } = expandablePage(false)
+    calls.chat.mockResolvedValue('SHELLERR1a77\n\nCommand exited with code 7')
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands, { absentRowText: ['Command exited with code'] }))
+      .rejects
+      .toThrow('no row draws the native text "Command exited with code"')
+  })
+
+  it('refuses a blank absent text, which every chat holds', async () => {
+    const { page } = expandablePage(false)
+    calls.chat.mockResolvedValue('SHELL1a42')
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEX }, [commands[0]], { absentRowText: [' '] }))
+      .rejects
+      .toThrow('nonblank fixed part')
+  })
+
+  it('reads no chat text when no absent text is stated', async () => {
+    const { page } = expandablePage(true)
+    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands)
+    expect(calls.chat).not.toHaveBeenCalled()
+  })
+
+  it('expands the row and preserves an exact native record without a missing marker', async () => {
+    const record = 'Command: printf MARK%s 77 >&2; exit 7\nStdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)'
+    const { page, log } = expandablePage(true, record)
+    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[1], printedPrefix: 'MARK', output: record, exactOutput: record }])
+    expect(log.filter(entry => entry.startsWith('click'))).toHaveLength(1)
+    expect(record).not.toContain(commands[1].output)
+  })
+
+  it('fails when the displayed native record loses any contents', async () => {
+    const record = 'Command: printf SHELLERR1a%s 77 >&2; exit 7\nStdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)'
+    const { page } = expandablePage(false, record.replace('\nSignal: (none)', ''))
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[1], output: record, exactOutput: record }]))
+      .rejects
+      .toThrow('the row preserves the exact native record')
+  })
+
+  it('checks native notice fragments on one result without refusing another preserved record', async () => {
+    const { page } = expandablePage(false, 'actual output')
+    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[0], absentRowText: ['Stdout:', 'Stderr:'] }])
+    const wrong = expandablePage(false, 'Stdout: actual output')
+    await expect(expectShellToolRows({ page: wrong.page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[0], absentRowText: ['Stdout:'] }]))
+      .rejects
+      .toThrow('the result body omits its native notice')
   })
 })

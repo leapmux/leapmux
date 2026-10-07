@@ -59,5 +59,6 @@ mimoTest.describe('MiMo Code interactive commands', () => {
 })
 
 mimoTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
-  await exerciseMiMoShellToolExecution(native, { includeFailure: false, prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  // The failed command writes only to stderr, so its output gate releases on the stderr text that the running row shows.
+  await exerciseMiMoShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass') })
 })

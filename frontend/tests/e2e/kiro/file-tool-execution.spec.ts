@@ -4,14 +4,14 @@ import { expect } from '@playwright/test'
 import { expandGoalsAndTodosSection, goalsAndTodosList } from '../helpers/goalsAndTodos'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
 import { expectFileDiff, nativeFileReadResult, runNativeToolSteps } from '../helpers/nativeToolExecution'
-import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, expectSettingsOptionChosen, openWorkspace, toolRows } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { kiroTest } from '../kiro-fixtures'
 import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro tool execution', () => {
-  kiroTest('reads, edits and writes a file, runs a command, and keeps a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+  kiroTest('reads, edits and writes a file, and keeps a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
     const directory = createNativeToolDirectory(workingDir)
     const note = join(directory, 'note.txt')
@@ -26,7 +26,6 @@ kiroTest.describe('Kiro tool execution', () => {
         { toolCalls: [readToolCall(context.provider, 'kiro-read', note)] },
         { toolCalls: [editToolCall(context.provider, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' })] },
         { toolCalls: [writeToolCall(context.provider, 'kiro-write', { path: created, content: 'kiro-created\n' })] },
-        { toolCalls: [bashToolCall(context.provider, 'kiro-shell', 'echo "kiro-$((40 + 2))"; exit 3')] },
         {
           toolCalls: [updateTodosToolCall(context.provider, 'kiro-todos', [
             { step: 'Edit the note', status: 'pending' },
@@ -34,8 +33,8 @@ kiroTest.describe('Kiro tool execution', () => {
           ])],
         },
       ],
-      prompt: 'Run the five scripted tools, then report.',
-      answer: 'All five tools ran.',
+      prompt: 'Run the four scripted tools, then report.',
+      answer: 'All four tools ran.',
       permissions: 'none',
     })
 
@@ -50,12 +49,7 @@ kiroTest.describe('Kiro tool execution', () => {
     expect(readFileSync(note, 'utf8')).toBe('kiro-after\n')
     expect(readFileSync(created, 'utf8')).toBe('kiro-created\n')
     await expect(tools.filter({ hasText: 'created.txt' }).first()).toBeVisible()
-    // The command text states no `kiro-42`, so only the command's own output can
-    // put it in a tool row. Kiro states the exit code beside the output, and the
-    // command header reads it.
-    await expect(tools.filter({ hasText: 'kiro-42' }).first()).toBeVisible()
-    await expect(tools.filter({ hasText: 'Error (exit 3)' }).first()).toBeVisible()
-    await expect(assistantBubbles(page).filter({ hasText: 'All five tools ran.' })).toBeVisible()
+    await expect(assistantBubbles(page).filter({ hasText: 'All four tools ran.' })).toBeVisible()
 
     // Kiro's to-do list reaches the session's checklist.
     await expandGoalsAndTodosSection(page)

@@ -22,6 +22,17 @@ describe('reasonixNativeOutput', () => {
     provider.rawOutput.reasonix.content = original.content[0]?.content.text ?? ''
     expect(reasonixNativeOutput(original, supplemental, 'native-call').text).toBe(text)
   })
+
+  it('keeps the full native record and removes only its final receipt from the copied preview', () => {
+    const current = fixture()
+    const text = `${current.text}\n[receipt r_actual]`
+    current.provider.rawOutput.reasonix.content = text
+    current.provider.rawOutput.reasonix.raw_content = text
+    current.original.content[0]!.content.text = `${text.slice(0, 8000)}\n…(${text.length - 8000} more chars truncated)`
+    const result = reasonixNativeOutput(current.original, current.supplemental, 'native-call')
+    expect(result.text).toBe(text)
+    expect(result.previewText).toBe(current.text)
+  })
   // The identity fields of the stored record must equal the frame, the record must belong to the call and to bash, and
   // the excerpt must be the record's text or its truncated prefix with the exact omitted count.
   it.each([

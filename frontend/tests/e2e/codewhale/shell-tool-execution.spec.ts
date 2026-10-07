@@ -43,5 +43,7 @@ codewhaleTest.describe('Codewhale tool execution', () => {
 })
 
 codewhaleTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
-  await exerciseShellToolExecution(native, { includeFailure: false, prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  // Codewhale fails the item of a command that exits nonzero, and wraps its output: `Failed to execute tool: `, the
+  // output, then `Command exited with code N`. The row header states the code, and the body draws only the output.
+  await exerciseShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass'), absentRowText: ['Failed to execute tool', 'Command exited with code'] })
 })

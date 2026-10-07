@@ -4,7 +4,7 @@ import { contentText } from '../helpers/mockModelScript'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, chatText, toolRows } from '../helpers/ui'
+import { applyPermissionPreset, toolRows } from '../helpers/ui'
 
 /**
  * The installed agent executes the scripted shell command. Calculated output proves that the executor ran the command.
@@ -12,15 +12,11 @@ import { applyPermissionPreset, chatText, toolRows } from '../helpers/ui'
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
 clineTest.describe('Cline tool execution', () => {
-  clineTest('draws the output of a command', async ({ native }) => {
-    // The shared scenario proves the computed output on the page and in the next model request.
-    await exerciseShellToolExecution(native, {
-      includeFailure: false,
-      // Cline states the result as a list of records. The row draws the output, not the record.
-      rowProof: async ({ page }) => {
-        expect(await chatText(page)).not.toContain('"success"')
-      },
-    })
+  clineTest('draws the output of a successful and a failed command', async ({ native }) => {
+    // The shared scenario proves the computed output on the page and in the next model request, and the exit code of
+    // the failed command in its row header. Cline states the result as a list of records, and the result of a failed
+    // command opens with `[Command exited with code N]`. The row draws the output, not the record or the line.
+    await exerciseShellToolExecution(native, { absentRowText: ['"success"', '"query"', 'Command exited with code'] })
   })
 
   clineTest('draws the error of a failed command, and the model reads why', async ({ native }) => {

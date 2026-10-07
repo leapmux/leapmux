@@ -40,8 +40,8 @@ describe('qwenOutputPathReceipt', () => {
     expect(native).toEqual(before)
   })
 
-  it('keeps the original failure preview', () => {
-    expect(qwenOutputPathReceipt(frame({ status: 'failed' })).preview).toBe(NOTICE)
+  it('reads the failure preview from the structured output', () => {
+    expect(qwenOutputPathReceipt(frame({ status: 'failed' })).preview).toBe('Native inline preview.')
   })
 
   it.each(['', '0', 'false'])('preserves the native preview %j', (preview) => {
@@ -175,6 +175,6 @@ describe('native filesystem boundaries', () => {
 
   it.each(['cancelled', 'timed_out'])('keeps the failure preview for a native %s shell outcome', (outcome) => {
     const native = frame({ status: 'failed', rawOutput: { type: 'shell_result', version: 1, outcome, outputFiles: [PATH], output: 'Native inline preview.', error: null } })
-    expect(qwenOutputPathReceipt(native)).toMatchObject({ status: 'failed', paths: [PATH], preview: NOTICE })
+    expect(qwenOutputPathReceipt(native)).toMatchObject({ status: 'failed', paths: [PATH], preview: 'Native inline preview.' })
   })
 })

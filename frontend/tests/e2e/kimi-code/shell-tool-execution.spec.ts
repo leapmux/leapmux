@@ -56,5 +56,7 @@ kimiTest.describe('uses Kimi Code tools', () => {
 })
 
 kimiTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
-  await exerciseShellToolExecution(native, { includeFailure: false, prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  // Kimi Code opens each result with `Wall time:`, and wraps a failed command in `<system>ERROR: …</system>` and the
+  // trailer `Command failed with exit code: N.`. The row draws only the output.
+  await exerciseShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass'), absentRowText: ['Wall time', '<system>', 'Command failed with exit code'] })
 })

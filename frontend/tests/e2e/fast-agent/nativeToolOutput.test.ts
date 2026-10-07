@@ -25,7 +25,7 @@ describe('fastAgentTerminalOutputFileLimit', () => {
   const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'actual-acp-uuid', status: 'completed', rawInput: { command: 'native command' }, rawOutput: text, content: [{ type: 'content', content: { type: 'text', text } }] }
 
   it('keeps the actual ACP identity when it differs from the model call ID', () => {
-    expect(fastAgentTerminalOutputFileLimit([frame], 'native command', text)).toEqual({ callId: 'actual-acp-uuid', text, byteLimit: 16000 })
+    expect(fastAgentTerminalOutputFileLimit([frame], 'native command', text)).toEqual({ callId: 'actual-acp-uuid', text, previewText: '[Output truncated by ACP terminal outputByteLimit: 16000 bytes (~4848 tokens). Client returned partial output only.]\nnative tail42', byteLimit: 16000 })
   })
 
   it('rejects another command, result, or repeated completion', () => {
@@ -50,7 +50,9 @@ describe('fastAgentTerminalOutputFileLimit', () => {
   const modelText = `${head.endsWith('\n') ? head : `${head}\n`}${notice}${tail.startsWith('\n') ? tail : `\n${tail}`}`
 
   it('correlates the native terminal text with the exact second truncation in model history', () => {
-    expect(fastAgentTerminalOutputFileLimit([terminalFrame], 'native command', modelText)).toEqual({ callId: frame.toolCallId, text: completeTerminalText, byteLimit: 128 })
+    const receipt = fastAgentTerminalOutputFileLimit([terminalFrame], 'native command', modelText)
+    expect(receipt).toMatchObject({ callId: frame.toolCallId, text: completeTerminalText, byteLimit: 128 })
+    expect(receipt.previewText).toBe(`[Output truncated by ACP terminal outputByteLimit: 128 bytes (~38 tokens). Client returned partial output only.]\n${'界😀'.repeat(100)}`)
   })
 
   it.each([

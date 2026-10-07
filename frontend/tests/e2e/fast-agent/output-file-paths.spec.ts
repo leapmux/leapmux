@@ -21,7 +21,7 @@ fastAgentTest('records the native client terminal output limit and retains its e
       const frames = capture.snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(nativeMessageBody)
       const modelText = nativeToolResult(capture.request, capture.call.id)
       const limit = fastAgentTerminalOutputFileLimit(frames, command, modelText)
-      await testInfo.attach('fast-agent-native-client-terminal-limit', { body: JSON.stringify({ callId: limit.callId, modelCallId: capture.call.id, sessionId: capture.agent.agentSessionId, byteLimit: limit.byteLimit, previewText: limit.text, text: limit.text, modelText }), contentType: 'application/json' })
+      await testInfo.attach('fast-agent-native-client-terminal-limit', { body: JSON.stringify({ callId: limit.callId, modelCallId: capture.call.id, sessionId: capture.agent.agentSessionId, byteLimit: limit.byteLimit, previewText: limit.previewText, text: limit.text, modelText }), contentType: 'application/json' })
       expect(limit.text).not.toContain(output.firstMarker)
       expect(limit.text).not.toContain(output.omittedMarker)
       expect(limit.text).toContain(output.lastMarker)
@@ -29,7 +29,7 @@ fastAgentTest('records the native client terminal output limit and retains its e
       await proveNativeToolOutputFilePaths({
         context: native,
         callId: limit.callId,
-        previewText: limit.text,
+        previewText: limit.previewText,
         previewMarkers: [output.lastMarker],
         absentMarkers: [output.omittedMarker],
         paths: [],

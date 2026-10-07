@@ -47,5 +47,9 @@ export function diracNativeOutputPaths(frames: readonly DiracScriptFrame[], scri
   const closing = frames.filter(({ original }) => isObject(original) && acpClosedToolCall(original, receipt.callId))
   if (closing.length !== 1 || !isObject(closing[0]?.original) || closing[0].original.name !== DIRAC_TOOL.ExecuteCommand)
     throw new Error('The native Dirac output requires one completed generated command card.')
-  return { ...receipt, paths: [path], previewText: receipt.output }
+  const preamble = receipt.exitCode === 0
+    ? 'Command executed successfully (exit code 0).\nOutput:\n'
+    : `Command failed with exit code ${receipt.exitCode}.\nOutput:\n`
+  const previewText = receipt.output.startsWith(preamble) ? receipt.output.slice(preamble.length) : receipt.output
+  return { ...receipt, paths: [path], previewText }
 }

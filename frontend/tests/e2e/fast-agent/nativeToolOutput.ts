@@ -17,7 +17,7 @@ export function fastAgentNativeOutput(text: string): string {
 }
 
 /** Match the actual ACP call by its command and both native output records. */
-export function fastAgentTerminalOutputFileLimit(frames: readonly unknown[], command: string, modelText: string): { callId: string, text: string, byteLimit: number } {
+export function fastAgentTerminalOutputFileLimit(frames: readonly unknown[], command: string, modelText: string): { callId: string, text: string, previewText: string, byteLimit: number } {
   if (!command || !modelText)
     throw new Error('The native Fast Agent terminal proof requires its command and returned text.')
   const results = frames.filter(isObject).filter(frame => frame.sessionUpdate === ACP_UPDATE.ToolCallUpdate
@@ -39,7 +39,7 @@ export function fastAgentTerminalOutputFileLimit(frames: readonly unknown[], com
     throw new Error('The native Fast Agent result lacks its exact client terminal output limit.')
   if (text !== modelText && fastAgentModelOutput(text, byteLimit) !== modelText)
     throw new Error('The native Fast Agent completed command differs from its exact model result.')
-  return { callId: result.toolCallId, text, byteLimit }
+  return { callId: result.toolCallId, text, previewText: text.replace(/\n\n\[Exit code: 0\]$/u, ''), byteLimit }
 }
 
 /** Reproduce the native model window after the separate client terminal limit. */

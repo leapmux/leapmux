@@ -48,11 +48,11 @@ reasonixTest('keeps the native result record and exact inline Copy with no outpu
   for (const value of [output.firstMarker, output.omittedMarker, output.lastMarker])
     expect(nativeOutput.text).toContain(value)
   const digest = createHash('sha256').update(nativeOutput.text).digest('hex')
-  await testInfo.attach('reasonix-native-result-reference', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, excerpt: nativeOutput.excerpt, previewText: nativeOutput.text, bytes: Buffer.byteLength(nativeOutput.text), sha256: digest }), contentType: 'application/json' })
+  await testInfo.attach('reasonix-native-result-reference', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, excerpt: nativeOutput.excerpt, previewText: nativeOutput.previewText, text: nativeOutput.text, bytes: Buffer.byteLength(nativeOutput.text), sha256: digest }), contentType: 'application/json' })
   await proveNativeToolOutputFilePaths({
     context: native,
     callId,
-    previewText: nativeOutput.text,
+    previewText: nativeOutput.previewText,
     paths: [],
     status: 'completed',
     previewMarkers: [output.firstMarker, output.lastMarker],

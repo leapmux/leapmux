@@ -36,4 +36,13 @@ describe('diracNativeOutputPaths', () => {
     duplicate.push(duplicate[1]!)
     expect(() => diracNativeOutputPaths(duplicate, script, '/native/tmp')).toThrow('exact completion')
   })
+
+  it('keeps the native record while the copied preview omits the command status preamble', () => {
+    const native = frames()
+    native[1]!.original.rawOutput = { output: `Command executed successfully (exit code 0).\nOutput:\n${preview}`, exitCode: 0, userRejected: false }
+    const result = diracNativeOutputPaths(native, script, '/native/tmp')
+    expect(result.output).toBe(`Command executed successfully (exit code 0).\nOutput:\n${preview}`)
+    expect(result.previewText).toBe(preview)
+    expect(result.paths).toEqual([path])
+  })
 })

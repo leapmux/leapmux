@@ -12,5 +12,12 @@ export function readDroidNativeOutput(snapshot: NativeMessageSnapshot, callId: s
   const path = pointers.length === 1 ? pointers[0]?.[1] : undefined
   if (!isFilesystemPath(path) || !/[\\/]droid-terminal-[\w-]+[\\/][0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.log$/iu.test(path))
     throw new Error('The native Droid result has no unique terminal output path.')
-  return { paths: [path], previewText: record.frame.content, frame: record.frame, content: record.message.content }
+  const content = record.frame.content
+  const trailer = /\[Process exited with code (-?\d+)\]\s*$/u.exec(content)
+  const exitCode = trailer ? Number(trailer[1]) : Number.NaN
+  let previewText = trailer && Number.isSafeInteger(exitCode) ? content.slice(0, trailer.index).replace(/\r?\n\r?\n$/u, '') : content
+  const failure = `Error: Command failed (exit code: ${exitCode})\n`
+  if (exitCode !== 0 && previewText.startsWith(failure))
+    previewText = previewText.slice(failure.length)
+  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
 }

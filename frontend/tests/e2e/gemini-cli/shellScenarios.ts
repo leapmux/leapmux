@@ -4,13 +4,19 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
-import { runNativeToolTurn } from '../helpers/nativeToolExecution'
+import { expectShellToolRows, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from '../helpers/shellArguments'
 import { assistantBubbles, toolCallRow } from '../helpers/ui'
 import { readGeminiToolOutput } from './toolResult'
 
 const INJECTION_REFUSAL = 'Command injection detected: command substitution syntax ($(), backticks, <() or >()) found in command arguments. On PowerShell, @() array subexpressions and $() subexpressions are also blocked. This is a security risk and the command was blocked.'
+
+/**
+ * The fixed parts of the record that Gemini CLI wraps around the output of a command for its model:
+ * `<untrusted_context>\nOutput: …\nExit Code: N\nProcess Group PGID: N\n</untrusted_context>`.
+ */
+const GEMINI_SHELL_RECORD = ['<untrusted_context>', 'Output:', 'Exit Code:', 'Process Group PGID'] as const
 
 /**
  * Preserve the native refusal and verify printed stdout and a nonzero shell exit.
@@ -20,6 +26,9 @@ const INJECTION_REFUSAL = 'Command injection detected: command substitution synt
  * names the hostile directory in DOUBLE quotes, where a POSIX shell would run
  * its `$(touch command-expanded-marker)`. The other cases name their files in
  * single quotes and print their markers without `$(`, so Gemini runs them.
+ *
+ * The rows of the two commands that ran take the shared shell row proof
+ * (`expectShellToolRows`) before and after a reload.
  */
 export async function exerciseGeminiShellToolExecution(context: ManagedNativeScenarioContext): Promise<void> {
   const agent = await currentNativeAgent(context)
@@ -27,9 +36,9 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
   const safeFile = join(mkdtempSync(join(agent.workingDir, 'native shell safe-')), 'native shell output.txt')
   const marker = uniqueMarker()
   const cases = [
-    { name: 'double-quoted path refusal', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > "${hostileFile}"; cat "${hostileFile}"`, output: INJECTION_REFUSAL, status: 'completed', rejected: true },
-    { name: 'printed stdout', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(safeFile)}; cat ${quotePosixShellArgument(safeFile)}`, output: `SHELL${marker}42`, status: 'completed', rejected: false },
-    { name: 'printed stderr', command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, status: 'failed', rejected: false },
+    { name: 'double-quoted path refusal', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > "${hostileFile}"; cat "${hostileFile}"`, output: INJECTION_REFUSAL, status: 'completed', rejected: true, row: undefined },
+    { name: 'printed stdout', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(safeFile)}; cat ${quotePosixShellArgument(safeFile)}`, output: `SHELL${marker}42`, status: 'completed', rejected: false, row: { output: `SHELL${marker}42`, printedPrefix: `SHELL${marker}`, exitCode: 0 } },
+    { name: 'printed stderr', command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, status: 'failed', rejected: false, row: { output: `SHELLERR${marker}77`, printedPrefix: `SHELLERR${marker}`, exitCode: 7 } },
   ] as const
   expect(existsSync(hostileFile)).toBe(false)
   expect(existsSync(safeFile)).toBe(false)
@@ -58,8 +67,9 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
       await expect(result).toHaveCount(1)
       await expect(result).toHaveAttribute('data-tool-status', scenario.status)
       await expect(result).toContainText(scenario.rejected ? 'Blocked: command substitution detected in shell command.' : scenario.output)
-      if (scenario.status === 'failed')
-        await expect(result).toContainText(/Error|failed|exit(?:ed)?(?: with)?(?: code)?\s*7/i)
+      // The row draws the output of the command, without the record that Gemini wraps around it for its model.
+      if (scenario.row)
+        await expectShellToolRows(context, [scenario.row], { absentRowText: GEMINI_SHELL_RECORD })
     }
     await proveResult()
     await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()

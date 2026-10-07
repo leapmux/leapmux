@@ -1,10 +1,13 @@
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolResultReader } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolOutcome, NativeToolResultReader } from './nativeScenario'
+import type { GatedOutput } from './outputGate'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { expect } from '@playwright/test'
+import { toolOutcomeLabel } from '../../../src/components/chat/results/toolOutcomeLabel'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { createNativeToolDirectory } from './nativeToolDirectory'
 import { nativeToolResult } from './nativeToolResult'
@@ -12,7 +15,7 @@ import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall, editToolCall, readToolCall, writeToolCall } from './providerToolCalls'
 import { isFileNameComponent } from './runDirectory'
 import { printfMarkerCommand, quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { assistantBubbles, chatText, controlButton, expectNoControlBanner, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, chatText, controlButton, expectNoControlBanner, messageBubbles, railedRows, sendMessage, toolRows, waitForAgentIdle } from './ui'
 
 interface ToolPreparation {
   prepare?: () => Promise<void>
@@ -108,6 +111,8 @@ export async function waitForNativeToolSteps(context: NativeScenarioContext, tar
 /** One tool step of a native turn: the tool calls of one model answer. */
 export interface NativeToolStep {
   toolCalls: readonly MockModelToolCall[]
+  /** The thinking that the model reports before the tool calls of this step. */
+  reasoning?: string
   /** Text that the step captures from its own request, for a `{{name}}` placeholder in a tool call. */
   captures?: Readonly<Record<string, string>>
 }
@@ -150,7 +155,11 @@ export interface NativeToolTurnRequests {
 
 /** The model step that answers one {@link NativeToolStep}. The copies keep the caller's arrays out of the script. */
 function nativeToolModelStep(step: NativeToolStep): MockModelStep {
-  return { toolCalls: [...step.toolCalls], ...(step.captures ? { captures: { ...step.captures } } : {}) }
+  return {
+    ...(step.reasoning !== undefined ? { reasoning: step.reasoning } : {}),
+    toolCalls: [...step.toolCalls],
+    ...(step.captures ? { captures: { ...step.captures } } : {}),
+  }
 }
 
 /**
@@ -183,8 +192,8 @@ export async function runNativeToolSteps(context: NativeScenarioContext, turn: N
  * A turn that answers a banner or a form between its two steps cannot use this helper.
  */
 export async function runNativeToolTurn(context: NativeScenarioContext, turn: NativeToolTurn): Promise<NativeToolTurnRequests> {
-  const { toolCalls, captures, ...rest } = turn
-  const start = await runNativeToolSteps(context, { ...rest, steps: [{ toolCalls, ...(captures ? { captures } : {}) }] })
+  const { toolCalls, reasoning, captures, ...rest } = turn
+  const start = await runNativeToolSteps(context, { ...rest, steps: [{ toolCalls, ...(reasoning !== undefined ? { reasoning } : {}), ...(captures ? { captures } : {}) }] })
   return {
     start,
     toolRequest: await context.modelScript.requestAt(start),
@@ -215,7 +224,77 @@ export async function nativeFileReadResult(
   return result.text
 }
 
-export interface ShellToolExecutionOptions extends ToolPreparation {
+/**
+ * A part of the shared shell row that a provider does not draw:
+ *
+ * - `outputFilePath`: a small output shows no output-path chip.
+ */
+type ShellRowPart = 'outputFilePath'
+
+/**
+ * The parts of the shared shell row that a provider does not draw, each with the reason. A part belongs to the row of
+ * the provider, so every scenario that runs a shell command of the provider reads the same entry. A provider that the
+ * table does not list draws every part.
+ */
+const SHELL_ROW_EXCEPTIONS: Readonly<Partial<Record<AgentProvider, Readonly<Partial<Record<ShellRowPart, string>>>>>> = {
+  [AgentProvider.GROK_BUILD]: {
+    outputFilePath: 'Grok Build keeps the output of every shell command in a log file, and states its path as '
+      + '`rawOutput.output_file` also for a small output that it did not truncate. The row shows that path for every '
+      + 'command, as the Grok Build cell of output-file-paths states.',
+  },
+}
+
+/**
+ * The providers that run one tool call of a model answer, each with the evidence. The shell scenario gives each of
+ * their commands a model answer of its own, still in one turn; every other provider gets both commands in one answer.
+ */
+const ONE_SHELL_CALL_PER_ANSWER: ReadonlyMap<AgentProvider, string> = new Map([
+  [AgentProvider.JUNIE, 'Junie 26.9.22 runs the first tool call of a model answer only: its next request replays that '
+  + 'call alone in the assistant message and holds no result for the second call.'],
+])
+
+/** One shell command of a scenario, as its rows must show it. */
+export interface ShellRowCommand {
+  /** The text that the command prints. No scripted prompt or answer holds it. */
+  output: string
+  /**
+   * The text that the command passes to `printf`, which `output` holds with the computed digits after it. The command
+   * holds it also, so a row that holds `printf` and this text shows the command, not only its output.
+   */
+  printedPrefix: string
+  /** The code that the command exits with. */
+  exitCode: number
+  /** Require this exact marked output after the helper expands the result row. */
+  exactOutput?: string
+  /** Native notice fragments that this result body must omit. */
+  absentRowText?: readonly string[]
+}
+
+/** The generated command and the output that its native result must prove. */
+export interface ShellCommand extends ShellRowCommand {
+  callId: string
+  command: string
+}
+
+/** A native result proves its output, or a provider proves an exact failure record. */
+export type ShellResultEvidence
+  = { kind: 'output', outcome: NativeToolOutcome, absentRowText?: readonly string[] }
+    | { kind: 'record', outcome: NativeToolOutcome & { failed: true, exitCode: number }, record: string }
+
+/** What the rows of the shell commands of one provider must not draw. */
+export interface ShellRowOptions {
+  /**
+   * Fixed parts of the notice, trailer or record that the provider adds to a command result for its model, and that
+   * no row may draw. The check reads the whole text of each output row, so it expands a collapsed row first: a
+   * collapsed result shows its first lines only, and a trailer is often the last line.
+   */
+  absentRowText?: readonly string[]
+}
+
+export interface ShellToolExecutionOptions extends ToolPreparation, ShellRowOptions {
+  /** Read a provider's native result and decide which exact evidence its row must preserve. */
+  readResult?: (request: MockModelRequestRecord, command: Readonly<ShellCommand>) => ShellResultEvidence | Promise<ShellResultEvidence>
+  /** Run the failed command beside the successful one. The default is true. */
   includeFailure?: boolean
   /**
    * Hold each command until the browser shows its output.
@@ -226,29 +305,123 @@ export interface ShellToolExecutionOptions extends ToolPreparation {
    * this option, because the hold changes the command that the model asks for.
    */
   outputGate?: boolean
-  /**
-   * Prove what the provider's row draws for each command, after the shared checks of that command. A provider states
-   * its own facts here, such as a native record that the row must not draw.
-   */
-  rowProof?: (proof: ShellRowProof) => Promise<void>
+  /** Reload the page after the turn, and prove every row again from the stored transcript. */
+  reload?: boolean
 }
 
-/** What the row proof of one command of {@link exerciseShellToolExecution} receives. */
-export interface ShellRowProof {
-  page: Page
-  /** The command that the model asked the native shell tool to run. */
-  command: string
-  /** The text that the command prints. */
-  output: string
-  /**
-   * The text that the command passes to `printf`, which `output` holds with the computed digits after it. The command
-   * holds it also, so a row that holds `printf` and this text shows the command, not only its output.
-   */
-  printedPrefix: string
-  failed: boolean
+/** The visible result rows of tool calls. */
+function toolResultBubbles(page: Page): Locator {
+  return page.locator('[data-testid="message-bubble"][data-tool-row-role="result"]:visible')
 }
 
-/** Verify actual shell output and a failed command through the native tool path. */
+/** The visible rows of tool calls, whatever their role. */
+function toolCallBubbles(page: Page): Locator {
+  return page.locator('[data-testid="message-bubble"][data-tool-row-role]:visible')
+}
+
+/** The name of the control that expands a collapsed result: the outer toolbar and the inner header word it apart. */
+const EXPAND_RESULT = /^Expand(?: output)?$/
+
+/** Expand each collapsed row of `rows`, so the page holds its whole text. A row that shows all of its text has no such control. */
+async function expandCollapsedRows(rows: Locator): Promise<void> {
+  for (const row of await rows.all()) {
+    const view = row.locator('..')
+    await view.hover()
+    const expand = view.getByRole('button', { name: EXPAND_RESULT })
+    if (await expand.count() === 0)
+      continue
+    await expand.first().click()
+    await expect(view.getByRole('button', { name: 'Collapse', exact: true }).first(), 'the expanded row offers to collapse again').toBeVisible()
+  }
+}
+
+/**
+ * Require the rows that a provider draws for its shell commands:
+ *
+ * - A tool row draws the output, and a tool row shows the command.
+ * - A row of the call draws the rail of its span.
+ * - The result row reaches its final status, and the header of a failed row states its exit code.
+ * - A small output shows no output path.
+ * - Each command keeps its own rows, also when one model answer called both.
+ * - No row draws a text of `absentRowText`.
+ *
+ * {@link SHELL_ROW_EXCEPTIONS} states the parts that a provider does not draw.
+ */
+export async function expectShellToolRows(
+  context: Pick<NativeScenarioContext, 'page' | 'provider'>,
+  commands: readonly ShellRowCommand[],
+  options: ShellRowOptions = {},
+): Promise<void> {
+  const { page } = context
+  const exceptions = SHELL_ROW_EXCEPTIONS[context.provider] ?? {}
+  for (const command of commands) {
+    if (command.exactOutput !== undefined) {
+      const selected = toolResultBubbles(page).filter({ hasText: command.printedPrefix })
+      await expect(selected, 'the native record identifies one result row').toHaveCount(1)
+      await expandCollapsedRows(selected)
+      const preview = selected.locator('[data-tool-output-preview]')
+      await expect(preview, 'the native record has one marked output').toHaveCount(1)
+      expect(await preview.textContent(), 'the row preserves the exact native record').toBe(command.exactOutput)
+    }
+    const outputRows = toolRows(page).filter({ hasText: command.output })
+    const resultRows = toolResultBubbles(page).filter({ hasText: command.output })
+    await expect(outputRows.first(), 'a tool row draws the output of the command').toBeVisible()
+    await expect(toolRows(page).filter({ hasText: 'printf' }).filter({ hasText: command.printedPrefix }).first(), 'a tool row shows the command').toBeVisible()
+    await expect(railedRows(page).filter({ hasText: command.output }).first(), 'the output row draws the rail of its span').toBeVisible()
+    await expect(resultRows.first(), 'the result row of the command reaches its final status')
+      .toHaveAttribute('data-tool-status', command.exitCode === 0 ? 'completed' : /^(?:completed|failed)$/)
+    if (command.exitCode !== 0) {
+      await expect(outputRows.filter({ hasText: toolOutcomeLabel('failed', `exit ${command.exitCode}`) }).first(), 'the header of the failed row states the exit code')
+        .toBeVisible()
+    }
+    if (exceptions.outputFilePath === undefined)
+      await expect(resultRows.getByTestId('tool-output-file-paths'), 'a small output shows no output path').toHaveCount(0)
+    if (command.absentRowText?.length) {
+      await expandCollapsedRows(resultRows)
+      const text = (await resultRows.allTextContents()).join('\n')
+      for (const absent of command.absentRowText) {
+        if (!absent.trim())
+          throw new Error('An absent row text must contain a nonblank native notice fragment.')
+        expect(text, 'the result body omits its native notice').not.toContain(absent)
+      }
+    }
+  }
+  for (const [index, first] of commands.entries()) {
+    for (const second of commands.slice(index + 1)) {
+      await expect(toolCallBubbles(page).filter({ hasText: first.printedPrefix }).filter({ hasText: second.printedPrefix }), 'each command keeps its own rows')
+        .toHaveCount(0)
+    }
+  }
+  if (!options.absentRowText?.length)
+    return
+  for (const command of commands)
+    await expandCollapsedRows(toolResultBubbles(page).filter({ hasText: command.output }))
+  const text = await chatText(page)
+  for (const absent of options.absentRowText) {
+    if (!absent.trim())
+      throw new Error('An absent row text must hold a nonblank fixed part of the native notice.')
+    expect(text, `no row draws the native text ${JSON.stringify(absent)}`).not.toContain(absent)
+  }
+}
+
+/** Run `run` while each gate holds its command, and release each gate after the browser shows the output of its own command. */
+function runWithGatedOutputs<T>(gated: readonly GatedOutput[], run: () => Promise<T>): Promise<T> {
+  return gated.reduceRight<() => Promise<T>>((inner, each) => () => runWithGatedOutput(each, inner), run)()
+}
+
+/**
+ * Run a successful and a failed shell command through the provider's native shell tool, both in ONE model answer, and
+ * prove the native results and the rows. A provider of {@link ONE_SHELL_CALL_PER_ANSWER} gets one answer for each
+ * command, in the same turn.
+ *
+ * - The output of each command reaches the next model request, and the successful command wrote its file in the literal
+ *   private directory, whose name holds shell metacharacters.
+ * - The nonzero exit reaches the model, or the Worker frame where the provider's reader reads it.
+ * - {@link expectShellToolRows} proves the rows, again after a reload when `reload` is set.
+ *
+ * One answer that calls both commands proves that each call keeps its own rows. A scenario of one command
+ * (`includeFailure: false`) calls one.
+ */
 export async function exerciseShellToolExecution(
   context: ManagedNativeScenarioContext,
   options: ShellToolExecutionOptions = {},
@@ -260,43 +433,61 @@ export async function exerciseShellToolExecution(
   expect(existsSync(outputFile)).toBe(false)
   const marker = uniqueMarker()
   const commands = [
-    { command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, printedPrefix: `SHELL${marker}`, output: `SHELL${marker}42`, failed: false },
-    ...(options.includeFailure === false ? [] : [{ command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, printedPrefix: `SHELLERR${marker}`, output: `SHELLERR${marker}77`, failed: true }]),
+    { callId: `shell-${marker}-0`, command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, printedPrefix: `SHELL${marker}`, output: `SHELL${marker}42`, exitCode: 0 },
+    ...(options.includeFailure === false ? [] : [{ callId: `shell-${marker}-1`, command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, printedPrefix: `SHELLERR${marker}`, output: `SHELLERR${marker}77`, exitCode: 7 }]),
   ]
+  // The gate files live in the literal private tool directory. A hold that quotes its path incorrectly runs the marker
+  // command, and the check of `command-expanded-marker` below finds it. Each command takes its own gate, so a provider
+  // that runs the two calls one after the other releases the first before the second starts.
+  const gates = commands.map(() => options.outputGate ? createOutputGate(directory) : undefined)
+  const calls = commands.map((command, index) => bashToolCall(context.provider, command.callId, gates[index]?.hold(command.command) ?? command.command))
+  const callPerAnswer = ONE_SHELL_CALL_PER_ANSWER.has(context.provider)
+  const steps: MockModelStep[] = callPerAnswer ? calls.map(call => ({ toolCalls: [call] })) : [{ toolCalls: calls }]
+  const answer = 'The native shell scenario ended.'
+  const stepIndex = await context.modelScript.queue(...steps, nativeTextStep(context, answer))
+  await sendMessage(context.page, context.modelScript.prompt('Run the native shell scenario.'))
+  const gated = commands.flatMap((command, index) => {
+    const gate = gates[index]
+    return gate ? [{ gate, shown: () => expect(toolRows(context.page).filter({ hasText: command.output }).first(), 'the live view shows the output of the held command').toBeVisible() }] : []
+  })
+  await runWithGatedOutputs(gated, () => waitForNativeToolSteps(context, stepIndex + steps.length + 1))
+  const rowCommands: ShellRowCommand[] = []
   for (const [index, command] of commands.entries()) {
-    const answer = `The shell scenario ${index} ended.`
-    const callId = `shell-${marker}-${index}`
-    const outputRow = () => messageContents(context.page).filter({ hasText: command.output }).first()
-    // The gate file lives in the literal private tool directory. A hold that quotes its path incorrectly runs the marker command, and the check of `command-expanded-marker` below finds it.
-    const gate = options.outputGate ? createOutputGate(directory) : undefined
-    const asked = gate ? gate.hold(command.command) : command.command
-    const stepIndex = await context.modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, callId, asked)] },
-      nativeTextStep(context, answer),
-    )
-    await sendMessage(context.page, context.modelScript.prompt(`Run the native shell scenario ${index}.`))
-    await runWithGatedOutput(
-      gate && { gate, shown: () => expect(outputRow(), 'the live view shows the output of the held command').toBeVisible() },
-      () => waitForNativeToolSteps(context, stepIndex + 2),
-    )
-    const request = await context.modelScript.requestAt(stepIndex + 1)
-    const result = await nativeToolOutcome(context, request, callId)
-    expect(result.text).toContain(command.output)
-    if (!command.failed) {
+    // The request after a tool step holds the results of that step.
+    const request = await context.modelScript.requestAt(stepIndex + (callPerAnswer ? index : 0) + 1)
+    const evidence: ShellResultEvidence = options.readResult
+      ? await options.readResult(request, command)
+      : { kind: 'output' as const, outcome: await nativeToolOutcome(context, request, command.callId) }
+    const result = evidence.outcome
+    if (evidence.kind === 'record') {
+      if (command.exitCode === 0 || result.failed !== true || result.exitCode === undefined || result.exitCode === 0
+        || !evidence.record.trim() || evidence.record !== result.text) {
+        throw new Error('A native record must preserve an exact nonempty failed result with a nonzero exit code.')
+      }
+      rowCommands.push({ ...command, output: evidence.record, exactOutput: evidence.record })
+    }
+    else {
+      expect(result.text, 'the next model request holds the output of the command').toContain(command.output)
+      rowCommands.push({ ...command, ...(evidence.absentRowText === undefined ? {} : { absentRowText: evidence.absentRowText }) })
+    }
+    if (command.exitCode === 0) {
       expect(readFileSync(outputFile, 'utf8')).toBe(`${command.output}\n`)
       expect(existsSync(join(agent.workingDir, 'command-expanded-marker'))).toBe(false)
     }
-    await expect(outputRow()).toBeVisible()
-    if (command.failed) {
-      if ('exitCode' in result)
-        expect(result.exitCode).toBe(7)
-      else
-        expect(result.text).toMatch(/(?:exit(?:ed)?(?: with)?[ _]code|exitCode|exit[ _]status)[^\d-]*7\b/i)
-      await expect(messageBubbles(context.page).filter({ hasText: command.output }).first()).toContainText(/Error|failed|exit[^\d-]*7\b/i)
+    else if ('exitCode' in result) {
+      expect(result.exitCode, 'the native exit code reaches LeapMux').toBe(command.exitCode)
     }
-    await options.rowProof?.({ page: context.page, command: asked, output: command.output, printedPrefix: command.printedPrefix, failed: command.failed })
-    await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+    else {
+      expect(result.text, 'the next model request states the native exit code').toMatch(new RegExp(`(?:exit(?:ed)?(?: with)?[ _]code|exitCode|exit[ _]status)[^\\d-]*${command.exitCode}\\b`, 'i'))
+    }
   }
+  await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+  await expectShellToolRows(context, rowCommands, options)
+  if (!options.reload)
+    return
+  await context.page.reload()
+  await expect(assistantBubbles(context.page).filter({ hasText: answer }).first(), 'the answer of the turn stays after a reload').toBeVisible()
+  await expectShellToolRows(context, rowCommands, options)
 }
 
 interface FileToolOptions extends ToolPreparation {

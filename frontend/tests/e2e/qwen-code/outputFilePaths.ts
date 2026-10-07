@@ -62,7 +62,7 @@ export function qwenOutputPathReceipt(value: unknown): QwenOutputPathReceipt {
       throw new Error('The native Qwen shell result requires its original paths and preview.')
     }
     paths = [...new Set(nativePaths)]
-    preview = value.status === 'failed' ? content.join('\n') : [raw.output, raw.error ?? ''].filter(text => text !== '').join('\n')
+    preview = [raw.output, raw.error ?? ''].filter(text => text !== '').join('\n')
     if (typeof raw.exitCode === 'number' && Number.isSafeInteger(raw.exitCode))
       exitCode = raw.exitCode
   }

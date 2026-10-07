@@ -5,9 +5,9 @@ import { cursorTest } from '../cursor-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
 import { createNativeToolDirectory } from '../helpers/nativeToolDirectory'
+import { expectShellToolRows } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument, uniqueMarker } from '../helpers/shellArguments'
-import { messageBubbles } from '../helpers/ui'
 import { cursorNativeToolOutput, runCursorNativeOperations } from './nativeExecutionScenario'
 
 cursorTest('executes actual native shell output and preserves a nonzero exit status', async ({ native }) => {
@@ -27,7 +27,11 @@ cursorTest('executes actual native shell output and preserves a nonzero exit sta
   expect(readFileSync(outputFile, 'utf8')).toBe(`${success}\n`)
   expect(existsSync(join(agent.workingDir, 'command-expanded-marker'))).toBe(false)
   expect(await cursorNativeToolOutput(native, 'native-shell-failure')).toMatchObject({ exitCode: 7, stdout: '', stderr: `${failure}\n` })
-  await expect(messageBubbles(native.page).filter({ hasText: failure }).first()).toContainText(/exit\D*7/i)
+  // Cursor states the two streams and the code apart, so its result holds no notice for a row to drop.
+  await expectShellToolRows(native, [
+    { output: success, printedPrefix: `CURSORSHELL${suffix}`, exitCode: 0 },
+    { output: failure, printedPrefix: `CURSORSTDERR${suffix}`, exitCode: 7 },
+  ])
   const next = await sendNativeAnswer(native, 'Use the actual native shell context and reply once.', 'The shell context probe completed.')
   expect(nativeModelContextText(next)).toContain(success)
   expect(nativeModelContextText(next)).toContain(failure)

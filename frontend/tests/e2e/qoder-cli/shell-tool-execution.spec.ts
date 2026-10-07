@@ -22,7 +22,9 @@ qoderTest.describe('qoder CLI tool execution', () => {
 })
 
 qoderTest('runs successful and failed native commands with their actual output', async ({ native }) => {
-  await exerciseShellToolExecution(native)
+  // Qoder CLI begins the result of a failed command with an `Exit code N` line. The row header states the code, and
+  // the body draws only the output.
+  await exerciseShellToolExecution(native, { absentRowText: ['Exit code'] })
 })
 
 qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ native }) => {

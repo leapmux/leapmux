@@ -1,7 +1,6 @@
-import { expect } from '@playwright/test'
 import { ampTest } from '../amp-fixtures'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
-import { applyPermissionPreset, chatText } from '../helpers/ui'
+import { applyPermissionPreset } from '../helpers/ui'
 
 /**
  * The installed agent executes the scripted shell command. Calculated output proves that the executor ran the command.
@@ -9,15 +8,11 @@ import { applyPermissionPreset, chatText } from '../helpers/ui'
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
 ampTest.describe('Amp tool execution', () => {
-  ampTest('draws the output of a command', async ({ native }) => {
-    // The shared scenario proves the computed output on the page and in the next model request.
-    await exerciseShellToolExecution(native, {
-      includeFailure: false,
-      // Amp states the result as a JSON record. The row draws its output, not the record.
-      rowProof: async ({ page }) => {
-        expect(await chatText(page)).not.toContain('"exitCode"')
-      },
-    })
+  ampTest('draws the output of a successful and a failed command', async ({ native }) => {
+    // The shared scenario proves the computed output on the page and in the next model request, and the exit code of
+    // the failed command in its row header. Amp states each result as a JSON record with `output` and `exitCode`. The
+    // row draws the output, not the record.
+    await exerciseShellToolExecution(native, { absentRowText: ['"exitCode"', '"output"'] })
   })
 })
 

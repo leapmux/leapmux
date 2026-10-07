@@ -9,6 +9,7 @@ export interface ReasonixNativeOutput {
   callId: string
   excerpt: string
   text: string
+  previewText: string
 }
 
 function nativeExcerptMatches(excerpt: string, text: string): boolean {
@@ -49,5 +50,5 @@ export function reasonixNativeOutput(original: unknown, supplemental: unknown, c
   }
   if (Buffer.byteLength(text) <= Buffer.byteLength(excerpt) || !/more chars truncated\)$/u.test(excerpt))
     throw new Error('The native Reasonix result supplied no omitted native output content.')
-  return { callId, excerpt, text }
+  return { callId, excerpt, text, previewText: text.replace(/\n\[receipt r_[\da-z_]+\]$/u, '') }
 }

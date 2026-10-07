@@ -112,5 +112,7 @@ setTimeout(() => server.close(), 180000).unref()
 })
 
 claudeTest('returns native shell success and failure output to the following model request', async ({ native }) => {
-  await exerciseShellToolExecution(native)
+  // Claude Code begins the result of a failed command with an `Exit code N` line. The row header states the code, and
+  // the body draws only the output.
+  await exerciseShellToolExecution(native, { absentRowText: ['Exit code'] })
 })

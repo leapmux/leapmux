@@ -10,6 +10,9 @@ import { stopProcess } from './process'
 import { createToolOutputControl, RELEASE_POLL_MS, waitForFileSignal } from './toolOutputControl'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
+// Real process startup can exceed the default unit deadline under full-suite load.
+// Release signals end each held stage. This deadline does not size that stage.
+const NATIVE_OUTPUT_TEST_TIMEOUT_MS = 30_000
 
 describe('waitForFileSignal', () => {
   let directory: string
@@ -75,7 +78,7 @@ describe('waitForFileSignal', () => {
   })
 })
 
-describe('createToolOutputControl', () => {
+describe('createToolOutputControl', { timeout: NATIVE_OUTPUT_TEST_TIMEOUT_MS }, () => {
   it('holds each output segment until its explicit release', async () => {
     mkdirSync(SCRATCH_ROOT, { recursive: true })
     const directory = mkdtempSync(join(SCRATCH_ROOT, 'output-control-test-'))
