@@ -21,10 +21,11 @@ function answered(kind: string): Record<string, unknown> {
 }
 
 describe('copilotControlResponseSummary', () => {
-  // The saved row reads the words the decision BUTTON carried, exactly as the Agent
-  // Client Protocol providers do. Before this, Copilot alone spoke in the past tense
-  // ("Allowed once") and the same decision read two ways across providers.
-  it('reads a saved permission decision in the words its button carried', () => {
+  // The saved row states the option that the decision selected, in the words of that
+  // option, exactly as the Agent Client Protocol providers do. Before this, Copilot
+  // alone spoke in the past tense ("Allowed once") and the same decision read two ways
+  // across providers.
+  it('reads a saved permission decision in the words of the option that it selected', () => {
     const request = permissionRequest({ kind: 'read', canOfferSessionApproval: true })
     const display = (kind: string) => copilotControlResponseSummary({
       claimToken: 'claim-1',

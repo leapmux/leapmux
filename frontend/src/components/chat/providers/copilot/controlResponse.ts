@@ -18,9 +18,11 @@ const COPILOT_DECISION_CANCELLED = 'cancelled'
  * decision word rather than a label LeapMux chose at answer time. That is what keeps
  * a reloaded transcript honest about what the runtime received.
  *
- * A PERMISSION decision then reads back through the option list its own buttons drew,
- * so the saved row carries the words the reader clicked. Every Agent Client Protocol
- * provider resolves a saved decision the same way, through the same helper.
+ * A permission decision reads back through the option list that its decision row drew.
+ * The saved row states the selected option, such as "Allow once".
+ * The decision button reads Allow or Deny. A scope pill states the duration.
+ * Every Agent Client Protocol provider resolves a saved decision the same
+ * way, through the same helper.
  */
 export function copilotControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const answer = pickObject(pickObject(cr.response, 'response'), 'response')
