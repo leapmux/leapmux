@@ -1,19 +1,19 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import { withCleanup } from './cleanup'
 import { assertPrivateNativePath } from './nativeCredentialIsolation'
 
 /**
- * Require the nearest existing entry at or above `path` to resolve inside the private run, and return that entry.
- * A missing path counts through its nearest existing ancestor, because a write creates the missing directories below
- * it. A symbolic link resolves to its target: a link to a target outside the run fails, and a broken link fails
- * because its target does not resolve. With `refuseSymlink`, the nearest existing entry must not be a symbolic link at
- * all, even one whose target lies inside the run.
+ * Require the nearest existing entry at or above `path` to resolve inside the private run. Return that entry.
+ * A missing path uses its nearest existing ancestor. A write creates its missing directories below that ancestor.
+ * The file system resolves symbolic links and parent segments before the guard compares paths.
+ * A link outside the run fails. A broken link fails because its target does not resolve.
+ * With `refuseSymlink`, the nearest existing entry must not be a symbolic link, even when its target stays inside.
  */
 export function assertPrivateNativeAncestor(path: string, runDir: string, options: { refuseSymlink?: boolean } = {}): string {
   if (!path || !isAbsolute(path) || path.includes('\0'))
     throw new Error('The private native path requires an absolute path.')
-  let existing = resolve(path)
+  let existing = path
   for (;;) {
     const entry = lstatSync(existing, { throwIfNoEntry: false })
     if (entry) {
@@ -29,22 +29,30 @@ export function assertPrivateNativeAncestor(path: string, runDir: string, option
   }
 }
 
-/** Apply one private native fixture file and restore its exact bytes after success or failure. */
+/**
+ * Apply one private native fixture file and restore its exact bytes after success or failure.
+ * Tests replace the initial writer to reproduce a partial setup failure.
+ */
 export async function withNativeConfigurationFile(
   options: { path: string, content: string, runDir: string },
   use: () => Promise<void>,
+  writeFixture: (path: string, content: string) => void = (path, content) => writeFileSync(path, content, { mode: 0o600 }),
 ): Promise<void> {
-  // Validate before creating directories. A link at the path or at a parent can point outside the private run, and a
-  // write through a broken link would create its target there.
-  assertPrivateNativeAncestor(resolve(options.path), options.runDir)
+  // Validate before creating directories. A parent link can point outside the private run.
+  // A write through a broken link can create its target there.
+  assertPrivateNativeAncestor(options.path, options.runDir)
   mkdirSync(dirname(options.path), { recursive: true })
   assertPrivateNativePath(dirname(options.path), options.runDir)
   const existing = existsSync(options.path)
   if (existing)
     assertPrivateNativePath(options.path, options.runDir)
   const original = existing ? readFileSync(options.path) : undefined
-  writeFileSync(options.path, options.content, { mode: 0o600 })
-  await withCleanup(use, async () => {
+  await withCleanup(async () => {
+    writeFixture(options.path, options.content)
+    await use()
+  }, async () => {
+    // The native operation can replace the file or its parent with a link.
+    assertPrivateNativeAncestor(options.path, options.runDir)
     if (original === undefined)
       rmSync(options.path, { force: true })
     else

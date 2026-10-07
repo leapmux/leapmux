@@ -1,5 +1,6 @@
+import { Buffer } from 'node:buffer'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assertPrivateNativeAncestor, withNativeConfigurationFile } from './nativeConfigurationFile'
@@ -13,6 +14,27 @@ beforeEach(() => {
 afterEach(() => rmSync(runDir, { recursive: true, force: true }))
 
 describe('withNativeConfigurationFile', () => {
+  it.each([true, false])('restores or removes a partial fixture after a failed initial write when the file existed: %s', async (existing) => {
+    const path = join(runDir, 'config.json')
+    const original = Buffer.from([0, 1, 255, 10, 65])
+    if (existing)
+      writeFileSync(path, original)
+    const use = vi.fn(async () => {})
+    const writeFixture = vi.fn((file: string) => {
+      writeFileSync(file, 'partial fixture bytes')
+      throw new Error('The fixture write failed after a partial write.')
+    })
+    await expect(withNativeConfigurationFile({ path, content: '{}', runDir }, use, writeFixture))
+      .rejects
+      .toThrow('The fixture write failed after a partial write.')
+    expect(writeFixture).toHaveBeenCalledOnce()
+    expect(use).not.toHaveBeenCalled()
+    if (existing)
+      expect(readFileSync(path)).toEqual(original)
+    else
+      expect(existsSync(path)).toBe(false)
+  })
+
   it('rejects an outside path before creating its parent directory', async () => {
     const outside = mkdtempSync(join(scratchRoot, 'outside-native-config-unit-'))
     const parent = join(outside, 'must-not-exist')
@@ -80,6 +102,85 @@ describe('withNativeConfigurationFile', () => {
     }
   })
 
+  it('refuses a parent segment after a directory link before creating an outside directory', async () => {
+    const outside = mkdtempSync(join(scratchRoot, 'outside-native-config-parent-'))
+    const child = join(outside, 'child')
+    mkdirSync(child)
+    const linked = join(runDir, 'linked-parent')
+    symlinkSync(child, linked, 'junction')
+    writeFileSync(join(outside, 'owner.txt'), 'outside')
+    writeFileSync(join(runDir, 'owner.txt'), 'private')
+    const escapes = readFileSync(`${linked}${sep}..${sep}owner.txt`, 'utf8') === 'outside'
+    const parent = join(outside, 'must-not-exist')
+    const path = `${linked}${sep}..${sep}must-not-exist${sep}config.json`
+    const use = vi.fn(async () => {})
+    try {
+      const operation = withNativeConfigurationFile({ path, content: '{}', runDir }, use)
+      // A platform can normalize parent segments before it follows a directory link.
+      // Read a marker through that same path to identify the actual parent.
+      if (escapes) {
+        await expect(operation).rejects.toThrow('outside the E2E run')
+        expect(use).not.toHaveBeenCalled()
+      }
+      else {
+        await operation
+        expect(use).toHaveBeenCalledOnce()
+      }
+      expect(existsSync(parent)).toBe(false)
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it.each([true, false])('refuses an outside replacement parent during cleanup when the file existed: %s', async (existing) => {
+    const outside = mkdtempSync(join(scratchRoot, 'outside-native-config-cleanup-'))
+    const parent = join(runDir, 'native-config')
+    mkdirSync(parent)
+    const path = join(parent, 'config.json')
+    const target = join(outside, 'config.json')
+    writeFileSync(target, 'outside bytes')
+    if (existing)
+      writeFileSync(path, 'original bytes')
+    try {
+      await expect(withNativeConfigurationFile({ path, content: 'temporary bytes', runDir }, async () => {
+        rmSync(parent, { recursive: true })
+        symlinkSync(outside, parent, 'junction')
+      })).rejects.toThrow('outside the E2E run')
+      expect(readFileSync(target, 'utf8')).toBe('outside bytes')
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves the native failure and cleanup refusal without changing the outside file', async () => {
+    const outside = mkdtempSync(join(scratchRoot, 'outside-native-config-error-'))
+    const parent = join(runDir, 'native-config')
+    mkdirSync(parent)
+    const path = join(parent, 'config.json')
+    const target = join(outside, 'config.json')
+    writeFileSync(path, 'original bytes')
+    writeFileSync(target, 'outside bytes')
+    try {
+      await expect(withNativeConfigurationFile({ path, content: 'temporary bytes', runDir }, async () => {
+        rmSync(parent, { recursive: true })
+        symlinkSync(outside, parent, 'junction')
+        throw new Error('The native operation failed.')
+      })).rejects.toMatchObject({
+        message: 'The operation and its cleanup failed',
+        errors: [
+          { message: 'The native operation failed.' },
+          { message: 'The private native path resolves outside the E2E run.' },
+        ],
+      })
+      expect(readFileSync(target, 'utf8')).toBe('outside bytes')
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   it('restores the original exact bytes after native use', async () => {
     const path = join(runDir, 'config.json')
     const original = '{"original":true}\n'
@@ -134,6 +235,40 @@ describe('assertPrivateNativeAncestor', () => {
   it('refuses an outside existing path and an outside missing path', () => {
     expect(() => assertPrivateNativeAncestor(outside, runDir)).toThrow('outside the E2E run')
     expect(() => assertPrivateNativeAncestor(join(outside, 'missing.json'), runDir)).toThrow('outside the E2E run')
+  })
+
+  it.each([true, false])('resolves a parent segment after a directory link before checking an existing file: %s', (existing) => {
+    const child = join(outside, 'child')
+    mkdirSync(child)
+    const linked = join(runDir, 'linked-parent')
+    symlinkSync(child, linked, 'junction')
+    writeFileSync(join(outside, 'owner.txt'), 'outside')
+    writeFileSync(join(runDir, 'owner.txt'), 'private')
+    if (existing) {
+      writeFileSync(join(outside, 'settings.json'), 'outside bytes')
+      writeFileSync(join(runDir, 'settings.json'), 'private bytes')
+    }
+    const path = `${linked}${sep}..${sep}settings.json`
+    const escapes = readFileSync(`${linked}${sep}..${sep}owner.txt`, 'utf8') === 'outside'
+    for (const options of [{}, { refuseSymlink: true }]) {
+      if (escapes)
+        expect(() => assertPrivateNativeAncestor(path, runDir, options)).toThrow('outside the E2E run')
+      else
+        expect(() => assertPrivateNativeAncestor(path, runDir, options)).not.toThrow()
+    }
+  })
+
+  it('accepts a parent segment after a directory link when the actual file stays inside the run', () => {
+    const target = join(runDir, 'target')
+    const child = join(target, 'child')
+    mkdirSync(child, { recursive: true })
+    writeFileSync(join(target, 'settings.json'), 'private bytes')
+    writeFileSync(join(runDir, 'settings.json'), 'private bytes')
+    const linked = join(runDir, 'linked-parent')
+    symlinkSync(child, linked, 'junction')
+    const path = `${linked}${sep}..${sep}settings.json`
+    expect(assertPrivateNativeAncestor(path, runDir)).toBe(path)
+    expect(assertPrivateNativeAncestor(path, runDir, { refuseSymlink: true })).toBe(path)
   })
 
   it('accepts a link to a target inside the run unless the caller refuses links', () => {

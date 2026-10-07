@@ -8,7 +8,7 @@ import { getGlobalState } from './server'
 
 /**
  * Validate a native path against the directory that owns its test run.
- * Both paths must exist, because only an existing path resolves through its links to the place that it names.
+ * Both paths must exist. The file system resolves each path through its symbolic links.
  */
 export function assertPrivateNativePath(path: string, runDir: string): void {
   if (!path || !runDir)
@@ -17,7 +17,9 @@ export function assertPrivateNativePath(path: string, runDir: string): void {
     throw new Error(`The E2E run directory ${runDir} does not exist.`)
   if (!existsSync(path))
     throw new Error(`The private native path ${path} does not exist.`)
-  const relativePath = relative(realpathSync(runDir), realpathSync(path))
+  // The JavaScript resolver normalizes parent segments before symbolic links.
+  // The native resolver preserves the file system order for a link followed by `..`.
+  const relativePath = relative(realpathSync.native(runDir), realpathSync.native(path))
   if (isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${sep}`))
     throw new Error('The private native path resolves outside the E2E run.')
 }
@@ -29,18 +31,18 @@ export interface IsolatedConfigurationRules {
   /** A credential that the configuration states. */
   expectedCredential?: string | undefined
   /**
-   * Text that the configuration must NOT hold, such as the key of a CLI that reads its key from an
-   * environment variable. The accepted mock credential of the turn request then proves the key.
+   * Text that the configuration must not hold, such as a key that the CLI reads from an environment variable.
+   * The accepted mock credential of the turn request proves that key.
    */
   absentFromConfiguration?: readonly string[] | undefined
-  /** Text that the configuration must hold, such as the line that names the environment variable. */
+  /** Text that the configuration must hold, such as the line that specifies the environment variable. */
   configurationMarkers?: readonly string[] | undefined
 }
 
 /**
- * Check the text of an isolated native configuration. A rule set must state the credential: either
- * the credential that the configuration holds, or the text that it must not hold. A value that the
- * test copied into the configuration itself can never fail the first form.
+ * Check the text of an isolated native configuration.
+ * State the required credential or the text that the configuration must not hold.
+ * A value that the test copies into the configuration cannot fail the first check.
  */
 export function assertIsolatedConfiguration(configuration: string, rules: IsolatedConfigurationRules): void {
   const absent = rules.absentFromConfiguration ?? []
@@ -71,14 +73,17 @@ export async function exerciseCredentialIsolation(
     configurationFiles?: readonly string[]
     inlineConfiguration?: readonly string[]
     privateDirectories: readonly string[]
-    /** The credential that the configuration states. Omit it, and state `absentFromConfiguration`, for a CLI that keeps no key in its files. */
+    /**
+     * The credential that the configuration states.
+     * Use `absentFromConfiguration` instead when the CLI keeps no key in its files.
+     */
     expectedCredential?: string
     absentFromConfiguration?: readonly string[]
     configurationMarkers?: readonly string[]
   },
 ): Promise<void> {
-  // An environment variable that the suite does not set reaches here as undefined, and `join` would turn it into an
-  // empty string that no check reports.
+  // An unset environment variable reaches here as undefined.
+  // A configuration join can turn it into an empty string, which hides the absent value.
   if (options.inlineConfiguration?.some(value => typeof value !== 'string' || value === ''))
     throw new Error('Each inline native configuration must be a nonempty string.')
   if (options.privateDirectories.some(value => typeof value !== 'string' || value === ''))
@@ -95,8 +100,8 @@ export async function exerciseCredentialIsolation(
   expect(options.privateDirectories.length).toBeGreaterThan(0)
   const runDir = getGlobalState().tmpDir
   for (const directory of options.privateDirectories) {
-    // A CLI creates its own directory only at its first write. The suite environment creates each directory that one of
-    // its variables gives, so this check does not depend on an earlier test of the run.
+    // A CLI creates its directory at its first write.
+    // The suite creates each directory that its environment specifies before the test starts.
     if (!existsSync(directory))
       throw new Error(`The private directory ${directory} does not exist before the native turn. The suite environment (helpers/mockAgentEnvironment.ts) must create each directory that one of its variables gives.`)
     assertPrivateNativePath(directory, runDir)

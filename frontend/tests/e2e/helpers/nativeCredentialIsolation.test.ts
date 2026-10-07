@@ -2,8 +2,8 @@ import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -55,12 +55,31 @@ describe('assertPrivateNativePath', () => {
     expect(() => assertPrivateNativePath(file, runDir)).not.toThrow()
   })
 
-  it('refuses a private-looking symlink that resolves outside the native run', () => {
+  it('refuses a symlink inside the native run that resolves outside it', () => {
     const outside = join(scratch, 'outside-run')
     mkdirSync(outside)
     const link = join(runDir, 'native-home')
     symlinkSync(outside, link, 'junction')
     expect(() => assertPrivateNativePath(link, runDir)).toThrow('outside the E2E run')
+  })
+
+  it('resolves a directory link before the following parent segment', () => {
+    const outside = join(scratch, 'outside-run')
+    const child = join(outside, 'child')
+    mkdirSync(child, { recursive: true })
+    writeFileSync(join(outside, 'settings.json'), 'outside bytes')
+    writeFileSync(join(runDir, 'settings.json'), 'private bytes')
+    const link = join(runDir, 'linked-parent')
+    symlinkSync(child, link, 'junction')
+    const path = `${link}${sep}..${sep}settings.json`
+    const actualText = readFileSync(path, 'utf8')
+    if (actualText === 'outside bytes') {
+      expect(() => assertPrivateNativePath(path, runDir)).toThrow('outside the E2E run')
+    }
+    else {
+      expect(actualText).toBe('private bytes')
+      expect(() => assertPrivateNativePath(path, runDir)).not.toThrow()
+    }
   })
 
   it('refuses a lexical path outside the private run', () => {
@@ -107,7 +126,7 @@ describe('assertIsolatedConfiguration', () => {
 
   // A CLI that reads its key from an environment variable keeps no key in the file. The test of such a
   // CLI states that the file holds none, and the accepted mock credential of the turn proves the key.
-  it('accepts a configuration that names an environment variable and holds no key', () => {
+  it('accepts a configuration that specifies an environment variable and holds no key', () => {
     const configuration = `base_url = "${origin}"\napi_key_env = "LEAPMUX_E2E_MODEL_API_KEY"`
     expect(() => assertIsolatedConfiguration(configuration, { mockOrigin: origin, absentFromConfiguration: [key], configurationMarkers: ['api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"'] })).not.toThrow()
   })
@@ -127,8 +146,8 @@ describe('assertIsolatedConfiguration', () => {
 })
 
 describe('exerciseCredentialIsolation', () => {
-  // An unset environment variable reaches the inline configuration as undefined. The check refuses it before it reads
-  // the environment, the files, or the browser.
+  // An unset environment variable reaches the inline configuration as undefined.
+  // The check refuses it before any environment read or browser access.
   it.each([[['']], [[undefined]], [['http://127.0.0.1:4100', undefined]]])('refuses the inline configuration %j before any other step', async (inlineConfiguration) => {
     const context = {
       provider: AgentProvider.CODEX,
