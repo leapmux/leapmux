@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,10 +22,8 @@ type refreshTestFixture struct {
 	mock *mockResponseWriter
 }
 
-// settingsSeed mirrors the legacy db.UpdateAgentAllSettingsParams scalar fields
-// the refresh tests seed an agent with. They are now persisted into the single
-// agents.options JSON column, so this helper folds the scalars plus any
-// Options JSON into that map before storing.
+// settingsSeed supplies the options of the agent that a refresh test stores.
+// options merges its scalar values into the Options JSON map.
 type settingsSeed struct {
 	Model          string
 	Effort         string
@@ -674,4 +673,137 @@ func TestPersistSettingsRefresh_SkipsCatalogPersistDuringStartup(t *testing.T) {
 		"during startup the grown catalog must not be persisted; the narrow seed is left for the handoff")
 	assert.NotNil(t, optionids.GroupByID(parseOptionGroups(got.OptionGroups), agent.OptionIDModel),
 		"the narrow seed's model group is left intact")
+}
+
+// liveSwitchFixture starts fixtureModelB at Low, as after a live switch from fixtureModelA.
+// The row holds the requested options that UpdateAgentSettings stores before the provider applies them.
+// Its catalog still describes storedModel.
+// The fixture returns the service and the agent's sink.
+// It returns the agent's watch writer also.
+func liveSwitchFixture(t *testing.T, storedModel string) (*Service, *testResponseWriter, agent.ProviderServices) {
+	t.Helper()
+	ctx := context.Background()
+	svc, _, w := setupTestService(t)
+	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	options := map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"}
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+		Options: marshalOptions(options),
+	}))
+	stored := (&switchingAgent{models: fixtureModels(), model: storedModel, effort: "low"}).OptionGroups()
+	require.NoError(t, svc.Queries.SetAgentOptionGroups(ctx, db.SetAgentOptionGroupsParams{
+		OptionGroups: mustMarshalOptionGroups(t, stored),
+		ID:           "agent-1",
+	}))
+	sink := svc.Output.NewSink("agent-1", provider)
+	starter := &switchingStarter{models: fixtureModels()}
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", AgentProvider: provider, WorkingDir: t.TempDir(), Options: options,
+	}, sink, starter.start)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+	return svc, w, sink
+}
+
+// effortLevels returns the option IDs of the effort group of a catalog, or nil when it has none.
+func effortLevels(groups []*leapmuxv1.AvailableOptionGroup) []string {
+	group := optionids.GroupByID(groups, agent.OptionIDEffort)
+	if group == nil {
+		return nil
+	}
+	levels := make([]string, 0, len(group.GetOptions()))
+	for _, option := range group.GetOptions() {
+		levels = append(levels, option.GetId())
+	}
+	return levels
+}
+
+// A model switch writes the requested values before the provider applies them.
+// Its confirmation matches those values, but the new model's ladder adds Max.
+// The refresh must persist and broadcast that catalog.
+// Otherwise a provider with no model effort subgroups, such as Factory Droid, leaves the browser on the previous ladder.
+func TestPersistSettingsRefresh_BroadcastsTheCatalogOfALiveModelSwitch(t *testing.T) {
+	t.Parallel()
+
+	svc, w, sink := liveSwitchFixture(t, fixtureModelA)
+	require.NotContains(t, effortLevels(parseOptionGroups(mustGetAgent(t, svc).OptionGroups)), "max",
+		"precondition: the stored catalog is the one of the previous model")
+	before := len(agentStatusChanges(t, w, "agent-1"))
+
+	sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
+
+	changes := agentStatusChanges(t, w, "agent-1")[before:]
+	require.Len(t, changes, 1, "the refresh broadcasts the new catalog once")
+	assert.Equal(t, fixtureModelB, optionids.CurrentValue(changes[0].GetOptionGroups(), agent.OptionIDModel))
+	assert.Equal(t, []string{"max", "high", "low"}, effortLevels(changes[0].GetOptionGroups()), "the broadcast carries the ladder of the new model")
+	assert.Equal(t, "low", optionids.CurrentValue(changes[0].GetOptionGroups(), agent.OptionIDEffort))
+
+	row := mustGetAgent(t, svc)
+	assert.Equal(t, []string{"max", "high", "low"}, effortLevels(parseOptionGroups(row.OptionGroups)), "the row keeps the broadcast catalog")
+	assert.Equal(t, OptionMap{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"}, parseOptions(row.Options),
+		"the refresh changes no option value")
+}
+
+// A refresh that confirms both the stored values and the stored catalog must send no event to the browser.
+func TestPersistSettingsRefresh_StaysQuietWhenTheLiveCatalogMatchesTheRow(t *testing.T) {
+	t.Parallel()
+
+	svc, w, sink := liveSwitchFixture(t, fixtureModelB)
+	storedBefore := mustGetAgent(t, svc).OptionGroups
+	before := len(agentStatusChanges(t, w, "agent-1"))
+
+	sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
+
+	assert.Len(t, agentStatusChanges(t, w, "agent-1"), before, "a refresh that confirms the row and its catalog broadcasts nothing")
+	assert.Equal(t, storedBefore, mustGetAgent(t, svc).OptionGroups, "the stored catalog stays as it was")
+}
+
+func TestPersistSettingsRefresh_AnnouncesOneCatalogForConcurrentConfirmations(t *testing.T) {
+	t.Parallel()
+
+	svc, w, sink := liveSwitchFixture(t, fixtureModelA)
+	before := len(agentStatusChanges(t, w, "agent-1"))
+	var callers sync.WaitGroup
+	for range 2 {
+		callers.Go(func() {
+			sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
+		})
+	}
+	callers.Wait()
+
+	assert.Len(t, agentStatusChanges(t, w, "agent-1")[before:], 1)
+	assert.Contains(t, effortLevels(parseOptionGroups(mustGetAgent(t, svc).OptionGroups)), "max")
+}
+
+func TestPersistSettingsRefresh_KeepsTheCatalogOfAClosedOrStoppedAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []string{"closed", "stopped"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			svc, w, sink := liveSwitchFixture(t, fixtureModelA)
+			if state == "closed" {
+				_, err := svc.Queries.CloseAgent(t.Context(), "agent-1")
+				require.NoError(t, err)
+			} else {
+				svc.Agents.StopAndWaitAgent("agent-1")
+			}
+			stored := mustGetAgent(t, svc).OptionGroups
+			before := len(agentStatusChanges(t, w, "agent-1"))
+
+			sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
+
+			assert.Len(t, agentStatusChanges(t, w, "agent-1"), before)
+			assert.Equal(t, stored, mustGetAgent(t, svc).OptionGroups)
+		})
+	}
+}
+
+// mustGetAgent reads the row of agent-1.
+func mustGetAgent(t *testing.T, svc *Service) db.Agent {
+	t.Helper()
+	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	return row
 }

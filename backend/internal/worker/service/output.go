@@ -1255,7 +1255,8 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 		// merge leaves the row unchanged -- the refresh just re-confirms the stored values
 		// (refreshes fire after UpdateSettings, and startup readbacks often confirm the
 		// row), or a concurrent writer already landed an equivalent merge and broadcast it.
-		// Either way there is nothing new to persist or broadcast, so skip both.
+		// Either way there is no value to persist or broadcast. The catalog that goes with
+		// the values can still be new, so broadcastChangedCatalog decides that half.
 		settled, wrote, err := s.casPersistOptions(dbAgent.Options, refresh)
 		if err != nil {
 			slog.Error("failed to persist refreshed settings",
@@ -1263,6 +1264,7 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 			return
 		}
 		if !wrote {
+			s.broadcastChangedCatalog()
 			return
 		}
 		newOptions = settled
@@ -1323,6 +1325,58 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 		AgentId: s.agentID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
 	})
+}
+
+// broadcastChangedCatalog persists and broadcasts a changed live catalog when the row already holds the refreshed values.
+// UpdateAgentSettings stores the requested values before the provider applies them.
+// The provider's confirmation can match those values while its model supplies a new effort ladder.
+// The RPC response contains option values only.
+// Factory Droid's model options contain no effort subgroups, so only this broadcast supplies its new ladder to the browser.
+// Without the broadcast, the browser keeps the previous model's levels.
+//
+// A stopped agent supplies no live catalog, so this path changes nothing for it.
+// catalogMu serializes the comparison and the write with persistCatalogAndBuildStatus.
+// A concurrent BroadcastStatusActive thus cannot replace this catalog with an older one.
+// The network broadcast runs outside that lock.
+func (s *agentOutputSink) broadcastChangedCatalog() {
+	if s.h.agents == nil || !s.h.agents.HasAgent(s.agentID) {
+		return
+	}
+	sc := s.buildChangedCatalogStatus()
+	if sc == nil {
+		return
+	}
+	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+		AgentId: s.agentID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
+}
+
+// buildChangedCatalogStatus persists a changed live catalog and returns the ACTIVE status change that carries it.
+// It returns nil for an unchanged catalog or a closed tab.
+// It returns nil when the row read fails also.
+// Compare the view before building the full status change, because that step reads git status.
+// Most refreshes change no catalog.
+func (s *agentOutputSink) buildChangedCatalogStatus() *leapmuxv1.AgentStatusChange {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+
+	existing, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+	if err != nil {
+		slog.Error("The Worker failed to read the agent for the catalog broadcast.",
+			"agent_id", s.agentID, "error", err)
+		return nil
+	}
+	if existing.ClosedAt.Valid {
+		return nil
+	}
+	live := optionGroupsView(s.h.agents, &existing, nil)
+	if len(live) == 0 || optionGroupsEqual(parseOptionGroups(existing.OptionGroups), live) {
+		return nil
+	}
+	sc := s.buildStatusChange(existing, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, existing.AgentSessionID)
+	s.persistCatalogIfChanged(existing, sc.GetOptionGroups())
+	return sc
 }
 
 // persistLiveCatalog persists the live option-group catalog to this agent's row when it has
