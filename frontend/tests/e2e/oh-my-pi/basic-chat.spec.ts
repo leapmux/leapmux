@@ -17,9 +17,6 @@ ohMyPiTest.describe('Oh My Pi basic chat', () => {
     await waitForAgentIdle(page)
 
     await expectAssistantAnswer(page)
-    // omp's agent_end reports no duration.
-    // The Worker measures the turn duration and includes it in the divider.
-    await expect(page.locator('[data-testid="result-divider"]:visible').last()).toHaveText(/^Turn ended \(.+\)$/)
     // Count the rows first.
     // An absence assertion over an empty locator can pass without testing a row.
     const contents = messageContents(page)
@@ -29,6 +26,8 @@ ohMyPiTest.describe('Oh My Pi basic chat', () => {
     const allText = (await contents.allTextContents()).join(' ')
     expect(allText).not.toContain('message_update')
     expect(allText).not.toContain('turn_end')
-    await exerciseBasicChat(native)
+    // The native `agent_end` event states no duration. The Worker measures the turn and adds the duration to the turn
+    // end.
+    await exerciseBasicChat(native, { timedDivider: true })
   })
 })

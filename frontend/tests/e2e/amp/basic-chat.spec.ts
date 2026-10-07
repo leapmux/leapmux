@@ -19,9 +19,6 @@ ampTest.describe('Amp basic chat', () => {
 
     await expectAssistantAnswer(page)
     await expect(bandRows(page, 'thought').filter({ hasText: 'Add the two numbers.' }).first()).toBeVisible()
-    // Amp reports no turn duration.
-    // The Worker measures the turn duration and includes it in the divider.
-    await expect(page.locator('[data-testid="result-divider"]:visible').last()).toHaveText(/^Turn ended \(.+\)$/)
     // Count the rows first.
     // An absence assertion over an empty locator can pass without testing a row.
     const contents = messageContents(page)
@@ -31,6 +28,8 @@ ampTest.describe('Amp basic chat', () => {
     const allText = (await contents.allTextContents()).join(' ')
     expect(allText).not.toContain('"subtype":"init"')
     expect(allText).not.toContain('stream-json')
-    await exerciseBasicChat(native)
+    // Amp states no duration for a turn that ends inside its process. The Worker measures the turn and adds the
+    // duration to the turn end.
+    await exerciseBasicChat(native, { timedDivider: true })
   })
 })
