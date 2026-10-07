@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,7 +138,7 @@ func TestSendRawInputRetiresTheRecordBeforeTheWrite(t *testing.T) {
 	key := publishOne(t, base, sink)
 
 	done := make(chan error, 1)
-	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)) }()
+	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}) }()
 	<-stdin.entered
 	assert.False(t, base.WithdrawOutstandingControlRequest(sink, key), "the answer in flight decided the request")
 	close(stdin.release)
@@ -168,7 +169,7 @@ func TestSendRawInputRestoresTheRecordOfAFailedWrite(t *testing.T) {
 			base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: stdin}}
 			key := publishOne(t, base, sink)
 
-			require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)))
+			require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}))
 			assert.Equal(t, tc.open, base.OutstandingControlForTest(key))
 		})
 	}
@@ -184,7 +185,7 @@ func TestSendRawInputDoesNotRestoreARecordThatAWithdrawalOutran(t *testing.T) {
 	key := publishOne(t, base, sink)
 
 	done := make(chan error, 1)
-	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)) }()
+	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}) }()
 	<-stdin.entered
 	// On its own goroutine: a withdrawal that still found the record would queue
 	// its cancel answer behind the held write, and wait for it.
@@ -212,11 +213,11 @@ func TestSendRawInputFailureOfAnUnknownAnswerAddsNoRecord(t *testing.T) {
 	base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: failingStdin{errors.New("the pipe closed")}}}
 	key := publishOne(t, base, sink)
 
-	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":8,"result":{}}`)))
+	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":8,"result":{}}`), agent.StopContext{}))
 	assert.True(t, base.OutstandingControlForTest(key), "the open request keeps its record")
 	assert.Equal(t, 1, base.OutstandingControlCountForTest(), "the failed answer to an unknown id adds no record")
 
-	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","method":"notify"}`)))
+	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","method":"notify"}`), agent.StopContext{}))
 	assert.Equal(t, 1, base.OutstandingControlCountForTest(), "a frame with no id answers nothing")
 }
 

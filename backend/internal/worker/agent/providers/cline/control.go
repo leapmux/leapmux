@@ -311,7 +311,7 @@ var errUnknownControl = errors.New("the Cline request no longer waits for an ans
 // SendRawInput delivers a control answer. The answer is the native reply that
 // the provider's ResolveControlResponse built from the browser's decision:
 // an approval reply or a capability reply.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if a.IsStopped() {
 		return errAgentStopped
 	}

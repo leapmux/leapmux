@@ -298,7 +298,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // The runtime settles the turn itself: the pending approvals and questions end
 // as cancelled, the running tools fail, and the turn completes as interrupted.
 // Each of those arrives as an event, so this method changes no state.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	threadID, turnID := a.threadID, a.turnID

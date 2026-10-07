@@ -311,7 +311,7 @@ func (p *Process) writeStdinDetached(data []byte, describe string) {
 
 // SendRawInput writes raw bytes directly to the process's stdin without
 // wrapping. Ensures a trailing newline.
-func (p *Process) SendRawInput(data []byte) error {
+func (p *Process) SendRawInput(data []byte, stop agent.StopContext) error {
 	p.Mu.Lock()
 	stopped := p.stopped
 	p.Mu.Unlock()
@@ -884,8 +884,9 @@ func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor
 // itself runs over HTTP. ReadOutput would drop every such line as invalid JSON,
 // and with it the address the provider waits for.
 //
-// handle runs on the reader goroutine and must not block: the child writes to
-// a pipe that this loop drains, and a child with a full pipe stops.
+// handle runs on the reader goroutine. A full output pipe stops the child until this loop drains it.
+// A handler can apply backpressure while an OS stdin write completes.
+// It must not wait for a response that this same reader must deliver, because that wait creates a deadlock.
 func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 	p.skipPreamble(scanner)
 

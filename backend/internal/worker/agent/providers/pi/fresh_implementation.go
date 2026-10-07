@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // A "Start fresh and implement" answer does not start the fresh session by
@@ -56,7 +57,7 @@ func (a *Agent) answerPiFreshSettingsDialog(id string, raw []byte) bool {
 		"value": PlanActionStartFresh,
 	})
 	if err == nil {
-		err = a.Process.SendRawInput(response)
+		err = a.Process.SendRawInput(response, agent.StopContext{})
 	}
 	if err != nil {
 		// The extension still waits on the dialog, so publish it and let the

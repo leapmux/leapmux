@@ -488,7 +488,7 @@ var _ agent.ChildInterrupter = (*Agent)(nil)
 // cancel of its session, by Qwen's own task id. No frame of a foreground spawn
 // states that id, so this reads it from Qwen's task list, by the tool call of
 // the spawn. A subagent that no longer runs needs no stop.
-func (a *Agent) InterruptChild(childKey string) error {
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	return a.WithSessionID(func(sessionID string) error {
 		response, err := a.SendRequest(qwenTaskListMethod, qwenSessionParams(sessionID), a.APITimeout())
 		if err != nil {

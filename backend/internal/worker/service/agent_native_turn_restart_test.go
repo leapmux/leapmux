@@ -205,7 +205,7 @@ func TestNativeTurnRestartCannotReopenClosedTab(t *testing.T) {
 		starts.Add(1)
 		return nil, errors.New("a closed tab reached the process launch")
 	}
-	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	require.ErrorContains(t, err, "closed")
 	assert.Zero(t, starts.Load(), "a stale row cannot start a process after tab close")
 	row, readErr := svc.Queries.GetAgentByID(ctx, id)
@@ -229,7 +229,7 @@ func TestNativeTurnRestartCannotReopenArchivedTab(t *testing.T) {
 		starts.Add(1)
 		return nil, errors.New("an archived tab reached process launch")
 	}
-	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	require.ErrorContains(t, err, "archived")
 	assert.Zero(t, starts.Load(), "an archived tab cannot start a process")
 	assert.False(t, svc.Agents.HasAgent(id))
@@ -258,7 +258,7 @@ func TestNativeTurnRestartRefusesMissingOrUnreadableRow(t *testing.T) {
 				starts.Add(1)
 				return nil, errors.New("a missing row reached the process launch")
 			}
-			_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+			_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 			require.ErrorContains(t, err, tc.want)
 			assert.Zero(t, starts.Load())
 			assert.False(t, old.IsStopped(), "a read failure must not stop the old process")
@@ -286,7 +286,7 @@ func TestNativeTurnRestartStopsLaunchWhenRowClosesDuringStart(t *testing.T) {
 			})
 	}
 
-	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	require.ErrorContains(t, err, "closed")
 	assert.True(t, newAgent.IsStopped(), "a process started after the row closed must be stopped")
 	assert.False(t, svc.Agents.HasAgent(id), "a closed tab cannot retain a process")
@@ -310,7 +310,7 @@ func TestNativeTurnRestartStopsLaunchWhenWorkspaceArchivesDuringStart(t *testing
 				return newAgent, nil
 			})
 	}
-	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	require.ErrorContains(t, err, "archived")
 	assert.True(t, newAgent.IsStopped(), "an archived tab cannot keep a late process")
 	assert.False(t, svc.Agents.HasAgent(id))
@@ -331,7 +331,7 @@ func TestNativeTurnRestartStopsLaunchAfterPostlaunchReadFault(t *testing.T) {
 			})
 	}
 
-	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	require.ErrorContains(t, err, "read agent")
 	assert.True(t, old.IsStopped(), "the restart already stopped the old process")
 	assert.True(t, newAgent.IsStopped(), "a process with unknown row state cannot keep running")
@@ -356,7 +356,7 @@ func TestNativeTurnRestartMintFailureKeepsTheLiveSessionID(t *testing.T) {
 	require.NoError(t, err)
 	svc.ControlIPC = &noIdentityRemoteIPC{failFrom: 1}
 
-	_, err = svc.restartAgentPreservingSession(row, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, err = svc.restartAgentPreservingSession(row, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	require.ErrorIs(t, err, ErrMissingIdentity)
 	assert.False(t, old.IsStopped(), "a failed mint did not replace the live process")
 	stored, readErr := svc.Queries.GetAgentByID(ctx, id)
@@ -386,7 +386,7 @@ func TestSettingsRestartMintFailureKeepsTheOldTurn(t *testing.T) {
 	row, err := svc.Queries.GetAgentByID(ctx, id)
 	require.NoError(t, err)
 	svc.ControlIPC = &noIdentityRemoteIPC{failFrom: 1}
-	_, err = svc.restartAgentPreservingSession(row, storedRestartOptions, settingsRestartMessages, restartTurnEndPending)
+	_, err = svc.restartAgentPreservingSession(row, storedRestartOptions, settingsRestartMessages, restartTurnEndPending, nil)
 	require.ErrorIs(t, err, ErrMissingIdentity)
 	assert.False(t, old.IsStopped())
 	queue, queueErr := svc.InputQueue.Snapshot(ctx, id)
@@ -411,7 +411,7 @@ func TestNativeTurnRestartUsesTheCurrentStoredOptions(t *testing.T) {
 		started = opts
 		return nil, errors.New("stop after observing restart options")
 	}
-	_, _ = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	_, _ = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	assert.Equal(t, "default", started.PermissionMode(), "native restart reads the settled mode after a concurrent settings write")
 }
 
@@ -438,7 +438,7 @@ func TestNativeTurnRestartCloseAfterRegistrationStopsReplacement(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, restartErr := svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+		_, restartErr := svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 		result <- restartErr
 	}()
 	select {
@@ -483,7 +483,7 @@ func TestNativeTurnRestartCloseBeforeRegistrationStopsReplacement(t *testing.T) 
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, restartErr := svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+		_, restartErr := svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 		result <- restartErr
 	}()
 	select {

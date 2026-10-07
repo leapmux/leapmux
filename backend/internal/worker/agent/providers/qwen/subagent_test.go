@@ -434,8 +434,8 @@ func TestQwenInterruptChildCancelsTheTaskOfTheSpawn(t *testing.T) {
 	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":true,"status":"running"}`))
 	interrupter := childInterrupter(t, a)
 
-	require.NoError(t, interrupter.InterruptChild("call_1"))
-	require.NoError(t, interrupter.InterruptChild("call_2"))
+	require.NoError(t, interrupter.InterruptChild("call_1", agent.StopContext{}))
+	require.NoError(t, interrupter.InterruptChild("call_2", agent.StopContext{}))
 	syncPeer(t, a)
 
 	assert.Equal(t, []map[string]any{
@@ -453,18 +453,18 @@ func TestQwenInterruptChildOfAnEndedSubagentSendsNoCancel(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":false,"reason":"not_running","status":"completed"}`))
 
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_3"))
+	require.NoError(t, childInterrupter(t, a).InterruptChild("call_3", agent.StopContext{}))
 	syncPeer(t, a)
 	assert.Empty(t, taskCancels(requests()), "a completed subagent takes no cancel")
 
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1"), "a subagent that ended before the cancel arrived needs no stop")
+	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}), "a subagent that ended before the cancel arrived needs no stop")
 }
 
 func TestQwenInterruptChildOfAnUnknownSpawnFails(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":true}`))
 
-	err := childInterrupter(t, a).InterruptChild("call_unknown")
+	err := childInterrupter(t, a).InterruptChild("call_unknown", agent.StopContext{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "call_unknown")
@@ -481,7 +481,7 @@ func TestQwenInterruptChildReportsAFailedTaskList(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	require.Error(t, childInterrupter(t, a).InterruptChild("call_1"))
+	require.Error(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}))
 }
 
 // A context clear stops the background work of the outgoing session: Qwen's
@@ -649,7 +649,7 @@ func TestQwenInterruptChildReportsAnUnreadableTaskList(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	err := childInterrupter(t, a).InterruptChild("call_1")
+	err := childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "task list")
@@ -669,7 +669,7 @@ func TestQwenInterruptChildReportsAFailedCancel(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	err := childInterrupter(t, a).InterruptChild("call_1")
+	err := childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{})
 
 	require.Error(t, err, "a cancel that Qwen could not run is a failed stop")
 	assert.Contains(t, err.Error(), "stop the Qwen subagent")
@@ -759,7 +759,7 @@ func TestQwenStoppedForegroundChildClosesAsStopped(t *testing.T) {
 			})
 			openForegroundSpawn(t, a, "call_1")
 			if tc.stop != nil {
-				err := childInterrupter(t, a).InterruptChild("call_1")
+				err := childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{})
 				if tc.stopErr {
 					require.Error(t, err)
 				} else {
@@ -783,7 +783,7 @@ func TestQwenStopOfAChildChangesNoOtherVerdict(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, qwenTaskResponder(qwenTaskFixture, `{"cancelled":true,"status":"running"}`))
 	openForegroundSpawn(t, a, "call_1")
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1"))
+	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}))
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_1","status":"completed","rawOutput":{"type":"task_execution","executionMode":"foreground","status":"completed","result":"Done."}}`))
 	row, _ := sink.BackgroundTask("call_1")
 	assert.Equal(t, bgtask.StatusCompleted, row.Status, "the work finished before the stop")
@@ -809,7 +809,7 @@ func TestQwenStoppedBackgroundChildClosesAsInterrupted(t *testing.T) {
 	// A path outside a subagents directory starts no reader, and the row still
 	// follows the child: the subject here is the row's end alone.
 	a.HandleOutput(backgroundLaunchResult(t, "/etc/passwd.jsonl"))
-	require.NoError(t, childInterrupter(t, a).InterruptChild("call_686a7e3e21"))
+	require.NoError(t, childInterrupter(t, a).InterruptChild("call_686a7e3e21", agent.StopContext{}))
 
 	a.HandleOutput(backgroundDone(t, "failed"))
 

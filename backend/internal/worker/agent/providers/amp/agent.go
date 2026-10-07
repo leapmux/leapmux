@@ -390,7 +390,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 // cancel, so the server can finish the turn with no executor attached.
 //
 // It does nothing when no turn runs.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.mu.Lock()
 	if a.stopped {
 		a.mu.Unlock()

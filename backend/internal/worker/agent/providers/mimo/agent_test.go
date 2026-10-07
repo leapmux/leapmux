@@ -100,7 +100,7 @@ func TestSendInputOnAStoppedAgent(t *testing.T) {
 	a.SetStoppedForTest(true)
 
 	assert.ErrorContains(t, a.SendInput("hello", nil), "stopped")
-	assert.ErrorContains(t, a.SendRawInput([]byte(`{}`)), "stopped")
+	assert.ErrorContains(t, a.SendRawInput([]byte(`{}`), agent.StopContext{}), "stopped")
 	assert.Empty(t, server.allRequests())
 }
 
@@ -276,6 +276,6 @@ func TestConcurrentCallsAndEvents(t *testing.T) {
 func TestSendRawInputRefusesAnUnknownRequest(t *testing.T) {
 	t.Parallel()
 	a, server := newTestAgent(t, nil)
-	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-permission:per_9")), "no pending request")
+	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-permission:per_9"), agent.StopContext{}), "no pending request")
 	assert.Empty(t, server.allRequests())
 }

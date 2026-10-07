@@ -53,7 +53,10 @@ func (a *Agent) beginPiCommand(method string, payload map[string]any) (func(time
 	}
 	data = append(data, '\n')
 
-	ch, release := a.Register(id)
+	ch, release, registerErr := a.Register(id)
+	if registerErr != nil {
+		return nil, fmt.Errorf("register %s: %w", method, registerErr)
+	}
 
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()

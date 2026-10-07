@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // sendInterruptControl stops the native child tasks and workflows also.
@@ -87,7 +88,7 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 			slog.Error("codebuddy: encode the interrupt refusal", "agent_id", a.AgentID(), "error", err)
 			return refused, err
 		}
-		if err := a.Process.SendRawInput(frame); err != nil {
+		if err := a.Process.SendRawInput(frame, agent.StopContext{}); err != nil {
 			return refused, err
 		}
 		refused = true
@@ -102,7 +103,7 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 
 // SendRawInput forwards one raw stdin frame. A control_response that answers a waiting
 // permission retires it, so an interrupt does not refuse it again.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	var frame struct {
 		Type     string `json:"type"`
 		Response struct {
@@ -112,11 +113,11 @@ func (a *Agent) SendRawInput(data []byte) error {
 	if json.Unmarshal(data, &frame) == nil && frame.Type == frameTypeControlResponse && frame.Response.RequestID != "" {
 		a.permissionWriteMu.Lock()
 		defer a.permissionWriteMu.Unlock()
-		if err := a.Process.SendRawInput(data); err != nil {
+		if err := a.Process.SendRawInput(data, stop); err != nil {
 			return err
 		}
 		a.forgetOpenPermission(frame.Response.RequestID)
 		return nil
 	}
-	return a.Process.SendRawInput(data)
+	return a.Process.SendRawInput(data, stop)
 }

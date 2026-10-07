@@ -73,7 +73,7 @@ func TestCodebuddyInterruptRefusesEachWaitingPermissionWithoutASecondStop(t *tes
 	a.HandleOutput(canUseTool("perm_a"))
 	require.Len(t, controls.PublishedControls(), 2)
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	frames := stdinFrames(t, stdin)
 	require.Len(t, frames, 2, "the native permission interrupt ends the turn without a competing stop")
@@ -82,7 +82,7 @@ func TestCodebuddyInterruptRefusesEachWaitingPermissionWithoutASecondStop(t *tes
 
 	// A second interrupt finds no waiting permission: each one was refused once.
 	stdin.Reset()
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, permissionRefusals(t, stdinFrames(t, stdin)))
 	assert.Empty(t, stdinFrames(t, stdin), "a competing stop waits for the native run to end")
 }
@@ -94,7 +94,7 @@ func TestCodebuddyInterruptRefusalStatesItsReason(t *testing.T) {
 	a, _, stdin := permissionFixture(t)
 	a.HandleOutput(canUseTool("perm_1"))
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	frames := stdinFrames(t, stdin)
 	require.NotEmpty(t, frames)
@@ -111,7 +111,7 @@ func TestCodebuddyInterruptKeepsAPermissionWhenItsRefusalFails(t *testing.T) {
 	a.HandleOutput(canUseTool("perm_1"))
 	a.SetStdinForTest(agenttest.FailingStdin{})
 
-	require.Error(t, a.Interrupt())
+	require.Error(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, controls.CanceledControls())
 	a.mu.Lock()
 	_, open := a.openPermissions["perm_1"]
@@ -148,7 +148,7 @@ func TestCodebuddyFailedRefusalDoesNotRestoreARetiredPermission(t *testing.T) {
 			a.HandleOutput(canUseTool("perm_1"))
 			failure := errors.New("the refusal write failed")
 			a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{retire: func() { retire(a) }, err: failure}))
-			require.ErrorIs(t, a.Interrupt(), failure)
+			require.ErrorIs(t, a.Interrupt(agent.StopContext{}), failure)
 			a.mu.Lock()
 			assert.Empty(t, a.openPermissions, "the failed write must not restore a retired permission")
 			a.mu.Unlock()
@@ -165,7 +165,7 @@ func TestCodebuddyRefusalSkipsAPermissionRetiredDuringAnEarlierWrite(t *testing.
 		retire: func() { a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"perm_b"}`)) },
 		output: stdin,
 	}))
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Equal(t, []string{"perm_a"}, permissionRefusals(t, stdinFrames(t, stdin)))
 	assert.Equal(t, []string{"perm_b", "perm_a"}, controls.CanceledControls())
 }
@@ -175,7 +175,7 @@ func TestCodebuddyFailedAnswerKeepsTheNativePermissionOpen(t *testing.T) {
 	a, _, _ := permissionFixture(t)
 	a.HandleOutput(canUseTool("perm_1"))
 	a.SetStdinForTest(agenttest.FailingStdin{})
-	require.Error(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)))
+	require.Error(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
 	a.mu.Lock()
 	_, open := a.openPermissions["perm_1"]
 	a.mu.Unlock()
@@ -188,7 +188,7 @@ func TestCodebuddyPermissionInterruptSendsGlobalStopAfterTheNativeRunEnds(t *tes
 	t.Parallel()
 	a, controls, stdin := permissionFixture(t)
 	a.HandleOutput(canUseTool("perm_1"))
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Len(t, stdinFrames(t, stdin), 1, "the SDK refusal precedes the global stop")
 
 	a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Permission denied for tool(s): Bash"]}`))
@@ -210,8 +210,8 @@ func TestCodebuddyPermissionInterruptHoldsACompetingStopUntilTheNativeRunEnds(t 
 	t.Parallel()
 	a, _, stdin := permissionFixture(t)
 	a.HandleOutput(canUseTool("perm_1"))
-	require.NoError(t, a.Interrupt())
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Len(t, stdinFrames(t, stdin), 1, "a competing stop must not replace the SDK refusal")
 }
 
@@ -219,7 +219,7 @@ func TestCodebuddyChildPermissionDoesNotDelayTheRootStop(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := permissionFixture(t)
 	a.HandleOutput(bytes.ReplaceAll(canUseTool("child_perm"), []byte(`"tool_use_id":"waiting-control"`), []byte(`"tool_use_id":"child-tool"`)))
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	frames := stdinFrames(t, stdin)
 	require.Len(t, frames, 1)
 	assert.Equal(t, frameTypeControlRequest, frames[0]["type"], "a child permission cannot hold the root's global stop")
@@ -233,7 +233,7 @@ func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 	for name, settle := range map[string]func(t *testing.T, a *Agent, controls *agenttest.ControlSink){
 		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
-			require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)))
+			require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
 		},
 		"the CLI withdrew it": func(_ *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
@@ -254,7 +254,7 @@ func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 			stdin.Reset()
 			canceled := len(controls.CanceledControls())
 
-			require.NoError(t, a.Interrupt())
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 			assert.Empty(t, permissionRefusals(t, stdinFrames(t, stdin)))
 			assert.Len(t, controls.CanceledControls(), canceled, "the interrupt withdraws no card")

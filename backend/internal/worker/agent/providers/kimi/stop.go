@@ -37,7 +37,7 @@ const kimiStopStepTimeout = 2 * time.Second
 
 // Interrupt aborts the main agent's running turn. A turn that is not running
 // needs nothing.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.turnActive
 	a.Mu.Unlock()

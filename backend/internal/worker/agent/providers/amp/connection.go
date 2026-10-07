@@ -82,7 +82,7 @@ func (p *ampProcess) markEnding() { p.exiting.Store(true) }
 
 // writeLine writes one JSON line to Amp's stdin.
 func (p *ampProcess) writeLine(line []byte) error {
-	if err := p.SendRawInput(line); err != nil {
+	if err := p.SendRawInput(line, agent.StopContext{}); err != nil {
 		return fmt.Errorf("deliver the message to amp: %w", err)
 	}
 	return nil

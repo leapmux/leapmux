@@ -644,6 +644,8 @@ func (h *OutputHandler) broadcastControlCancel(agentID, requestID, claimToken st
 // restart stays deduped because its claim survives, and a genuinely reissued request_id is disambiguated
 // per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
+	_, _, release := h.lockControlMutation(agentID, "")
+	defer release()
 	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
@@ -963,12 +965,6 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	}
 }
 
-// ReportInterruptIgnored restores the running state that InterruptAgent hid
-// while it waited for the provider to end the turn.
-func (s *agentOutputSink) ReportInterruptIgnored() {
-	s.h.NoteAgentInterruptIgnored(s.agentID, s.rootAgentID)
-}
-
 // RequeueDroppedInput queues the input as the reader's next message. It writes
 // the row that states why the message appears again only when this call added
 // the item, so a repeat of one drop writes nothing twice.
@@ -1061,20 +1057,54 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if request.SourceSeq < 0 {
 		return fmt.Errorf("control source sequence is negative")
 	}
-	// The database keeps the current token for an identical pending request.
-	// RETURNING supplies that token without a separate read that could race another write.
+	if !s.ownsControlPublisher() {
+		return nil
+	}
+	st, scope, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
+	defer release()
+	st.mu.Lock()
+	if scope.controlsStopped {
+		st.mu.Unlock()
+		return nil
+	}
+	previous, known := st.pendingControl[requestID]
+	st.mu.Unlock()
+	// The database owns persisted values. The live scope owns the request association.
+	// An unknown association starts a new instance, even when the persisted payload agrees.
+	// The SQLite generator omits a parameter used only in an ON CONFLICT predicate.
+	// Select the claim token before the store, which replaces the row in one statement.
+	current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read the pending control request: %w", err)
+	}
+	if !s.ownsControlPublisher() {
+		return nil
+	}
+	claimToken := id.Generate()
+	if err == nil && known && previous.scope == scope && previous.claimToken == current.ClaimToken &&
+		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+		claimToken = current.ClaimToken
+	}
 	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
 		AgentID:        s.agentID,
 		AgentSessionID: request.AgentSessionID,
 		RequestID:      requestID,
 		Payload:        payload,
-		ClaimToken:     id.Generate(),
+		ClaimToken:     claimToken,
 		SourceSeq:      request.SourceSeq,
 	})
 	if err != nil {
 		return fmt.Errorf("store control request: %w", err)
 	}
-	s.h.noteControlRequestAdded(s.agentID, s.rootAgentID, requestID, stored.ClaimToken)
+	st.mu.Lock()
+	if st.pendingControl == nil {
+		st.pendingControl = make(map[string]ownedControlRequest)
+	}
+	st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
+	st.mu.Unlock()
+	if !known || previous.claimToken != stored.ClaimToken {
+		s.h.refreshActivity(s.agentID, s.rootAgentID)
+	}
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
@@ -1087,6 +1117,8 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 }
 
 func (s *agentOutputSink) CancelControlRequest(requestID string) {
+	_, _, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
+	defer release()
 	request, err := s.h.queries.CancelControlRequest(bgCtx(), db.CancelControlRequestParams{AgentID: s.agentID, RequestID: requestID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return

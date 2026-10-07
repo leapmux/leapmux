@@ -141,7 +141,7 @@ func TestListAgents_ReportsStartingWhileAProcessIsReplaced(t *testing.T) {
 			require.Empty(t, w.errors)
 		}, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE},
 		{"a forced stop", func(t *testing.T, rig *processChangeRig, row db.Agent) {
-			require.NoError(t, rig.svc.forceStopAgentTurn(row))
+			require.NoError(t, rig.forceStop(row))
 		}, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE},
 		{"a clear of the context", func(t *testing.T, rig *processChangeRig, _ db.Agent) {
 			finish, err := rig.svc.prepareClearContext(rig.id)
@@ -192,7 +192,7 @@ func TestListAgents_ReportsNoStartingAfterAProcessChangeFails(t *testing.T) {
 		announced leapmuxv1.AgentStatus
 	}{
 		{"a forced stop", func(t *testing.T, rig *processChangeRig, row db.Agent) {
-			require.Error(t, rig.svc.forceStopAgentTurn(row))
+			require.Error(t, rig.forceStop(row))
 		}, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE},
 		{"a clear of the context", func(t *testing.T, rig *processChangeRig, _ db.Agent) {
 			_, err := rig.svc.prepareClearContext(rig.id)
@@ -254,4 +254,12 @@ func TestListAgents_ReportsStartingFromTheOpenToTheEndOfTheStartup(t *testing.T)
 	assert.False(t, rig.processAtLaunch[0])
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, rig.duringLaunch[0], "the launch of an open must read STARTING")
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, rig.listedStatusOf(opened.GetAgent().GetId()), "the process of the open runs after the startup")
+}
+
+func (r *processChangeRig) forceStop(row db.Agent) error {
+	r.t.Helper()
+	target, err := r.svc.Agents.CaptureStopTarget(r.id)
+	require.NoError(r.t, err)
+	stop := r.svc.Output.NoteAgentStopRequested(r.id, r.id)
+	return r.svc.forceStopAgentTurn(row, target, stop)
 }

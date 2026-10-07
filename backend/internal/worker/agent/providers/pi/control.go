@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // rememberOpenDialog records a published dialog that Pi waits on.
@@ -36,7 +37,7 @@ func (a *Agent) forgetOpenDialog(id string) {
 // `ui.input`. Pi's abort then waits until the agent is idle, and the agent waits on
 // the extension's tool, which waits on the dialog. Without this answer the turn never
 // ends, and the extension waits for ever.
-func (a *Agent) settleOpenDialogs() error {
+func (a *Agent) settleOpenDialogs(stop agent.StopContext) error {
 	a.dialogCancelMu.Lock()
 	defer a.dialogCancelMu.Unlock()
 	a.Mu.Lock()
@@ -54,7 +55,7 @@ func (a *Agent) settleOpenDialogs() error {
 	slices.Sort(ids)
 	var failures []error
 	for _, id := range ids {
-		if err := a.cancelOpenDialog(id); err != nil {
+		if err := a.cancelOpenDialog(id, stop); err != nil {
 			failures = append(failures, err)
 			continue
 		}
@@ -68,12 +69,12 @@ func (a *Agent) settleOpenDialogs() error {
 // cancelOpenDialog answers one dialog with a cancellation. It writes to the process
 // directly, because SendRawInput reads a response as the reader's own answer to a
 // question.
-func (a *Agent) cancelOpenDialog(id string) error {
+func (a *Agent) cancelOpenDialog(id string, stop agent.StopContext) error {
 	response, err := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": id, "cancelled": true})
 	if err != nil {
 		return fmt.Errorf("encode the Pi cancellation for dialog %s: %w", id, err)
 	}
-	if err := a.Process.SendRawInput(response); err != nil {
+	if err := a.Process.SendRawInput(response, stop); err != nil {
 		return fmt.Errorf("send the Pi cancellation for dialog %s: %w", id, err)
 	}
 	return nil

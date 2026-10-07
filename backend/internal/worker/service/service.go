@@ -145,10 +145,8 @@ type Service struct {
 	// them even if a handler panics.
 	Cleanup sync.WaitGroup
 
-	// forceStops holds the agent ids with an interrupt-escalation restart in
-	// flight. A stop press that lands while the replacement is still starting
-	// finds nothing running to interrupt, and the honest answer is the benign
-	// one -- the press that began the restart already carried this one's intent.
+	// forceStops shares a process replacement result for one captured process and turn scope.
+	// Closing the result channel publishes its error to every concurrent caller.
 	forceStops sync.Map
 
 	// Native tool changes can require a replacement before queued input runs.
@@ -649,7 +647,9 @@ func New(cfg Config) *Service {
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
-	svc.sendControlResponseFn = svc.Agents.SendRawInput
+	svc.sendControlResponseFn = func(agentID string, content []byte) error {
+		return svc.Agents.SendRawInput(agentID, content, agent.StopContext{})
+	}
 	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
 

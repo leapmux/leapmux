@@ -18,11 +18,11 @@ import (
 func TestInterruptAbortsTheRunningTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.Interrupt(), "no turn, nothing to abort")
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}), "no turn, nothing to abort")
 	assert.Empty(t, r.hub.commandsNamed(commandRunAbort))
 
 	requestID := r.startTurn(t, "Hello.")
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	abort, ok := r.hub.waitCommand(commandRunAbort)
 	require.True(t, ok)
 	assert.Equal(t, r.sessionID(), abort.SessionID)
@@ -38,7 +38,7 @@ func TestAnInterruptThatClineRefusesLeavesTheTurnAsItWas(t *testing.T) {
 	r := newRig(t)
 	requestID := r.startTurn(t, "Hello.")
 	r.hub.handle(commandRunAbort, func(fakeCommand) fakeReply { return fakeReply{Code: "busy", Message: "no"} })
-	require.Error(t, r.agent.Interrupt())
+	require.Error(t, r.agent.Interrupt(agent.StopContext{}))
 	r.endRun(t, requestID, contracts.ClineRunReasonError)
 	messages := r.sink.Messages()
 	assert.Equal(t, agent.MessageCompletionError, messages[len(messages)-1].Completion, "a failed interrupt interrupted nothing")
@@ -48,7 +48,7 @@ func TestInterruptRefusesAStoppedAgent(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.agent.Stop()
-	require.ErrorIs(t, r.agent.Interrupt(), errAgentStopped)
+	require.ErrorIs(t, r.agent.Interrupt(agent.StopContext{}), errAgentStopped)
 }
 
 func TestStopShutsTheDaemonDownAndEndsTheTurn(t *testing.T) {
@@ -211,7 +211,7 @@ func TestAnInterruptBeforeTheRunStartsAbortsItWhenItStarts(t *testing.T) {
 	sendErr := make(chan error, 1)
 	go func() { sendErr <- r.agent.SendInput("Hello.", nil) }()
 	requestID := <-sent
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	assert.Empty(t, r.hub.commandsNamed(commandRunAbort), "no run exists to abort yet")
 
 	r.emit(eventRunStarted, map[string]any{"requestId": requestID, "clientId": r.agent.clientID})
@@ -244,7 +244,7 @@ func TestAnInterruptEndsATurnThatHasNoRun(t *testing.T) {
 	r := newRig(t)
 	r.feed(t, eventAssistantDelta, map[string]any{"text": "late"})
 	require.True(t, r.turnActive(), "stray output opens a turn")
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	assert.False(t, r.turnActive(), "the interrupt ends the turn")
 	assert.Len(t, r.hub.commandsNamed(commandRunAbort), 1)
 	messages := r.sink.Messages()
@@ -266,7 +266,7 @@ func TestADeferredAbortThatFailsLeavesTheTurnAsItWas(t *testing.T) {
 	sendErr := make(chan error, 1)
 	go func() { sendErr <- r.agent.SendInput("Hello.", nil) }()
 	requestID := <-sent
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	r.emit(eventRunStarted, map[string]any{"requestId": requestID, "clientId": r.agent.clientID})
 	require.NoError(t, <-sendErr)
 	_, ok := r.hub.waitCommand(commandRunAbort)

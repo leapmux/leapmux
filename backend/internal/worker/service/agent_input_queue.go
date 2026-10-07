@@ -367,7 +367,7 @@ func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 // InterruptAgent RPC applies belong to a user STOP, and a stop-pause would hold
 // the very dispatch Preempt exists to unblock.
 func (a *agentInputQueueAdapter) Interrupt(agentID string) error {
-	err := a.svc.Agents.Interrupt(agentID)
+	err := a.svc.Agents.Interrupt(agentID, agent.StopContext{})
 	if errors.Is(err, agent.ErrAgentNotFound) {
 		return fmt.Errorf("agent is not running: %w", err)
 	}

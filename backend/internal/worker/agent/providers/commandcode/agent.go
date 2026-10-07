@@ -183,7 +183,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	return providerkit.ClassifyJSONRPCDeliveryError(methodTurnSteer, err)
 }
 
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	_, err := a.request(methodTurnInterrupt, nil, a.APITimeout())
 	return err
 }

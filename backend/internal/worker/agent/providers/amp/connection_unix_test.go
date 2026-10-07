@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -90,11 +90,11 @@ func newProcessHarnessWithShell(t *testing.T, shell string) *processHarness {
 	script := strings.NewReplacer("{{args}}", h.argsFile, "{{env}}", h.envFile).Replace(fakeAmpScript)
 	require.NoError(t, os.WriteFile(program, []byte(script), 0o755))
 
-	options := agent.Options{AgentID: "agent-proc", WorkingDir: t.TempDir(), Shell: shell, APITimeout: 30 * time.Second}
+	options := agentapi.Options{AgentID: "agent-proc", WorkingDir: t.TempDir(), Shell: shell, APITimeout: 30 * time.Second}
 	agentDir := agentdirtest.NewDir(t, agentDirSpec())
 	bridge, err := newPermissionBridge(agentDir.Path())
 	require.NoError(t, err)
-	h.agent = newAgent(options, agent.NewProviderServices(h.sink), launchConfig{
+	h.agent = newAgent(options, agentapi.NewProviderServices(h.sink), launchConfig{
 		opts:          options,
 		spec:          launch.Spec{Program: program},
 		helperEnv:     contracts.EnvAgentHelper + "=" + filepath.Join(agentDir.Path(), helperSpecFileName),
@@ -143,7 +143,7 @@ func TestProcessRunsATurnWithTheLaunchArguments(t *testing.T) {
 	h := newProcessHarness(t)
 	require.NoError(t, h.agent.SendInput("ping", nil))
 	ends := h.awaitTurnEnds(1)
-	assert.Equal(t, agent.MessageCompletionComplete, ends[0].Completion)
+	assert.Equal(t, agentapi.MessageCompletionComplete, ends[0].Completion)
 	assert.Equal(t, "T-fake", h.sink.LastSessionID(), "the init line states the thread")
 
 	settingsPath := filepath.Join(h.agent.launch.stateDir, settingsFileName)
@@ -164,15 +164,15 @@ func TestProcessInterruptEndsTheTurnAndTheNextMessageResumes(t *testing.T) {
 	require.NoError(t, h.agent.SendInput("hang", nil))
 	require.Eventually(t, func() bool { return h.sink.LastSessionID() == "T-fake" }, 30*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agentapi.StopContext{}))
 	ends := h.awaitTurnEnds(1)
-	assert.Equal(t, agent.MessageCompletionInterrupted, ends[0].Completion)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, ends[0].Completion)
 	h.awaitProcess(false)
 	assert.Empty(t, h.sink.Notifications(), "an interrupt is not an error")
 
 	require.NoError(t, h.agent.SendInput("ping", nil))
 	ends = h.awaitTurnEnds(2)
-	assert.Equal(t, agent.MessageCompletionComplete, ends[1].Completion)
+	assert.Equal(t, agentapi.MessageCompletionComplete, ends[1].Completion)
 	args := h.lines(h.argsFile)
 	assert.Equal(t, []string{"threads", "continue", "T-fake"}, args[:3])
 	assert.NotContains(t, args, "--no-archive-after-execute")
@@ -188,7 +188,7 @@ func TestProcessCrashShowsTheErrorAndResumesAtOnce(t *testing.T) {
 
 	require.NoError(t, h.agent.SendInput("crash", nil))
 	ends := h.awaitTurnEnds(2)
-	assert.Equal(t, agent.MessageCompletionError, ends[1].Completion)
+	assert.Equal(t, agentapi.MessageCompletionError, ends[1].Completion)
 	assert.Contains(t, string(ends[1].Content), "Error: boom")
 
 	// The resumed process is idle, so it answers the next message.
@@ -199,7 +199,7 @@ func TestProcessCrashShowsTheErrorAndResumesAtOnce(t *testing.T) {
 	h.awaitProcess(true)
 	require.NoError(t, h.agent.SendInput("ping again", nil))
 	ends = h.awaitTurnEnds(3)
-	assert.Equal(t, agent.MessageCompletionComplete, ends[2].Completion)
+	assert.Equal(t, agentapi.MessageCompletionComplete, ends[2].Completion)
 }
 
 // A stop during a turn ends the turn as interrupted, although Amp answers the
@@ -222,7 +222,7 @@ func TestProcessStopEndsTheProcess(t *testing.T) {
 		t.Fatal("the process outlived Stop")
 	}
 	ends := h.awaitTurnEnds(1)
-	assert.Equal(t, agent.MessageCompletionInterrupted, ends[0].Completion)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, ends[0].Completion)
 }
 
 // The user's Amp settings file is the one that Amp itself finds, which a shell
@@ -271,7 +271,7 @@ func TestProcessSettingsFileDelegatesInBothModes(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			h := newProcessHarness(t)
-			h.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: mode})
+			h.agent.UpdateSettings(map[string]string{agentapi.OptionIDPermissionMode: mode})
 			require.NoError(t, h.agent.SendInput("ping", nil))
 			h.awaitTurnEnds(1)
 			assert.JSONEq(t, delegateToHelper, h.generatedRules())
@@ -285,7 +285,7 @@ func TestProcessSettingsFileDelegatesInBothModes(t *testing.T) {
 func TestProcessSwitchToAskAsksAtTheVeryNextRequest(t *testing.T) {
 	t.Parallel()
 	h := newProcessHarness(t)
-	h.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll})
+	h.agent.UpdateSettings(map[string]string{agentapi.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll})
 	require.NoError(t, h.agent.SendInput("run-a-tool", nil))
 	require.Eventually(t, func() bool {
 		h.agent.mu.Lock()
@@ -302,7 +302,7 @@ func TestProcessSwitchToAskAsksAtTheVeryNextRequest(t *testing.T) {
 	assert.Equal(t, helperExitAllow, allowed.exitCode(t), "Allow All allows the call")
 	assert.Zero(t, h.sink.PublishedControlCount(), "Allow All shows no banner")
 
-	h.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAsk})
+	h.agent.UpdateSettings(map[string]string{agentapi.OptionIDPermissionMode: contracts.AmpPermissionModeAsk})
 	after, err := os.Stat(settingsPath)
 	require.NoError(t, err)
 	assert.True(t, os.SameFile(before, after), "the switch rewrites no settings file")
@@ -314,6 +314,6 @@ func TestProcessSwitchToAskAsksAtTheVeryNextRequest(t *testing.T) {
 	request := h.sink.LastPublishedControl()
 	assert.Equal(t, "TU-fake", permissionPayload(t, request.Payload).ToolUseID, "the banner is for the call")
 	asked.assertStillWaits(t)
-	require.NoError(t, h.agent.SendRawInput(controlAnswer(t, request.RequestID, agent.ControlBehaviorDeny, "")))
+	require.NoError(t, h.agent.SendRawInput(controlAnswer(t, request.RequestID, agentapi.ControlBehaviorDeny, ""), agentapi.StopContext{}))
 	assert.Equal(t, helperExitReject, asked.exitCode(t))
 }

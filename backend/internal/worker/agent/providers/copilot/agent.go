@@ -445,7 +445,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // The worker's InterruptAgent handler reads that refusal as "not running" and
 // says so; a nil here reported a stop that never happened, and the handler then
 // withdrew the prompts of a process that had already gone.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
 	if a.IsStopped() {

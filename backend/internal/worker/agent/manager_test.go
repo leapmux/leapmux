@@ -19,6 +19,20 @@ type stubProvider struct {
 	clearContextFn func() (string, error)
 }
 
+type nonComparableProvider struct {
+	agenttest.IdleAgent
+	values []string
+}
+
+func TestManagerAcceptsANonComparableProvider(t *testing.T) {
+	t.Parallel()
+	m := agent.NewManager(testRegistry, nil)
+	provider := nonComparableProvider{values: []string{"a provider value"}}
+	require.NotPanics(t, func() { m.PutAgentForTest("value", provider) })
+	assert.True(t, m.AgentAlive("value"))
+	assert.NotPanics(t, func() { m.LiveOptionGroups("value", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE) })
+}
+
 func (s *stubProvider) AgentID() string                                 { return "stub" }
 func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
 func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
@@ -30,10 +44,10 @@ func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachme
 func (s *stubProvider) PublishTurnActive() agent.TurnState {
 	return agent.TurnState{}
 }
-func (s *stubProvider) SendRawInput([]byte) error { return nil }
-func (s *stubProvider) Stop()                     {}
-func (s *stubProvider) IsStopped() bool           { return false }
-func (s *stubProvider) DiscardOutput()            {}
+func (s *stubProvider) SendRawInput(data []byte, stop agent.StopContext) error { return nil }
+func (s *stubProvider) Stop()                                                  {}
+func (s *stubProvider) IsStopped() bool                                        { return false }
+func (s *stubProvider) DiscardOutput()                                         {}
 func (s *stubProvider) ClearContext() (string, error) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()
@@ -50,7 +64,7 @@ func (s *stubProvider) SettingsSnapshot() agent.SettingsApplyResult {
 func (s *stubProvider) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(options)
 }
-func (s *stubProvider) Interrupt() error { return nil }
+func (s *stubProvider) Interrupt(stop agent.StopContext) error { return nil }
 
 func TestManager_ClearContextWaitsForLifecycleLock(t *testing.T) {
 	t.Parallel()

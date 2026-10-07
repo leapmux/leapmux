@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -100,7 +100,7 @@ func newClaudeInterruptRigResponding(t *testing.T, beforeAck []string, respond f
 			StderrDone:   make(chan struct{}),
 			APITimeout:   2 * time.Second,
 		}),
-		sink:           agent.NewProviderServices(sink),
+		sink:           agentapi.NewProviderServices(sink),
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	a.SkipStderr()
@@ -184,7 +184,7 @@ func TestClaudeCodeAgent_Interrupt_SendsControlRequest(t *testing.T) {
 
 	rig := newClaudeInterruptRig(t)
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agentapi.StopContext{}))
 
 	captured := rig.captured()
 	require.Len(t, captured, 1)
@@ -221,12 +221,12 @@ func TestClaudeCodeAgent_Interrupt_TheAbortedTurnStatesTheStop(t *testing.T) {
 	rig.agent.turnActive = true
 	rig.agent.Mu.Unlock()
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agentapi.StopContext{}))
 
 	require.Eventually(t, func() bool { return len(rig.sink.Messages()) > 0 }, time.Second, 5*time.Millisecond,
 		"the aborted turn stored no result")
 	messages := rig.sink.Messages()
-	assert.Equal(t, agent.MessageCompletionInterrupted, messages[len(messages)-1].Completion,
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, messages[len(messages)-1].Completion,
 		"the turn end states the stop the reader asked for, not the subtype's failure")
 }
 
@@ -242,7 +242,7 @@ func TestClaudeCodeAgent_Interrupt_ATurnThatFinishedFirstIsNotInterrupted(t *tes
 	rig.agent.turnActive = true
 	rig.agent.Mu.Unlock()
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agentapi.StopContext{}))
 
 	require.Eventually(t, func() bool { return len(rig.sink.Messages()) > 0 }, time.Second, 5*time.Millisecond,
 		"the finished turn stored no result")
@@ -259,7 +259,7 @@ func TestClaudeCodeAgent_Interrupt_OutsideATurnMarksNothing(t *testing.T) {
 
 	rig := newClaudeInterruptRigWithPreamble(t, nil)
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agentapi.StopContext{}))
 	rig.agent.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true}`))
 
 	messages := rig.sink.Messages()
@@ -275,7 +275,7 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	// Mark the agent stopped without driving the cmd lifecycle.
 	rig.agent.SetStoppedForTest(true)
 
-	err := rig.agent.Interrupt()
+	err := rig.agent.Interrupt(agentapi.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 }
@@ -289,7 +289,7 @@ func TestClaudeCodeAgent_InterruptChild_SendsStopTaskRequest(t *testing.T) {
 	rig := newClaudeInterruptRig(t)
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
 
-	require.NoError(t, rig.agent.InterruptChild("task-1"))
+	require.NoError(t, rig.agent.InterruptChild("task-1", agentapi.StopContext{}))
 
 	captured := rig.captured()
 	require.Len(t, captured, 1)
@@ -317,11 +317,11 @@ func TestClaudeCodeAgent_InterruptChild_TheStopTaskErrorSurfaces(t *testing.T) {
 	rig := newClaudeInterruptRigWithControlError(t, "no such task")
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-2","tool_use_id":"spawn-2","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
 
-	err := rig.agent.InterruptChild("task-2")
+	err := rig.agent.InterruptChild("task-2", agentapi.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no such task")
-	assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
-	assert.NotErrorIs(t, err, agent.ErrChildOperationUnsupported)
+	assert.NotErrorIs(t, err, agentapi.ErrChildRouteNotReady)
+	assert.NotErrorIs(t, err, agentapi.ErrChildOperationUnsupported)
 
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-2","tool_use_id":"spawn-2","status":"stopped"}`))
 	tasks := rig.sink.BackgroundTasks()
@@ -339,7 +339,7 @@ func TestClaudeCodeAgent_InterruptChild_TheClosingRowSaysInterrupted(t *testing.
 
 	rig := newClaudeInterruptRig(t)
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-3","tool_use_id":"spawn-3","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
-	require.NoError(t, rig.agent.InterruptChild("task-3"))
+	require.NoError(t, rig.agent.InterruptChild("task-3", agentapi.StopContext{}))
 
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-3","tool_use_id":"spawn-3","status":"stopped"}`))
 
@@ -362,7 +362,7 @@ func TestClaudeCodeAgent_InterruptChild_AStopThatLostTheRaceLeavesNoMark(t *test
 	rig := newClaudeInterruptRig(t)
 	a := rig.agent
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tu-spawn","task_type":"local_agent","description":"Explore the parser","prompt":"Find every caller."}`))
-	require.NoError(t, a.InterruptChild("task-1"))
+	require.NoError(t, a.InterruptChild("task-1", agentapi.StopContext{}))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tu-spawn","status":"completed","summary":"done"}`))
 	_, status, found, _ := rig.sink.LookupBackgroundTask("task-1")
 	require.True(t, found)
@@ -391,7 +391,7 @@ func TestClaudeCodeAgent_InterruptChild_AChildResultThatFinishedFirstIsNotInterr
 
 	rig := newClaudeInterruptRig(t)
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-r1","tool_use_id":"spawn-r1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
-	require.NoError(t, rig.agent.InterruptChild("task-r1"))
+	require.NoError(t, rig.agent.InterruptChild("task-r1", agentapi.StopContext{}))
 
 	rig.agent.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"spawn-r1","subtype":"success","is_error":false,"terminal_reason":"completed","result":"done"}`))
 
@@ -409,13 +409,13 @@ func TestClaudeCodeAgent_InterruptChild_AChildResultThatStatesTheAbortIsInterrup
 
 	rig := newClaudeInterruptRig(t)
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-r2","tool_use_id":"spawn-r2","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
-	require.NoError(t, rig.agent.InterruptChild("task-r2"))
+	require.NoError(t, rig.agent.InterruptChild("task-r2", agentapi.StopContext{}))
 
 	rig.agent.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"spawn-r2","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]}`))
 
 	messages := rig.sink.Child("child-of-spawn-r2").Messages()
 	require.NotEmpty(t, messages)
-	assert.Equal(t, agent.MessageCompletionInterrupted, messages[len(messages)-1].Completion)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, messages[len(messages)-1].Completion)
 	tasks := rig.sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status)
@@ -429,7 +429,7 @@ func TestClaudeCodeAgent_InterruptChild_NotificationBeforeAckSaysInterrupted(t *
 	})
 	rig.agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-5","tool_use_id":"spawn-5","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
 
-	require.NoError(t, rig.agent.InterruptChild("task-5"))
+	require.NoError(t, rig.agent.InterruptChild("task-5", agentapi.StopContext{}))
 
 	tasks := rig.sink.BackgroundTasks()
 	require.Len(t, tasks, 1)

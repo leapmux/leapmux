@@ -403,7 +403,7 @@ func (a *Agent) withdrawAllControls() {
 // ResolveControlResponse built the frame from the stored request, so the frame
 // carries every id its route needs. A frame whose request is no longer pending
 // is refused: the runtime settled it already, and its card is gone.
-func (a *Agent) SendRawInput(raw []byte) error {
+func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	a.Mu.Unlock()
@@ -416,7 +416,7 @@ func (a *Agent) SendRawInput(raw []byte) error {
 	}
 	switch frame.Frame {
 	case contracts.CodewhaleReplyFrameInterrupt:
-		return a.Interrupt()
+		return a.Interrupt(stop)
 	case contracts.CodewhaleReplyFrameApproval:
 		return a.sendApprovalReply(frame)
 	case contracts.CodewhaleReplyFrameUserInput:

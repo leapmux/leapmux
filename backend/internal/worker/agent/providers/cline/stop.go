@@ -31,7 +31,7 @@ const abortWait = 2 * time.Second
 //     a mode change applies. The mode change ends it, and the interrupt stops
 //     the plan continuation that would follow it (applyModeChange). No abort
 //     goes out: the rebuild detaches the session that it would reach.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -21,7 +21,7 @@ func TestClaudeSubagentHandbackPersistsOneSharedReportInBothTranscripts(t *testi
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newTestAgent(agent.NewProviderServices(sink))
+	agent := newTestAgent(agentapi.NewProviderServices(sink))
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Parser reviewer","prompt":"Inspect the parser."}`))
 	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"**Parser report**\n\n- Finding"}}]},"parent_tool_use_id":"spawn-1","task_description":"Parser reviewer"}`))
 	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Report delivered to your caller.\"}"}]}]},"parent_tool_use_id":"spawn-1"}`))
@@ -61,7 +61,7 @@ func TestClaudeSubagentHandbackRespectsTheDeliveryOutcome(t *testing.T) {
 	} {
 		t.Run(tc.outcome, func(t *testing.T) {
 			sink := &agenttest.Sink{}
-			agent := newTestAgent(agent.NewProviderServices(sink))
+			agent := newTestAgent(agentapi.NewProviderServices(sink))
 			agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
 			agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"Report"}}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
 			agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":"done"}]},"parent_tool_use_id":"spawn-1"}`))
@@ -84,7 +84,7 @@ func TestClaudeBackgroundSubagentHandbackUsesThePeerResultAndDropsTheChildEcho(t
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newTestAgent(agent.NewProviderServices(sink))
+	agent := newTestAgent(agentapi.NewProviderServices(sink))
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
 	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"handback-1","name":"SubagentHandback","input":{"message":"**Background report**\n\n- Finding"}}]},"parent_tool_use_id":"spawn-1","task_description":"Reviewer"}`))
 	agent.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"handback-1","type":"tool_result","content":"done"}]},"parent_tool_use_id":"spawn-1"}`))
@@ -108,7 +108,7 @@ func TestClaudePeerHandbackSurvivesMissingChildState(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newTestAgent(agent.NewProviderServices(sink))
+	agent := newTestAgent(agentapi.NewProviderServices(sink))
 	agent.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"done","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"SECURITY WARNING: review carefully\n[Subagent hand-back] The report follows:\n  **Recovered report**\n  \n  - Finding","handback":true,"flagged":true}}`))
 
 	reports := sink.LeapMuxNotifications()
@@ -123,7 +123,7 @@ func TestClaudePeerHandbackUsesEventIdentityAcrossRestarts(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newTestAgent(agent.NewProviderServices(sink))
+	agent := newTestAgent(agentapi.NewProviderServices(sink))
 	agent.HandleOutput([]byte(`{"type":"result","uuid":"report-1","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Draft report","handback":true}}`))
 	agent.HandleOutput([]byte(`{"type":"result","uuid":"report-2","origin":{"kind":"peer","from":"orphan-reviewer","senderTaskId":"unknown-task","body":"[Subagent hand-back] The report follows:\n  Corrected report","handback":true}}`))
 
@@ -134,7 +134,7 @@ func TestClaudePeerHandbackReplayKeepsOneEventIdentity(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newTestAgent(agent.NewProviderServices(sink))
+	agent := newTestAgent(agentapi.NewProviderServices(sink))
 	line := []byte(`{"type":"result","uuid":"report-1","origin":{"kind":"peer","from":"reviewer","senderTaskId":"task-1","body":"[Subagent hand-back] The report follows:\n  Report","handback":true}}`)
 	agent.HandleOutput(line)
 	agent.HandleOutput(line)
@@ -181,9 +181,9 @@ func TestClaude_InterruptChildWithoutChildSteering(t *testing.T) {
 
 	assert.False(t, claudeProvider{}.ChildCapabilities(nil).AcceptsMessages,
 		"Claude Code exposes no wire path that sends input to a subagent")
-	_, sendsDirectInput := any(&Agent{}).(agent.ChildSteerer)
+	_, sendsDirectInput := any(&Agent{}).(agentapi.ChildSteerer)
 	assert.False(t, sendsDirectInput, "the agent must not implement ChildSteerer")
-	_, interruptsChild := any(&Agent{}).(agent.ChildInterrupter)
+	_, interruptsChild := any(&Agent{}).(agentapi.ChildInterrupter)
 	assert.True(t, interruptsChild, "the CLI's stop_task control_request stops one subagent alone")
 }
 
@@ -197,16 +197,16 @@ func TestClaude_InterruptChildWithoutChildSteering(t *testing.T) {
 func TestClaude_InterruptChildWithoutALiveTaskReturnsRetryable(t *testing.T) {
 	t.Parallel()
 
-	a := newTestAgent(agent.NewProviderServices(&agenttest.Sink{}))
+	a := newTestAgent(agentapi.NewProviderServices(&agenttest.Sink{}))
 
-	require.ErrorIs(t, a.InterruptChild("task-unknown"), agent.ErrChildRouteNotReady)
-	require.ErrorIs(t, a.InterruptChild(""), agent.ErrChildRouteNotReady)
-	require.ErrorIs(t, a.InterruptChild("prestart:spawn-1"), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, a.InterruptChild("task-unknown", agentapi.StopContext{}), agentapi.ErrChildRouteNotReady)
+	require.ErrorIs(t, a.InterruptChild("", agentapi.StopContext{}), agentapi.ErrChildRouteNotReady)
+	require.ErrorIs(t, a.InterruptChild("prestart:spawn-1", agentapi.StopContext{}), agentapi.ErrChildRouteNotReady)
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
 	assert.True(t, a.tasks.knowsTask("task-1"), "a task_started of this process registers the route")
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed"}`))
-	require.ErrorIs(t, a.InterruptChild("task-1"), agent.ErrChildRouteNotReady,
+	require.ErrorIs(t, a.InterruptChild("task-1", agentapi.StopContext{}), agentapi.ErrChildRouteNotReady,
 		"a finished run has nothing to stop, and its row key alone is no route")
 }
 
@@ -219,7 +219,7 @@ func TestClaude_AForwardedEnvelopeBeforeTaskStartedOpensARunningRow(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
@@ -243,7 +243,7 @@ func TestClaude_TheLateTaskStartedRenamesTheReorderedRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"parent_tool_use_id": "tu-spawn",
@@ -273,7 +273,7 @@ func TestClaude_TaskStartedFirstOpensOneRowUnderTheTaskID(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 
 	a.HandleOutput([]byte(`{
 		"type": "system",
@@ -302,7 +302,7 @@ func TestClaude_TaskStartedPersistsThePromptAsTheChildsFirstMessage(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 
 	a.HandleOutput([]byte(`{
 		"type": "system",
@@ -337,7 +337,7 @@ func TestClaude_TaskStartedPersistsThePromptWithNoDescription(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -358,7 +358,7 @@ func TestClaude_TaskStartedWithoutAPromptPersistsNothing(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -377,7 +377,7 @@ func TestClaude_TaskStartedForAShellPersistsNoPrompt(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -406,7 +406,7 @@ func TestClaude_TaskNotificationWithOutputFileKeepsTheSubagentKind(t *testing.T)
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -441,7 +441,7 @@ func TestClaude_TaskNotificationWithOutputFileKeepsTheShellKind(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -470,7 +470,7 @@ func TestClaude_TaskNotificationWithOutputFileKeepsTheWorkflowKind(t *testing.T)
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -513,7 +513,7 @@ func TestClaude_BackgroundTasksChangedLeavesTheRegistryAlone(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -548,7 +548,7 @@ func TestClaude_TaskUpdatedDoesNotChangeTheRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -581,7 +581,7 @@ func TestClaude_TaskUpdatedForAnUnknownTaskCreatesNoRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_updated",
@@ -615,7 +615,7 @@ func TestClaude_ReplayedTaskStartedDoesNotDuplicateThePrompt(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	started := []byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -660,7 +660,7 @@ func TestClaude_AgentToolUseOpensNoSpan(t *testing.T) {
 			t.Parallel()
 
 			sink := &agenttest.Sink{}
-			a := newTestAgent(agent.NewProviderServices(sink))
+			a := newTestAgent(agentapi.NewProviderServices(sink))
 			a.HandleOutput([]byte(`{
 				"type": "assistant",
 				"message": {"role": "assistant", "content": [
@@ -689,7 +689,7 @@ func TestClaude_OrdinaryToolUseStillOpensASpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -709,7 +709,7 @@ func TestClaude_ParallelBlocksOpenOnlyTheNonSpawns(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -731,7 +731,7 @@ func TestClaude_AgentToolResultDrawsNoRail(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -760,7 +760,7 @@ func TestClaude_SpawnInsideOpenReadDrawsOneColumn(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -805,7 +805,7 @@ func TestClaude_WorkflowTaskStartedGivesTheSpanBack(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -848,7 +848,7 @@ func TestClaude_ShellTaskStartedKeepsTheSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -878,7 +878,7 @@ func TestClaude_AgentTaskStartedLeavesNoSpanOpen(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -915,7 +915,7 @@ func TestClaude_UnknownTaskTypeGivesTheSpanBack(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	// A spawning tool whose wire name is in no list, so its tool_use opens a span.
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
@@ -955,7 +955,7 @@ func TestClaude_WorkflowTaskStartedWithoutToolUseIDClosesNothing(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -980,7 +980,7 @@ func TestClaude_ChildTranscriptReservesUnderTheSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"parent_tool_use_id": "tu-spawn",
@@ -1004,7 +1004,7 @@ func TestClaude_SpawnRowUnderAnOpenParentStillTakesTheNeutralBorder(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {"role": "assistant", "content": [
@@ -1036,7 +1036,7 @@ func TestClaude_NestedSpawnOpensNoSpanInTheChildTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	// A forwarded envelope carries the spawning tool_use id, which routes it to
 	// the child transcript.
 	a.HandleOutput([]byte(`{
@@ -1146,7 +1146,7 @@ func TestClaude_SendMessageRevivesAFinishedSubagent(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -1176,7 +1176,7 @@ func TestClaude_ReviveDoesNotCloseTheSendMessageSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
@@ -1194,7 +1194,7 @@ func TestClaude_FirstTaskStartedStillClosesTheSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -1214,7 +1214,7 @@ func TestClaude_TaskStartedWithoutASendMessageDoesNotRevive(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -1234,7 +1234,7 @@ func TestClaude_SendMessageArmExpiresAtTheTurnEnd(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
@@ -1253,7 +1253,7 @@ func TestClaude_SendMessageToAnUnknownRecipientIsInert(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -1270,7 +1270,7 @@ func TestClaude_SendMessageToARunningSubagentDoesNotRevive(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -1295,7 +1295,7 @@ func TestClaude_SendMessageFromAChildTranscriptArms(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	// A DIFFERENT subagent sends the message, so the envelope is forwarded.
@@ -1338,7 +1338,7 @@ func TestClaude_AChildArmSurvivesTheRootTurnEnd(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageFromChild(a, "tu-other-spawn", "tu-send", "task-1")
@@ -1355,7 +1355,7 @@ func TestClaude_AChildArmExpiresAtTheChildTurnEnd(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageFromChild(a, "tu-other-spawn", "tu-send", "task-1")
@@ -1376,7 +1376,7 @@ func TestClaude_AChildTurnEndKeepsTheRootArms(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
@@ -1415,7 +1415,7 @@ func TestClaude_RestartedSubagentOutputStaysInOneTranscript(t *testing.T) {
 			t.Parallel()
 
 			sink := &agenttest.Sink{}
-			a := newTestAgent(agent.NewProviderServices(sink))
+			a := newTestAgent(agentapi.NewProviderServices(sink))
 			child := spawnAndFinishSubagent(t, a, sink)
 			before := len(child.Messages())
 
@@ -1445,7 +1445,7 @@ func TestClaude_ReviveWithoutAPromptStillReopensTheRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -1462,7 +1462,7 @@ func TestClaude_OneSendMessageArmsOneRevive(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
@@ -1485,7 +1485,7 @@ func TestClaude_SendMessageArmsEveryRecipientInOneMessage(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	for _, spawn := range []string{"tu-spawn-a", "tu-spawn-b"} {
 		a.HandleOutput([]byte(`{
 			"type": "system", "subtype": "task_started",
@@ -1532,7 +1532,7 @@ func TestClaude_SendMessageWithUnreadableInputArmsNothing(t *testing.T) {
 		`{"to": "", "message": "blank recipient"}`,
 	} {
 		sink := &agenttest.Sink{}
-		a := newTestAgent(agent.NewProviderServices(sink))
+		a := newTestAgent(agentapi.NewProviderServices(sink))
 		spawnAndFinishSubagent(t, a, sink)
 
 		a.HandleOutput([]byte(`{
@@ -1556,7 +1556,7 @@ func TestClaude_AnUnreadableRegistryDoesNotFreeTheSendMessageSpan(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{LookupErr: errors.New("database is locked")}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 
 	sendMessageTo(a, "tu-send", "task-1")
 	require.Contains(t, spanIDs(sink.OpenSpans()), "tu-send")
@@ -1578,7 +1578,7 @@ func TestClaude_ReviveWithAnUnlinkedRowOpensNoSecondTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 	// The child transcript exists; only the row's linkage to it is missing.
@@ -1612,7 +1612,7 @@ func TestClaude_ATaskStartedThatResolvesNoChildKeepsTheArm(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	sink.UnlinkBackgroundTask("task-1")
 
@@ -1632,7 +1632,7 @@ func TestClaude_ARestartedResultUnderTheSpawnSpanClosesTheRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
@@ -1684,7 +1684,7 @@ func TestClaude_AShellWakeRevivesTheSubagentWithoutAMessage(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 	finishShellTask(a, "shell-1")
@@ -1708,7 +1708,7 @@ func TestClaude_AWakeNamingAnUnseenShellDoesNotRevive(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	a.HandleOutput([]byte(`{
@@ -1763,7 +1763,7 @@ func TestClaude_AOneLineWakeBlockRevivesTheRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	finishShellTask(a, "shell-7")
 
@@ -1789,7 +1789,7 @@ func TestClaude_ReviveResolvesTheChildFromTheRegistryRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -1809,7 +1809,7 @@ func TestClaude_AFailedReviveKeepsTheMessageAndRearms(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{ReviveErr: errors.New("database is locked")}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -1834,7 +1834,7 @@ func TestClaude_ASiblingSendOpensNoSecondTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	// The sender: a second, still-running subagent of the same root.
 	a.HandleOutput([]byte(`{
@@ -1859,7 +1859,7 @@ func TestClaude_ASiblingSendKeepsItsSpanOpen(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	a.HandleOutput([]byte(`{
 		"type": "system", "subtype": "task_started",
@@ -1883,7 +1883,7 @@ func TestClaude_ASecondSenderDoesNotCancelTheFirstsArm(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	a.HandleOutput([]byte(`{
 		"type": "system", "subtype": "task_started",
@@ -1914,7 +1914,7 @@ func TestClaude_AWakeNamingASubagentIsNotProof(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	// task-1 is a finished SUBAGENT, not a shell. A replayed prompt that carries
@@ -1941,7 +1941,7 @@ func TestClaude_AnUnreadableRegistryKeepsThePromptTitleForAFirstStart(t *testing
 	t.Parallel()
 
 	sink := &agenttest.Sink{LookupErr: errors.New("database is locked")}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 
 	a.HandleOutput([]byte(`{
 		"type": "system", "subtype": "task_started",
@@ -1967,7 +1967,7 @@ func TestClaude_AWakeBlockNeverBecomesTheRowTitle(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{LookupErr: errors.New("database is locked")}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	finishShellTask(a, "shell-7")
 
 	a.HandleOutput([]byte(`{
@@ -2134,7 +2134,7 @@ func TestClaude_AFirstStartRenamesItsPreStartRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 
 	// The reorder: the subagent talks before the CLI announces it.
 	a.HandleOutput([]byte(`{
@@ -2174,7 +2174,7 @@ func TestClaude_ARestartReorderOpensNoPreStartRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
@@ -2206,11 +2206,11 @@ func TestClaude_ARestartWithNoPerProcessEvidenceStillKeepsOneRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	spawnAndFinishSubagent(t, newTestAgent(agent.NewProviderServices(sink)), sink)
+	spawnAndFinishSubagent(t, newTestAgent(agentapi.NewProviderServices(sink)), sink)
 
 	// A fresh agent over the SAME sink models the worker restart: the registry row
 	// and the child row survive, the tool_use index and childTask do not.
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
 		"parent_tool_use_id": "tu-spawn",
@@ -2234,7 +2234,7 @@ func TestClaude_ARestartCallIsRefusedAfterTheTurnEnd(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	sink.UnlinkBackgroundTask("task-1")
 
@@ -2256,7 +2256,7 @@ func TestClaude_ARestartSurvivesAnUnreadableSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{SpawnSpanErr: errors.New("boom")}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
@@ -2287,7 +2287,7 @@ func TestClaude_ARestartOfAnUnlinkedRowOpensNoChildUnderTheRestartCall(t *testin
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	a := newTestAgent(agentapi.NewProviderServices(sink))
 	spawnAndFinishSubagent(t, a, sink)
 	sink.UnlinkBackgroundTask("task-1")
 
@@ -2344,7 +2344,7 @@ func TestClaude_RestartedSubagentKeepsOneRegistryRow(t *testing.T) {
 			t.Parallel()
 
 			sink := &agenttest.Sink{}
-			a := newTestAgent(agent.NewProviderServices(sink))
+			a := newTestAgent(agentapi.NewProviderServices(sink))
 			spawnAndFinishSubagent(t, a, sink)
 			tc.restart(a)
 			a.HandleOutput([]byte(`{

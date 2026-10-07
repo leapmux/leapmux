@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,18 +14,18 @@ import (
 func TestCursorRefusesEmbeddedBlobAttachments(t *testing.T) {
 	t.Parallel()
 	provider := Registration().Plugin
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindText, agent.AttachmentKindImage} {
-		assert.NoError(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), kind)
+	for _, kind := range []agentapi.AttachmentKind{agentapi.AttachmentKindText, agentapi.AttachmentKindImage} {
+		assert.NoError(t, provider.ValidateAttachment(agentapi.ClassifiedAttachment{Kind: kind, Filename: "input"}), kind)
 	}
-	for _, kind := range []agent.AttachmentKind{agent.AttachmentKindPDF, agent.AttachmentKindBinary} {
-		assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: kind, Filename: "input"}), string(kind))
+	for _, kind := range []agentapi.AttachmentKind{agentapi.AttachmentKindPDF, agentapi.AttachmentKindBinary} {
+		assert.ErrorContains(t, provider.ValidateAttachment(agentapi.ClassifiedAttachment{Kind: kind, Filename: "input"}), string(kind))
 	}
 }
 
 func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T) {
 	t.Parallel()
 
-	res := cursorProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
 			"id":7,
@@ -60,7 +60,7 @@ func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T)
 func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 	t.Parallel()
 
-	res := cursorProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
 			"id":"plan-7",
@@ -93,7 +93,7 @@ func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t *testing.T) {
 	t.Parallel()
 
-	res := cursorProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
 			"id":"plan-7",
@@ -128,7 +128,7 @@ func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *test
 	// falls through to the ACP permission context -- which has no options, so it degrades to
 	// method-only. The raw response is forwarded unchanged.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"rejected","reason":"No"}}}`)
-	res := cursorProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
 			"id":7,
@@ -145,7 +145,7 @@ func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *test
 func TestCursorProviderForwardsAQuestionAnswerUnchanged(t *testing.T) {
 	t.Parallel()
 	response := []byte(`{"id":7,"result":{"outcome":{"outcome":"answered","answers":[{"questionId":"color","selectedOptionIds":["red"]}]}}}`)
-	res := cursorProvider{}.ResolveControlResponse(agent.ControlResponseContext{
+	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
 		RequestPayload:  []byte(`{"id":7,"method":"cursor/ask_question","params":{}}`),
 		ResponseContent: response,
 	})
@@ -158,14 +158,14 @@ func TestCursorProviderForwardsAQuestionAnswerUnchanged(t *testing.T) {
 func TestCursorPlanRequestCarriesARejectedCancelAnswer(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
-	agent := newCursorAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCursorAgentWithSink(agentapi.NewProviderServices(sink))
 	var stdin bytes.Buffer
 	agent.SetStdinForTest(agenttest.NopStdin(&stdin))
 	agent.SetSessionIDForTest("session-1")
 	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`))
 	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":8,"method":"cursor/ask_question","params":{}}`))
 	require.Len(t, sink.PublishedControls(), 2)
-	require.NoError(t, agent.Interrupt())
+	require.NoError(t, agent.Interrupt(agentapi.StopContext{}))
 	answers := agenttest.JSONRPCResultsByID(t, stdin.String())
 	assert.JSONEq(t, `{"outcome":{"outcome":"rejected"}}`, answers[`7`])
 	assert.NotContains(t, answers, `8`, "Cursor defines no outcome for a withdrawn question")

@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestZCodeInterrupt_KeepsTheTurnAliveWhileTheAgentStillSpeaks(t *testing.T) 
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	a.Mu.Lock()
 	turnActive := a.turnActive
@@ -83,7 +84,7 @@ func TestZCodeInterrupt_ASessionEventRefreshesTheFallback(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed)
 
 	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"still working"}}}}`)))
@@ -123,7 +124,7 @@ func TestZCodeClearContext_DropsTheStoppedTurnWindow(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.cancelStoppedZCodeTurn()
 
 	a.Mu.Lock()
@@ -156,7 +157,7 @@ func TestZCodeStoppedTurn_WritesARowForTheStop(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed)
 
 	// The app-server stays silent, so the window expires.
@@ -185,7 +186,7 @@ func TestZCodeStoppedTurn_KeepsTheSpansOfWorkStillRunning(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	timer.fire()
 
 	assert.Zero(t, sink.ResetSpanCount(), "a call still running keeps the span its update needs")
@@ -206,7 +207,7 @@ func TestZCodeStoppedTurn_WritesNoRowWhenTheTurnReportsItsOwnEnd(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"turn.completed","payload":{"resultType":"cancelled","duration":900}}}}`)))
 
 	a.Mu.Lock()
@@ -265,7 +266,7 @@ func TestZCodeStoppedTurn_WritesNoRowAfterTheTurnAlreadyEnded(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed)
 
 	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"turn.completed","payload":{"resultType":"cancelled","duration":900}}}}`)))
@@ -289,7 +290,7 @@ func TestZCodeStoppedTurn_WritesNoIgnoredRowInsideTheGrace(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	handleZCodeOutput(a, providerkit.ParseLine([]byte(`{"method":"session/event","params":{"sessionId":"sess-1","event":{"type":"text.delta","payload":{"text":"winding down"}}}}`)))
 
@@ -315,7 +316,8 @@ func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testin
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	var ignored atomic.Int32
+	require.NoError(t, a.Interrupt(agent.NewStopContext(func() { ignored.Add(1) })))
 	// The accepted stop is now older than the grace, exactly as a live run is
 	// by the time the ignored turn's next frame arrives.
 	a.Mu.Lock()
@@ -329,7 +331,7 @@ func TestZCodeStoppedTurn_WritesOneIgnoredRowWhenTheAgentKeepsSpeaking(t *testin
 	require.Len(t, notifications, 1, "one row per accepted stop, however many frames follow")
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notifications[0].Source)
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeStopIgnored+`"}`, string(notifications[0].Content))
-	assert.Equal(t, 1, sink.InterruptIgnoredReports(),
+	assert.Equal(t, int32(1), ignored.Load(),
 		"the ignored interrupt restores the activity that makes another Interrupt available")
 }
 
@@ -339,9 +341,10 @@ func TestZCodeStoppedTurn_ReportsTheIgnoredInterruptWhenTheNotificationWriteFail
 	sink := &failingZCodeNotificationSink{Sink: &agenttest.Sink{}}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
 
-	a.persistZCodeStopIgnoredRow()
+	var ignored atomic.Int32
+	a.persistZCodeStopIgnoredRow([]agent.StopContext{agent.NewStopContext(func() { ignored.Add(1) })})
 
-	assert.Equal(t, 1, sink.InterruptIgnoredReports(),
+	assert.Equal(t, int32(1), ignored.Load(),
 		"a transcript failure must not leave the Interrupt button hidden")
 	assert.Empty(t, sink.PersistedNotifications())
 }
@@ -364,7 +367,7 @@ func TestZCodeInterruptEscalationReady(t *testing.T) {
 	assert.False(t, a.InterruptEscalationReady(), "no stop has been accepted yet")
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.False(t, a.InterruptEscalationReady(), "a stop inside its grace has not been judged yet")
 
 	a.Mu.Lock()
@@ -393,7 +396,7 @@ func TestZCodeStop_WritesTheStopRowWhenAStopWasPending(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	// Stop's own final session/stop, and its wait for the process it tears down.
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
@@ -425,7 +428,7 @@ func TestZCodeStop_WritesOneStopRowWhenTheWindowFiresDuringTheStop(t *testing.T)
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed, "the stop arms the silence window")
 	fire := timer.fire
 	require.NotNil(t, fire)

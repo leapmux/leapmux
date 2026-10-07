@@ -2088,11 +2088,11 @@ func TestActivity_ARefusedStopPutsTheIndicatorBack(t *testing.T) {
 	h, rec := newActivityHandler(t, "agent-1")
 	settles := holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.NoteAgentStopRequested("agent-1", "agent-1")
+	stop := h.NoteAgentStopRequested("agent-1", "agent-1")
 	h.WaitActivityRefreshes()
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 
-	h.NoteAgentStopFailed("agent-1", "agent-1")
+	stop.Failed()
 	h.WaitActivityRefreshes()
 
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates(), "the turn never stopped")
@@ -2110,14 +2110,12 @@ func TestActivity_AnIgnoredInterruptPutsTheIndicatorAndButtonBack(t *testing.T) 
 	h, rec := newActivityHandler(t, "agent-1")
 	holdSettles(t, h)
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.NoteAgentStopRequested("agent-1", "agent-1")
+	stop := h.NoteAgentStopRequested("agent-1", "agent-1")
 	h.WaitActivityRefreshes()
 	require.Equal(t, []bool{true, false}, rec.busyStates())
 
-	reporter := agent.NewProviderServices(&agentOutputSink{
-		h: h, agentID: "agent-1", rootAgentID: "agent-1",
-	})
-	reporter.ReportInterruptIgnored()
+	reporter := stop.Context()
+	reporter.ReportIgnored()
 	h.WaitActivityRefreshes()
 
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
@@ -2125,7 +2123,7 @@ func TestActivity_AnIgnoredInterruptPutsTheIndicatorAndButtonBack(t *testing.T) 
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
 		h.AgentActivitySnapshot("agent-1", "agent-1").State)
 
-	reporter.ReportInterruptIgnored()
+	reporter.ReportIgnored()
 	h.WaitActivityRefreshes()
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
 		"a duplicate report publishes no duplicate activity transition")

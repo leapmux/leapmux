@@ -406,7 +406,7 @@ func (a *Agent) Wait() error {
 // With no turn active it sends no abort, so scripts can invoke it without
 // probing currentTurnActive first. It still answers each open dialog,
 // because no abort settles a dialog that waits outside a turn.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.noteInterruptRequested()
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
@@ -417,13 +417,13 @@ func (a *Agent) Interrupt() error {
 		return fmt.Errorf("agent is stopped")
 	}
 	if !turnActive {
-		return a.settleOpenDialogs()
+		return a.settleOpenDialogs(stop)
 	}
 	wait, err := a.beginPiCommand(CommandAbort, nil)
 	if err != nil {
 		return err
 	}
-	settleErr := a.settleOpenDialogs()
+	settleErr := a.settleOpenDialogs(stop)
 	// Short timeout — Pi acks aborts quickly; longer waits would just
 	// extend the apparent latency of a user-driven interrupt.
 	_, err = wait(1 * time.Second)

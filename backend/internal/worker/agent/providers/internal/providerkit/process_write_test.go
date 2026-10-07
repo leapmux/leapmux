@@ -41,7 +41,7 @@ func TestRawInputReportsPartialDelivery(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			process := &Process{stdin: partialStdinWriter{written: test.written, err: test.err}}
-			err := process.SendRawInput([]byte("abc\n"))
+			err := process.SendRawInput([]byte("abc\n"), agent.StopContext{})
 			if test.want == nil {
 				require.NoError(t, err)
 			} else {

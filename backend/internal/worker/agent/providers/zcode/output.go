@@ -241,6 +241,8 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	background := payload.InputSource != ""
 
 	a.Mu.Lock()
+	a.turnGeneration++
+	a.cancelStoppedZCodeTurnLocked()
 	a.turnActive = true
 	a.backgroundTurn = background
 	if !background {

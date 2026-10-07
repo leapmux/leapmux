@@ -308,7 +308,7 @@ func TestQuestionResponseTravelsAsATaskNotification(t *testing.T) {
 
 	// The text holds the three characters that Letta Code escapes in XML, and quotes that it keeps.
 	response := `{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":[{"question":"Use <b> & \"x\"?","header":"Tag","options":[{"label":"Yes","description":"Use it"},{"label":"No","description":"Skip it"}]}],"status":"answered","answers":{"Use <b> & \"x\"?":"Yes"}}`
-	require.NoError(t, a.SendRawInput([]byte(response)))
+	require.NoError(t, a.SendRawInput([]byte(response), agent.StopContext{}))
 
 	command := fake.nextCommand(t)
 	require.Equal(t, "input", command["type"])
@@ -331,7 +331,7 @@ func TestQuestionDismissalTravelsAsATaskNotification(t *testing.T) {
 	t.Parallel()
 	fake, a := openedAgent(t)
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"dismissed"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"dismissed"}`), agent.StopContext{}))
 
 	payload := inputPayload(t, fake)
 	messages, ok := payload["messages"].([]any)
@@ -356,7 +356,7 @@ func TestQuestionResponseThatLettaWouldRefuseIsNotSent(t *testing.T) {
 		"another version":          `{"type":"ask_user_question_response","version":1,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"dismissed"}`,
 		"no call":                  `{"type":"ask_user_question_response","version":2,"questions":` + lettaColorQuestions + `,"status":"dismissed"}`,
 	} {
-		assert.Error(t, a.SendRawInput([]byte(response)), name)
+		assert.Error(t, a.SendRawInput([]byte(response), agent.StopContext{}), name)
 	}
 	select {
 	case command := <-fake.commands:
@@ -434,7 +434,7 @@ func TestQueuedQuestionAnswerEchoIsNotARow(t *testing.T) {
 	sink := &agenttest.Sink{}
 	fake, a := openedAgentWithSink(t, sink)
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"answered","answers":{"Which color do you prefer?":"Red"}}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"answered","answers":{"Which color do you prefer?":"Red"}}`), agent.StopContext{}))
 	payload := inputPayload(t, fake)
 	id := sentClientMessageID(t, payload)
 	require.True(t, isLeapMuxClientMessageID(id), "the answer states a LeapMux id: %q", id)
@@ -475,7 +475,7 @@ func TestEchoOfEveryAnswerLeapMuxSendsIsNoRow(t *testing.T) {
 			sink := &agenttest.Sink{}
 			fake, a := openedAgentWithSink(t, sink)
 
-			require.NoError(t, a.SendRawInput([]byte(response)))
+			require.NoError(t, a.SendRawInput([]byte(response), agent.StopContext{}))
 			payload := inputPayload(t, fake)
 			id := sentClientMessageID(t, payload)
 			text := sentMessageText(t, payload)
@@ -507,7 +507,7 @@ func TestEchoOfAQuestionAnswerStatesTheIDOfTheAnswer(t *testing.T) {
 	sink := &agenttest.Sink{}
 	fake, a := openedAgentWithSink(t, sink)
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"dismissed"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"dismissed"}`), agent.StopContext{}))
 	id := sentClientMessageID(t, inputPayload(t, fake))
 	require.True(t, isLeapMuxClientMessageID(id), "the answer states a LeapMux id: %q", id)
 

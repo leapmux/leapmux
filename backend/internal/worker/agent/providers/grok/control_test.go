@@ -112,7 +112,7 @@ func TestGrokResolvedInteractionLeavesAnAnsweredCardAlone(t *testing.T) {
 	// The reader answers. The answer retires the record of the request.
 	answer, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 9, "result": map[string]any{"outcome": "accepted", "answers": map[string]any{}}})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 	syncPeer(t, a)
 
 	// Grok echoes the resolution for the reader's own answer too.
@@ -188,7 +188,7 @@ func TestGrokInterruptAnswersEachDialogOfTheTurn(t *testing.T) {
 	require.Equal(t, 4, sink.PublishedControlCount())
 
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	syncPeer(t, a)
 
 	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
@@ -248,7 +248,7 @@ func TestGrokClearContextReleasesThePlanApprovalOfTheOutgoingSession(t *testing.
 	assert.Equal(t, []string{grokTestSession}, sessionIDs(requestsFor(requests(), acp.MethodSessionClose)))
 
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	syncPeer(t, a)
 	assert.Equal(t, []string{grokTestSession, "session-2"}, sessionIDs(requestsFor(requests(), acp.MethodSessionCancel)))
 	assert.Equal(t, 1, answerCount(t, requests(), 30), "the later stop answers nothing of the old session")
@@ -309,7 +309,7 @@ func TestGrokResolutionInAnotherSessionLeavesTheCardOpen(t *testing.T) {
 	assert.Equal(t, []string{"jsonrpc:12"}, sink.CanceledControls())
 
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	syncPeer(t, a)
 	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
 	assert.JSONEq(t, `{"outcome":{"outcome":"cancelled"}}`, answers["11"], "the stop still releases the parent turn")

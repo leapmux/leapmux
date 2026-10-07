@@ -69,12 +69,15 @@ type stoppedTurnWindow struct {
 	// it and an open clears it; an ARM keeps it, because the window an arm swaps in
 	// watches the same accepted stop the old one did.
 	notified bool
+	// contexts identify each native stop that this window observes.
+	contexts []agent.StopContext
 }
 
-// open stamps a newly accepted stop. Interrupt alone calls it, before it arms.
-func (w *stoppedTurnWindow) open(now time.Time) {
+// open records a stop that Interrupt or SendRawInput received a native acknowledgement for.
+func (w *stoppedTurnWindow) open(now time.Time, stop agent.StopContext) {
 	w.armedAt = now
 	w.notified = false
+	w.contexts = append(w.contexts, stop)
 }
 
 // arm swaps in a fresh timer and returns the generation it owns.
@@ -101,6 +104,7 @@ func (w *stoppedTurnWindow) cancel() {
 	w.generation++
 	w.armedAt = time.Time{}
 	w.notified = false
+	w.contexts = nil
 }
 
 // armed reports whether a stop is being watched now.
@@ -171,13 +175,16 @@ func (a *Agent) refreshStoppedZCodeTurn() {
 		return
 	}
 	notifyIgnored := !a.stopWindow.notified && a.stopWindow.provenIgnored(zcodeStopIgnoredGrace)
+	var contexts []agent.StopContext
 	if notifyIgnored {
 		a.stopWindow.notified = true
+		contexts = a.stopWindow.contexts
+		a.stopWindow.contexts = nil
 	}
 	a.armStoppedZCodeTurnLocked()
 	a.Mu.Unlock()
 	if notifyIgnored {
-		a.persistZCodeStopIgnoredRow()
+		a.persistZCodeStopIgnoredRow(contexts)
 	}
 }
 
@@ -199,9 +206,10 @@ func (a *Agent) cancelStoppedZCodeTurnLocked() {
 // A no-op when no turn is active, so a caller need not probe first. session/stop
 // is the same request Stop issues; the app-server aborts the turn's controller and
 // replies with an empty object.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive || a.compactionSessionID != "", a.sessionID
+	generation := a.turnGeneration
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
@@ -218,12 +226,56 @@ func (a *Agent) Interrupt() error {
 	// ran between them saw a fresh armedAt with no window armed -- the half-applied
 	// state that stopProvenIgnoredLocked must never observe.
 	a.Mu.Lock()
-	if !a.turnActive && a.compactionSessionID == "" {
+	if a.turnGeneration != generation || a.sessionID != sessionID || (!a.turnActive && a.compactionSessionID == "") {
 		a.Mu.Unlock()
 		return nil
 	}
-	a.stopWindow.open(time.Now())
+	a.stopWindow.open(time.Now(), stop)
 	a.armStoppedZCodeTurnLocked()
+	a.Mu.Unlock()
+	return nil
+}
+
+// SendRawInput observes native stop replies without changing the caller's frame.
+// A stop request requires its native integer ID and the current native session.
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+	var method struct {
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(data, &method) != nil || method.Method != MethodSessionStop {
+		return a.Process.SendRawInput(data, stop)
+	}
+	var frame struct {
+		ID     *int64 `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			SessionID string `json:"sessionId"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(data, &frame) != nil {
+		return fmt.Errorf("decode ZCode stop request")
+	}
+	if frame.ID == nil {
+		return fmt.Errorf("ZCode stop request has no integer ID")
+	}
+	a.Mu.Lock()
+	sessionID, generation := a.sessionID, a.turnGeneration
+	active := a.turnActive || a.compactionSessionID != ""
+	a.Mu.Unlock()
+	if frame.Params.SessionID == "" || frame.Params.SessionID != sessionID {
+		return agent.ErrInputSessionChanged
+	}
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	if _, err := a.sendZCodeFrame(*frame.ID, MethodSessionStop, data, zcodeStopTimeout); err != nil {
+		return err
+	}
+	a.Mu.Lock()
+	if active && a.turnGeneration == generation && a.sessionID == sessionID && (a.turnActive || a.compactionSessionID != "") {
+		a.stopWindow.open(time.Now(), stop)
+		a.armStoppedZCodeTurnLocked()
+	}
 	a.Mu.Unlock()
 	return nil
 }
@@ -341,11 +393,13 @@ func (a *Agent) persistZCodeStopRow() {
 // running, so the transcript owes the reader an explanation and an instruction --
 // press Interrupt again, and the worker escalates that press into a forced stop. One
 // row per accepted stop, from refreshStoppedZCodeTurn's once-flag.
-func (a *Agent) persistZCodeStopIgnoredRow() {
+func (a *Agent) persistZCodeStopIgnoredRow(contexts []agent.StopContext) {
 	// Restore the Worker's activity before the transcript write. The provider
 	// still runs the same turn even if persistence fails, so a database error
 	// must not leave the Interrupt button hidden from the user.
-	a.sink.ReportInterruptIgnored()
+	for _, stop := range contexts {
+		stop.ReportIgnored()
+	}
 	content, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeStopIgnored})
 	if err != nil {
 		slog.Error("zcode marshal stop-ignored row", "agent_id", a.AgentID(), "error", err)

@@ -199,7 +199,7 @@ func TestGrokInterruptChildCancelsTheSubagent(t *testing.T) {
 	a.HandleOutput(spawnCall(t, "call_2_0", "List files", "go", false))
 	a.HandleOutput(spawned(t, "sub-1", "List files", nil))
 
-	require.NoError(t, a.InterruptChild("call_2_0"))
+	require.NoError(t, a.InterruptChild("call_2_0", agent.StopContext{}))
 
 	sent := requestsFor(requests(), grokSubagentCancelMethod)
 	require.Len(t, sent, 1)
@@ -212,8 +212,8 @@ func TestGrokInterruptChildOfAnUnknownRowIsNotReady(t *testing.T) {
 	// The spawn exists, but no child session belongs to it yet.
 	a.HandleOutput(spawnCall(t, "call_2_0", "List files", "go", false))
 
-	assert.ErrorIs(t, a.InterruptChild("call_2_0"), agent.ErrChildRouteNotReady)
-	assert.ErrorIs(t, a.InterruptChild("never"), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, a.InterruptChild("call_2_0", agent.StopContext{}), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, a.InterruptChild("never", agent.StopContext{}), agent.ErrChildRouteNotReady)
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), grokSubagentCancelMethod))
 }
@@ -228,7 +228,7 @@ func TestGrokInterruptChildReportsARefusal(t *testing.T) {
 	})
 	a.HandleOutput(spawned(t, "sub-1", "helper", nil))
 
-	assert.Error(t, a.InterruptChild("sub-1"))
+	assert.Error(t, a.InterruptChild("sub-1", agent.StopContext{}))
 }
 
 func TestGrokWorkflowRunKeepsOneGroupedRow(t *testing.T) {
@@ -473,7 +473,7 @@ func TestGrokClearDropsTheChildLinks(t *testing.T) {
 	a.clearProviderState()
 
 	assert.Empty(t, a.childRowForSession("sub-1"))
-	assert.ErrorIs(t, a.InterruptChild("call_2_0"), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, a.InterruptChild("call_2_0", agent.StopContext{}), agent.ErrChildRouteNotReady)
 	a.stateMu.Lock()
 	assert.Equal(t, childState{}, a.children, "no link of the old session stays")
 	assert.Empty(t, a.controls.byToolCall, "no request of the old session stays")
@@ -498,7 +498,7 @@ func TestGrokSubagentWithASeparateChildSessionEndsItsTurns(t *testing.T) {
 	a.HandleOutput(childTurnCompleted(t, "child-session-1"))
 
 	assert.Equal(t, []string{"Listing now."}, childTexts(t, child), "the turn end stores the child's text")
-	require.NoError(t, a.InterruptChild("call_2_0"), "the row still reaches the subagent under its own id")
+	require.NoError(t, a.InterruptChild("call_2_0", agent.StopContext{}), "the row still reaches the subagent under its own id")
 }
 
 func TestGrokChildStateLinkReplacesAnEarlierLink(t *testing.T) {

@@ -101,6 +101,9 @@ type Agent struct {
 	// instead of dropping it.
 	lastSeq    int64
 	turnActive bool
+	// turnGeneration changes when a native turn starts or a compaction replaces it.
+	// A delayed stop acknowledgement must not open a window for another turn.
+	turnGeneration uint64
 	// A native compaction runs outside the prompt turn. Keep its session until a
 	// state.updated result ends it, so the input queue stays busy meanwhile.
 	compactionSessionID string
@@ -200,6 +203,7 @@ func (a *Agent) CompactContext() error {
 		return agent.ErrAgentBusy
 	}
 	a.compactionSessionID = sessionID
+	a.turnGeneration++
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 

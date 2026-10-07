@@ -179,10 +179,10 @@ func TestInterrupt(t *testing.T) {
 	rt.respondJSON(http.MethodPost, route, http.StatusOK, map[string]any{"id": testTurnID})
 	a, _ := newTestAgent(t, rt)
 
-	require.NoError(t, a.Interrupt(), "no turn runs, so nothing is sent")
+	require.NoError(t, a.Interrupt(agent.StopContext{}), "no turn runs, so nothing is sent")
 	assert.Empty(t, rt.requestsTo(http.MethodPost, route))
 	a.turnID = testTurnID
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Len(t, rt.requestsTo(http.MethodPost, route), 1)
 	// The interrupt changes no state: the runtime's own turn end does.
 	assert.Equal(t, testTurnID, a.turnID)
@@ -195,7 +195,7 @@ func TestInterruptOfATurnThatEndedIsNoError(t *testing.T) {
 		rt.respondStatus(http.MethodPost, turnPath(testThreadID, testTurnID, turnRouteInterrupt), status, "no turn")
 		a, _ := newTestAgent(t, rt)
 		a.turnID = testTurnID
-		assert.NoError(t, a.Interrupt(), status)
+		assert.NoError(t, a.Interrupt(agent.StopContext{}), status)
 	}
 }
 
@@ -372,11 +372,11 @@ func TestInterruptReportsWhatItCannotStop(t *testing.T) {
 	rt.respondStatus(http.MethodPost, route, http.StatusInternalServerError, "boom")
 	a, _ := newTestAgent(t, rt)
 	a.turnID = testTurnID
-	err := a.Interrupt()
+	err := a.Interrupt(agent.StopContext{})
 	assert.ErrorContains(t, err, "boom", "a refusal other than an ended turn reaches the caller")
 
 	a.SetStoppedForTest(true)
-	assert.ErrorContains(t, a.Interrupt(), "stopped")
+	assert.ErrorContains(t, a.Interrupt(agent.StopContext{}), "stopped")
 	assert.Len(t, rt.requestsTo(http.MethodPost, route), 1, "a stopped agent sends nothing")
 }
 

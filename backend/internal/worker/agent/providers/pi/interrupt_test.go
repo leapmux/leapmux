@@ -28,7 +28,7 @@ func TestPiAgent_Interrupt_SendsAbortDuringActiveTurn(t *testing.T) {
 		return json.RawMessage(`null`), true, ""
 	})
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 
 	reqs := rig.requests()
 	require.Len(t, reqs, 1)
@@ -42,7 +42,7 @@ func TestPiAgent_Interrupt_NoActiveTurnIsNoop(t *testing.T) {
 	rig := newPiTestRig(t, agenttest.Nop())
 	// currentTurnActive defaults to false.
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 
 	// One pipe carries every write in order, so a sentinel that reaches the recorder
 	// first proves that Interrupt wrote nothing before it.
@@ -95,7 +95,7 @@ func TestPiAgent_Interrupt_CancelsEachOpenDialogAfterTheAbort(t *testing.T) {
 	rig.agent.handlePiExtensionUIRequest(piOpenSelect("dialog-a"))
 	require.Len(t, sink.PublishedControls(), 2)
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 	// The recorder reads the pipe on its own goroutine. A sentinel's answer states that
 	// it read every earlier line.
 	_, err := rig.agent.sendPiCommand(CommandGetState, nil, time.Second)
@@ -106,7 +106,7 @@ func TestPiAgent_Interrupt_CancelsEachOpenDialogAfterTheAbort(t *testing.T) {
 	assert.Equal(t, []string{"dialog-a", "dialog-b"}, sink.CanceledControls())
 
 	// A second interrupt finds no open dialog: each one was answered once.
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 	_, err = rig.agent.sendPiCommand(CommandGetState, nil, time.Second)
 	require.NoError(t, err)
 	assert.Len(t, piCancellations(rig.requests()), 2)
@@ -122,7 +122,7 @@ func TestPiAgent_Interrupt_CancelsAnOpenDialogWithNoTurn(t *testing.T) {
 	rig := newPiTestRig(t, agent.NewProviderServices(sink))
 	rig.agent.handlePiExtensionUIRequest(piOpenSelect("dialog-1"))
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 
 	_, err := rig.agent.sendPiCommand(CommandGetState, nil, time.Second)
 	require.NoError(t, err)
@@ -138,7 +138,7 @@ func TestPiAgent_Interrupt_KeepsADialogWhenItsCancellationFails(t *testing.T) {
 	a.SetStdinForTest(agenttest.FailingStdin{})
 	a.handlePiExtensionUIRequest(piOpenSelect("dialog-1"))
 
-	require.Error(t, a.Interrupt(), "the interrupt must report the failed cancellation")
+	require.Error(t, a.Interrupt(agent.StopContext{}), "the interrupt must report the failed cancellation")
 	assert.Empty(t, sink.CanceledControls(), "the reader can still answer the open dialog")
 	a.Mu.Lock()
 	_, open := a.openDialogs["dialog-1"]
@@ -155,7 +155,7 @@ func TestPiAgent_Interrupt_LeavesADialogThatPiNoLongerWaitsOn(t *testing.T) {
 	for name, settle := range map[string]func(t *testing.T, a *Agent, sink *agenttest.ControlSink){
 		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.handlePiExtensionUIRequest(piOpenSelect("dialog-1"))
-			require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"dialog-1","value":"A"}`)))
+			require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"dialog-1","value":"A"}`), agent.StopContext{}))
 		},
 		"its deadline passed": func(t *testing.T, a *Agent, sink *agenttest.ControlSink) {
 			clock := testutil.NewQuartzMock(t)
@@ -184,7 +184,7 @@ func TestPiAgent_Interrupt_LeavesADialogThatPiNoLongerWaitsOn(t *testing.T) {
 			flush()
 			before := len(piCancellations(rig.requests()))
 
-			require.NoError(t, rig.agent.Interrupt())
+			require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 
 			flush()
 			assert.Len(t, piCancellations(rig.requests()), before, "the interrupt sends no cancellation")
@@ -202,7 +202,7 @@ func TestPiAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	rig.agent.currentTurnActive = true
 	rig.agent.Mu.Unlock()
 
-	err := rig.agent.Interrupt()
+	err := rig.agent.Interrupt(agent.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 }

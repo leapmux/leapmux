@@ -99,7 +99,7 @@ func TestZCodeInterrupt_IdleIsANoop(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, stdin.Frames(), "Interrupt with no active turn must not write")
 }
 
@@ -115,7 +115,7 @@ func TestZCodeInterrupt_SendsSessionStop(t *testing.T) {
 	// is what this test is about.
 	a.CancelForTest()
 
-	_ = a.Interrupt()
+	_ = a.Interrupt(agent.StopContext{})
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -146,7 +146,7 @@ func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
 
 	// The app-server's own answer to a stop: an empty object, and no event after it.
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.NotNil(t, timer.fire, "the stop arms the silence window")
 	timer.fire()
 
@@ -179,7 +179,7 @@ func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	assert.Empty(t, sink.Messages(), "the call keeps its running card until its own update arrives")
 	a.Mu.Lock()
@@ -201,7 +201,7 @@ func TestZCodeInterrupt_ARefusedStopLeavesTheTurnRunning(t *testing.T) {
 	a.Mu.Unlock()
 
 	refuseZCodeRequest(t, a, stdin, MethodSessionStop, -32000, "the session is busy")
-	require.Error(t, a.Interrupt())
+	require.Error(t, a.Interrupt(agent.StopContext{}))
 
 	a.Mu.Lock()
 	turnActive := a.turnActive
@@ -219,7 +219,7 @@ func TestZCodeInterrupt_StoppedAgentReturnsError(t *testing.T) {
 	a.turnActive = true
 	a.Mu.Unlock()
 
-	err := a.Interrupt()
+	err := a.Interrupt(agent.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 	assert.Empty(t, stdin.Frames())
@@ -235,7 +235,7 @@ func TestZCodeInterrupt_NoSessionIsANoop(t *testing.T) {
 	a.sessionID = ""
 	a.Mu.Unlock()
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, stdin.Frames())
 }
 

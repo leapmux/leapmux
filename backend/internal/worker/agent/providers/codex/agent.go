@@ -334,7 +334,7 @@ func decodeCodexThreadSandbox(raw json.RawMessage) (map[string]*string, error) {
 //
 // Returns nil when there's nothing to interrupt (no active turn) so callers
 // can invoke this safely without tracking turn lifecycle.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	threadID := a.threadID

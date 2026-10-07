@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 type piCustomQuestionAnswer struct{ Text string }
@@ -51,7 +52,7 @@ func (a *Agent) preparePiQuestionDialog(id string, raw []byte) (*piQuestionSourc
 		a.Mu.Unlock()
 		response, err := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": id, "value": answer.Text})
 		if err == nil {
-			err = a.Process.SendRawInput(response)
+			err = a.Process.SendRawInput(response, agent.StopContext{})
 		}
 		if err == nil {
 			return source, true
@@ -83,7 +84,7 @@ func (a *Agent) preparePiQuestionDialog(id string, raw []byte) (*piQuestionSourc
 
 // SendRawInput converts one custom answer into rpiv's select-then-input exchange.
 // Ordinary responses and unrelated Pi commands retain their original bytes.
-func (a *Agent) SendRawInput(data []byte) (sendErr error) {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) (sendErr error) {
 	var response struct {
 		Type      string  `json:"type"`
 		ID        string  `json:"id"`
@@ -91,7 +92,7 @@ func (a *Agent) SendRawInput(data []byte) (sendErr error) {
 		Cancelled bool    `json:"cancelled"`
 	}
 	if json.Unmarshal(data, &response) != nil || response.Type != contracts.PiEventExtensionUIResponse {
-		return a.Process.SendRawInput(data)
+		return a.Process.SendRawInput(data, stop)
 	}
 	a.dialogCancelMu.Lock()
 	defer a.dialogCancelMu.Unlock()
@@ -113,7 +114,7 @@ func (a *Agent) SendRawInput(data []byte) (sendErr error) {
 	delete(a.questionDialogs, response.ID)
 	if dialog == nil {
 		a.Mu.Unlock()
-		return a.Process.SendRawInput(data)
+		return a.Process.SendRawInput(data, stop)
 	}
 	defer func() {
 		if sendErr == nil {
@@ -133,7 +134,7 @@ func (a *Agent) SendRawInput(data []byte) (sendErr error) {
 		!slices.Contains(dialog.Dialog.Options, *response.Value) && len(dialog.Dialog.Options) > 0
 	if !custom {
 		a.Mu.Unlock()
-		return a.Process.SendRawInput(data)
+		return a.Process.SendRawInput(data, stop)
 	}
 	answer := &piCustomQuestionAnswer{Text: *response.Value}
 	if a.customQuestionAnswers == nil {
@@ -152,7 +153,7 @@ func (a *Agent) SendRawInput(data []byte) (sendErr error) {
 		encoded, err = json.Marshal(fields)
 	}
 	if err == nil {
-		err = a.Process.SendRawInput(encoded)
+		err = a.Process.SendRawInput(encoded, stop)
 	}
 	if err == nil {
 		return nil

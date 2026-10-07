@@ -28,7 +28,7 @@ func TestPiCustomQuestionAnswerBridgesNativeDialogs(t *testing.T) {
 	a, sink, output := piQuestionResponseFixture()
 	answer := []byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`)
 	original := append([]byte(nil), answer...)
-	require.NoError(t, a.SendRawInput(answer))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 	assert.Equal(t, original, answer)
 	assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","value":"3. Type something."}`, output.String())
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
@@ -47,7 +47,7 @@ func TestPiQuestionResponsePreservesOrdinaryReplies(t *testing.T) {
 		`{"type":"get_state","id":"command"}`,
 	} {
 		a, _, output := piQuestionResponseFixture()
-		require.NoError(t, a.SendRawInput([]byte(reply)))
+		require.NoError(t, a.SendRawInput([]byte(reply), agent.StopContext{}))
 		assert.Equal(t, reply+"\n", output.String())
 	}
 }
@@ -55,7 +55,7 @@ func TestPiQuestionResponsePreservesOrdinaryReplies(t *testing.T) {
 func TestPiCustomQuestionAnswerDoesNotSurviveToolCompletion(t *testing.T) {
 	t.Parallel()
 	a, sink, output := piQuestionResponseFixture()
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`), agent.StopContext{}))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_end","toolCallId":"question","toolName":"ask_user_question","result":{"content":[]}}`)))
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"late","method":"input","title":"Choose\n\nType your answer:"}`))
 	assert.Len(t, strings.Split(strings.TrimSpace(output.String()), "\n"), 1)
@@ -68,9 +68,9 @@ func TestPiCustomQuestionAnswerCanRetryAfterWriteFailure(t *testing.T) {
 	a, _, output := piQuestionResponseFixture()
 	a.SetStdinForTest(agenttest.FailingStdin{})
 	reply := []byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`)
-	require.Error(t, a.SendRawInput(reply))
+	require.Error(t, a.SendRawInput(reply, agent.StopContext{}))
 	a.SetStdinForTest(agenttest.NopStdin(output))
-	require.NoError(t, a.SendRawInput(reply))
+	require.NoError(t, a.SendRawInput(reply, agent.StopContext{}))
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:"}`))
 	assert.Len(t, strings.Split(strings.TrimSpace(output.String()), "\n"), 2)
 }
@@ -83,9 +83,9 @@ func TestPiFailedQuestionAnswerKeepsTheDialogForInterrupt(t *testing.T) {
 			a, sink, output := piQuestionResponseFixture()
 			a.SetStdinForTest(agenttest.FailingStdin{})
 			reply := []byte(`{"type":"extension_ui_response","id":"select","value":"` + value + `"}`)
-			require.Error(t, a.SendRawInput(reply))
+			require.Error(t, a.SendRawInput(reply, agent.StopContext{}))
 			a.SetStdinForTest(agenttest.NopStdin(output))
-			require.NoError(t, a.Interrupt())
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","cancelled":true}`, output.String())
 			assert.Equal(t, []string{"select"}, sink.CanceledControls())
 		})
@@ -111,7 +111,7 @@ func TestPiQuestionWriteFailureCannotRestoreClearedState(t *testing.T) {
 	a.SetStdinForTest(writer)
 	done := make(chan error, 1)
 	go func() {
-		done <- a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`))
+		done <- a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`), agent.StopContext{})
 	}()
 	<-writer.entered
 	a.discardIncompletePiTools()
@@ -124,7 +124,7 @@ func TestPiQuestionWriteFailureCannotRestoreClearedState(t *testing.T) {
 func TestPiCustomQuestionAnswerSurvivesAFailedAutoResponse(t *testing.T) {
 	t.Parallel()
 	a, sink, output := piQuestionResponseFixture()
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`), agent.StopContext{}))
 	// Pi asks for the text. The automatic answer cannot reach stdin.
 	a.SetStdinForTest(agenttest.FailingStdin{})
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))

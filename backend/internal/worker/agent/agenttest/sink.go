@@ -63,9 +63,6 @@ type Sink struct {
 	// turnKinds records the queue classification that accompanied each turn
 	// state.
 	turnStates []agent.TurnState
-	// interruptIgnoredReports records when a provider proves that an accepted
-	// interrupt did not end its turn.
-	interruptIgnoredReports int
 	// requeuedInputs records each RequeueDroppedInput call in order, including repeats.
 	// The Worker ignores a repeated drop.
 	// The test sink retains repeats so a test can detect the provider defect.
@@ -351,18 +348,6 @@ func (s *Sink) SetTurnState(state agent.TurnState, seq uint64) {
 	s.turnStates = append(s.turnStates, state)
 	s.turnSeqs = append(s.turnSeqs, seq)
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
-}
-
-func (s *Sink) ReportInterruptIgnored() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.interruptIgnoredReports++
-}
-
-func (s *Sink) InterruptIgnoredReports() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.interruptIgnoredReports
 }
 
 // RequeuedInput is one input that a provider handed back through
@@ -1419,7 +1404,6 @@ func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)              { 
 func (nop) ReadToolResult(string) (*agent.StoredMessage, error)               { return nil, nil }
 func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
 func (nop) SetTurnState(agent.TurnState, uint64)                              {}
-func (nop) ReportInterruptIgnored()                                           {}
 func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error { return nil }
 func (nop) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (nop) OpenSpan(string, string)                                           {}

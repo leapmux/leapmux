@@ -24,7 +24,7 @@ func (IdleAgent) PublishTurnActive() agent.TurnState {
 	return agent.TurnState{}
 }
 
-func (IdleAgent) SendRawInput([]byte) error { return nil }
+func (IdleAgent) SendRawInput(data []byte, stop agent.StopContext) error { return nil }
 
 func (IdleAgent) Stop() {}
 
@@ -48,7 +48,7 @@ func (IdleAgent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult
 	return agent.ConfirmedSettings(options)
 }
 
-func (IdleAgent) Interrupt() error { return nil }
+func (IdleAgent) Interrupt(stop agent.StopContext) error { return nil }
 
 // GroupsAgent is an IdleAgent that reports groups as its live option groups.
 type GroupsAgent struct {

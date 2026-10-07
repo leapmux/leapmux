@@ -333,11 +333,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 			content := r.GetContent()
 			isInterrupt := svc.Agents.Registry().IsInterrupt(dbAgent.AgentProvider, content)
+			var stop *agentStopRequest
+			var target agent.StopTarget
 			if isInterrupt {
+				target, _ = svc.Agents.CaptureStopTarget(agentID)
 				// The raw interrupt frame is the fallback stop path, so it opens
 				// the stop exactly as the RPC does, in the same order. This
 				// handler rejected a child above, so the agent is its own root.
-				svc.Output.NoteAgentStopRequested(agentID, agentID)
+				stop = svc.Output.NoteAgentStopRequested(agentID, agentID)
 				svc.pauseInputQueueForStop(agentID)
 			}
 			if notice := svc.Agents.Registry().Plugin(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && isInterrupt {
@@ -346,12 +349,21 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
 			}
 
-			delivered := svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
-			if isInterrupt && delivered {
-				svc.cancelControlRequestsForStop(agentID)
+			deliver := func(data []byte) error {
+				if stop != nil {
+					return target.SendRawInput(data, stop.Context())
+				}
+				return svc.Agents.SendRawInput(agentID, data, agent.StopContext{})
 			}
-			if isInterrupt && !delivered {
-				svc.Output.NoteAgentStopFailed(agentID, agentID)
+			if err := svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content, deliver); err != nil {
+				if stop != nil {
+					stop.Failed()
+				}
+				sendFailedPrecondition(sender, err.Error())
+				return
+			}
+			if stop != nil {
+				stop.Delivered(target)
 			}
 			sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 		})
@@ -901,13 +913,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				if rowErr != nil {
 					return
 				}
-				if !svc.Agents.HasAgent(row.OwnerAgentID) {
+				target, targetErr := svc.Agents.CaptureStopTarget(row.OwnerAgentID)
+				if targetErr != nil {
 					sendNotFoundError(sender, "agent not found or not running")
 					return
 				}
-				svc.Output.NoteAgentStopRequested(agentID, row.OwnerAgentID)
-				if err := svc.Agents.InterruptChild(row.OwnerAgentID, row.RowKey); err != nil {
-					svc.Output.NoteAgentStopFailed(agentID, row.OwnerAgentID)
+				stop := svc.Output.NoteAgentStopRequested(agentID, row.OwnerAgentID)
+				if err := target.InterruptChild(row.RowKey, stop.Context()); err != nil {
+					stop.Failed()
 					if errors.Is(err, agent.ErrChildOperationUnsupported) {
 						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
 						return
@@ -921,11 +934,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					sendNotFoundError(sender, "agent not found or not running")
 					return
 				}
-				svc.cancelControlRequestsForStop(agentID)
+				stop.Delivered(target)
 				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 				return
 			}
-			svc.Output.NoteAgentStopRequested(agentID, agentID)
+			target, _ := svc.Agents.CaptureStopTarget(agentID)
+			stop := svc.Output.NoteAgentStopRequested(agentID, agentID)
 			// The escalation branch is the second press, for a provider that has
 			// PROVEN its own stop signal ineffective -- the running agent states
 			// that fact through the Manager's escalation probe, the same
@@ -934,25 +948,25 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// signalling it. No pauseInputQueueForStop on this branch: the first
 			// press already set that pause, and the planned-restart guard inside
 			// the force stop owns the restart window.
-			if svc.Agents.InterruptEscalationReady(agentID) {
-				if err := svc.forceStopAgentTurn(dbAgent); err != nil {
-					svc.Output.NoteAgentStopFailed(agentID, agentID)
+			if target.EscalationReady() {
+				if err := svc.forceStopAgentTurn(dbAgent, target, stop); err != nil {
+					stop.Failed()
 					slog.Warn("forced stop failed", "agent_id", agentID, "error", err)
 					sendFailedPrecondition(sender, "failed to interrupt the agent process; press Interrupt again")
 					return
 				}
-				svc.cancelControlRequestsForStop(agentID)
+				stop.Delivered(target)
 				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 				return
 			}
 			svc.pauseInputQueueForStop(agentID)
-			if err := svc.Agents.Interrupt(agentID); err != nil {
-				svc.Output.NoteAgentStopFailed(agentID, agentID)
+			if err := target.Interrupt(stop.Context()); err != nil {
+				stop.Failed()
 				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
 				return
 			}
-			svc.cancelControlRequestsForStop(agentID)
+			stop.Delivered(target)
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 		})
 
@@ -2780,7 +2794,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 // unchanged request when the restart fails.
 func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	if _, err := svc.restartAgentPreservingSession(dbAgent, func(db.Agent) OptionMap { return newOptions }, settingsRestartMessages, restartTurnEndPending); err != nil {
+	if _, err := svc.restartAgentPreservingSession(dbAgent, func(db.Agent) OptionMap { return newOptions }, settingsRestartMessages, restartTurnEndPending, nil); err != nil {
 		return newOptions, unresolvedSettingsResult(newOptions)
 	}
 	// Read the typed snapshot from the relaunched provider. A startup readback
@@ -2806,42 +2820,6 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	slog.Info("agent restarted with new settings",
 		"agent_id", agentID, "model", settled[agent.OptionIDModel], "effort", settled[agent.OptionIDEffort])
 	return settled, result
-}
-
-// forceStopAgentTurn replaces the provider process to end a turn whose stop
-// the running provider already accepted and then ignored -- the escalation a
-// provider asks for by answering the Manager's InterruptEscalationReady probe,
-// which is the only way this is reached.
-//
-// When the provider's own stop signal aborts nothing, the only real stop is
-// process-level. The replacement runs the same planned-restart shape
-// applySettingsViaRestart runs: the queue pauses for the swap and resumes only
-// its own pause, and the fresh process resumes the SAME session, so the
-// conversation and the queued input survive. Any stop row the reader sees is
-// the provider's own -- Stop runs inside the replacement and knows whether a
-// stop was pending.
-//
-// A press that lands while a replacement is already starting answers nil: that
-// press's intent was carried by the one that began it, and the restart is not
-// something a second concurrent copy would improve.
-func (svc *Service) forceStopAgentTurn(dbAgent db.Agent) error {
-	agentID := dbAgent.ID
-	if _, inFlight := svc.forceStops.LoadOrStore(agentID, struct{}{}); inFlight {
-		return nil
-	}
-	defer svc.forceStops.Delete(agentID)
-
-	// The agent keeps the settings its row already holds; only the process is
-	// replaced. The id comes BACK from the restart rather than being resolved again
-	// here: resolveResumeSessionID issues a HasUserMessages query, and two separate
-	// resolutions can disagree, so the log line stated an id the relaunch may not have
-	// used -- for exactly the incident a reader consults it for.
-	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, storedRestartOptions, forcedStopMessages, restartTurnEndPending)
-	if err != nil {
-		return err
-	}
-	slog.Info("agent force-stopped by replacement", "agent_id", agentID, "resume_session_id", resumeSessionID)
-	return nil
 }
 
 var errAgentClosedDuringLaunch = errors.New("agent tab closed during process launch")
@@ -2907,8 +2885,11 @@ func (svc *Service) validateLaunchedAgent(agentID string) (db.Agent, error) {
 // A failed launch clears a stale saved session ID. Each caller supplies its
 // own complete error messages and this function keeps the queue pause paired.
 // It returns the session ID that the replacement used.
-func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor func(db.Agent) OptionMap, messages restartMessages, turnEnd restartTurnEnd) (string, error) {
+func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor func(db.Agent) OptionMap, messages restartMessages, turnEnd restartTurnEnd, currentStop func() bool) (string, error) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	if currentStop != nil && !currentStop() {
+		return "", errStopTargetChanged
+	}
 	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
 	if err != nil {
 		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
@@ -2946,6 +2927,9 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 	_, launched, err := func() (map[string]string, bool, error) {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
+		if currentStop != nil && !currentStop() {
+			return nil, false, errStopTargetChanged
+		}
 		current, readErr := svc.readOpenAgentForLaunch(agentID)
 		if readErr != nil {
 			rowUnavailable = errors.Is(readErr, errAgentClosedDuringLaunch) || errors.Is(readErr, errAgentArchivedDuringLaunch)
@@ -2976,6 +2960,13 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		}
 		return confirmed, launched, nil
 	}()
+	if errors.Is(err, errStopTargetChanged) {
+		if finishErr := queueRestart.Finish(bgCtx(), false, false); finishErr != nil {
+			slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
+		}
+		queueRestartFinished = true
+		return "", err
+	}
 	if rowUnavailable || rowReadFailed {
 		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED
 		if rowReadFailed {
@@ -3902,10 +3893,9 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 // These payloads are forwarded directly to the agent's stdin and are not
 // wrapped in a user message envelope or persisted as chat messages.
 //
-// It reports whether the payload reached the agent. The raw stop path reads that
-// answer: a stop it published but could not deliver has to be withdrawn, or the
-// reader keeps a running agent that reads idle.
-func (svc *Service) handleControlRequestMessage(agentID string, provider leapmuxv1.AgentProvider, content string) bool {
+// It returns the native delivery or startup error. A locally stored mode needs no running process.
+// A failed stop delivery withdraws only the attempt that requested it.
+func (svc *Service) handleControlRequestMessage(agentID string, provider leapmuxv1.AgentProvider, content string, deliver func([]byte) error) error {
 	// The provider owns the wire-format parse; the service owns the DB write + forward. Persist an
 	// eager set_permission_mode to the DB so that /clear (which reads the DB) always sees the latest
 	// mode. Some providers (e.g. Claude Code) don't echo the mode back in their control_response, so
@@ -3918,14 +3908,15 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 		svc.setAgentPermissionMode(agentID, mode)
 
 		if !svc.Agents.HasAgent(agentID) {
-			return false
+			// The stored mode also applies to a process that still starts.
+			return nil
 		}
 
-		if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
+		if err := deliver([]byte(content)); err != nil {
 			slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
-			return false
+			return err
 		}
-		return true
+		return nil
 	}
 
 	// If agent is not running, handle special cases locally.
@@ -3933,21 +3924,21 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 		if svc.Agents.Registry().IsInterrupt(provider, content) {
 			// Agent is already gone -- nothing to interrupt, and nothing that a
 			// withdrawn stop could put back on screen. The stop stands.
-			return true
+			return nil
 		}
 		// Other control requests need the agent running.
 		if err := svc.ensureAgentRunning(agentID, resumeIfConversation, interactiveStart); err != nil {
 			slog.Error("failed to start agent for control request", "agent_id", agentID, "error", err)
-			return false
+			return err
 		}
 	}
 
 	// Send as raw input to the agent's stdin.
-	if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
+	if err := deliver([]byte(content)); err != nil {
 		slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
-		return false
+		return err
 	}
-	return true
+	return nil
 }
 
 // pauseInputQueueForStop closes the input queue behind a stop the reader asked
@@ -3967,23 +3958,6 @@ func (svc *Service) pauseInputQueueForStop(agentID string) {
 	if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
 		slog.Warn("failed to pause agent input queue for the stop", "agent_id", agentID, "error", err)
 	}
-}
-
-// cancelControlRequestsForStop withdraws the control requests the stopped turn was
-// blocked on. It is one of the two enders of a published stop, the other being
-// OutputHandler.NoteAgentStopFailed.
-//
-// A permission request belongs to the turn that asked it. Four providers were measured
-// waiting on one when the reader pressed Stop: the turn ended and the card stayed,
-// asking a live-looking question about a turn that no longer existed, and an answer to
-// it had nowhere to go.
-//
-// It runs only after the stop was DELIVERED, which is where this differs from the
-// queue pause beside it. A pause that outlives a failed stop is a state the reader can
-// correct; a question withdrawn from a turn that is still running is not -- it would
-// leave the agent waiting for an answer with no way left to give one.
-func (svc *Service) cancelControlRequestsForStop(agentID string) {
-	svc.Output.ClearPendingControlRequests(agentID)
 }
 
 // persistSyntheticUserMessage stores the provider's interrupt notice as an unmarked user row.

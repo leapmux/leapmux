@@ -62,7 +62,7 @@ type answeringPublishSink struct {
 func (s *answeringPublishSink) PublishControlRequest(agent.ControlRequest) error {
 	// The ordinary answer path: the frame carries the request's own id, and
 	// SendRawInput forgets the record after it writes.
-	if err := s.base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":"allow"}}`)); err != nil {
+	if err := s.base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":"allow"}}`), agent.StopContext{}); err != nil {
 		return err
 	}
 	return nil
@@ -106,7 +106,7 @@ func TestControlRegistryForgetsAnAnsweredRequestAfterTheWrite(t *testing.T) {
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{}
 	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
-	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"once"}}}`)))
+	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"once"}}}`), agent.StopContext{}))
 	stdin.Reset()
 	base.WithdrawAllControlRequests(sink)
 	assert.Empty(t, stdin.String(), "the answered request must not receive a second answer")
@@ -117,7 +117,7 @@ func TestControlRegistryKeepsARequestWhoseAnswerCouldNotBeWritten(t *testing.T) 
 	base := &JSONRPCProcess{Process: NewProcessFrom(ProcessConfig{AgentID: "agent", Stdin: agenttest.FailingStdin{}})}
 	sink := &agenttest.ControlSink{}
 	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
-	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)))
+	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}))
 	base.outstandingMu.Lock()
 	_, found := base.outstandingControls["jsonrpc:7"]
 	base.outstandingMu.Unlock()
@@ -214,7 +214,7 @@ func TestWithdrawOutstandingControlRequestLeavesAnAnsweredRequest(t *testing.T) 
 	base, _ := newRegistryBase()
 	sink := &agenttest.ControlSink{}
 	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), nil)
-	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`)))
+	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`), agent.StopContext{}))
 
 	assert.False(t, base.WithdrawOutstandingControlRequest(sink, "jsonrpc:7"))
 	assert.Empty(t, sink.CanceledControls())

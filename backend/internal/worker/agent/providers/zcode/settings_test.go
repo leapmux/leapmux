@@ -1325,7 +1325,7 @@ func TestZCodePlanFlag_ADeclinedPlanKeepsPlanMode(t *testing.T) {
 		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorDeny, "Split step 2.", nil),
 	})
 	require.NotEmpty(t, resolution.Content)
-	require.NoError(t, a.SendRawInput(resolution.Content))
+	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
 	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
 
@@ -1358,7 +1358,7 @@ func TestZCodePlanFlag_AnApprovedPlanReturnsToTheNativeMode(t *testing.T) {
 		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorAllow, "", nil),
 	})
 	require.NotEmpty(t, resolution.Content)
-	require.NoError(t, a.SendRawInput(resolution.Content))
+	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
 	a.HandleOutput(zcodeModeChangedLine(t, 3, zcodeModeChangedPayload{
 		Mode: contracts.ZCodeModeEdit, PlanEnabled: false,

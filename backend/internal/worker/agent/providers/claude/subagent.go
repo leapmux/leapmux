@@ -731,7 +731,7 @@ var claudeTaskStatusMap = map[string]bgtask.Status{
 // retry: the condition is transient, because a worker restart re-announces
 // every task and a late task_started renames the pre-start row onto its id. A
 // stop_task failure surfaces unchanged.
-func (a *Agent) InterruptChild(childKey string) error {
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	if !a.tasks.knowsTask(childKey) {
 		return fmt.Errorf("%w: unknown claude subagent task %q", agent.ErrChildRouteNotReady, childKey)
 	}

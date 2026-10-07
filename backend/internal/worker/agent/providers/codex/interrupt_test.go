@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
@@ -113,7 +113,7 @@ func TestCodexAgent_Interrupt_TimesOutWhenCodexDoesNotAnswer(t *testing.T) {
 	rig.agent.turnID = "turn-42"
 	rig.agent.SetAPITimeoutForTest(20 * time.Millisecond)
 
-	err := rig.agent.Interrupt()
+	err := rig.agent.Interrupt(agentapi.StopContext{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout waiting for turn/interrupt response")
@@ -129,8 +129,8 @@ func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
 	rig.agent.SetAPITimeoutForTest(time.Second)
 
 	results := make(chan error, 2)
-	go func() { results <- rig.agent.Interrupt() }()
-	go func() { results <- rig.agent.Interrupt() }()
+	go func() { results <- rig.agent.Interrupt(agentapi.StopContext{}) }()
+	go func() { results <- rig.agent.Interrupt(agentapi.StopContext{}) }()
 
 	require.Eventually(t, func() bool { return len(rig.captured()) == 1 }, time.Second, 5*time.Millisecond)
 	frames := rig.captured()
@@ -151,7 +151,7 @@ func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
 	rig.agent.turnID = "turn-42"
 	rig.responseBodies <- agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)}
 
-	err := rig.agent.Interrupt()
+	err := rig.agent.Interrupt(agentapi.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "turn is not active")
 }
@@ -165,7 +165,7 @@ func TestCodexAgent_Interrupt_SendsTurnInterruptRequest(t *testing.T) {
 
 	interruptDone := make(chan error, 1)
 	go func() {
-		interruptDone <- rig.agent.Interrupt()
+		interruptDone <- rig.agent.Interrupt(agentapi.StopContext{})
 	}()
 
 	// The response arrives after Codex aborts the turn. The test rig sends that
@@ -203,7 +203,7 @@ func TestCodexAgent_InterruptChild_SendsTurnInterruptRequest(t *testing.T) {
 
 	interruptDone := make(chan error, 1)
 	go func() {
-		interruptDone <- rig.agent.InterruptChild("child-thread")
+		interruptDone <- rig.agent.InterruptChild("child-thread", agentapi.StopContext{})
 	}()
 	select {
 	case err := <-interruptDone:
@@ -228,7 +228,7 @@ func TestCodexAgent_InterruptChild_NoActiveTurnIsNoop(t *testing.T) {
 	rig := newCodexInterruptRig(t)
 	rig.agent.collabChildren = map[string]*codexChildState{"child-thread": {spawnCorrelationID: "spawn-1"}}
 
-	require.NoError(t, rig.agent.InterruptChild("child-thread"))
+	require.NoError(t, rig.agent.InterruptChild("child-thread", agentapi.StopContext{}))
 	time.Sleep(50 * time.Millisecond)
 	assert.Empty(t, rig.captured(), "an idle child must not send turn/interrupt without a turn ID")
 }
@@ -237,13 +237,13 @@ func TestCodexAgent_Interrupt_UsesMainTurnAfterChildTurnStarted(t *testing.T) {
 	t.Parallel()
 
 	rig := newCodexInterruptRig(t)
-	rig.agent.sink = agent.NewProviderServices(&agenttest.Sink{})
+	rig.agent.sink = agentapi.NewProviderServices(&agenttest.Sink{})
 	rig.agent.threadID = "main-thread"
 
 	handleCodexOutput(rig.agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
 	handleCodexOutput(rig.agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agentapi.StopContext{}))
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -271,7 +271,7 @@ func TestCodexAgent_Interrupt_NoTurnIsNoop(t *testing.T) {
 	// or the turn already completed. Calling Interrupt unconditionally
 	// must succeed without sending anything.
 
-	require.NoError(t, rig.agent.Interrupt())
+	require.NoError(t, rig.agent.Interrupt(agentapi.StopContext{}))
 
 	// Give the pipe reader goroutine a chance to surface anything.
 	time.Sleep(50 * time.Millisecond)
@@ -287,7 +287,7 @@ func TestCodexAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	rig.agent.turnID = "u"
 	rig.agent.SetStoppedForTest(true)
 
-	err := rig.agent.Interrupt()
+	err := rig.agent.Interrupt(agentapi.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 }
@@ -300,7 +300,7 @@ func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *tes
 	require.NoError(t, err)
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
 		AgentID:     agent.AgentID(),
 		Stdin:       writePipe,

@@ -116,7 +116,7 @@ func (a *Agent) Wait() error {
 // mid-stop the call returns the underlying error so the caller can
 // surface it, but a no-active-turn agent won't fail — Claude Code
 // silently ack's interrupts received outside a turn.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if a.IsStopped() {
 		return fmt.Errorf("agent is stopped")
 	}

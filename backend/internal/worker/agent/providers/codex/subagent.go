@@ -633,7 +633,7 @@ func (a *Agent) takeCollabChildPrompt(threadID string) string {
 }
 
 // InterruptChild aborts a child's current turn inside the owner process.
-func (a *Agent) InterruptChild(childKey string) error {
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	threadID := childKey
 	if !a.knownCollabChild(threadID) {
 		// The live route can be empty after a restart while the registry row

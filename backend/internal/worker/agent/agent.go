@@ -156,10 +156,6 @@ type TurnServices interface {
 	// authoritative -- so each provider's tests pin the clear on every path that
 	// ends a turn.
 	SetTurnState(state TurnState, seq uint64)
-	// ReportInterruptIgnored reports that the provider accepted an interrupt but
-	// kept the same turn running. The Worker restores the activity that the
-	// interrupt request hid, including the Interrupt button for a later attempt.
-	ReportInterruptIgnored()
 	// RequeueDroppedInput hands back input that the provider accepted into the
 	// running turn and that the agent dropped before the model read it. The
 	// Worker queues it as the reader's next message, under the queue's own rules,
@@ -623,7 +619,7 @@ type Agent interface {
 	// lives on the interface rather than in each provider's SendInput so a new
 	// provider cannot leave it out.
 	PublishTurnActive() TurnState
-	SendRawInput(data []byte) error
+	SendRawInput(data []byte, stop StopContext) error
 	Stop()
 	IsStopped() bool
 	DiscardOutput()
@@ -649,7 +645,7 @@ type Agent interface {
 	// Returns nil on success or if the agent is not currently in a turn;
 	// returns a non-nil error only when the interrupt mechanism itself
 	// failed (e.g. stdin write error).
-	Interrupt() error
+	Interrupt(stop StopContext) error
 }
 
 // ContextCompactor runs a provider-native context compaction. Providers that
@@ -741,7 +737,7 @@ type ChildSteerer interface {
 // ChildInterrupter lets a provider stop a child turn without claiming that the
 // provider can send direct input to that child.
 type ChildInterrupter interface {
-	InterruptChild(childKey string) error
+	InterruptChild(childKey string, stop StopContext) error
 }
 
 // ErrChildOperationUnsupported is returned when a running agent lacks the

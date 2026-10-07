@@ -281,7 +281,8 @@ func TestPi_HandlePiResponse_RoutesByStringID(t *testing.T) {
 	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"}),
 	}
-	ch, release := a.Register("leapmux-1")
+	ch, release, registerErr := a.Register("leapmux-1")
+	require.NoError(t, registerErr)
 	defer release()
 
 	consumed := a.handlePiResponse(providerkit.ParseLine([]byte(
@@ -1267,7 +1268,8 @@ func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T)
 	// though Pi mints string ids itself, defensive callers should not break
 	// when a server emits a JSON-RPC-shaped numeric id.
 	a := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})}
-	ch, release := a.Register("42")
+	ch, release, registerErr := a.Register("42")
+	require.NoError(t, registerErr)
 	defer release()
 
 	consumed := a.handlePiResponse(providerkit.ParseLine([]byte(

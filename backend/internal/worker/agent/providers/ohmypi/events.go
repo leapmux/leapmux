@@ -5,6 +5,8 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -206,7 +208,7 @@ func (a *Agent) refuseHostCall(frameType string, raw []byte) {
 		slog.Warn("omp encode host call refusal", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if err := a.Process.SendRawInput(encoded); err != nil {
+	if err := a.Process.SendRawInput(encoded, agent.StopContext{}); err != nil {
 		slog.Warn("omp send host call refusal", "agent_id", a.AgentID(), "error", err)
 	}
 }

@@ -297,12 +297,12 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 // SendRawInput delivers a raw frame: a control response, or the raw abort
 // frame. Kimi Code reads nothing on stdin, so there is no frame to forward
 // verbatim.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if a.IsStopped() {
 		return errors.New("agent is stopped")
 	}
 	if isKimiRawAbort(data) {
-		return a.Interrupt()
+		return a.Interrupt(stop)
 	}
 	return a.deliverControlResponse(data)
 }

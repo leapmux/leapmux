@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,7 +93,7 @@ func TestAskAnswersASingleSelect(t *testing.T) {
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
 
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89",
-		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}), agent.StopContext{}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, "158b2ba4525bfb89", answers[0]["id"])
 	assert.Equal(t, "SQLite (Recommended)", answers[0]["value"], "the bridge answers omp's own label, suffix included")
@@ -106,7 +107,7 @@ func TestAskAnswersAMultiSelectWithDone(t *testing.T) {
 	r := newRig(t)
 	r.emit(askCallMessage("call_2", multiAskArgs), multiAskDialog1)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba48f5bfb8b",
-		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go", "Rust"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go", "Rust"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 
 	r.emit(askStart("call_2"), multiAskDialog2)
@@ -125,7 +126,7 @@ func TestAskAnswersOtherThroughTheEditor(t *testing.T) {
 	r.emit(askCallMessage("call_3", twoAskArgs), twoAskDialog1)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, twoAskFirstReqID,
 		contracts.OhMyPiAskQuestionAnswer{ID: "color", Selected: []string{"blue"}},
-		contracts.OhMyPiAskQuestionAnswer{ID: "name", Custom: "gamma (typed)"})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "name", Custom: "gamma (typed)"}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 	r.emit(askStart("call_3"), twoAskEditor)
 	r.waitForDialogAnswers(2)
@@ -145,7 +146,7 @@ func TestAskFinishesAMultiSelectInsideSeveralQuestionsThroughOther(t *testing.T)
 		`{"type":"extension_ui_request","id":"d1","method":"select","title":"Which languages? (1/2)","options":["Go","Rust","Other (type your own)"]}`)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "d1",
 		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Rust"}, Custom: "and Zig"},
-		contracts.OhMyPiAskQuestionAnswer{ID: "ok", Selected: []string{"yes"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "ok", Selected: []string{"yes"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 	// omp offers no "Done" here: it expects its own arrow keys to move on.
 	r.emit(askStart("call_8"),
@@ -183,7 +184,7 @@ func TestAskAnswersAnEditorWhoseQuestionRowOmpShortened(t *testing.T) {
 				`{"type":"extension_ui_request","id":"d1","method":"select","title":"`+tc.question+` (1/2)","options":["vitest","playwright","Other (type your own)"]}`)
 			require.NoError(t, r.agent.SendRawInput(askAnswer(t, "d1",
 				contracts.OhMyPiAskQuestionAnswer{ID: "fw", Selected: []string{"vitest"}},
-				contracts.OhMyPiAskQuestionAnswer{ID: "ok", Selected: []string{"yes"}})))
+				contracts.OhMyPiAskQuestionAnswer{ID: "ok", Selected: []string{"yes"}}), agent.StopContext{}))
 			r.waitForDialogAnswers(1)
 			r.emit(askStart("call_9"),
 				`{"type":"extension_ui_request","id":"d2","method":"select","title":"(1 selected) `+tc.question+` (1/2)","options":["vitest","playwright","Other (type your own)"]}`)
@@ -216,7 +217,7 @@ func TestAskHandsOffAnEditorOfAnotherQuestion(t *testing.T) {
 		`{"type":"extension_ui_request","id":"d1","method":"select","title":"Which languages? (1/2)","options":["Go","Rust","Other (type your own)"]}`)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "d1",
 		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Rust"}},
-		contracts.OhMyPiAskQuestionAnswer{ID: "ok", Selected: []string{"yes"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "ok", Selected: []string{"yes"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 	r.emit(askStart("call_8"),
 		`{"type":"extension_ui_request","id":"d2","method":"select","title":"(1 selected) Which languages? (1/2)","options":["Go","Rust","Other (type your own)"]}`)
@@ -233,7 +234,7 @@ func TestAskAnswersASingleMultiSelectWithTextThroughTheEditor(t *testing.T) {
 	r := newRig(t)
 	r.emit(askCallMessage("call_2", multiAskArgs), multiAskDialog1)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba48f5bfb8b",
-		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go"}, Custom: "Zig too"})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go"}, Custom: "Zig too"}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 	r.emit(askStart("call_2"), multiAskDialog2)
 	r.waitForDialogAnswers(2)
@@ -261,14 +262,14 @@ func TestAskRefusesAnAnswerItCannotUse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
 			r.emit(askCallMessage("call_3", twoAskArgs), twoAskDialog1)
-			err := r.agent.SendRawInput(askAnswer(t, twoAskFirstReqID, tc.answers...))
+			err := r.agent.SendRawInput(askAnswer(t, twoAskFirstReqID, tc.answers...), agent.StopContext{})
 			assert.ErrorContains(t, err, tc.message)
 			assert.Empty(t, r.dialogAnswers(), "nothing reaches omp, so the request stays open")
 
 			// A correct answer still works afterwards.
 			require.NoError(t, r.agent.SendRawInput(askAnswer(t, twoAskFirstReqID,
 				contracts.OhMyPiAskQuestionAnswer{ID: "name", Selected: []string{"alpha"}},
-				contracts.OhMyPiAskQuestionAnswer{ID: "color", Selected: []string{"red"}})))
+				contracts.OhMyPiAskQuestionAnswer{ID: "color", Selected: []string{"red"}}), agent.StopContext{}))
 			r.waitForDialogAnswers(1)
 		})
 	}
@@ -277,15 +278,15 @@ func TestAskRefusesAnAnswerItCannotUse(t *testing.T) {
 func TestAskRefusesAnAnswerToNoOpenQuestion(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	err := r.agent.SendRawInput(askAnswer(t, "gone", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}))
+	err := r.agent.SendRawInput(askAnswer(t, "gone", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}), agent.StopContext{})
 	assert.ErrorContains(t, err, "no longer open")
 
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
 	answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}})
-	require.NoError(t, r.agent.SendRawInput(answer))
-	assert.ErrorContains(t, r.agent.SendRawInput(answer), "already answered")
+	require.NoError(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	assert.ErrorContains(t, r.agent.SendRawInput(answer, agent.StopContext{}), "already answered")
 
-	assert.Error(t, r.agent.SendRawInput([]byte(`{"type":"leapmux_ask_answer","answers":"not a list"}`)), "a malformed answer fails")
+	assert.Error(t, r.agent.SendRawInput([]byte(`{"type":"leapmux_ask_answer","answers":"not a list"}`), agent.StopContext{}), "a malformed answer fails")
 }
 
 func TestAskHandsAnUnexpectedDialogToTheReader(t *testing.T) {
@@ -293,7 +294,7 @@ func TestAskHandsAnUnexpectedDialogToTheReader(t *testing.T) {
 	r := newRig(t)
 	r.emit(askCallMessage("call_2", multiAskArgs), multiAskDialog1)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba48f5bfb8b",
-		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go", "Rust"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go", "Rust"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 
 	// A later omp changed the title format: the bridge cannot tell what it asks.
@@ -330,11 +331,11 @@ func TestAskCancellationEndsTheBridge(t *testing.T) {
 	r := newRig(t)
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
 	// The reader rejects the question: the browser sends omp's own cancel.
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"158b2ba4525bfb89","cancelled":true}`)))
+	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"158b2ba4525bfb89","cancelled":true}`), agent.StopContext{}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, true, answers[0]["cancelled"])
 
-	err := r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}))
+	err := r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}), agent.StopContext{})
 	assert.ErrorContains(t, err, "no longer open")
 	r.emit(askEnd("call_1"))
 	assert.Empty(t, r.sink.CanceledControls(), "the reader closed the request already")
@@ -353,7 +354,7 @@ func TestAskWithdrawnByOmp(t *testing.T) {
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog,
 		`{"type":"extension_ui_request","id":"c","method":"cancel","targetId":"158b2ba4525bfb89"}`)
 	assert.Equal(t, []string{"158b2ba4525bfb89"}, r.sink.CanceledControls())
-	err := r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}))
+	err := r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}), agent.StopContext{})
 	assert.ErrorContains(t, err, "no longer open", "omp no longer waits for the answer")
 }
 
@@ -394,7 +395,7 @@ func TestAskFollowsTheCallsOfOneMessageInOrder(t *testing.T) {
 		`{"type":"toolCall","id":"call_b","name":"ask","arguments":` + twoAskArgs + `}],"stopReason":"toolUse"}}`
 	r.emit(message, singleAskDialog)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89",
-		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 
 	r.emit(askStart("call_a"), askEnd("call_a"), twoAskDialog1, askStart("call_b"))
@@ -408,7 +409,7 @@ func TestAskFollowsTheCallsOfOneMessageInOrder(t *testing.T) {
 
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, twoAskFirstReqID,
 		contracts.OhMyPiAskQuestionAnswer{ID: "name", Selected: []string{"beta"}},
-		contracts.OhMyPiAskQuestionAnswer{ID: "color", Selected: []string{"red"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "color", Selected: []string{"red"}}), agent.StopContext{}))
 	answers := r.waitForDialogAnswers(2)
 	assert.Equal(t, "beta", answers[1]["value"])
 }
@@ -422,10 +423,10 @@ func TestAskKeepsTheRequestOpenWhenTheAnswerCannotReachOmp(t *testing.T) {
 	answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}})
 
 	r.agent.SetStoppedForTest(true)
-	assert.ErrorContains(t, r.agent.SendRawInput(answer), "answer the question")
+	assert.ErrorContains(t, r.agent.SendRawInput(answer, agent.StopContext{}), "answer the question")
 	r.agent.SetStoppedForTest(false)
 
-	require.NoError(t, r.agent.SendRawInput(answer))
+	require.NoError(t, r.agent.SendRawInput(answer, agent.StopContext{}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, "SQLite (Recommended)", answers[0]["value"])
 }
@@ -437,7 +438,7 @@ func TestAskHandsOffASingleMultiSelectThatOffersNoDone(t *testing.T) {
 	r := newRig(t)
 	r.emit(askCallMessage("call_2", multiAskArgs), multiAskDialog1)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba48f5bfb8b",
-		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "langs", Selected: []string{"Go"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 
 	noDone := `{"type":"extension_ui_request","id":"nd","method":"select","title":"(1 selected) Which languages?","options":["Go","Rust","TypeScript","Other (type your own)"]}`
@@ -453,7 +454,7 @@ func TestAskHandsADialogAfterTheLastQuestionToTheReader(t *testing.T) {
 	r := newRig(t)
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89",
-		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}}), agent.StopContext{}))
 	r.waitForDialogAnswers(1)
 
 	again := `{"type":"extension_ui_request","id":"x9","method":"select","title":"Which database?","options":["SQLite (Recommended)","PostgreSQL","Other (type your own)"]}`
@@ -480,7 +481,7 @@ func TestAskPublishesAnotherDialogThatArrivesBeforeTheAnswer(t *testing.T) {
 	assert.JSONEq(t, other, string(controls[1].Payload))
 
 	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "158b2ba4525bfb89",
-		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"PostgreSQL"}})))
+		contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"PostgreSQL"}}), agent.StopContext{}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, "158b2ba4525bfb89", answers[0]["id"])
 	assert.Equal(t, "PostgreSQL", answers[0]["value"])

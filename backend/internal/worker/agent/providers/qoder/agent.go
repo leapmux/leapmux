@@ -122,7 +122,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		a.setTurnActive(false)
 		return err
 	}
-	if err := a.SendRawInput(raw); err != nil {
+	if err := a.SendRawInput(raw, agent.StopContext{}); err != nil {
 		a.setTurnActive(false)
 		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
 	}
@@ -212,11 +212,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if err != nil {
 		return err
 	}
-	return a.SendRawInput(raw)
+	return a.SendRawInput(raw, agent.StopContext{})
 }
 
 // Interrupt aborts the running turn with Qoder's own interrupt control request.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if a.IsStopped() {
 		return fmt.Errorf("the Qoder process is stopped")
 	}

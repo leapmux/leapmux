@@ -92,7 +92,7 @@ func TestZCodeManualCompactionInterruptEndsASilentSummary(t *testing.T) {
 	a.PublishTurnActive()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.Equal(t, 1, timer.armed)
 	timer.fire()
 

@@ -170,7 +170,7 @@ func (a *Agent) toolCallRow(toolUseID string) int64 {
 // Amp's stdin takes user lines alone, and Amp ends the whole session at any
 // other line. So SendRawInput refuses an answer whose behavior it cannot read,
 // and every line that is not a user line, and sends nothing to Amp.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(data); ok && requestID != "" {
 		return a.answerPermission(requestID, behavior, message)
 	}
@@ -187,7 +187,7 @@ func (a *Agent) SendRawInput(data []byte) error {
 	if proc == nil || proc.ending() {
 		return errors.New("no Amp process runs to take the line")
 	}
-	return proc.SendRawInput(data)
+	return proc.SendRawInput(data, stop)
 }
 
 // answerPermission delivers the user's decision on one permission request. It

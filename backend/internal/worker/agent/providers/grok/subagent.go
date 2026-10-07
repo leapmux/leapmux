@@ -403,7 +403,7 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
 // InterruptChild stops one subagent. childKey is the registry row key.
-func (a *Agent) InterruptChild(childKey string) error {
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	a.stateMu.Lock()
 	subagentID, ok := a.children.subagentByRow[childKey]
 	a.stateMu.Unlock()

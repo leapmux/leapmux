@@ -382,8 +382,8 @@ func TestAutomaticPathsStillRefuseAnAgentWhoseNativeResumeWasRefused(t *testing.
 		enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, "hello"))
 	assert.Equal(t, errAgentStartupFailed.Error(),
 		enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, "/compact"))
-	assert.False(t, svc.handleControlRequestMessage(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{}}`),
+	assert.Error(t, svc.handleControlRequestMessage(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{}}`, func(data []byte) error { return svc.Agents.SendRawInput(agentID, data, agent.StopContext{}) }),
 		"a control request reached an agent whose startup failed")
 	assert.Equal(t, outcomeSkipped, svc.AgentResumer().resumeOne(t.Context(), agentID))
 

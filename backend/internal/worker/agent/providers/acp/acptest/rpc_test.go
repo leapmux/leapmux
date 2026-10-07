@@ -26,11 +26,12 @@ func TestNewAgentForRPCIgnoresOutboundResponses(t *testing.T) {
 			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 		},
 	)
-	pending, release := base.Register(7)
+	pending, release, err := base.Register(7)
+	require.NoError(t, err)
 	defer release()
 	base.SendResponseDetached(json.RawMessage(`7`), map[string]any{"items": []any{}}, "outbound response")
 	require.NoError(t, base.SendNotification("test/notify", nil))
-	_, err := base.SendRequest("test/sync", nil, 30*time.Second)
+	_, err = base.SendRequest("test/sync", nil, 30*time.Second)
 	require.NoError(t, err)
 
 	select {

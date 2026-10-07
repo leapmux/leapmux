@@ -384,7 +384,7 @@ func (a *Agent) HandleOutput(content []byte) {
 
 // SendRawInput executes a control answer that ResolveControlResponse built. It
 // refuses every other input, because the server takes no raw frame.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	a.Mu.Unlock()

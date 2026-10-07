@@ -204,7 +204,7 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 	return agent.TurnState{Active: child.active, Steerable: child.active && child.descriptor.Mode == "continuable"}
 }
 
-func (a *Agent) InterruptChild(childKey string) error {
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	a.Mu.Lock()
 	child := a.children[childKey]
 	a.Mu.Unlock()

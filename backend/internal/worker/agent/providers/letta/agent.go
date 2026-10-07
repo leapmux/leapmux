@@ -293,7 +293,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 }
 
 // Interrupt aborts the running turn with abort_message.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	active := a.turnActive
 	a.Mu.Unlock()

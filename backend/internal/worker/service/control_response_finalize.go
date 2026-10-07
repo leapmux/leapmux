@@ -75,6 +75,8 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		write = &prepared
 	}
 	ctx := bgCtx()
+	_, _, release := svc.Output.lockControlMutation(agentID, "")
+	defer release()
 	var seq int64
 	var removed db.ControlRequest
 	apply := func(tx *sql.Tx) error {

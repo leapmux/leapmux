@@ -253,7 +253,7 @@ func TestAnApprovedPlanContinuesInActMode(t *testing.T) {
 
 	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{
 		ApprovalId: "p1", Approved: true, PermissionMode: contracts.ClinePermissionModeAutoApprove,
-	})))
+	}), agent.StopContext{}))
 	replies := approvalReplies(t, r.hub)
 	require.Len(t, replies, 1)
 	assert.Empty(t, replies[0].PermissionMode, "Cline never sees LeapMux's field")
@@ -292,7 +292,7 @@ func TestARejectedPlanStaysInPlanMode(t *testing.T) {
 	requestID := r.startTurn(t, "Plan it.")
 	r.emit(contracts.ClineEventApprovalRequested, approval("p1", contracts.ClineToolSwitchToActMode))
 	waitFor(t, func() bool { return r.sink.PublishedControlCount() == 1 }, "the plan approval is published")
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "p1", Reason: "Split it."})))
+	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "p1", Reason: "Split it."}), agent.StopContext{}))
 	r.endRun(t, requestID, contracts.ClineRunReasonCompleted)
 	assert.Len(t, r.hub.commandsNamed(commandSessionCreate), 1, "no rebuild")
 	assert.Equal(t, contracts.ClinePermissionModePlan, r.agent.settings.permissionMode)
@@ -307,7 +307,7 @@ func TestAPlanApprovedAndThenInterruptedSwitchesWithoutGoingOn(t *testing.T) {
 	requestID := r.startTurn(t, "Go.")
 	r.emit(contracts.ClineEventApprovalRequested, approval("p1", contracts.ClineToolSwitchToActMode))
 	waitFor(t, func() bool { return r.sink.PublishedControlCount() == 1 }, "the plan approval is published")
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "p1", Approved: true})))
+	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "p1", Approved: true}), agent.StopContext{}))
 	r.emit(contracts.ClineEventRunAborted, map[string]any{"reason": "aborted"})
 	r.hub.reply(requestID, fakeReply{})
 	waitFor(t, func() bool { return len(r.hub.commandsNamed(commandSessionCreate)) == 2 }, "the approved mode applies")
@@ -563,7 +563,7 @@ func TestAnInterruptDuringThePlanSwitchStopsTheContinuation(t *testing.T) {
 	r.emit(contracts.ClineEventAssistantFinished, map[string]any{"text": "Plan: edit it."})
 	r.emit(contracts.ClineEventApprovalRequested, approval("p1", contracts.ClineToolSwitchToActMode))
 	waitFor(t, func() bool { return r.sink.PublishedControlCount() == 1 }, "the plan approval is published")
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "p1", Approved: true})))
+	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "p1", Approved: true}), agent.StopContext{}))
 	tool := question(r, "tool-1")
 	tool["capabilityName"] = capabilitySwitchToActMode
 	tool["payload"] = map[string]any{"toolName": contracts.ClineToolSwitchToActMode, "input": map[string]any{}}
@@ -574,7 +574,7 @@ func TestAnInterruptDuringThePlanSwitchStopsTheContinuation(t *testing.T) {
 
 	detachID := <-detached
 	require.True(t, r.turnActive(), "the settling turn holds the input queue")
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	assert.Empty(t, r.hub.commandsNamed(commandRunAbort), "a settling turn has no run to abort")
 	r.hub.reply(detachID, fakeReply{})
 

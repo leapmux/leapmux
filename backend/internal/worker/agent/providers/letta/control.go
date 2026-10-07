@@ -420,7 +420,7 @@ func (a *Agent) lettaSession() string {
 //     for a permission resolves the approval that the running turn waits for.
 //   - The question response becomes a task notification in a `create_message`
 //     input. A running turn queues it, and an idle conversation starts a turn.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if a.IsStopped() {
 		return errAgentStopped
 	}

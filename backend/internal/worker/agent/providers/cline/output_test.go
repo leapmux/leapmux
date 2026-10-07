@@ -162,7 +162,7 @@ func TestTheRunsEndClosesWhatTheTurnLeftOpen(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	requestID := r.startTurn(t, "Hello.")
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	abort, ok := r.hub.waitCommand(commandRunAbort)
 	require.True(t, ok)
 	assert.Equal(t, r.sessionID(), abort.str("sessionId"))

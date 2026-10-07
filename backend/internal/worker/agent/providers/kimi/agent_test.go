@@ -305,30 +305,30 @@ func TestKimiSendRawInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, map[string]any{"type": "turn.started", "turnId": 0, "origin": map[string]any{"kind": "user"}})
-		require.NoError(t, rig.agent.SendRawInput([]byte(`{"action":"abort"}`)))
+		require.NoError(t, rig.agent.SendRawInput([]byte(`{"action":"abort"}`), agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)), 1)
 	})
 
 	t.Run("an interrupt with no turn sends nothing", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		require.NoError(t, rig.agent.Interrupt())
+		require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)))
 	})
 
 	t.Run("anything else is a control response", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		err := rig.agent.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"approval_1","response":{"decision":"approved"}}}`))
+		err := rig.agent.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"approval_1","response":{"decision":"approved"}}}`), agent.StopContext{})
 		require.ErrorIs(t, err, errKimiControlGone, "no request of that id is pending")
-		require.Error(t, rig.agent.SendRawInput([]byte(`not json`)))
+		require.Error(t, rig.agent.SendRawInput([]byte(`not json`), agent.StopContext{}))
 	})
 
 	t.Run("refuses once stopped", func(t *testing.T) {
 		t.Parallel()
 		a := newOfflineKimiAgent(t, &agenttest.Sink{})
 		a.SetStoppedForTest(true)
-		require.ErrorContains(t, a.SendRawInput([]byte(`{"action":"abort"}`)), "stopped")
+		require.ErrorContains(t, a.SendRawInput([]byte(`{"action":"abort"}`), agent.StopContext{}), "stopped")
 	})
 }
 

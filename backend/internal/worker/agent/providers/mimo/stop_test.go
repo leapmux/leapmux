@@ -27,7 +27,7 @@ func interruptOnClock(t *testing.T, a *Agent, clock *quartz.Mock) time.Duration 
 	grace := clock.Trap().AfterFunc(mimoAbortGraceTimerTag)
 	defer grace.Close()
 	result := make(chan error, 1)
-	go func() { result <- a.Interrupt() }()
+	go func() { result <- a.Interrupt(agent.StopContext{}) }()
 	delay := testutil.WaitForTimer(t, ctx, grace)
 	require.NoError(t, <-result)
 	return delay
@@ -44,7 +44,7 @@ func TestInterruptWithoutATurnSendsNothing(t *testing.T) {
 	t.Parallel()
 	a, server := newTestAgent(t, nil)
 	clock := useMockClock(t, a)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, server.allRequests())
 	assertNoTimer(t, clock, "no abort means no check after the grace")
 }
@@ -162,7 +162,7 @@ func TestFailedInterruptLeavesTheLaterTurnInterruptIntact(t *testing.T) {
 		writeJSON(w, http.StatusOK, `true`)
 	})
 	firstResult := make(chan error, 1)
-	go func() { firstResult <- a.Interrupt() }()
+	go func() { firstResult <- a.Interrupt(agent.StopContext{}) }()
 	select {
 	case <-firstArrived:
 	case <-testutil.DeadlineContext(t).Done():
@@ -191,7 +191,7 @@ func TestInterruptThatFailsKeepsTheTurn(t *testing.T) {
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
 	server.respond("POST /session/ses_test/abort", http.StatusInternalServerError, `{}`)
 
-	assert.ErrorContains(t, a.Interrupt(), "abort the MiMo turn")
+	assert.ErrorContains(t, a.Interrupt(agent.StopContext{}), "abort the MiMo turn")
 	assert.Empty(t, a.interruptRequests)
 	assertNoTimer(t, clock, "the abort stopped nothing, so no check follows")
 	assert.Equal(t, []bool{true}, sink.TurnActives())
@@ -205,7 +205,7 @@ func TestInterruptWithoutASessionSendsNothing(t *testing.T) {
 	a.turnActive = true
 	a.sessionID = ""
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, server.allRequests())
 	assert.Empty(t, a.interruptRequests)
 	assertNoTimer(t, clock, "no abort means no check after the grace")
@@ -215,7 +215,7 @@ func TestInterruptOnAStoppedAgent(t *testing.T) {
 	t.Parallel()
 	a, server := newTestAgent(t, nil)
 	a.SetStoppedForTest(true)
-	assert.ErrorContains(t, a.Interrupt(), "stopped")
+	assert.ErrorContains(t, a.Interrupt(agent.StopContext{}), "stopped")
 	assert.Empty(t, server.allRequests())
 }
 

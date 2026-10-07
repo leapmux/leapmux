@@ -390,7 +390,7 @@ func TestASendDuringARebuildIsRefusedAsBusy(t *testing.T) {
 	require.ErrorAs(t, err, &busy)
 	assert.False(t, busy.ActiveTurnSteerable, "no run takes a steer during the rebuild")
 	require.ErrorIs(t, r.agent.SteerInput("Hi.", nil), agent.ErrAgentBusy)
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	assert.Empty(t, r.hub.commandsNamed(commandRunAbort), "the detached session has no run to abort")
 	assert.Empty(t, r.hub.commandsNamed(commandSessionSendInput), "nothing reaches the detached runtime")
 	r.hub.reply(detachID, fakeReply{})

@@ -323,7 +323,7 @@ func TestInterrupt(t *testing.T) {
 
 	t.Run("is a no-op with no turn", func(t *testing.T) {
 		r := newRig(t)
-		require.NoError(t, r.agent.Interrupt())
+		require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 		assert.Empty(t, r.commandsOfType(CommandAbort))
 	})
 
@@ -338,20 +338,20 @@ func TestInterrupt(t *testing.T) {
 		})
 		r.emit(`{"type":"agent_start"}`)
 
-		require.NoError(t, r.agent.Interrupt())
+		require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 		r.waitForCommand(CommandAbort, 1)
 	})
 
 	t.Run("refuses a stopped agent", func(t *testing.T) {
 		r := newRig(t)
 		r.agent.SetStoppedForTest(true)
-		assert.ErrorContains(t, r.agent.Interrupt(), "stopped")
+		assert.ErrorContains(t, r.agent.Interrupt(agent.StopContext{}), "stopped")
 	})
 
 	t.Run("wire format matches the provider classifier", func(t *testing.T) {
 		r := newRig(t)
 		r.emit(`{"type":"agent_start"}`)
-		require.NoError(t, r.agent.Interrupt())
+		require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 		abort := r.waitForCommand(CommandAbort, 1)[0]
 		assert.True(t, ompProvider{}.IsInterrupt(string(abort.Raw)))
 	})
@@ -361,7 +361,7 @@ func TestTheInterruptedTurnReadsAsInterrupted(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 
 	// omp can end a stopped run on an error when a tool was still running.
 	r.emit(`{"type":"agent_end","isTerminal":true,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"This operation was aborted"}]}`)

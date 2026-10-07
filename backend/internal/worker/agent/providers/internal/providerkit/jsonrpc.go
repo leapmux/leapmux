@@ -58,7 +58,7 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 // A write that delivers no bytes restores the control for another answer.
 // ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
 // Restoring it in that case can send a second answer to a retired request.
-func (b *JSONRPCProcess) SendRawInput(data []byte) error {
+func (b *JSONRPCProcess) SendRawInput(data []byte, stop agent.StopContext) error {
 	restore := b.takeOutstandingControl(data)
 	err := b.writeRawFrame(data)
 	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
@@ -69,7 +69,7 @@ func (b *JSONRPCProcess) SendRawInput(data []byte) error {
 
 func (b *JSONRPCProcess) writeRawFrame(data []byte) error {
 	if b.FrameMessage == nil {
-		return b.Process.SendRawInput(data)
+		return b.Process.SendRawInput(data, agent.StopContext{})
 	}
 	if b.IsStopped() {
 		return fmt.Errorf("agent is stopped")
@@ -142,7 +142,10 @@ func (b *JSONRPCProcess) SendRequestObserved(method string, params json.RawMessa
 			observe(result, err)
 		}
 	}
-	ch, release := b.RegisterObserved(reqID, rawObserver)
+	ch, release, err := b.RegisterObserved(reqID, rawObserver)
+	if err != nil {
+		return nil, &jsonRPCRequestNotSentError{cause: err}
+	}
 	defer release()
 
 	data, err := json.Marshal(jsonrpcMessage{
@@ -168,7 +171,10 @@ func (b *JSONRPCProcess) SendRequestObserved(method string, params json.RawMessa
 
 func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
 	reqID := b.nextReqID.Add(1)
-	ch, release := b.Register(reqID)
+	ch, release, err := b.Register(reqID)
+	if err != nil {
+		return &jsonRPCRequestNotSentError{cause: err}
+	}
 	data, err := json.Marshal(jsonrpcMessage{JSONRPC: "2.0", ID: reqID, Method: method, Params: params})
 	if err != nil {
 		release()

@@ -366,7 +366,7 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 			slog.Error("codebuddy: encode control failure", "agent_id", a.AgentID(), "error", marshalErr)
 			return
 		}
-		if err := a.SendRawInput(response); err != nil {
+		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
 			slog.Warn("codebuddy: send control failure", "agent_id", a.AgentID(), "error", err)
 		}
 	}
@@ -437,7 +437,7 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 // sendControlFire sends a control request without waiting for its response.
 func (a *Agent) sendControlFire(requestBody string) error {
 	msg := `{"type":"control_request","request_id":"` + shortID() + `","request":` + requestBody + `}`
-	return a.SendRawInput([]byte(msg))
+	return a.SendRawInput([]byte(msg), agent.StopContext{})
 }
 
 // codebuddyControlTimerTag labels the timers of sendControlAndWait. The timers
@@ -468,7 +468,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (c
 	}()
 
 	msg := `{"type":"control_request","request_id":"` + requestID + `","request":` + requestBody + `}`
-	if err := a.SendRawInput([]byte(msg)); err != nil {
+	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
 		exitWait := a.Clock().NewTimer(codebuddyControlExitWait, codebuddyControlTimerTag)
 		defer exitWait.Stop(codebuddyControlTimerTag)
 		select {

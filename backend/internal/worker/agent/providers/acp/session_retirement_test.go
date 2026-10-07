@@ -136,7 +136,7 @@ func TestACPCancelPrecedesControlWithdrawalWhenTheProviderRequiresIt(t *testing.
 			a.HandleOutput(elicitationRequest(t, 41, "session-1"))
 			require.Len(t, sink.PublishedControls(), 2)
 			if operation == "interrupt" {
-				require.NoError(t, a.Interrupt())
+				require.NoError(t, a.Interrupt(agent.StopContext{}))
 			} else {
 				_, err := a.ClearContext()
 				require.NoError(t, err)
@@ -264,7 +264,7 @@ func TestACPClearContextReleasesTheOutgoingTurnBeforeTheNewSession(t *testing.T)
 
 	// A later stop belongs to the new session alone.
 	a.promptActive = true
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	syncTestPeer(t, a)
 	assert.Equal(t, []string{"session-1", "session-2"}, sessionIDsOf(requests(), MethodSessionCancel))
 	assert.Equal(t, indexOfAnswer(t, requests(), 30), indexOfAnswer(t, lines, 30), "no second answer reaches the old request")
@@ -549,7 +549,7 @@ func TestACPInterruptRetiresAnAnswerlessRequestByDefault(t *testing.T) {
 	answerlessRequest(t, a, 70)
 	a.promptActive = true
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	syncTestPeer(t, a)
 
 	assert.Equal(t, []string{"jsonrpc:70"}, sink.CanceledControls())
@@ -562,7 +562,7 @@ func TestACPInterruptRetiresAnAnswerlessRequestByDefault(t *testing.T) {
 func TestACPKeepsAnAnswerlessRequestThatOutlivesTheTurn(t *testing.T) {
 	t.Parallel()
 	for name, stop := range map[string]func(*testAgent) error{
-		"interrupt":     func(a *testAgent) error { return a.Interrupt() },
+		"interrupt":     func(a *testAgent) error { return a.Interrupt(agent.StopContext{}) },
 		"context clear": func(a *testAgent) error { _, err := a.ClearContext(); return err },
 	} {
 		t.Run(name, func(t *testing.T) {

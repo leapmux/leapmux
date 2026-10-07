@@ -48,8 +48,15 @@ func (a *Agent) sendZCodeRequest(method string, params any, timeout time.Duratio
 		return nil, fmt.Errorf("marshal %s: %w", method, err)
 	}
 	data = append(data, '\n')
+	return a.sendZCodeFrame(id, method, data, timeout)
+}
 
-	ch, release := a.Register(id)
+// sendZCodeFrame preserves caller bytes and claims the native reply ID before the write.
+func (a *Agent) sendZCodeFrame(id int64, method string, data []byte, timeout time.Duration) (json.RawMessage, error) {
+	ch, release, err := a.Register(id)
+	if err != nil {
+		return nil, fmt.Errorf("register %s: %w", method, err)
+	}
 	defer release()
 
 	if a.IsStopped() {
@@ -71,6 +78,9 @@ func (a *Agent) sendZCodeRequest(method string, params any, timeout time.Duratio
 	}
 	if env.Error != nil {
 		return nil, fmt.Errorf("%s failed: %w", method, env.Error)
+	}
+	if len(env.Result) == 0 {
+		return nil, fmt.Errorf("%s response has no result or error", method)
 	}
 	return env.Result, nil
 }

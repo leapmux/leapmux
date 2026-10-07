@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,8 +15,53 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+type observedControlRead struct {
+	db.DBTX
+	read func(context.Context, string, ...any) *sql.Row
+}
+
+type observedControlStore struct {
+	db.DBTX
+	store func(context.Context, string, ...any) *sql.Row
+}
+
+type heldRetirementWriter struct {
+	mockResponseWriter
+	entered chan struct{}
+	release chan struct{}
+	held    atomic.Bool
+}
+
+func (w *heldRetirementWriter) SendStream(message *leapmuxv1.InnerStreamMessage) error {
+	var response leapmuxv1.WatchEventsResponse
+	if err := proto.Unmarshal(message.GetPayload(), &response); err != nil {
+		return err
+	}
+	if activity := response.GetAgentEvent().GetActivityChanged(); activity != nil &&
+		activity.GetState() == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE && w.held.CompareAndSwap(false, true) {
+		close(w.entered)
+		<-w.release
+	}
+	return nil
+}
+
+func (q observedControlStore) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "-- name: StoreControlRequest :one") {
+		return q.store(ctx, query, args...)
+	}
+	return q.DBTX.QueryRowContext(ctx, query, args...)
+}
+
+func (q observedControlRead) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "-- name: GetControlRequest :one") {
+		return q.read(ctx, query, args...)
+	}
+	return q.DBTX.QueryRowContext(ctx, query, args...)
+}
 
 type controlPublicationWriter struct {
 	mockResponseWriter
@@ -216,4 +265,215 @@ func createTestControlRequest(t *testing.T, ctx context.Context, queries *db.Que
 	t.Helper()
 	_, err := queries.StoreControlRequest(ctx, params)
 	require.NoError(t, err)
+}
+
+func TestControlPublicationReadFailureKeepsTheCurrentInstance(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	publishStopControl(t, sink, "request")
+	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "failed-read"}}
+	registerAgentWatch(svc, "failed-read", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	svc.Output.queries = db.New(observedControlRead{DBTX: svc.DB, read: func(ctx context.Context, _ string, _ ...any) *sql.Row {
+		return svc.DB.QueryRowContext(ctx, "SELECT missing_control_column")
+	}})
+	require.ErrorContains(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"changed":true}`)}), "read the pending control request")
+	after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.Empty(t, writer.snapshot())
+}
+
+func TestControlPublicationStoreFailureKeepsTheCurrentInstance(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	publishStopControl(t, sink, "request")
+	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "failed-store"}}
+	registerAgentWatch(svc, "failed-store", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER reject_control_replacement
+		BEFORE INSERT ON control_requests BEGIN SELECT RAISE(ABORT, 'control replacement unavailable'); END`)
+	require.NoError(t, err)
+	require.ErrorContains(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"changed":true}`)}), "control replacement unavailable")
+	after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.Empty(t, writer.snapshot())
+}
+
+func TestControlPublicationRenewsAnUnknownLiveAssociation(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	publishStopControl(t, sink, "request")
+	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	st := svc.Output.activityFor("agent-1", "agent-1")
+	st.mu.Lock()
+	st.pendingControl = nil
+	st.mu.Unlock()
+	publishStopControl(t, sink, "request")
+	after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	assert.Equal(t, before.Payload, after.Payload)
+	assert.NotEqual(t, before.ClaimToken, after.ClaimToken)
+}
+
+func TestControlPublicationAddsASequenceAfterAnUnsequencedAnnouncement(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	request := agent.ControlRequest{RequestID: "request", Payload: []byte(`{"question":"Choose one"}`)}
+	require.NoError(t, sink.PublishControlRequest(request))
+	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	request.SourceSeq = 37
+	require.NoError(t, sink.PublishControlRequest(request))
+	after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	assert.Equal(t, before.ClaimToken, after.ClaimToken)
+	assert.Equal(t, int64(37), after.SourceSeq)
+}
+
+func TestControlPublicationKeepsOwnershipDuringATurnOrProcessChange(t *testing.T) {
+	for _, boundary := range []string{"turn", "process"} {
+		t.Run(boundary, func(t *testing.T) {
+			t.Parallel()
+			svc, _, oldSink, _ := stopOwnershipFixture(t)
+			request := agent.ControlRequest{RequestID: "request", Payload: []byte(`{"question":"Choose one"}`), SourceSeq: 11}
+			require.NoError(t, oldSink.PublishControlRequest(request))
+			before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+			require.NoError(t, err)
+			entered, release := make(chan struct{}), make(chan struct{})
+			var reads atomic.Int32
+			svc.Output.queries = db.New(observedControlRead{DBTX: svc.DB, read: func(ctx context.Context, query string, args ...any) *sql.Row {
+				if reads.Add(1) == 1 {
+					close(entered)
+					<-release
+				}
+				return svc.DB.QueryRowContext(ctx, query, args...)
+			}})
+			oldDone := make(chan error, 1)
+			go func() { oldDone <- oldSink.PublishControlRequest(request) }()
+			<-entered
+			newSink := oldSink
+			if boundary == "turn" {
+				oldSink.SetTurnState(agent.TurnState{}, 2)
+				oldSink.SetTurnState(agent.TurnState{Active: true}, 3)
+			} else {
+				newSink = svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+				svc.Output.NoteAgentProcessStarted("agent-1")
+				newSink.SetTurnState(agent.TurnState{Active: true}, 1)
+			}
+			close(release)
+			require.NoError(t, <-oldDone)
+			request.SourceSeq = 22
+			require.NoError(t, newSink.PublishControlRequest(request))
+			after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+			require.NoError(t, err)
+			assert.NotEqual(t, before.ClaimToken, after.ClaimToken)
+			assert.Equal(t, int64(22), after.SourceSeq)
+		})
+	}
+}
+
+func TestControlPublicationKeepsItsActivityEntryUntilTheStoreCompletes(t *testing.T) {
+	t.Parallel()
+	svc, _, childID, rootID := setupChildAgentTest(t)
+	svc.Agents.PutAgentForTest(rootID, &heldStopAgent{calls: make(chan heldStopCall, 1)})
+	root := svc.Output.sinkForAgent(rootID)
+	require.NotNil(t, root)
+	svc.Output.NoteAgentProcessStarted(rootID)
+	sink := root.ChildSink(childID)
+	st := svc.Output.activityFor(childID, rootID)
+	entered, release := make(chan struct{}), make(chan struct{})
+	svc.Output.queries = db.New(observedControlStore{DBTX: svc.DB, store: func(ctx context.Context, query string, args ...any) *sql.Row {
+		close(entered)
+		<-release
+		return svc.DB.QueryRowContext(ctx, query, args...)
+	}})
+	done := make(chan error, 1)
+	go func() {
+		done <- sink.PublishControlRequest(agent.ControlRequest{RequestID: "child-control", Payload: []byte(`{"question":"Choose one"}`)})
+	}()
+	<-entered
+	require.NoError(t, root.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
+	holdSettles(t, svc.Output).close()
+	svc.Output.refreshActivityFrom(childID, rootID, nil, svc.Output.activitySeq.Add(1), settleImmediate)
+	current, retained := svc.Output.activity.Load(childID)
+	assert.True(t, retained, "activity retirement must retain a control mutation that still owns the entry")
+	assert.Same(t, st, current)
+	close(release)
+	require.NoError(t, <-done)
+}
+
+func TestControlFinalizationWaitsForAnInFlightRepeatedPublication(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	publishStopControl(t, sink, "request")
+	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	row := requireAgentRow(t, svc, "agent-1")
+	entered, release := make(chan struct{}), make(chan struct{})
+	var stores atomic.Int32
+	svc.Output.queries = db.New(observedControlStore{DBTX: svc.DB, store: func(ctx context.Context, query string, args ...any) *sql.Row {
+		if stores.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return svc.DB.QueryRowContext(ctx, query, args...)
+	}})
+	publicationDone := make(chan error, 1)
+	go func() {
+		publicationDone <- sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: before.Payload})
+	}()
+	<-entered
+	svc.sendControlResponseFn = func(string, []byte) error { return nil }
+	responseDone := make(chan error, 1)
+	go func() {
+		responseDone <- svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
+			AgentId: "agent-1", ClaimToken: before.ClaimToken,
+			Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"request","response":{"behavior":"allow"}}}`),
+		})
+	}()
+	st := svc.Output.activityFor("agent-1", "agent-1")
+	admitted := assert.Eventually(t, func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.controlMutations == 2
+	}, 30*time.Second, 5*time.Millisecond, "the actual answer finalizer must wait behind the publication")
+	close(release)
+	require.NoError(t, <-publicationDone)
+	require.NoError(t, <-responseDone)
+	require.True(t, admitted)
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.ErrorIs(t, err, sql.ErrNoRows, "the finalizer removes the completed instance after its last announcement")
+	publishStopControl(t, sink, "request")
+	after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	require.NoError(t, err)
+	assert.NotEqual(t, before.ClaimToken, after.ClaimToken, "a later announcement cannot reuse the retired claim")
+}
+
+func TestActivityRetirementKeepsATurnThatStartsDuringTheBroadcast(t *testing.T) {
+	t.Parallel()
+	svc, root, rootID, childID := setupActivityRegistryTest(t)
+	svc.Output.refreshActivityTree(rootID, settleImmediate)
+	st := svc.Output.activityFor(childID, rootID)
+	writer := &heldRetirementWriter{
+		mockResponseWriter: mockResponseWriter{channelID: "retirement-test"},
+		entered:            make(chan struct{}), release: make(chan struct{}),
+	}
+	registerAgentWatch(svc, "retirement-test", childID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	require.NoError(t, root.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
+	done := make(chan struct{})
+	go func() { defer close(done); holdSettles(t, svc.Output).close() }()
+	<-writer.entered
+	root.ChildSink(childID).SetTurnState(agent.TurnState{Active: true}, 1)
+	close(writer.release)
+	<-done
+	current, retained := svc.Output.activity.Load(childID)
+	assert.True(t, retained, "the old idle broadcast cannot retire the new native turn")
+	if retained {
+		assert.Same(t, st, current)
+	}
 }

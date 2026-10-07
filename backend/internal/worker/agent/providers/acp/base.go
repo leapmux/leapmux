@@ -21,7 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -125,7 +125,7 @@ type Base struct {
 	openRows acpOpenRows
 
 	providerkit.JSONRPCProcess
-	sink agent.ProviderServices
+	sink agentapi.ProviderServices
 	// hooks is what the provider changed about this base. applyHooks sets it
 	// once, before the process starts, and nothing changes it after that, so
 	// the base reads it without b.Mu.
@@ -169,7 +169,7 @@ type Base struct {
 	model                 string
 	permissionMode        string
 	currentPrimaryAgent   string
-	availableModels       []*agent.ModelInfo
+	availableModels       []*agentapi.ModelInfo
 	// modelsFieldInfos holds the models reported through the SessionModelState
 	// `models` field at the last full session response (handshake or ClearContext).
 	// A runtime config_option_update carries only the configOptions `model` select,
@@ -215,7 +215,7 @@ type Base struct {
 // handleACPPromptResponse drains one turn and persists its prompt response.
 func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 	if resp == nil {
-		b.finishIncompleteACPPrompt(agent.MessageCompletionInterrupted)
+		b.finishIncompleteACPPrompt(agentapi.MessageCompletionInterrupted)
 		return
 	}
 	b.persistFinishedTurn(resp)
@@ -233,17 +233,17 @@ func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	main := b.main()
 	turn, hasPromptBoundary := b.drainPromptTurn()
 	if !hasPromptBoundary {
-		main.persistCompletedText(agent.AssembledMessageKindReasoning, turn.thoughtText)
-		main.persistCompletedText(agent.AssembledMessageKindText, turn.assistantText)
+		main.persistCompletedText(agentapi.AssembledMessageKindReasoning, turn.thoughtText)
+		main.persistCompletedText(agentapi.AssembledMessageKindText, turn.assistantText)
 	}
 	// A tool the turn left unfinished failed -- unless the reader STOPPED the turn,
 	// in which case it was cut rather than broken. A clean cancel returns a prompt
 	// response rather than an error, so Cursor arrives here and not on the error
 	// path: its stopped command stored `completion: error` for work the reader
 	// chose to end.
-	incomplete := agent.MessageCompletionError
+	incomplete := agentapi.MessageCompletionError
 	if b.acpInterruptRequested() {
-		incomplete = agent.MessageCompletionInterrupted
+		incomplete = agentapi.MessageCompletionInterrupted
 	}
 	main.persistIncompleteTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
@@ -255,8 +255,8 @@ func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 // acpTextProgressScope is the live-counter scope for one text kind. The scope is
 // LeapMux's own key, so it keeps the protocol's update name rather than changing
 // with the stored shape.
-func acpTextProgressScope(kind agent.AssembledMessageKind) string {
-	if kind == agent.AssembledMessageKindReasoning {
+func acpTextProgressScope(kind agentapi.AssembledMessageKind) string {
+	if kind == agentapi.AssembledMessageKindReasoning {
 		return contracts.ACPUpdateAgentThoughtChunk
 	}
 	return contracts.ACPUpdateAgentMessageChunk
@@ -266,7 +266,7 @@ func acpTextProgressScope(kind agent.AssembledMessageKind) string {
 // response was empty, or the request failed. A prompt with an agent turn
 // waiting behind it closes only the tool calls that it left open, and the
 // progress of the agent turn stays (see BeginAgentTurn).
-func (b *Base) finishIncompleteACPPrompt(completion agent.MessageCompletion) {
+func (b *Base) finishIncompleteACPPrompt(completion agentapi.MessageCompletion) {
 	turn, hasPromptBoundary := b.drainPromptTurn()
 	if !hasPromptBoundary {
 		b.finishACPTurn(turn, completion)
@@ -281,19 +281,19 @@ func (b *Base) finishIncompleteACPPrompt(completion agent.MessageCompletion) {
 
 // finishAllTurnOutput ends every turn that has output: the prompt, and an agent
 // turn that waits behind it. Stop and the exit of the process end both.
-func (b *Base) finishAllTurnOutput(completion agent.MessageCompletion) {
+func (b *Base) finishAllTurnOutput(completion agentapi.MessageCompletion) {
 	b.finishACPTurn(b.drainTurn(), completion)
 }
 
-func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agent.MessageCompletion) {
+func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCompletion) {
 	if b.IsDiscardingOutput() {
 		b.ResetCumulativeOutput()
-		b.sink.ReportProgress(agent.ResetProgress())
+		b.sink.ReportProgress(agentapi.ResetProgress())
 		return
 	}
 	b.main().finishTurn(turn, completion)
 	b.clearCompletedTerminals()
-	b.sink.ReportProgress(agent.ResetProgress())
+	b.sink.ReportProgress(agentapi.ResetProgress())
 }
 
 // MethodHandler is called for JSON-RPC methods not handled by the shared
@@ -454,7 +454,7 @@ func (b *Base) ClearContext() (string, error) {
 		return "", err
 	}
 	b.notePromptActive()
-	b.finishACPTurn(outgoingTurn, agent.MessageCompletionInterrupted)
+	b.finishACPTurn(outgoingTurn, agentapi.MessageCompletionInterrupted)
 	// Same for an unspent spawn prompt. Its row belongs to the OUTGOING session
 	// and will never produce a closing observation to drop it, so without this
 	// it is held for the life of the agent process -- and if the new session
@@ -570,8 +570,8 @@ type secondaryAxis struct {
 }
 
 var (
-	permissionModeAxis = secondaryAxis{optionID: agent.OptionIDPermissionMode, label: "Mode", order: agent.OptionOrderPermissionMode}
-	primaryAgentAxis   = secondaryAxis{optionID: agent.OptionIDPrimaryAgent, label: "Primary Agent", order: agent.OptionOrderPrimaryAgent}
+	permissionModeAxis = secondaryAxis{optionID: agentapi.OptionIDPermissionMode, label: "Mode", order: agentapi.OptionOrderPermissionMode}
+	primaryAgentAxis   = secondaryAxis{optionID: agentapi.OptionIDPrimaryAgent, label: "Primary Agent", order: agentapi.OptionOrderPrimaryAgent}
 )
 
 // secondaryAxisFor maps a mode channel to its fixed presentation axis.
@@ -799,9 +799,9 @@ func (b *Base) setSecondary(value string) error {
 // UpdateSettings applies the model, secondary setting, and mutable config options for every ACP family.
 // It uses the resolved secondary channel and effectiveSetModel.
 // b.hooks.ModelIDNormalizer supplies each provider's model-ID conversion.
-func (b *Base) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResult {
 	sc := b.secondaryChannel()
-	model := options[agent.OptionIDModel]
+	model := options[agentapi.OptionIDModel]
 	if b.hooks.ModelIDNormalizer != nil {
 		model = b.hooks.ModelIDNormalizer(model)
 	}
@@ -856,18 +856,18 @@ func (b *Base) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 		b.sink.BroadcastStatusActive(sessionID)
 	}
 	if !ok {
-		return agent.RestartRequiredSettings(options)
+		return agentapi.RestartRequiredSettings(options)
 	}
 	return b.SettingsSnapshot()
 }
 
-func (b *Base) SettingsSnapshot() agent.SettingsApplyResult {
-	result := agent.ConfirmedSettings(agent.CurrentOptions(b.OptionGroups()))
+func (b *Base) SettingsSnapshot() agentapi.SettingsApplyResult {
+	result := agentapi.ConfirmedSettings(agentapi.CurrentOptions(b.OptionGroups()))
 	b.Mu.Lock()
 	unresolved := b.options.unresolved.keys()
 	b.Mu.Unlock()
 	for _, id := range unresolved {
-		result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
+		result.Settlements[id] = agentapi.OptionSettlement{State: agentapi.OptionSettlementUnresolved}
 	}
 	return result
 }
@@ -882,7 +882,7 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 	// Derive the available-model list (the union of both channels) and the current
 	// model/secondary id from a single parse of resp.
 	var model, secondaryVal string
-	var models []*agent.ModelInfo
+	var models []*agentapi.ModelInfo
 	var modelsFieldInfos []ModelInfo
 	var modes []ModeInfo
 	var configOptions []ConfigOption
@@ -956,7 +956,7 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 // Thus a later config_option_update cannot discard entries from only one model channel.
 // An empty current model preserves the value that reapplySettings just restored.
 // The caller holds b.Mu.
-func (b *Base) refreshModelsLocked(models []*agent.ModelInfo, modelsFieldInfos []ModelInfo, model string, normalizeModel func(string) string) {
+func (b *Base) refreshModelsLocked(models []*agentapi.ModelInfo, modelsFieldInfos []ModelInfo, model string, normalizeModel func(string) string) {
 	if len(models) > 0 {
 		b.availableModels = models
 		b.modelsFieldInfos = modelsFieldInfos
@@ -1010,7 +1010,7 @@ func primaryAgentOptions(a string) map[string]string {
 	if a == "" {
 		return nil
 	}
-	return map[string]string{agent.OptionIDPrimaryAgent: a}
+	return map[string]string{agentapi.OptionIDPrimaryAgent: a}
 }
 
 // configurePrimaryAgents installs the handshake's primary-agent list and selection.
@@ -1204,7 +1204,7 @@ func (b *Base) wireTurnActive() {
 		b.Mu.Lock()
 		steerable := active && b.steersLocked()
 		b.Mu.Unlock()
-		providerkit.PublishTurnStateTo(b.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
+		providerkit.PublishTurnStateTo(b.sink, agentapi.TurnState{Active: active, Steerable: steerable}, seq)
 	}
 }
 
@@ -1253,21 +1253,21 @@ func (b *Base) SteerAdvertised(content string, attachments []*leapmuxv1.Attachme
 	method, active, sessionID := b.steerMethod, b.promptActive, b.sessionID
 	b.Mu.Unlock()
 	if method == "" {
-		return agent.ErrSteeringUnsupported
+		return agentapi.ErrSteeringUnsupported
 	}
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agentapi.ErrNoActiveTurn
 	}
 	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
-		"prompt":    BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
+		"prompt":    BuildPromptBlocks(content, agentapi.ClassifyAttachments(attachments)),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal ACP steer params: %w", err)
 	}
 	if _, err := b.SendRequest(method, params, b.APITimeout()); err != nil {
 		if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
-			return agent.ErrNoActiveTurn
+			return agentapi.ErrNoActiveTurn
 		}
 		return providerkit.ClassifyJSONRPCDeliveryError(method, err)
 	}
@@ -1275,7 +1275,7 @@ func (b *Base) SteerAdvertised(content string, attachments []*leapmuxv1.Attachme
 	stillActive := b.promptActive
 	b.Mu.Unlock()
 	if !stillActive {
-		return agent.ErrNoActiveTurn
+		return agentapi.ErrNoActiveTurn
 	}
 	return nil
 }
@@ -1287,7 +1287,7 @@ func (b *Base) Stop() {
 	b.clearActivePrompt()
 	b.releaseAllTerminals()
 	b.Process.Stop()
-	b.finishAllTurnOutput(agent.MessageCompletionInterrupted)
+	b.finishAllTurnOutput(agentapi.MessageCompletionInterrupted)
 	b.finishAllChildConversations()
 }
 
@@ -1384,7 +1384,7 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 // persistPromptResponse stores the turn-end row. The caller closes each text
 // segment first, so this handles the response frame and the spans alone.
 func (b *Base) persistPromptResponse(resp json.RawMessage, numToolUses int) {
-	if err := b.sink.PersistTurnEnd(agent.WithToolUseCount(agent.MessageContent{Original: resp}, numToolUses), agent.SpanInfo{}); err != nil {
+	if err := b.sink.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil {
 		slog.Error("persist acp prompt result", "agent_id", b.AgentID(), "error", err)
 	}
 	b.sink.ResetSpans()
@@ -1519,7 +1519,7 @@ type SubagentObservation struct {
 	// shared translator copies it into the child transcript. The parent keeps its
 	// native tool result, so the report stays visible in both conversations.
 	ReportID string
-	Report   agent.SubagentReport
+	Report   agentapi.SubagentReport
 }
 
 func parseACPToolCallUpdate(update json.RawMessage) (map[string]json.RawMessage, ToolCallUpdateEnvelope, bool) {
@@ -1678,17 +1678,17 @@ type SessionResult struct {
 // session ID validation, and UpdateSessionID/BroadcastStatusActive.
 func (b *Base) startACPHandshake(
 	stdout, stderr io.ReadCloser,
-	opts agent.Options,
+	opts agentapi.Options,
 	initParams json.RawMessage,
 	sessionCfg SessionConfig,
 ) (*SessionResult, error) {
 	b.DrainStderr(stderr)
 
 	// Install the progress-reset decorator once for every ACP provider.
-	b.sink = agent.NewModelProgressResetSink(b.sink)
+	b.sink = agentapi.NewModelProgressResetSink(b.sink)
 	b.beginSessionUpdates()
 
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := agentapi.NewStdoutScanner(stdout)
 	go b.ReadOutputLoop(scanner, b.handleOutput)
 
 	cleanup := b.stopAndWait
@@ -1793,16 +1793,16 @@ func ParseAdvertisedMethod(initializeResponse []byte, namespace, expectedMethod 
 // fixed launch + handshake pipeline shared by every ACP agent; the spec
 // supplies only what differs between providers.
 type StartSpec[T any] struct {
-	Registration   agent.Registration                            // launch and option metadata of the provider
-	ProviderName   string                                        // process/log name, e.g. "cursor"
-	BaseArgs       []string                                      // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see reasonix.Start)
-	RCMarkerEnvKey string                                        // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
-	PinnedEnv      []string                                      // "KEY=value" assignments that REPLACE any inherited value and any value that the user's profile exports (see PinEnv and launch.WrapSpec.SetEnv); nil for none
-	SessionConfig  SessionConfig                                 // zero value -> acpDefaultSessionConfig
-	NewAgent       func() *T                                     // construct a zero-value concrete agent
-	Base           func(*T) *Base                                // accessor for the agent's embedded Base
-	Configure      func(a *T, sink agent.ProviderServices) Hooks // the hooks of the provider; the start applies them before the process starts
-	AfterHandshake func(*T, *SessionResult, agent.Options) error // post-handshake apply step; nil for none
+	Registration   agentapi.Registration                            // launch and option metadata of the provider
+	ProviderName   string                                           // process/log name, e.g. "cursor"
+	BaseArgs       []string                                         // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see reasonix.Start)
+	RCMarkerEnvKey string                                           // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
+	PinnedEnv      []string                                         // "KEY=value" assignments that REPLACE any inherited value and any value that the user's profile exports (see PinEnv and launch.WrapSpec.SetEnv); nil for none
+	SessionConfig  SessionConfig                                    // zero value -> acpDefaultSessionConfig
+	NewAgent       func() *T                                        // construct a zero-value concrete agent
+	Base           func(*T) *Base                                   // accessor for the agent's embedded Base
+	Configure      func(a *T, sink agentapi.ProviderServices) Hooks // the hooks of the provider; the start applies them before the process starts
+	AfterHandshake func(*T, *SessionResult, agentapi.Options) error // post-handshake apply step; nil for none
 }
 
 // Start launches an ACP agent subprocess and performs the initialize and
@@ -1814,7 +1814,7 @@ type StartSpec[T any] struct {
 //   - The session config.
 //   - The hooks that Configure returns.
 //   - The step that applies the settings after the handshake.
-func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec StartSpec[T]) (_ agent.Agent, retErr error) {
+func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.ProviderServices, spec StartSpec[T]) (_ agentapi.Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, spec.Registration)
@@ -1923,7 +1923,7 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	b.finishSessionUpdates()
 	// Every concrete ACP agent (*T) implements Agent via its embedded Base
 	// plus its own overrides; assert it here so Start can stay generic over T.
-	agent, ok := any(a).(agent.Agent)
+	agent, ok := any(a).(agentapi.Agent)
 	if !ok {
 		return nil, fmt.Errorf("acp agent %T does not implement Agent", a)
 	}
@@ -1940,7 +1940,7 @@ func Start[T any](ctx context.Context, opts agent.Options, sink agent.ProviderSe
 func (b *Base) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	b.Mu.Lock()
 	var groups []*leapmuxv1.AvailableOptionGroup
-	if mg := agent.ModelOptionGroup(b.availableModels, b.model, agent.EffortSubGroups); mg != nil {
+	if mg := agentapi.ModelOptionGroup(b.availableModels, b.model, agentapi.EffortSubGroups); mg != nil {
 		groups = append(groups, mg)
 	}
 	if grp := b.secondaryOptionGroupLocked(); grp != nil {
@@ -2168,11 +2168,11 @@ type ConfigOptionValue struct {
 // dedups by *raw* id: a normalizer that collapses two distinct wire ids to one
 // (e.g. Cursor's "default[]" -> "auto") would otherwise emit the same model twice,
 // and it also guards against a server repeating an id within a single channel.
-func buildACPModels(models []ModelInfo, currentModelID string, normalize func(string) string) []*agent.ModelInfo {
+func buildACPModels(models []ModelInfo, currentModelID string, normalize func(string) string) []*agentapi.ModelInfo {
 	if normalize != nil {
 		currentModelID = normalize(currentModelID)
 	}
-	result := make([]*agent.ModelInfo, 0, len(models))
+	result := make([]*agentapi.ModelInfo, 0, len(models))
 	seen := make(map[string]bool, len(models))
 	for _, m := range models {
 		id := m.ModelID
@@ -2187,7 +2187,7 @@ func buildACPModels(models []ModelInfo, currentModelID string, normalize func(st
 		if name == "" {
 			name = id
 		}
-		result = append(result, &agent.ModelInfo{
+		result = append(result, &agentapi.ModelInfo{
 			Id:          id,
 			DisplayName: name,
 			Description: m.Description,
@@ -2365,7 +2365,7 @@ func mergeModelInfos(primary, secondary []ModelInfo) []ModelInfo {
 // model-id normalizer, and returns them alongside the normalized current model
 // id. Centralizing this keeps the handshake and runtime model channels
 // byte-for-byte identical in how they normalize.
-func (b *Base) buildModels(infos []ModelInfo, currentModelID string) ([]*agent.ModelInfo, string) {
+func (b *Base) buildModels(infos []ModelInfo, currentModelID string) ([]*agentapi.ModelInfo, string) {
 	models := buildACPModels(infos, currentModelID, b.hooks.ModelIDNormalizer)
 	if b.hooks.ModelIDNormalizer != nil {
 		currentModelID = b.hooks.ModelIDNormalizer(currentModelID)
@@ -2521,7 +2521,7 @@ func (b *Base) applyHandshakeMode(handshake *SessionResult, defaultMode string) 
 // otherwise-healthy session -- can't drift between the two families. configureSecondary
 // wires the family-specific secondary configuration (permission mode or primary agent),
 // which is the only step that differs.
-func (b *Base) applySecondaryStartup(handshake *SessionResult, opts agent.Options, requestedModel string, configureSecondary func() error) error {
+func (b *Base) applySecondaryStartup(handshake *SessionResult, opts agentapi.Options, requestedModel string, configureSecondary func() error) error {
 	b.applyHandshakeModels(handshake)
 	if err := configureSecondary(); err != nil {
 		b.stopAndWait()
@@ -2538,12 +2538,12 @@ func (b *Base) applySecondaryStartup(handshake *SessionResult, opts agent.Option
 // id; trySetStartupModel routes through effectiveSetModel, which picks Cursor's
 // wire-mapping setCursorModel automatically. See applySecondaryStartup for the shared
 // model-last ordering.
-func (b *Base) ApplyPermissionModeStartup(handshake *SessionResult, opts agent.Options, defaultMode, requestedModel string) error {
+func (b *Base) ApplyPermissionModeStartup(handshake *SessionResult, opts agentapi.Options, defaultMode, requestedModel string) error {
 	return b.applySecondaryStartup(handshake, opts, requestedModel, func() error {
 		b.applyHandshakeMode(handshake, defaultMode)
 		b.finishSessionUpdates()
 		return b.applyStartupPermissionMode(
-			opts.PermissionMode(), opts.NewSessionDefaultOptionIDs[agent.OptionIDPermissionMode])
+			opts.PermissionMode(), opts.NewSessionDefaultOptionIDs[agentapi.OptionIDPermissionMode])
 	})
 }
 
@@ -2554,9 +2554,9 @@ func (b *Base) ApplyPermissionModeStartup(handshake *SessionResult, opts agent.O
 // fallback list is read from b.secondaryFallback (which Start sets from the static groups
 // of the provider before the handshake), so each provider sources its primary-agent list
 // exactly once.
-func (b *Base) ApplyPrimaryAgentStartup(handshake *SessionResult, opts agent.Options, defaultAgent string) error {
+func (b *Base) ApplyPrimaryAgentStartup(handshake *SessionResult, opts agentapi.Options, defaultAgent string) error {
 	return b.applySecondaryStartup(handshake, opts, opts.Model(), func() error {
-		return b.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, opts.Get(agent.OptionIDPrimaryAgent), b.secondaryFallback, defaultAgent)
+		return b.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, opts.Get(agentapi.OptionIDPrimaryAgent), b.secondaryFallback, defaultAgent)
 	})
 }
 
@@ -2664,7 +2664,7 @@ func (b *Base) applyConfigOptionModelsLocked(options []ConfigOption) (modelChang
 	// known models than blank the picker -- an empty model list is a worse experience
 	// than a momentarily stale one, and a genuinely model-less update is not a shape
 	// our providers produce. Do not "fix" this to clear the list on empty.
-	if len(models) > 0 && !agent.ModelInfosEqual(b.availableModels, models) {
+	if len(models) > 0 && !agentapi.ModelInfosEqual(b.availableModels, models) {
 		b.availableModels = models
 		listChanged = true
 	}
@@ -2805,10 +2805,10 @@ func acpRefreshMap(model, mode string, optionValues optionmap.Map) optionmap.Map
 		refresh[k] = v
 	}
 	if model != "" {
-		refresh[agent.OptionIDModel] = model
+		refresh[agentapi.OptionIDModel] = model
 	}
 	if mode != "" {
-		refresh[agent.OptionIDPermissionMode] = mode
+		refresh[agentapi.OptionIDPermissionMode] = mode
 	}
 	return refresh
 }
@@ -3226,7 +3226,7 @@ func (b *Base) reapplyOptions(stored map[string]string) {
 // (like trySetStartupModel): a relaunch's fresh process starts on the server default,
 // so a persisted preference (e.g. a chosen reasoning effort) is re-pushed here. A
 // rejected option is logged and skipped, never aborting an otherwise-healthy session.
-func (b *Base) applyStartupOptions(opts agent.Options) {
+func (b *Base) applyStartupOptions(opts agentapi.Options) {
 	// A daemon may drive its reasoning-effort axis under a NON-"effort" id (Goose
 	// thinking_effort, or a thought_level-categorized custom id), but the
 	// operator env-effort override (resolveProviderDefaults / EffortEnvOverride) is stored under
@@ -3245,7 +3245,7 @@ func (b *Base) applyStartupOptions(opts agent.Options) {
 			// The advertised effort axis under a non-"effort" id has no value under its own key in
 			// opts; fall back to the well-known "effort" override so it is still applied.
 			if requested == "" && id == effortID {
-				requested = opts.Get(agent.OptionIDEffort)
+				requested = opts.Get(agentapi.OptionIDEffort)
 			}
 			if requested == "" || requested == values[id] {
 				continue
@@ -3281,7 +3281,7 @@ func (b *Base) cancelSession() error {
 // No-op when no session is open (sessionID still empty) so
 // the worker InterruptAgent RPC can be called unconditionally without
 // the caller having to wait for the ACP handshake to complete.
-func (b *Base) Interrupt() error {
+func (b *Base) Interrupt(stop agentapi.StopContext) error {
 	if b.IsStopped() {
 		return fmt.Errorf("agent is stopped")
 	}
@@ -3341,7 +3341,7 @@ func (b *Base) handleACPCancelRequest(params json.RawMessage) {
 	if json.Unmarshal(params, &notification) != nil {
 		return
 	}
-	identity, valid := agent.NewControlRequestIdentity(notification.RequestID)
+	identity, valid := agentapi.NewControlRequestIdentity(notification.RequestID)
 	if !valid {
 		return
 	}
@@ -3388,7 +3388,7 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 		}
 		// A request needs a response even if the transcript write fails.
 		b.RefuseUnsupportedRequest(line)
-		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}, agent.SpanInfo{}); err != nil {
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agentapi.MessageContent{Original: line.Raw}, agentapi.SpanInfo{}); err != nil {
 			slog.Error("acp persist notification", "agent_id", b.AgentID(), "method", line.Method, "error", err)
 		}
 	}
@@ -3397,13 +3397,13 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 // PublishTurnActive satisfies Agent for every ACP provider. The base already
 // republishes promptActive from one place, so this only gives that place the
 // interface's name.
-func (b *Base) PublishTurnActive() agent.TurnState {
+func (b *Base) PublishTurnActive() agentapi.TurnState {
 	b.Mu.Lock()
 	active := b.promptActive
 	steerable := active && b.steersLocked()
 	b.Mu.Unlock()
 	b.notePromptActive()
-	return agent.TurnState{Active: active, Steerable: steerable}
+	return agentapi.TurnState{Active: active, Steerable: steerable}
 }
 
 // IsCurrentSession reports whether sessionID is the session this agent is

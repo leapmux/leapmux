@@ -988,7 +988,7 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 			slog.Error("encode claude control failure", "agent_id", a.AgentID(), "error", marshalErr)
 			return
 		}
-		if err := a.SendRawInput(response); err != nil {
+		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
 			slog.Warn("send claude control failure", "agent_id", a.AgentID(), "error", err)
 		}
 	}

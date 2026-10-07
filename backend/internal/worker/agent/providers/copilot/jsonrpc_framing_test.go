@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,7 @@ func TestJSONRPCUsesConfiguredFramingForEveryWrite(t *testing.T) {
 			return b.SendErrorResponse(json.RawMessage(`0`), -32601, "Unsupported method")
 		}, `{"jsonrpc":"2.0","id":0,"error":{"code":-32601,"message":"Unsupported method"}}`},
 		{"raw input", func(b *providerkit.JSONRPCProcess) error {
-			return b.SendRawInput([]byte(" {\"id\":9007199254740993}\n"))
+			return b.SendRawInput([]byte(" {\"id\":9007199254740993}\n"), agent.StopContext{})
 		}, " {\"id\":9007199254740993}\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

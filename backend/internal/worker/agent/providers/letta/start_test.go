@@ -454,7 +454,7 @@ func TestSendRawInputSendsTheAnswerOverTheSocket(t *testing.T) {
 	a.Mu.Unlock()
 
 	answer := []byte(`{"kind":"approval_response","request_id":"perm-call-1","decision":{"behavior":"allow"}}`)
-	require.NoError(t, a.SendRawInput(answer))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 
 	command := fake.nextCommand(t)
 	assert.Equal(t, "input", command["type"], "the answer travels as an input command")
@@ -478,8 +478,8 @@ func TestSendRawInputRefusesANonAnswer(t *testing.T) {
 	a.conversationID = "local-conv-1"
 	a.Mu.Unlock()
 
-	require.Error(t, a.SendRawInput([]byte(`{"kind":"create_message"}`)), "a non-answer is refused")
-	require.Error(t, a.SendRawInput([]byte(`not json`)), "an unparseable answer is refused")
+	require.Error(t, a.SendRawInput([]byte(`{"kind":"create_message"}`), agent.StopContext{}), "a non-answer is refused")
+	require.Error(t, a.SendRawInput([]byte(`not json`), agent.StopContext{}), "an unparseable answer is refused")
 	select {
 	case command := <-fake.commands:
 		t.Fatalf("a refused answer still wrote a command: %v", command)

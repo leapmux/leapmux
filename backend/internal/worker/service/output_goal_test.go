@@ -685,7 +685,7 @@ func TestGoal_DeliveredTextCommandPersistsThroughTheOutputSink(t *testing.T) {
 	svc, _, agentID, _ := setupGoalTest(t)
 	startGoalAgentProcess(t, svc, agentID)
 	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
-		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")))
+		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
 	require.Eventually(t, func() bool {
 		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
 	}, time.Second, 5*time.Millisecond)

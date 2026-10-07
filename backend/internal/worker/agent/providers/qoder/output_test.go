@@ -65,7 +65,7 @@ func TestQoderInterruptMarksTheAbortedTurnEndInterrupted(t *testing.T) {
 	a, sink, _ := newGoalAgent(t)
 
 	a.setTurnActive(true)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.HandleOutput([]byte(qoderAbortedResult))
 
 	assert.Equal(t, agent.MessageCompletionInterrupted, onlyTurnEnd(t, sink).Completion,
@@ -144,7 +144,7 @@ func TestQoderInterruptAfterTheTurnFinishedKeepsItsOutcome(t *testing.T) {
 	a, sink, _ := newGoalAgent(t)
 
 	a.setTurnActive(true)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.HandleOutput([]byte(qoderSuccessResult))
 
 	assert.Empty(t, onlyTurnEnd(t, sink).Completion)
@@ -156,7 +156,7 @@ func TestQoderIdleInterruptDoesNotMislabelTheNextTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newGoalAgent(t)
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Contains(t, stdin.String(), `"subtype":"interrupt"`, "the interrupt still reaches Qoder")
 	a.setTurnActive(true)
 	a.HandleOutput([]byte(qoderAbortedResult))
@@ -171,7 +171,7 @@ func TestQoderInterruptNoteEndsWithItsTurn(t *testing.T) {
 	a, sink, _ := newGoalAgent(t)
 
 	a.setTurnActive(true)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.setTurnActive(false)
 	a.setTurnActive(true)
 	a.HandleOutput([]byte(qoderAbortedResult))
@@ -186,7 +186,7 @@ func TestQoderUnsentInterruptLeavesNoNote(t *testing.T) {
 	a.SetStdinForTest(agenttest.FailingStdin{})
 
 	a.setTurnActive(true)
-	require.Error(t, a.Interrupt())
+	require.Error(t, a.Interrupt(agent.StopContext{}))
 	a.HandleOutput([]byte(qoderAbortedResult))
 
 	assert.Empty(t, onlyTurnEnd(t, sink).Completion)

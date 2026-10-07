@@ -360,7 +360,7 @@ func TestARunThatStartsAfterTheSenderGaveUpKeepsItsTurn(t *testing.T) {
 	assert.True(t, turn.steerable, "the message's turn takes a steer")
 	assert.Equal(t, requestID, turn.requestID)
 
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	_, ok := r.hub.waitCommand(commandRunAbort)
 	require.True(t, ok, "a turn whose run started aborts it at once")
 	r.endRun(t, requestID, contracts.ClineRunReasonAborted)

@@ -162,7 +162,7 @@ func (a *Agent) setTurnState(active bool) {
 	a.sink.SetTurnState(agent.TurnState{Active: active, Steerable: active}, seq)
 }
 
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.active
 	a.Mu.Unlock()
@@ -191,7 +191,7 @@ func (a *Agent) CompactContext() error {
 
 func (a *Agent) DiscardOutput() { a.discard.Store(true); a.Process.DiscardOutput() }
 
-func (a *Agent) SendRawInput(raw []byte) error { return a.answerControl(raw) }
+func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error { return a.answerControl(raw) }
 
 // HandleOutput accepts one native mux frame for provider tests.
 func (a *Agent) HandleOutput(raw []byte) {

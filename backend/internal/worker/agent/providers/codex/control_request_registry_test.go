@@ -30,7 +30,7 @@ func TestCodexInterruptAnswersAnOutstandingElicitation(t *testing.T) {
 	// No thread or turn, so Interrupt has nothing to cancel and returns early --
 	// the drain must still run, because a request the runtime waits on outlives
 	// the turn that raised it.
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	assert.Contains(t, stdin.String(), `{"action":"cancel"}`,
 		"the elicitation's own cancel answer releases the blocked MCP call")

@@ -401,7 +401,7 @@ func TestExecuteControlReply(t *testing.T) {
 			a, sink, server := newControlTestAgent(t)
 			feed(a, tc.asked(t))
 
-			require.NoError(t, a.SendRawInput(tc.answer))
+			require.NoError(t, a.SendRawInput(tc.answer, agent.StopContext{}))
 			requests := server.requestsTo(tc.route)
 			require.Len(t, requests, 1)
 			if tc.body != "" {
@@ -409,7 +409,7 @@ func TestExecuteControlReply(t *testing.T) {
 			}
 			assert.Empty(t, a.controls, "an answered request is forgotten")
 			assert.Empty(t, sink.PermissionMode(), "only an approved plan moves the session")
-			assert.ErrorContains(t, a.SendRawInput(tc.answer), "no pending request", "a request takes one answer")
+			assert.ErrorContains(t, a.SendRawInput(tc.answer, agent.StopContext{}), "no pending request", "a request takes one answer")
 		})
 	}
 }
@@ -422,7 +422,7 @@ func TestApprovedPlanAdoptsBuild(t *testing.T) {
 	a.mode = contracts.MiMoModePlan
 	feed(a, planAskedEvent(t, "que_2", "missing.md"))
 
-	require.NoError(t, a.SendRawInput(allowEnvelope("mimo-question:que_2")))
+	require.NoError(t, a.SendRawInput(allowEnvelope("mimo-question:que_2"), agent.StopContext{}))
 	assert.JSONEq(t, `{"answers":[["Yes"]]}`, string(server.requestsTo("POST /question/que_2/reply")[0].Body))
 	assert.Equal(t, contracts.MiMoModeBuild, a.mode)
 	assert.Equal(t, contracts.MiMoModeBuild, sink.PermissionMode())
@@ -437,7 +437,7 @@ func TestAnswerToARequestMiMoDroppedRetiresTheCard(t *testing.T) {
 	feed(a, permissionAskedEvent(t, "per_1", testSessionID, ""))
 	server.respond("POST /permission/per_1/reply", http.StatusNotFound, `{"name":"NotFoundError"}`)
 
-	err := a.SendRawInput(allowEnvelope("mimo-permission:per_1"))
+	err := a.SendRawInput(allowEnvelope("mimo-permission:per_1"), agent.StopContext{})
 	assert.ErrorContains(t, err, "no longer waits")
 	assert.Equal(t, []string{"mimo-permission:per_1"}, sink.CanceledControls())
 	assert.Empty(t, a.controls)
@@ -449,7 +449,7 @@ func TestAnswerThatFailsToSendKeepsTheRequest(t *testing.T) {
 	feed(a, permissionAskedEvent(t, "per_1", testSessionID, ""))
 	server.respond("POST /permission/per_1/reply", http.StatusInternalServerError, `{}`)
 
-	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-permission:per_1")), "send the answer")
+	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-permission:per_1"), agent.StopContext{}), "send the answer")
 	assert.Empty(t, sink.CanceledControls())
 	assert.Len(t, a.controls, 1, "the user can answer again")
 }
@@ -459,7 +459,7 @@ func TestAnswerThatDoesNotFitIsRefused(t *testing.T) {
 	a, _, server := newControlTestAgent(t)
 	feed(a, questionAskedEvent(t, "que_1", testSessionID))
 
-	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-question:que_1")), "does not answer a question")
+	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-question:que_1"), agent.StopContext{}), "does not answer a question")
 	assert.Empty(t, server.requestsTo("POST /question/que_1/reply"))
 	assert.Len(t, a.controls, 1)
 }
@@ -472,7 +472,7 @@ func TestElicitationAnswerToAnOrdinaryQuestionIsRefused(t *testing.T) {
 	a, _, server := newControlTestAgent(t)
 	feed(a, questionAskedEvent(t, "que_1", testSessionID))
 
-	err := a.SendRawInput(elicitationEnvelope("mimo-question:que_1", contracts.MCPElicitationActionAccept))
+	err := a.SendRawInput(elicitationEnvelope("mimo-question:que_1", contracts.MCPElicitationActionAccept), agent.StopContext{})
 	assert.ErrorContains(t, err, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, "Accept"))
 	assert.Empty(t, server.requestsTo("POST /question/que_1/reply"))
 	assert.Len(t, a.controls, 1, "the question still waits for an answer")

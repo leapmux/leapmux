@@ -3,7 +3,6 @@ package agent_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -462,15 +461,13 @@ func TestListAvailableProvidersIncompleteWhenTheShellCannotStart(t *testing.T) {
 		"a shell that never ran is not evidence that no provider is installed")
 }
 
-// PutAgentForTest refuses an agent that the manager cannot compare by identity,
-// at the call that planted it, and registers a pointer.
-func TestPutAgentForTestRefusesAnAgentTheManagerCannotCompare(t *testing.T) {
+// Each registration owns its identity, so a provider value need not be comparable.
+func TestPutAgentForTestAcceptsValueAndPointerProviders(t *testing.T) {
 	t.Parallel()
 
 	m := agent.NewManager(agenttest.MustNewRegistry(testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)), nil)
-	assert.PanicsWithValue(t,
-		fmt.Sprintf("agent: PutAgentForTest needs a comparable agent, such as a pointer; got %T", agenttest.GroupsAgent{}),
-		func() { m.PutAgentForTest("value", agenttest.GroupsAgent{}) })
+	assert.NotPanics(t, func() { m.PutAgentForTest("value", agenttest.GroupsAgent{}) })
+	assert.True(t, m.HasAgent("value"))
 
 	planted := &agenttest.GroupsAgent{}
 	m.PutAgentForTest("pointer", planted)

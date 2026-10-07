@@ -1025,7 +1025,7 @@ func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
-		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")))
+		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
 	require.Eventually(t, func() bool {
 		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
 	}, inputQueueWait, 5*time.Millisecond)
@@ -1503,12 +1503,12 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 
 	svc, dispatcher, _ := setupTestService(t)
 	startEchoAgent(t, svc, "agent-1")
-	_, err := svc.Queries.StoreControlRequest(context.Background(), db.StoreControlRequestParams{
-		AgentID:   "agent-1",
+	sink := svc.Output.sinkForAgent("agent-1")
+	require.NotNil(t, sink)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: "request-1",
 		Payload:   []byte(`{"type":"control_request","request_id":"request-1","request":{"subtype":"can_use_tool"}}`),
-	})
-	require.NoError(t, err)
+	}))
 
 	// The raw frame is the stop path that waits for no answer, so the stop it sends is
 	// DELIVERED rather than merely attempted. That is the bar the cancel runs behind.
@@ -1519,7 +1519,7 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 	}, writer)
 	assert.Empty(t, writer.rejections())
 
-	_, err = svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
+	_, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
 		AgentID: "agent-1", RequestID: "request-1",
 	})
 	assert.Error(t, err, "the question belonged to the turn the stop ended")

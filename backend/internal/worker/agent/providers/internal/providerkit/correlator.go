@@ -18,20 +18,24 @@ type pendingResponse struct {
 	observe func(json.RawMessage)
 }
 
-// Register returns a reply channel and its cleanup function.
-// Defer cleanup even when the request fails.
+// Register reserves an unused reply ID and returns its channel and cleanup function.
+// Defer cleanup after registration succeeds, even when the later request fails.
 // The channel holds one reply, so delivery does not wait for the caller.
-func (c *Correlator[ID]) Register(id ID) (<-chan json.RawMessage, func()) {
+func (c *Correlator[ID]) Register(id ID) (<-chan json.RawMessage, func(), error) {
 	return c.RegisterObserved(id, nil)
 }
 
 // RegisterObserved calls observe before it sends the reply to the channel.
 // The observer runs on the reader. It must not wait for another reply.
 // An absent or removed request cannot call the observer.
-func (c *Correlator[ID]) RegisterObserved(id ID, observe func(json.RawMessage)) (<-chan json.RawMessage, func()) {
+// A duplicate in-flight ID returns an error and retains the original registration.
+func (c *Correlator[ID]) RegisterObserved(id ID, observe func(json.RawMessage)) (<-chan json.RawMessage, func(), error) {
 	ch := make(chan json.RawMessage, 1)
-	c.pending.Store(id, &pendingResponse{channel: ch, observe: observe})
-	return ch, func() { c.pending.Delete(id) }
+	response := &pendingResponse{channel: ch, observe: observe}
+	if _, occupied := c.pending.LoadOrStore(id, response); occupied {
+		return nil, nil, fmt.Errorf("request ID already has a pending reply: %v", id)
+	}
+	return ch, func() { c.pending.CompareAndDelete(id, response) }, nil
 }
 
 // Deliver claims one pending request and sends its unchanged reply.

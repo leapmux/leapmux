@@ -144,7 +144,7 @@ func TestKimiInterrupt(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
 		rig.fake.reply("POST "+kimiSessionPath("session_1", kimiActionAbort), fakeKapReply{Code: 40401, Msg: "no running turn"})
-		require.ErrorContains(t, rig.agent.Interrupt(), "no running turn")
+		require.ErrorContains(t, rig.agent.Interrupt(agent.StopContext{}), "no running turn")
 	})
 
 	t.Run("refuses a session id that Kimi Code does not issue", func(t *testing.T) {
@@ -155,7 +155,7 @@ func TestKimiInterrupt(t *testing.T) {
 		rig.agent.sessionID = "../other"
 		rig.agent.Mu.Unlock()
 		before := len(rig.fake.routes())
-		require.ErrorContains(t, rig.agent.Interrupt(), "session id")
+		require.ErrorContains(t, rig.agent.Interrupt(agent.StopContext{}), "session id")
 		assert.Len(t, rig.fake.routes(), before)
 	})
 }

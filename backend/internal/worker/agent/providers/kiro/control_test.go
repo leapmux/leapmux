@@ -170,7 +170,7 @@ func TestKiroResolvedInteractionAfterTheAnswerCancelsNothing(t *testing.T) {
 		"result": map[string]any{"action": contracts.KiroUserInputActionAnswered, "answer": "Postgres"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 	syncPeer(t, a)
 
 	// Kiro reports every resolution, the reader's own answer included.

@@ -212,7 +212,7 @@ func TestAnAnsweredDialogIsNotWithdrawnAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	r, ctx, clock := newDeadlineRig(t)
 	r.emit(frameTimedConfirm)
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`)))
+	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`), agent.StopContext{}))
 	r.waitForCommand("extension_ui_response", 1)
 
 	clock.Advance(time.Minute).MustWait(ctx)
@@ -293,7 +293,7 @@ func TestAnInterruptCancelsADialogThatTheAbortLeavesOpen(t *testing.T) {
 	r.emit(frameCommandEditor)
 	require.Equal(t, 1, r.sink.PublishedControlCount())
 
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	r.waitForCommand(CommandAbort, 1)
 
 	answers := r.waitForCommand("extension_ui_response", 1)
@@ -317,7 +317,7 @@ func TestAnInterruptLeavesTheDialogsOfTheAbortedRunToOmp(t *testing.T) {
 	r.emit(`{"type":"agent_start"}`, frameApprovedBashStart, frameApprovalDialog, frameCommandEditor)
 	require.Equal(t, 2, r.sink.PublishedControlCount())
 
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
 	assert.Equal(t, "e1", answers[0].Payload["id"])
@@ -340,10 +340,10 @@ func TestAnInterruptWithNoTurnAnswersOnlyTheDialogsOmpWaitsOn(t *testing.T) {
 		`{"type":"extension_ui_request","id":"open-b","method":"input","title":"Branch name"}`,
 		`{"type":"extension_ui_request","id":"open-a","method":"editor","title":"Commit message"}`,
 	)
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`)))
+	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`), agent.StopContext{}))
 	r.waitForCommand("extension_ui_response", 1)
 
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 3)
 	require.Len(t, answers, 3)
@@ -354,9 +354,9 @@ func TestAnInterruptWithNoTurnAnswersOnlyTheDialogsOmpWaitsOn(t *testing.T) {
 	assert.Empty(t, r.commandsOfType(CommandAbort), "no turn runs, so nothing is aborted")
 
 	// A second interrupt finds nothing left to answer.
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	r.emit(frameCommandEditor)
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	answers = r.waitForCommand("extension_ui_response", 4)
 	require.Len(t, answers, 4)
 	assert.Equal(t, "e1", answers[3].Payload["id"])
@@ -377,7 +377,7 @@ func TestAnInterruptAnswersTheOpenDialogsWhenOmpRefusesTheAbort(t *testing.T) {
 	armCommandTurn(t, r)
 	r.emit(frameCommandEditor)
 
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
 	assert.Equal(t, "e1", answers[0].Payload["id"])
@@ -389,7 +389,7 @@ func TestADialogThatAnInterruptAnsweredIsNotWithdrawnAgainAtItsDeadline(t *testi
 	t.Parallel()
 	r, ctx, clock := newDeadlineRig(t)
 	r.emit(frameTimedConfirm)
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 	require.Equal(t, []string{"c1"}, r.sink.CanceledControls())
 
 	clock.Advance(time.Minute).MustWait(ctx)
@@ -407,7 +407,7 @@ func TestAnInterruptDoesNotAnswerADialogThatCouldNotBePublished(t *testing.T) {
 	r.sink.PublicationError = nil
 	r.emit(frameCommandEditor)
 
-	require.NoError(t, r.agent.Interrupt())
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 2)
 	require.Len(t, answers, 2)
@@ -437,7 +437,7 @@ func TestSendRawInputPassesADialogAnswerThrough(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	answer := `{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`
-	require.NoError(t, r.agent.SendRawInput([]byte(answer)))
+	require.NoError(t, r.agent.SendRawInput([]byte(answer), agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
 	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the browser's answer unchanged")
@@ -455,7 +455,7 @@ func TestSendRawInputFailsAfterExit(t *testing.T) {
 			return false
 		}
 	})
-	err := r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"x","value":"Approve"}`))
+	err := r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"x","value":"Approve"}`), agent.StopContext{})
 	assert.Error(t, err)
 }
 

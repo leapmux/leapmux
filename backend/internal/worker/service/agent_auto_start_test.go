@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -695,8 +696,9 @@ func TestSendAgentRawMessage_DoesNotStartAnAgentWhoseStartupFailed(t *testing.T)
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"test-mcp-status","request":{"subtype":"mcp_status"}}`,
 	}, w)
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1, "the handler must finish before the assertion below reads the starts")
+	require.Len(t, w.rejections(), 1, "the error response proves that the handler finished")
+	assert.Equal(t, int32(codes.FailedPrecondition), w.rejections()[0].code)
+	assert.Equal(t, errAgentStartupFailed.Error(), w.rejections()[0].message)
 	assert.Empty(t, rec.ids(), "a control request started an agent whose startup failed")
 }
 

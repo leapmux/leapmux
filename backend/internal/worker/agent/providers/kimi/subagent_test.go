@@ -170,7 +170,7 @@ func TestKimiInterruptChildClosesAsInterrupted(t *testing.T) {
 	rig := newKimiTestRig(t, agent.Options{})
 	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
 	spawnAgent(t, rig, "agent-0", "call_child", nil)
-	require.NoError(t, rig.agent.InterruptChild("session_1/agent-0"))
+	require.NoError(t, rig.agent.InterruptChild("session_1/agent-0", agent.StopContext{}))
 	endSubagent(t, rig, "agent-0", contracts.KimiEventSubagentCancelled, nil)
 
 	row, _ := childOf(t, rig.sink, "session_1/agent-0")
@@ -429,7 +429,7 @@ func TestKimiChildRouting(t *testing.T) {
 	t.Run("an interrupt cancels the subagent's task", func(t *testing.T) {
 		t.Parallel()
 		rig := newLinkedRig(t)
-		require.NoError(t, rig.agent.InterruptChild("session_1/agent-0"))
+		require.NoError(t, rig.agent.InterruptChild("session_1/agent-0", agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "tasks", "agent-task-agent-0", kimiActionCancel)), 1)
 	})
 
@@ -437,14 +437,14 @@ func TestKimiChildRouting(t *testing.T) {
 		t.Parallel()
 		rig := newLinkedRig(t)
 		endSubagent(t, rig, "agent-0", contracts.KimiEventSubagentCompleted, nil)
-		require.ErrorIs(t, rig.agent.InterruptChild("session_1/agent-0"), agent.ErrChildOperationUnsupported)
+		require.ErrorIs(t, rig.agent.InterruptChild("session_1/agent-0", agent.StopContext{}), agent.ErrChildOperationUnsupported)
 	})
 
 	t.Run("an interrupt the server refuses fails", func(t *testing.T) {
 		t.Parallel()
 		rig := newLinkedRig(t)
 		rig.fake.reply("POST "+kimiItemPath("session_1", "tasks", "agent-task-agent-0", kimiActionCancel), fakeKapReply{Code: 40401, Msg: "task gone"})
-		require.ErrorContains(t, rig.agent.InterruptChild("session_1/agent-0"), "task gone")
+		require.ErrorContains(t, rig.agent.InterruptChild("session_1/agent-0", agent.StopContext{}), "task gone")
 	})
 
 	t.Run("a task id that Kimi Code does not issue is refused", func(t *testing.T) {
@@ -452,7 +452,7 @@ func TestKimiChildRouting(t *testing.T) {
 		rig := newLinkedRig(t)
 		rig.agent.children.update("agent-0", func(c *kimiChild) { c.taskID = "../x" })
 		before := len(rig.fake.routes())
-		require.ErrorContains(t, rig.agent.InterruptChild("session_1/agent-0"), "task id")
+		require.ErrorContains(t, rig.agent.InterruptChild("session_1/agent-0", agent.StopContext{}), "task id")
 		assert.Len(t, rig.fake.routes(), before)
 	})
 
@@ -478,7 +478,7 @@ func TestKimiChildRouting(t *testing.T) {
 		err := rig.agent.SendChildInput("session_old/agent-0", "Hello.", nil)
 		require.ErrorIs(t, err, errKimiChildUnknown)
 		assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
-		require.ErrorIs(t, rig.agent.InterruptChild("session_old/agent-0"), errKimiChildUnknown)
+		require.ErrorIs(t, rig.agent.InterruptChild("session_old/agent-0", agent.StopContext{}), errKimiChildUnknown)
 	})
 }
 

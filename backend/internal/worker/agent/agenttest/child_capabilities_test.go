@@ -7,17 +7,17 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // statingPlugin states the child capabilities that a test chooses.
 type statingPlugin struct {
-	agent.ProviderDefaults
+	agentapi.ProviderDefaults
 	steers, interrupts bool
 }
 
-func (p statingPlugin) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
-	return agent.ChildCapabilities{AcceptsMessages: p.steers, AcceptsInterrupt: p.interrupts}
+func (p statingPlugin) ChildCapabilities(optionmap.Map) agentapi.ChildCapabilities {
+	return agentapi.ChildCapabilities{AcceptsMessages: p.steers, AcceptsInterrupt: p.interrupts}
 }
 
 // plainAgent has no child capability.
@@ -26,14 +26,16 @@ type plainAgent struct{}
 // interruptingAgent can interrupt a child turn, and nothing more.
 type interruptingAgent struct{}
 
-func (*interruptingAgent) InterruptChild(string) error { return nil }
+func (*interruptingAgent) InterruptChild(childKey string, stop agentapi.StopContext) error {
+	return nil
+}
 
 // steeringAgent can do both.
 type steeringAgent struct{ interruptingAgent }
 
 func (*steeringAgent) SendChildInput(string, string, []*leapmuxv1.Attachment) error  { return nil }
 func (*steeringAgent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error { return nil }
-func (*steeringAgent) ActiveChildTurnState(string) agent.TurnState                   { return agent.TurnState{} }
+func (*steeringAgent) ActiveChildTurnState(string) agentapi.TurnState                { return agentapi.TurnState{} }
 
 func TestAssertChildCapabilitiesPassesWhenThePluginStatesTheMethodSet(t *testing.T) {
 	t.Parallel()

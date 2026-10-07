@@ -108,7 +108,10 @@ func (a *Agent) beginCommandFrame(command string, payload map[string]any) (func(
 	}
 	data = append(data, '\n')
 
-	ch, release := a.Register(id)
+	ch, release, err := a.Register(id)
+	if err != nil {
+		return nil, fmt.Errorf("register omp %s: %w", command, err)
+	}
 
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()

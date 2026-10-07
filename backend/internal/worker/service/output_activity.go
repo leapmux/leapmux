@@ -90,7 +90,7 @@ type agentActivity struct {
 	// chokepoint. A worker restart drops the map, which is correct: the boot
 	// sweep marks every active row interrupted and no process is running yet, so
 	// the agent derives idle either way.
-	pendingControl map[string]string
+	pendingControl map[string]ownedControlRequest
 
 	// settledToolUses carries the tool-call count of the turn that most recently
 	// ended, waiting for the busy->false edge that turn leads to. A turn that
@@ -117,37 +117,13 @@ type agentActivity struct {
 	// Cleared where the settle reaches the wire, and where the work comes back.
 	settlePending bool
 
-	// stopRequested says the USER stopped this agent and the provider has not
-	// answered yet. It does two things, and both exist because the turn flag
-	// beside it is stale for as long as that answer takes.
-	//
-	//   - activityStateLocked stops reading the turn flag as work. A stop the
-	//     reader asked for is not work, and withdrawing the question that turn
-	//     was blocked on would otherwise re-derive WORKING and put the spinner
-	//     back at the moment they pressed Stop.
-	//   - settleCanResumeLocked refuses the debounce window. InterruptAgent
-	//     pauses the input queue before it signals, so nothing wakes the agent
-	//     back into the turn it just cancelled, and a held stop would leave the
-	//     indicator and the Interrupt button on screen for settleDelay.
-	//
-	// The provider's own next turn-flag publish clears it, when that publish
-	// CHANGES the flag: the turn ended, or another one opened, and either
-	// answers the stop. A refused delivery clears it too (NoteAgentStopFailed),
-	// and so does a process boundary.
-	//
-	// A REPEAT publish of the value the entry already holds does NOT clear it.
-	// It answers nothing, because the provider reports the state it reported
-	// before. Providers do send one: providers/pi/output.go republishes the turn flag on a
-	// retried run, and providers/zcode/output.go publishes it at every turn start. Spending
-	// the mark there let the withdrawal of the pending prompt re-derive WORKING
-	// before the stop the mark was taken for arrived.
-	//
-	// One residual, stated because it is not free to close. A provider that
-	// accepts a delivered stop, ignores it, and reports no turn flag again keeps
-	// this entry not-working while it runs. Nothing else here can see that the
-	// agent carried on, because the derivation reads no output. The next turn
-	// flag, and every process boundary, correct it.
-	stopRequested bool
+	// scope owns concurrent stop attempts and pending controls for one runtime turn.
+	scope *activityScope
+	// controlMu serializes control publication and withdrawal across database calls.
+	// Take controlMu before mu when an operation needs both locks.
+	controlMu sync.Mutex
+	// controlMutations retains this entry while a mutation owns or waits for controlMu.
+	controlMutations int
 
 	// settleGen counts the windows this entry opened. holdSettleLocked captures
 	// the current value in the timer's closure, and deliverHeldSettle publishes
@@ -370,64 +346,6 @@ func (h *OutputHandler) deliverHeldSettle(agentID, rootAgentID string, gen uint6
 	h.refreshActivityIn(st, agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleImmediate)
 }
 
-// NoteAgentStopRequested records that the USER stopped this agent, and publishes
-// that at once rather than waiting for the provider to answer.
-//
-// The debounce window exists for a stop the CLI takes back microseconds later.
-// An interrupt is the opposite: InterruptAgent pauses the input queue before it
-// signals, so no wake follows. Holding it left the thinking indicator and the
-// Interrupt button on screen for three seconds after the user cancelled, which
-// invites a second interrupt.
-//
-// The publish is what makes the press feel like the stop. Every provider answers
-// a stop with a round trip -- Claude Code waits for the acknowledgement of its
-// interrupt control request, and the ACP servers report the end of the cancelled
-// turn later still -- and until that answer lands the turn flag reads WORKING.
-// So the mark, not the answer, is what drops the spinner. NoteAgentStopFailed is
-// the other half: a delivery that never reached the agent puts it back.
-//
-// Call it BEFORE the delivery. The MARK is set synchronously, so every reader
-// that derives its own answer -- AgentActivitySnapshot, and the close guard
-// through it -- sees the stop the moment the caller returns.
-func (h *OutputHandler) NoteAgentStopRequested(agentID, rootAgentID string) {
-	st := h.activityFor(agentID, rootAgentID)
-	st.mu.Lock()
-	st.stopRequested = true
-	st.mu.Unlock()
-	h.publishStopMark(agentID, rootAgentID)
-}
-
-// NoteAgentStopFailed withdraws a stop that never reached the agent, and
-// republishes.
-//
-// The agent still runs whatever it was running, so the indicator and the
-// Interrupt button belong back on screen. Without this the optimistic publish
-// above would leave a runaway agent reading idle, with the button that stops it
-// hidden -- which is the one failure the button exists to prevent.
-func (h *OutputHandler) NoteAgentStopFailed(agentID, rootAgentID string) {
-	h.clearAgentStopRequested(agentID, rootAgentID)
-}
-
-// NoteAgentInterruptIgnored restores activity after a provider proves that an
-// accepted interrupt did not end its turn. The restored WORKING state returns
-// the indicator and the Interrupt button for another attempt.
-func (h *OutputHandler) NoteAgentInterruptIgnored(agentID, rootAgentID string) {
-	h.clearAgentStopRequested(agentID, rootAgentID)
-}
-
-// clearAgentStopRequested withdraws the optimistic stop mark and republishes
-// the activity that still runs behind it.
-func (h *OutputHandler) clearAgentStopRequested(agentID, rootAgentID string) {
-	st := h.activityFor(agentID, rootAgentID)
-	st.mu.Lock()
-	requested := st.stopRequested
-	st.stopRequested = false
-	st.mu.Unlock()
-	if requested {
-		h.publishStopMark(agentID, rootAgentID)
-	}
-}
-
 // publishStopMark republishes agentID after its stop mark moved, off the
 // caller's goroutine.
 //
@@ -512,11 +430,11 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 	// The turn the provider reports, minus the one the reader stopped. The flag
 	// stays true until the provider answers the stop, and that answer is a whole
 	// round trip away -- so every read of it below is this value, or the
-	// Interrupt button puts its own spinner back. See stopRequested.
+	// Interrupt button puts its own spinner back. See stopRequestedLocked.
 	//
 	// It covers the TURN alone. A background task the agent launched runs on
 	// past a stop, and activeTasks still reports it.
-	turnRunning := st.turnActive && !st.stopRequested
+	turnRunning := st.turnActive && !st.stopRequestedLocked()
 	// A prompt with no turn behind it does NOT make the agent wait: a shell task
 	// can ask for permission after its agent's turn ended, and what a close would
 	// interrupt there is the task, which activeTasks already reports.
@@ -552,7 +470,7 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 // Only a ROOT can be blocked, because activityStateLocked answers a child from
 // its registry row and never reads pendingControl.
 func settleCanResumeLocked(st *agentActivity, in activityInputs) bool {
-	if !in.processAlive || st.stopRequested {
+	if !in.processAlive || st.stopRequestedLocked() {
 		return false
 	}
 	return in.childID != "" || len(st.pendingControl) == 0
@@ -578,7 +496,7 @@ func (h *OutputHandler) activityFor(agentID, rootAgentID string) *agentActivity 
 		st.mu.Lock()
 		st.rootAgentID = rootAgentID
 		st.mu.Unlock()
-		h.indexTreeChild(agentID, rootAgentID)
+		h.indexTreeChild(agentID, rootAgentID, st)
 	}
 	return st
 }
@@ -590,12 +508,12 @@ func (h *OutputHandler) activityFor(agentID, rootAgentID string) *agentActivity 
 // the authority, this is written from the same call that writes it, and
 // ForgetActivity deletes from both. The data flows one way, and rebuilding this
 // from the map is a walk of the map.
-func (h *OutputHandler) indexTreeChild(agentID, rootAgentID string) {
+func (h *OutputHandler) indexTreeChild(agentID, rootAgentID string, st *agentActivity) {
 	if agentID == rootAgentID {
 		return
 	}
 	v, _ := h.treeChildren.LoadOrStore(rootAgentID, &sync.Map{})
-	v.(*sync.Map).Store(agentID, struct{}{})
+	v.(*sync.Map).Store(agentID, st)
 }
 
 // resolveRoot fills in the feeding process's id when the caller does not know
@@ -633,6 +551,10 @@ func (h *OutputHandler) ForgetActivity(agentID string) {
 	// refresh can find the edge again, and the child's tab keeps a spinner and an
 	// armed Interrupt button on a run that ended.
 	st.mu.Lock()
+	if st.controlMutations > 0 {
+		st.mu.Unlock()
+		return
+	}
 	deliver := st.settlePending
 	// Read the root from the entry rather than through resolveRoot, which takes
 	// this same lock. An entry no sink ever touched records none, and an agent is
@@ -649,14 +571,43 @@ func (h *OutputHandler) ForgetActivity(agentID string) {
 		seq := h.activitySeq.Add(1)
 		h.refreshActivityIn(st, agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleImmediate)
 	}
-	h.activity.Delete(agentID)
+	st.mu.Lock()
+	if st.controlMutations > 0 {
+		st.mu.Unlock()
+		return
+	}
+	removed := h.activity.CompareAndDelete(agentID, st)
+	st.mu.Unlock()
+	if !removed {
+		return
+	}
+	h.removeActivityIndex(agentID, rootAgentID, st)
+}
+
+func (h *OutputHandler) removeActivityIndex(agentID, rootAgentID string, st *agentActivity) {
 	if rootAgentID != agentID {
 		if v, ok := h.treeChildren.Load(rootAgentID); ok {
-			v.(*sync.Map).Delete(agentID)
+			v.(*sync.Map).CompareAndDelete(agentID, st)
 		}
 	}
 	// A root takes its whole index with it, so a tree that closes leaves nothing.
 	h.treeChildren.Delete(agentID)
+}
+
+// retireActivity rechecks automatic retirement after the activity broadcast.
+// A newer turn or control mutation can supersede the earlier idle decision.
+func (h *OutputHandler) retireActivity(agentID string, st *agentActivity) {
+	st.mu.Lock()
+	if !st.retirableLocked() || st.published == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING {
+		st.mu.Unlock()
+		return
+	}
+	rootAgentID := st.rootAgentID
+	removed := h.activity.CompareAndDelete(agentID, st)
+	st.mu.Unlock()
+	if removed {
+		h.removeActivityIndex(agentID, rootAgentID, st)
+	}
 }
 
 // AgentActivity is what the Worker knows about one agent's work: the state, and
@@ -1063,11 +1014,8 @@ func (h *OutputHandler) refreshActivityIn(
 	// drops the count it should have carried.
 	st.cancelSettleLocked(h)
 	st.settlePending = false
-	// stopRequested is NOT cleared here. A publish is not the provider's answer
-	// to the stop, and the one that withdraws the prompt the stopped turn was
-	// blocked on runs BEFORE that answer -- clearing it there spent the mark on
-	// the wrong transition and left the real stop to wait out settleDelay.
-	// setTurnActive owns the clear; see stopRequested.
+	// An activity publication retires no stop attempt. It does not confirm native delivery.
+	// A changed turn publication retires the previous scope in setTurnActive.
 	retire = retire && st.retirableLocked()
 	st.mu.Unlock()
 
@@ -1091,7 +1039,7 @@ func (h *OutputHandler) refreshActivityIn(
 	// that is still RUNNING publishes WORKING and keeps its entry, which is what
 	// the display cap needs. See retirableLocked for what else keeps one.
 	if retire {
-		h.ForgetActivity(agentID)
+		h.retireActivity(agentID, st)
 	}
 }
 
@@ -1110,7 +1058,7 @@ func (h *OutputHandler) refreshActivityIn(
 // over.
 func (st *agentActivity) retirableLocked() bool {
 	return !st.turnActive && st.turnSeq == 0 && len(st.pendingControl) == 0 &&
-		st.settledToolUses == nil && !st.settlePending && st.settleTimer == nil && !st.stopRequested
+		st.settledToolUses == nil && !st.settlePending && st.settleTimer == nil && !st.stopRequestedLocked() && st.controlMutations == 0
 }
 
 // refreshActivityTree recomputes the root and every child that owns a registry
@@ -1195,6 +1143,12 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	changed := st.turnActive != active
+	stopped := st.stopRequestedLocked()
+	if changed {
+		previous := h.scopeLocked(st, rootAgentID)
+		st.scope = &activityScope{publisher: previous.publisher}
+	}
+	scope := st.scope
 	st.turnActive = active
 	if active && root {
 		// A fresh turn supersedes whatever the previous one left unspent, so a
@@ -1204,19 +1158,13 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	st.mu.Unlock()
 	if !changed {
 		// A REPEAT publish reports the state the entry already holds, so it
-		// answers no stop and must spend no mark: see stopRequested.
+		// answers no stop and must spend no mark: see stopRequestedLocked.
 		return
 	}
-	h.refreshActivity(agentID, rootAgentID)
-	if root {
-		// A CHANGED flag IS the provider's answer to a stop the reader asked
-		// for: it ended the turn, or it opened another one, and either way the
-		// mark has nothing left to describe. The clear runs AFTER the refresh
-		// above, because that refresh is the stop the mark exists to publish at
-		// once -- clearing first would hand it to the debounce window instead.
-		st.mu.Lock()
-		st.stopRequested = false
-		st.mu.Unlock()
+	if stopped {
+		h.refreshActivityTree(rootAgentID, settleImmediate)
+	} else {
+		h.refreshActivity(agentID, rootAgentID)
 	}
 	if active || !root {
 		return
@@ -1236,7 +1184,7 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	// its window. Its count is therefore still unspent. Clearing here would make
 	// every ordinary turn end ring, zero-tool turns included.
 	st.mu.Lock()
-	if !st.settlePending {
+	if st.scope == scope && !st.settlePending {
 		st.settledToolUses = nil
 	}
 	st.mu.Unlock()
@@ -1335,12 +1283,12 @@ func (h *OutputHandler) noteControlRequestAdded(agentID, rootAgentID, requestID,
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	if st.pendingControl == nil {
-		st.pendingControl = make(map[string]string, 1)
+		st.pendingControl = make(map[string]ownedControlRequest, 1)
 	}
-	previousToken, dup := st.pendingControl[requestID]
-	st.pendingControl[requestID] = claimToken
+	previous, dup := st.pendingControl[requestID]
+	st.pendingControl[requestID] = ownedControlRequest{claimToken: claimToken, scope: h.scopeLocked(st, rootAgentID)}
 	st.mu.Unlock()
-	if dup && previousToken == claimToken {
+	if dup && previous.claimToken == claimToken {
 		return
 	}
 	h.refreshActivity(agentID, rootAgentID)
@@ -1363,7 +1311,7 @@ func (h *OutputHandler) noteControlRequestsRemoved(agentID, rootAgentID string, 
 		st.pendingControl = nil
 	} else {
 		for _, request := range requests {
-			if claimToken, ok := st.pendingControl[request.RequestID]; ok && claimToken == request.ClaimToken {
+			if control, ok := st.pendingControl[request.RequestID]; ok && control.claimToken == request.ClaimToken {
 				delete(st.pendingControl, request.RequestID)
 				changed = true
 			}
@@ -1438,7 +1386,8 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	st.settledToolUses = nil
 	// The stop mark belongs to the process that carried it, so it dies with that
 	// process rather than exempting the next one's first stop.
-	st.stopRequested = false
+	publisher, _ := h.turnPublisher.Load(rootAgentID)
+	st.scope = &activityScope{publisher: publisher}
 	st.mu.Unlock()
 	// The field writes above run whatever the latch says, because
 	// AgentActivitySnapshot reads them and a process boundary must leave the

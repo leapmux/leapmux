@@ -169,7 +169,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		a.setTurnActive(false)
 		return err
 	}
-	if err := a.SendRawInput(raw); err != nil {
+	if err := a.SendRawInput(raw, agent.StopContext{}); err != nil {
 		a.setTurnActive(false)
 		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
 	}
@@ -259,7 +259,7 @@ func codebuddySteerOutcome(resp codebuddyControlResult, err error) error {
 // Interrupt stops the turn through a waiting permission or a control request.
 // CodeBuddy's permission refusal carries interrupt:true and stops the native run.
 // Send the global stop after the native run ends, before the next input enters.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.permissionWriteMu.Lock()
 	defer a.permissionWriteMu.Unlock()
 	if a.IsStopped() {

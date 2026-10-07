@@ -84,7 +84,7 @@ func TestCodebuddyInterruptMarksOnlyTheCurrentNativeResult(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	require.NoError(t, a.SendInput("Run the current turn.", nil))
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	result := []byte(codebuddyResultAbortedStreaming)
 	a.HandleOutput(result)
 	first := sink.Messages()
@@ -124,7 +124,7 @@ func TestCodebuddyAStopThatTookEffectMarksTheTurnEndInterrupted(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
 			require.NoError(t, a.SendInput("Run the current turn.", nil))
-			require.NoError(t, a.Interrupt())
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			a.HandleOutput([]byte(tc.frame))
 			rows := turnEnds(sink.Messages())
 			require.Len(t, rows, 1)
@@ -148,7 +148,7 @@ func TestCodebuddyATurnThatEndedBeforeTheStopKeepsItsOutcome(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
 			require.NoError(t, a.SendInput("Run the current turn.", nil))
-			require.NoError(t, a.Interrupt())
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			a.HandleOutput([]byte(tc.frame))
 			rows := turnEnds(sink.Messages())
 			require.Len(t, rows, 1)
@@ -165,7 +165,7 @@ func TestCodebuddyAFinishedTurnSpendsTheStopNote(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	require.NoError(t, a.SendInput("Run the current turn.", nil))
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.HandleOutput([]byte(codebuddyResultFinished))
 	require.NoError(t, a.SendInput("Run the next turn.", nil))
 	a.HandleOutput([]byte(codebuddyResultAbortedStreaming))
@@ -178,7 +178,7 @@ func TestCodebuddyIdleInterruptDoesNotMarkTheNextNativeResult(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.NoError(t, a.SendInput("Run a new turn.", nil))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"","is_error":false}`))
 	messages := sink.Messages()

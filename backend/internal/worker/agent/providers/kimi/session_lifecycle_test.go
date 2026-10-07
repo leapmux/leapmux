@@ -331,7 +331,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		assert.Equal(t, contracts.KimiEventQuestionRequested, byID["question_9"]["type"])
 		assert.Equal(t, "agent-0", byID["question_9"]["agentId"])
 
-		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_9", "allow", nil, nil)), "the user can answer it")
+		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_9", "allow", nil, nil), agent.StopContext{}), "the user can answer it")
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "approvals", "approval_9", "")), 1)
 	})
 
@@ -348,7 +348,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		waitFor(t, func() bool { return len(rig.sink.CanceledControls()) == 1 }, "the resolved request leaves the banner")
 		assert.Equal(t, []string{"approval_1"}, rig.sink.CanceledControls())
 		assert.Equal(t, 2, rig.sink.PublishedControlCount(), "a request still pending is not published twice")
-		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil)), errKimiControlGone)
+		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), errKimiControlGone)
 	})
 
 	// The status's `busy` is true while ANY agent of the session runs, or a
@@ -672,7 +672,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		row, _ := childOf(t, rig.sink, "session_1/agent-9")
 		assert.Equal(t, bgtask.StatusRunning, row.Status)
 		assert.Equal(t, "Background audit", row.Title)
-		require.NoError(t, rig.agent.InterruptChild("session_1/agent-9"), "its task is what stops it")
+		require.NoError(t, rig.agent.InterruptChild("session_1/agent-9", agent.StopContext{}), "its task is what stops it")
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "tasks", "agent-task-9", kimiActionCancel)), 1)
 		ended, _ := childOf(t, rig.sink, "session_1/agent-1")
 		assert.Equal(t, bgtask.StatusCompleted, ended.Status, "the background subagent that ended during the gap closes")
@@ -804,7 +804,7 @@ func TestKimiClearContextSettlesTheSubagentsOfTheOldSession(t *testing.T) {
 	assert.Equal(t, kimiSpanID("session_1", "agent-0", 0, "call_grep"), closing.SpanID)
 	assert.True(t, closing.Closing)
 	assert.Equal(t, agent.MessageCompletionInterrupted, closing.Completion, "the subagent's open call is closed where it started")
-	require.ErrorIs(t, rig.agent.InterruptChild("session_1/agent-0"), errKimiChildUnknown, "the old session's subagent has no route")
+	require.ErrorIs(t, rig.agent.InterruptChild("session_1/agent-0", agent.StopContext{}), errKimiChildUnknown, "the old session's subagent has no route")
 	after, _ := rig.sink.BackgroundTask("session_1/agent-0")
 	assert.Equal(t, row.Status, after.Status)
 }

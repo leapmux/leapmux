@@ -62,7 +62,7 @@ func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestBody string
 	a.registerPendingControl(requestID, ch)
 
 	msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`, requestID, requestBody)
-	if err := a.SendRawInput([]byte(msg)); err != nil {
+	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
 		a.unregisterPendingControl(requestID)
 		// A write failure almost always means the child closed its stdin —
 		// i.e. it exited before we could hand off the request. Wait briefly

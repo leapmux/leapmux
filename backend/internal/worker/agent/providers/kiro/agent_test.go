@@ -378,7 +378,7 @@ func TestKiroInterruptEndsAPendingCompaction(t *testing.T) {
 	require.NoError(t, a.CompactContext())
 	require.True(t, a.PromptActive())
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	assert.False(t, a.PromptActive(), "the stop releases the turn that the compaction held")
 	assert.Equal(t, []string{"Stopped waiting for the context compaction"}, statusTexts(sink))
@@ -437,7 +437,7 @@ func TestKiroLateAnswerOfAStoppedCompactionLeavesTheNextOneAlone(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"success":true}`)}
 	})
 	require.NoError(t, a.CompactContext())
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.NoError(t, a.CompactContext(), "the stop released the turn, so a new compaction starts")
 
 	closeRelease()
@@ -562,7 +562,7 @@ func TestKiroInterruptWithoutACompactionLeavesKirosTurnToItsMarker(t *testing.T)
 	a.HandleOutput(turnStart(t))
 	require.True(t, a.AgentTurnActive())
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	assert.True(t, a.AgentTurnActive(), "the stop ends no turn by itself")
 	assert.Empty(t, statusTexts(sink), "no compaction waited, so the stop states nothing of one")

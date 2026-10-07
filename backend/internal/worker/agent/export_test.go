@@ -25,7 +25,10 @@ func (m *Manager) AgentForTest(agentID string) (Agent, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	a, ok := m.agents[agentID]
-	return a, ok
+	if !ok {
+		return nil, false
+	}
+	return a.provider, true
 }
 
 // SeedCachedCatalogForTest stores groups as the cached catalog of agentID,

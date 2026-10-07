@@ -59,7 +59,7 @@ func TestChildOperationsRefuseUnknownAndOneShotChildrenBeforeTransport(t *testin
 	for _, key := range []string{"", "missing", "one-shot"} {
 		assert.ErrorIs(t, a.SendChildInput(key, "message", nil), agent.ErrChildOperationUnsupported)
 		assert.ErrorIs(t, a.SteerChildInput(key, "message", nil), agent.ErrChildOperationUnsupported)
-		assert.ErrorIs(t, a.InterruptChild(key), agent.ErrChildOperationUnsupported)
+		assert.ErrorIs(t, a.InterruptChild(key, agent.StopContext{}), agent.ErrChildOperationUnsupported)
 	}
 }
 

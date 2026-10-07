@@ -178,7 +178,7 @@ func (a *Agent) cancelDialog(id string) {
 		slog.Error("omp encode dialog cancellation", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if err := a.Process.SendRawInput(response); err != nil {
+	if err := a.Process.SendRawInput(response, agent.StopContext{}); err != nil {
 		slog.Warn("omp send dialog cancellation", "agent_id", a.AgentID(), "request_id", id, "error", err)
 	}
 }
@@ -194,7 +194,7 @@ func (a *Agent) answerDialog(id, value string) error {
 	if err != nil {
 		return err
 	}
-	return a.Process.SendRawInput(response)
+	return a.Process.SendRawInput(response, agent.StopContext{})
 }
 
 // withdrawDialog cancels the control request of a dialog omp no longer waits for.
@@ -262,7 +262,7 @@ func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 // turns it into the dialog chain omp waits on (see answerAsk). Every other frame
 // reaches omp unchanged, and a cancellation of the bridge's request also ends the
 // bridge's state for that call.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	var head struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
@@ -279,5 +279,5 @@ func (a *Agent) SendRawInput(data []byte) error {
 			a.forgetOpenDialog(head.ID)
 		}
 	}
-	return a.Process.SendRawInput(data)
+	return a.Process.SendRawInput(data, stop)
 }

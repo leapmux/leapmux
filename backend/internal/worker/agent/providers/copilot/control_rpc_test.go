@@ -36,7 +36,7 @@ func TestNativeCopilotControlResponseRequiresAReceipt(t *testing.T) {
 			a.HandleOutput([]byte(fmt.Sprintf(`{"method":"session.event","params":{"sessionId":%q,"event":{"type":"permission.requested","data":{"requestId":"request"}}}}`, a.currentNativeSessionID())))
 			identifier := sink.LastPublishedControl().RequestID
 			response := []byte(fmt.Sprintf(`{"response":{"request_id":%q,"response":{"kind":"approve-once"}}}`, identifier))
-			err = a.SendRawInput(response)
+			err = a.SendRawInput(response, agent.StopContext{})
 			require.Error(t, err)
 			require.Equal(t, outcome != "protocol-error", errors.Is(err, agent.ErrDeliveryUncertain))
 		})
@@ -60,7 +60,7 @@ func TestNativeCopilotRefusedControlResponseRemainsPending(t *testing.T) {
 	require.Equal(t, 1, sink.PublishedControlCount())
 	identifier := sink.LastPublishedControl().RequestID
 	response := []byte(fmt.Sprintf(`{"response":{"request_id":%q,"response":{"kind":"approve-once"}}}`, identifier))
-	require.ErrorContains(t, a.SendRawInput(response), "did not accept")
+	require.ErrorContains(t, a.SendRawInput(response, agent.StopContext{}), "did not accept")
 	a.controlMu.Lock()
 	pending := a.controls[identifier]
 	a.controlMu.Unlock()
@@ -68,7 +68,7 @@ func TestNativeCopilotRefusedControlResponseRemainsPending(t *testing.T) {
 	a.stateMu.Lock()
 	a.sessionID = "another-session"
 	a.stateMu.Unlock()
-	require.ErrorContains(t, a.SendRawInput(response), "previous session")
+	require.ErrorContains(t, a.SendRawInput(response, agent.StopContext{}), "previous session")
 	a.stateMu.Lock()
 	a.sessionID = pending.sessionID
 	a.stateMu.Unlock()
@@ -103,8 +103,8 @@ func TestNativeCopilotControlResponseDelivery(t *testing.T) {
 		require.Equal(t, index+1, sink.PublishedControlCount())
 		identifier := sink.LastPublishedControl().RequestID
 		response := []byte(fmt.Sprintf(`{"response":{"request_id":%q,"response":%s}}`, identifier, tc.answer))
-		require.NoError(t, a.SendRawInput(response))
-		require.ErrorContains(t, a.SendRawInput(response), "no longer pending")
+		require.NoError(t, a.SendRawInput(response, agent.StopContext{}))
+		require.ErrorContains(t, a.SendRawInput(response, agent.StopContext{}), "no longer pending")
 	}
 	raw, err := os.ReadFile(requestsPath)
 	require.NoError(t, err)
@@ -131,7 +131,7 @@ func TestNativeCopilotControlResponseDelivery(t *testing.T) {
 func deliverCopilotControl(t *testing.T, a *Agent, sink *agenttest.ControlSink, answer string) string {
 	t.Helper()
 	identifier := sink.LastPublishedControl().RequestID
-	require.NoError(t, a.SendRawInput(fmt.Appendf(nil, `{"response":{"request_id":%q,"response":%s}}`, identifier, answer)))
+	require.NoError(t, a.SendRawInput(fmt.Appendf(nil, `{"response":{"request_id":%q,"response":%s}}`, identifier, answer), agent.StopContext{}))
 	raw, err := a.SendRequest("probe.lastControlValue", json.RawMessage(`{}`), time.Second)
 	require.NoError(t, err)
 	var probe struct {
@@ -201,6 +201,6 @@ func TestNativeCopilotProjectApprovalNeedsALocation(t *testing.T) {
 	a, sink := startCopilotForControls(t, "LEAPMUX_TEST_COPILOT_NO_LOCATION=1")
 	identifier := sink.LastPublishedControl().RequestID
 	err := a.SendRawInput(fmt.Appendf(nil,
-		`{"response":{"request_id":%q,"response":{"kind":"approve-for-location","approval":{"kind":"read"}}}}`, identifier))
+		`{"response":{"request_id":%q,"response":{"kind":"approve-for-location","approval":{"kind":"read"}}}}`, identifier), agent.StopContext{})
 	require.ErrorContains(t, err, "no permission location")
 }

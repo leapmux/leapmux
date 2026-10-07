@@ -314,7 +314,7 @@ func (a *Agent) nextTurnSeq() uint64 {
 }
 
 // Interrupt aborts the agent's current turn with droid.interrupt_session.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	active := a.turnActive

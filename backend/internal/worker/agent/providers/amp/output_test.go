@@ -430,7 +430,7 @@ func TestProbeInterruptTranscript(t *testing.T) {
 	for _, line := range lines[:5] {
 		h.feed(fp, line)
 	}
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, lines[5])
 	fp.exit()
 	fp.awaitHandled(t)
@@ -544,7 +544,7 @@ func TestInterruptedResultEndsTheTurnAsInterrupted(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("sleep")
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, errorResult(interruptedMessage))
 
 	ends := h.turnEnds()
@@ -570,7 +570,7 @@ func TestProbeInterruptDuringAModelRequest(t *testing.T) {
 	fp := h.send("Probe the interrupt race.")
 	lines := fixtureLines(t, "probe_interrupt_model.jsonl")
 	require.Len(t, lines, 3)
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	for _, line := range lines {
 		h.feed(fp, line)
 	}
@@ -599,7 +599,7 @@ func TestATurnThatFinishedBeforeTheStopKeepsItsOutcome(t *testing.T) {
 	require.Len(t, lines, 4)
 	h.feed(fp, lines[0])
 	h.feed(fp, lines[1])
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, lines[2])
 	h.feed(fp, lines[3])
 	fp.exit()
@@ -633,7 +633,7 @@ func TestAFailureThatEndedTheTurnBeforeTheStopIsAnError(t *testing.T) {
 	require.Len(t, lines, 3)
 	h.feed(fp, lines[0])
 	h.feed(fp, lines[1])
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, lines[2])
 
 	ends := h.turnEnds()
@@ -720,7 +720,7 @@ func TestASuccessResultAfterAStopRequestEndsTheTurnAsInterrupted(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("sleep")
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, `{"type":"result","subtype":"success","duration_ms":9,"is_error":false,"num_turns":1,"result":"partial","session_id":"T-1"}`)
 
 	ends := h.turnEnds()
@@ -738,7 +738,7 @@ func TestSignalsRecordThemselvesOnTheProcess(t *testing.T) {
 		h := newHarness(t)
 		fp := h.send("sleep")
 		assert.False(t, fp.interruptSignalled.Load(), "a process the agent never signalled")
-		require.NoError(t, h.agent.Interrupt())
+		require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 		assert.True(t, fp.interruptSignalled.Load())
 	})
 	t.Run("stop", func(t *testing.T) {
@@ -753,7 +753,7 @@ func TestSignalsRecordThemselvesOnTheProcess(t *testing.T) {
 		h := newHarness(t)
 		fp := h.send("go")
 		h.feed(fp, textLine("done", stopReasonEndTurn))
-		require.NoError(t, h.agent.Interrupt())
+		require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 		assert.False(t, fp.interruptSignalled.Load())
 	})
 }
@@ -832,7 +832,7 @@ func TestTurnEndClosesTheCallsItOutlived(t *testing.T) {
 		toolUseBlock("TU-shell", "shell_command", `{"command":"sleep 40"}`)+`,`+
 		toolUseBlock("TU-task", contracts.AmpSubagentToolTask, `{"description":"Say pong","prompt":"Reply pong"}`)+
 		`]`, "tool_use"))
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, errorResult(interruptedMessage))
 
 	var closing []agenttest.Message

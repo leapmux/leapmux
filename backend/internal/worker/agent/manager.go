@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
-	"reflect"
 	"slices"
 	"sync"
 
@@ -24,20 +23,10 @@ var ErrAgentNotFound = errors.New("agent not found")
 // Manager tracks active agents and routes messages.
 type Manager struct {
 	mu                 sync.RWMutex
-	agents             map[string]Agent           // agentID -> Agent
-	cachedOptionGroups map[string]cachedCatalog   // agentID -> last known option groups
-	lifecycleLocks     map[string]*lifecycleEntry // agentID -> refcounted mutex
-	// exitDone maps each running provider to a channel closed once its background Wait
-	// goroutine has fully finished -- past its onExit cleanup. stopAndWait blocks on it so a
-	// restart's new provider is never registered (and so can never persist control requests)
-	// until the old process's onExit has run. See stopAndWait and startAgentWith.
-	exitDone map[Agent]chan struct{}
-	// exiting holds each provider whose process exited and whose exit callback
-	// has not finished. The slot stays registered through that callback, so
-	// HasAgent alone cannot separate a live process from one that exited. A
-	// caller that is about to WRITE to the provider asks AgentAlive instead.
-	exiting map[Agent]struct{}
-	onExit  ExitHandler
+	agents             map[string]*agentRegistration // agentID -> runtime registration
+	cachedOptionGroups map[string]cachedCatalog      // agentID -> last known option groups
+	lifecycleLocks     map[string]*lifecycleEntry    // agentID -> refcounted mutex
+	onExit             ExitHandler
 	// registry states every provider this manager can start. It is fixed at
 	// construction and never nil, so every read of a provider's registration goes
 	// through the one value the worker was wired with.
@@ -71,13 +60,13 @@ type Manager struct {
 
 // cachedCatalog holds the last catalog and the model that supplies it.
 // Offline reads can reuse or rebuild groups from that model.
-// process identifies the concrete provider that supplied a live sample.
-// A persisted catalog has no process.
-// Only that same live process can reuse the sample for a publication.
+// registration identifies the runtime that supplied a live sample.
+// A persisted catalog has no registration.
+// Only that same registration can reuse the sample for a publication.
 type cachedCatalog struct {
-	groups  []*leapmuxv1.AvailableOptionGroup
-	model   string
-	process Agent
+	groups       []*leapmuxv1.AvailableOptionGroup
+	model        string
+	registration *agentRegistration
 }
 
 // lifecycleEntry is a per-agent mutex whose refcount is guarded by Manager.mu.
@@ -99,11 +88,9 @@ func NewManager(registry *Registry, onExit ExitHandler) *Manager {
 	}
 	return &Manager{
 		registry:           registry,
-		agents:             make(map[string]Agent),
+		agents:             make(map[string]*agentRegistration),
 		cachedOptionGroups: make(map[string]cachedCatalog),
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
-		exitDone:           make(map[Agent]chan struct{}),
-		exiting:            make(map[Agent]struct{}),
 		onExit:             onExit,
 		startupSlots:       newStartupSlots(config.ResolveStartupConcurrency(0)),
 	}
@@ -224,17 +211,10 @@ func (m *Manager) ExitHandlerForTest() ExitHandler {
 // so a test can reach the manager's dispatch for an agent it built itself. It
 // replaces any agent already registered under that id, and starts no Wait
 // goroutine, so nothing removes the entry when a exits.
-//
-// It panics for an agent that is not comparable. The manager compares agents by
-// identity, as it compares every production agent, which is a pointer, so such an
-// agent would panic later at a place that does not state the cause.
 func (m *Manager) PutAgentForTest(agentID string, a Agent) {
-	if !reflect.TypeOf(a).Comparable() {
-		panic(fmt.Sprintf("agent: PutAgentForTest needs a comparable agent, such as a pointer; got %T", a))
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.agents[agentID] = a
+	m.agents[agentID] = &agentRegistration{provider: a}
 }
 
 // LifecycleLockCallersForTest reports how many callers hold or wait for the
@@ -384,16 +364,16 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 	confirmedOptions := provider.SettingsSnapshot().ConfirmedOptions()
 
 	// done is closed once the exit goroutine below has fully finished (past onExit), so
-	// stopAndWait can block on it before returning -- guaranteeing a restart's new provider is
+	// stopAndWait waits on it before returning, so a restart's new provider is
 	// not registered until this process's onExit (which clears control_requests by agent id)
 	// has run, and so cannot have its own requests wiped by it.
 	done := make(chan struct{})
+	entry := &agentRegistration{provider: provider, done: done}
 
 	m.mu.Lock()
-	m.agents[opts.AgentID] = provider
-	m.exitDone[provider] = done
+	m.agents[opts.AgentID] = entry
 	if len(groups) > 0 {
-		m.cachedOptionGroups[opts.AgentID] = cachedCatalog{groups: groups, model: optionids.CurrentValue(groups, OptionIDModel), process: provider}
+		m.cachedOptionGroups[opts.AgentID] = cachedCatalog{groups: groups, model: optionids.CurrentValue(groups, OptionIDModel), registration: entry}
 	}
 	m.mu.Unlock()
 
@@ -405,11 +385,11 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 
 	// Wait for the agent to exit in the background, then clean up.
 	go func() {
-		// Close `done` last -- AFTER onExit has run -- so a stopAndWait blocked on it observes
-		// the completed cleanup. The exitDone entry is removed under the lock first.
+		// Close done after onExit returns, so stopAndWait observes completed cleanup.
+		// The registration drops its channel under the lock first.
 		defer func() {
 			m.mu.Lock()
-			delete(m.exitDone, provider)
+			entry.done = nil
 			m.mu.Unlock()
 			close(done)
 		}()
@@ -418,7 +398,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		// The process ended. The slot stays registered until onExit finishes,
 		// so record the state that the slot no longer carries.
 		m.mu.Lock()
-		m.exiting[provider] = struct{}{}
+		entry.exiting = true
 		m.mu.Unlock()
 		exitCode := 0
 		if err != nil {
@@ -464,14 +444,13 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		}
 
 		m.mu.Lock()
-		// Delete outside the identity check below: a defensively replaced
-		// provider must leave no entry behind.
-		delete(m.exiting, provider)
+		// Clear this registration's exit state even if another registration replaced it.
+		entry.exiting = false
 		// Release the slot only after onExit pauses durable input. A turn-end
 		// drain can otherwise see no provider and restart a process after a crash.
 		// Only remove entries that still point at this provider. The identity
 		// check protects a defensive replacement from an old exit goroutine.
-		if m.agents[opts.AgentID] == provider {
+		if m.agents[opts.AgentID] == entry {
 			delete(m.agents, opts.AgentID)
 			delete(m.cachedOptionGroups, opts.AgentID)
 		}
@@ -586,7 +565,8 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 // that does not run, and for a provider that does not implement InputSteerer.
 func (m *Manager) SupportsSteering(agentID string) bool {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return false
@@ -617,7 +597,8 @@ func (m *Manager) LockProvider(agentID string) (Agent, func()) {
 	unlock := m.LockAgent(agentID)
 
 	m.mu.RLock()
-	p := m.agents[agentID]
+	entry := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 
 	return p, unlock
@@ -625,28 +606,30 @@ func (m *Manager) LockProvider(agentID string) (Agent, func()) {
 
 // SendRawInput writes raw bytes directly to the specified agent's stdin
 // without wrapping in a UserInputMessage.
-func (m *Manager) SendRawInput(agentID string, data []byte) error {
+func (m *Manager) SendRawInput(agentID string, data []byte, stop StopContext) error {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 
-	return p.SendRawInput(data)
+	return p.SendRawInput(data, stop)
 }
 
 // Interrupt aborts the agent's current turn using the provider-specific
 // signal. Returns ErrAgentNotFound when the agent isn't running.
-func (m *Manager) Interrupt(agentID string) error {
+func (m *Manager) Interrupt(agentID string, stop StopContext) error {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
-	return p.Interrupt()
+	return p.Interrupt(stop)
 }
 
 // InterruptEscalationReady reports whether an earlier interrupt of this agent
@@ -656,7 +639,8 @@ func (m *Manager) Interrupt(agentID string) error {
 // probe; every other provider answers false and every interrupt stays ordinary.
 func (m *Manager) InterruptEscalationReady(agentID string) bool {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return false
@@ -704,9 +688,10 @@ func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachm
 // InterruptChild aborts a subagent's current turn inside the owner process.
 // Input and interrupt capabilities stay separate because Codex Multi-Agent V2
 // permits direct interruption but rejects direct input.
-func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
+func (m *Manager) InterruptChild(rootAgentID, childKey string, stop StopContext) error {
 	m.mu.RLock()
-	p, ok := m.agents[rootAgentID]
+	entry, ok := m.agents[rootAgentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, rootAgentID)
@@ -715,7 +700,7 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 	if !ok {
 		return ErrChildOperationUnsupported
 	}
-	return interrupter.InterruptChild(childKey)
+	return interrupter.InterruptChild(childKey, stop)
 }
 
 // SupportedGoalActions reports the session-goal actions the RUNNING agent can
@@ -739,8 +724,9 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 // worst answer is one extra broadcast that names what the old process could do.
 func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
-	_, exiting := m.exiting[p]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
+	exiting := entry != nil && entry.exiting
 	m.mu.RUnlock()
 	// An EXITING process can do nothing, and the exit handler is exactly when
 	// this is asked: onExit runs before the map entry is deleted, so a bare
@@ -795,7 +781,8 @@ func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string
 // false if the agent had already exited.
 func (m *Manager) StopAgent(agentID string) bool {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 
 	if ok {
@@ -822,10 +809,11 @@ func (m *Manager) DiscardOutputAndStopAgent(agentID string) bool {
 
 func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	var done chan struct{}
 	if ok {
-		done = m.exitDone[p]
+		done = entry.done
 	}
 	m.mu.RUnlock()
 
@@ -833,13 +821,9 @@ func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 		return false
 	}
 	if done == nil {
-		// Invariant: every m.agents entry is seeded together with its m.exitDone channel
-		// (startAgentWith, under a single m.mu critical section). A registered agent with no
-		// exitDone channel means some new registration path skipped that pairing -- which would
-		// silently skip the restart happen-before wait below and reopen the race where the old
-		// process's onExit wipes the new process's freshly-persisted control_requests. Log
-		// loudly so a future violation surfaces instead of degrading in silence.
-		slog.Error("agent registered without an exitDone channel; restart serialization may race",
+		// Production registration creates the provider and its done channel in one critical section.
+		// A missing channel prevents the wait for onExit and can let cleanup remove replacement controls.
+		slog.Error("agent registration has no completion channel; restart cleanup can remove replacement controls",
 			"agent_id", agentID)
 	}
 
@@ -867,8 +851,10 @@ func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 	// for it above), so these deletes are typically no-ops; they also cover the rare path where
 	// the agent was registered but its exit goroutine had not yet been scheduled.
 	m.mu.Lock()
-	delete(m.agents, agentID)
-	delete(m.cachedOptionGroups, agentID)
+	if m.agents[agentID] == entry {
+		delete(m.agents, agentID)
+		delete(m.cachedOptionGroups, agentID)
+	}
 	m.mu.Unlock()
 
 	return true
@@ -880,7 +866,8 @@ func (m *Manager) ClearContext(agentID string) (string, error) {
 	defer unlock()
 
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return "", ErrAgentNotFound
@@ -1015,8 +1002,9 @@ func (m *Manager) OptionGroups(agentID string, provider leapmuxv1.AgentProvider,
 // The process can exit after this snapshot, so a publication must carry no lifecycle status.
 func (m *Manager) LiveOptionGroups(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
 	m.mu.RLock()
-	p := m.agents[agentID]
-	_, exiting := m.exiting[p]
+	entry := m.agents[agentID]
+	p := entry.providerOrNil()
+	exiting := entry != nil && entry.exiting
 	m.mu.RUnlock()
 	if p == nil || exiting {
 		return nil
@@ -1024,16 +1012,16 @@ func (m *Manager) LiveOptionGroups(agentID string, provider leapmuxv1.AgentProvi
 
 	live := p.OptionGroups()
 	m.mu.Lock()
-	_, exiting = m.exiting[p]
-	if m.agents[agentID] != p || exiting {
+	exiting = entry.exiting
+	if m.agents[agentID] != entry || exiting {
 		m.mu.Unlock()
 		return nil
 	}
 	if len(live) > 0 {
-		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), process: p}
+		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), registration: entry}
 	} else {
 		cached := m.cachedOptionGroups[agentID]
-		if cached.process == p {
+		if cached.registration == entry {
 			live = cached.groups
 		} else {
 			live = nil
@@ -1053,7 +1041,8 @@ func (m *Manager) LiveOptionGroups(agentID string, provider leapmuxv1.AgentProvi
 // precedence (and the cache refresh) from drifting.
 func (m *Manager) resolveLiveCatalog(agentID string, provider leapmuxv1.AgentProvider, currentModel string) (groups []*leapmuxv1.AvailableOptionGroup, running bool, cached cachedCatalog) {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	cached = m.cachedOptionGroups[agentID]
 	m.mu.RUnlock()
 	if !ok {
@@ -1063,7 +1052,7 @@ func (m *Manager) resolveLiveCatalog(agentID string, provider leapmuxv1.AgentPro
 	// the slice, and calling it twice could also observe two different catalogs across a concurrent
 	// refresh.
 	if live := p.OptionGroups(); len(live) > 0 {
-		m.refreshCachedCatalog(agentID, p, live)
+		m.refreshCachedCatalog(agentID, entry, live)
 		return m.registry.withModelGroupDefaultMarked(live, provider), true, cached
 	}
 	// Transiently-empty live read: serve the freshest known cached catalog (refreshCachedCatalog
@@ -1147,11 +1136,11 @@ func (m *Manager) OptionGroupsForRow(agentID string, provider leapmuxv1.AgentPro
 // provider isn't clobbered. (The entry is dropped on exit, so this does not carry the
 // catalog into the post-exit offline window; that is served from the persisted
 // option_groups column.)
-func (m *Manager) refreshCachedCatalog(agentID string, p Agent, live []*leapmuxv1.AvailableOptionGroup) {
+func (m *Manager) refreshCachedCatalog(agentID string, entry *agentRegistration, live []*leapmuxv1.AvailableOptionGroup) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.agents[agentID] == p {
-		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), process: p}
+	if m.agents[agentID] == entry {
+		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), registration: entry}
 	}
 }
 
@@ -1434,7 +1423,8 @@ func (m *Manager) PreloadCache(agentID string, groups []*leapmuxv1.AvailableOpti
 // identifies live confirmations and values that still need a restart.
 func (m *Manager) UpdateSettings(agentID string, options optionmap.Map) SettingsApplyResult {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return RestartRequiredSettings(options)
@@ -1445,7 +1435,8 @@ func (m *Manager) UpdateSettings(agentID string, options optionmap.Map) Settings
 // CurrentSettings returns the running provider's typed settings snapshot.
 func (m *Manager) CurrentSettings(agentID string) SettingsApplyResult {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	m.mu.RUnlock()
 	if !ok {
 		return SettingsApplyResult{}
@@ -1457,9 +1448,10 @@ func (m *Manager) CurrentSettings(agentID string) SettingsApplyResult {
 // changed launch-only state. A stopped or other provider needs no replacement.
 func (m *Manager) NativeTurnRestartRequired(agentID string) bool {
 	m.mu.RLock()
-	p, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
+	p := entry.providerOrNil()
 	if ok {
-		if _, exiting := m.exiting[p]; exiting {
+		if exiting := entry != nil && entry.exiting; exiting {
 			ok = false
 		}
 	}
@@ -1490,7 +1482,10 @@ func (m *Manager) HasAgent(agentID string) bool {
 func (m *Manager) RunningAgent(agentID string) Agent {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.agents[agentID]
+	if entry := m.agents[agentID]; entry != nil {
+		return entry.provider
+	}
+	return nil
 }
 
 // AgentAlive reports whether a LIVE process serves the agent.
@@ -1504,12 +1499,11 @@ func (m *Manager) RunningAgent(agentID string) Agent {
 func (m *Manager) AgentAlive(agentID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	provider, ok := m.agents[agentID]
+	entry, ok := m.agents[agentID]
 	if !ok {
 		return false
 	}
-	_, exiting := m.exiting[provider]
-	return !exiting
+	return !entry.exiting
 }
 
 // ListAgentIDs returns the IDs of all currently tracked agents.
@@ -1528,7 +1522,7 @@ func (m *Manager) StopAll() {
 	m.mu.Lock()
 	providers := make([]Agent, 0, len(m.agents))
 	for _, p := range m.agents {
-		providers = append(providers, p)
+		providers = append(providers, p.provider)
 	}
 	m.mu.Unlock()
 

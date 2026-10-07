@@ -104,7 +104,7 @@ func TestNativeCopilotSessionLifecycle(t *testing.T) {
 	require.NoError(t, a.SendInput(content, []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: image}}))
 	require.True(t, a.PublishTurnActive().Active)
 	require.ErrorIs(t, a.SendInput("second input", nil), agent.ErrAgentBusy)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.False(t, a.PublishTurnActive().Active)
 	before := len(sink.Messages())
 	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"foreign-session","event":{"type":"assistant.turn_start","data":{}}}}`))

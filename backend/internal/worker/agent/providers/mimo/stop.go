@@ -22,7 +22,7 @@ const mimoStreamStopWait = 5 * time.Second
 // The server answers the abort at once and ends the turn on the event stream:
 // an aborted-message error, then idle. A timer then compares the turn with the
 // server's own status, so a turn whose idle never arrives still ends.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped, active, sessionID := a.StoppedLocked(), a.turnActive, a.sessionID
 	var attempt uint64

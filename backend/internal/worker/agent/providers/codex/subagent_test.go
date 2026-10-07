@@ -66,7 +66,7 @@ func TestCodex_MultiAgentV2ChildDoesNotAdvertiseDirectInput(t *testing.T) {
 func TestCodex_InterruptChildUnknownThreadReturnsRetryable(t *testing.T) {
 	t.Parallel()
 	a := &Agent{}
-	err := a.InterruptChild("unknown-thread")
+	err := a.InterruptChild("unknown-thread", agent.StopContext{})
 	assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
 }
 

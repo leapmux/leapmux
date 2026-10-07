@@ -52,7 +52,7 @@ func (svc *Service) restartAfterNativeTurn(agentID string) {
 		}
 		return
 	}
-	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved)
+	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
 	if err != nil {
 		return
 	}

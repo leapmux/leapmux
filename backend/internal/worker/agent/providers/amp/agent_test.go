@@ -106,7 +106,7 @@ func TestSteeringIsRefusedWhileTheProcessEnds(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("sleep")
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	require.True(t, h.turnActive(), "the turn ends at Amp's result, not at the signal")
 
 	assert.ErrorIs(t, h.agent.SteerInput("too late", nil), agent.ErrNoActiveTurn)
@@ -258,7 +258,7 @@ func TestInterruptSignalsTheProcessAndTheResultEndsTheTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("sleep 40")
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	assert.True(t, fp.ending(), "no new line goes to a process an interrupt signalled")
 	h.feed(fp, errorResult(interruptedMessage))
 	fp.exit()
@@ -278,7 +278,7 @@ func TestInterruptSignalsTheProcessAndTheResultEndsTheTurn(t *testing.T) {
 func TestInterruptWithNoTurnIsANoop(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	assert.Empty(t, h.sink.Messages())
 }
 
@@ -288,7 +288,7 @@ func TestExitAfterInterruptWithNoResultEndsTheTurnInterrupted(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("sleep 40")
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	fp.exit()
 	fp.awaitHandled(t)
 	ends := h.turnEnds()
@@ -304,7 +304,7 @@ func TestInterruptThatAmpIgnoresStopsTheProcess(t *testing.T) {
 	trap := h.clock.Trap().NewTimer("amp", "interrupt-escalation")
 	defer trap.Close()
 	fp := h.send("sleep 40")
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	call := trap.MustWait(t.Context())
 	call.MustRelease(t.Context())
 	h.clock.Advance(10 * time.Second).MustWait(t.Context())
@@ -579,7 +579,7 @@ func TestNewMessageWaitsForTheOldProcessExit(t *testing.T) {
 	defer trap.Close()
 	fp := h.send("go")
 	h.feed(fp, initLine("T-2"))
-	require.NoError(t, h.agent.Interrupt())
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	h.feed(fp, errorResult(interruptedMessage))
 
 	h.drainStarted()
@@ -645,7 +645,7 @@ func TestStopEndsTheRunningTurnAndRemovesTheDirectory(t *testing.T) {
 	require.NoError(t, h.agent.Wait())
 
 	assert.ErrorContains(t, h.agent.SendInput("after", nil), "stopped")
-	assert.ErrorContains(t, h.agent.Interrupt(), "stopped")
+	assert.ErrorContains(t, h.agent.Interrupt(agent.StopContext{}), "stopped")
 	h.agent.Stop() // idempotent
 }
 
@@ -668,18 +668,18 @@ func TestRawInputReachesTheRunningProcess(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	userLine := []byte(`{"type":"user","message":{"role":"user","content":[]}}`)
-	assert.ErrorContains(t, h.agent.SendRawInput(userLine), "no Amp process")
+	assert.ErrorContains(t, h.agent.SendRawInput(userLine, agent.StopContext{}), "no Amp process")
 	fp := h.send("go")
-	require.NoError(t, h.agent.SendRawInput(userLine))
+	require.NoError(t, h.agent.SendRawInput(userLine, agent.StopContext{}))
 	assert.Len(t, fp.lines(), 2)
 
 	// A process that an interrupt signalled takes no new line.
-	require.NoError(t, h.agent.Interrupt())
-	assert.ErrorContains(t, h.agent.SendRawInput(userLine), "no Amp process")
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+	assert.ErrorContains(t, h.agent.SendRawInput(userLine, agent.StopContext{}), "no Amp process")
 	assert.Len(t, fp.lines(), 2)
 
 	h.agent.Stop()
-	assert.ErrorIs(t, h.agent.SendRawInput(userLine), errAgentStopped)
+	assert.ErrorIs(t, h.agent.SendRawInput(userLine, agent.StopContext{}), errAgentStopped)
 }
 
 func TestStderrComesFromTheLastProcess(t *testing.T) {

@@ -49,7 +49,8 @@ func TestClassifyZCodeMessage_IDPlusMethodIsShapeOnly(t *testing.T) {
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
 	// A pending request registered under the same id must win, so the app-server's
 	// answer is never mistaken for the request it answers.
-	ch, release := a.Register(int64(42))
+	ch, release, err := a.Register(int64(42))
+	require.NoError(t, err)
 	defer release()
 	assert.True(t, a.interceptResponse(line), "a pending id must consume the line before the server-request path")
 	select {

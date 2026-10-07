@@ -726,7 +726,7 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 // task, and the subagent's turn ends as cancelled. A swarm member and a
 // follow-up turn the user started run as no task, and the server offers no
 // route that stops one of them alone.
-func (a *Agent) InterruptChild(childKey string) error {
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	agentID, sessionID, err := a.childRoute(childKey)
 	if err != nil {
 		return err

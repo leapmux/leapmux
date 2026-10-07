@@ -287,7 +287,10 @@ func (a *Agent) beginPrompt(payload map[string]any) (*pendingPrompt, error) {
 	}
 	data = append(data, '\n')
 
-	ch, release := a.Register(id)
+	ch, release, err := a.Register(id)
+	if err != nil {
+		return nil, fmt.Errorf("register omp prompt: %w", err)
+	}
 	ack := make(chan promptAck, 1)
 	pending := &pendingPrompt{id: id, ack: ack}
 	pending.write = func() error {
@@ -381,7 +384,7 @@ func promptPayload(content string, attachments []*leapmuxv1.Attachment) map[stri
 // When no turn runs, it sends no abort, so a script can call it without checking
 // first. It still answers each dialog that omp waits on, because no abort settles
 // one.
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()

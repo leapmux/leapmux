@@ -168,8 +168,8 @@ func (a *Agent) CompactContext() error {
 // turn that it held ends with no divider, and its late answer changes
 // nothing. Kiro can still finish the summary, and then states it in its own
 // report.
-func (a *Agent) Interrupt() error {
-	err := a.Base.Interrupt()
+func (a *Agent) Interrupt(stop agent.StopContext) error {
+	err := a.Base.Interrupt(stop)
 	a.stateMu.Lock()
 	running := a.compaction.id
 	a.stateMu.Unlock()
