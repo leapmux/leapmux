@@ -11,6 +11,7 @@ import { expect } from '@playwright/test'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD } from '../../../src/components/chat/persistedControlResponse'
 import { withCleanup } from './cleanup'
 import { expectTurnEndedAfter } from './modelScriptFixture'
+import { assertPrivateNativeAncestor } from './nativeConfigurationFile'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
 import { currentNativeAgent, nativeScenarioModelContextText, nativeTextStep, nativeToolOutcome, toolTurnSteps } from './nativeScenario'
@@ -19,6 +20,7 @@ import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { isFileNameComponent } from './runDirectory'
+import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { answerControl, assistantBubbles, controlActions, controlButton, enterControlFeedback, expectNoControlBanner, messageBubbles, openWorkspace, PLATFORM_MOD, sendMessage, toolCallRow, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
 
@@ -374,7 +376,10 @@ export interface RememberedAllow {
  * call: that call runs in the next turn, and the turn raises no request at any time.
  */
 export async function exerciseRememberedAllow(context: ManagedNativeScenarioContext, options: RememberedAllow): Promise<void> {
-  const saved = (options.ruleFiles ?? []).map(path => ({ path, content: existsSync(path) ? readFileSync(path) : undefined }))
+  const saved = (options.ruleFiles ?? []).map((path) => {
+    assertPrivateNativeAncestor(path, getGlobalState().tmpDir, { refuseSymlink: true })
+    return { path, content: existsSync(path) ? readFileSync(path) : undefined }
+  })
   await withCleanup(async () => {
     const firstAnswer = `The first call ran. ${uniqueMarker('FIRST')}`
     const firstSteps = toolTurnSteps([options.firstCall], nativeTextStep(context, firstAnswer), options.answerStep)
@@ -412,6 +417,7 @@ export async function exerciseRememberedAllow(context: ManagedNativeScenarioCont
     await options.viewProof?.()
   }, async () => {
     for (const { path, content } of saved) {
+      assertPrivateNativeAncestor(path, getGlobalState().tmpDir, { refuseSymlink: true })
       if (content === undefined)
         rmSync(path, { force: true })
       else

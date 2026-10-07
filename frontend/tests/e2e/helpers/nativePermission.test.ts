@@ -5,7 +5,7 @@ import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { GatedOutput, OutputGate } from './outputGate'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,6 +14,10 @@ import { allowNativeOperation, createNativePermissionFileWrite, declinedToolCall
 import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
+vi.mock('./server', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./server')>()
+  return { ...original, getGlobalState: () => ({ tmpDir: native.directory }) }
+})
 const declinedRow = vi.hoisted(() => ({ assertions: [] as string[] }))
 /** The browser steps of a decision flow, in order. */
 const flow = vi.hoisted(() => ({ events: [] as string[], onAnswer: undefined as ((decision: string) => void) | undefined, feedback: '' }))
@@ -734,6 +738,52 @@ describe('exerciseRememberedAllow', () => {
     })
   })
 
+  it('rejects a rule file outside the private run before it queues a turn', async () => {
+    const outside = mkdtempSync(join(scratchRoot, 'outside-rule-test-'))
+    const path = join(outside, 'operator.rules')
+    writeFileSync(path, 'outside rule\n')
+    const { context: remembered, queued } = scriptedContext(() => ({}), [4, 6])
+    try {
+      await expect(exerciseRememberedAllow(remembered, {
+        scope: 'Always',
+        firstCall,
+        secondCall,
+        firstProof: () => {},
+        secondProof: () => {},
+        ruleFiles: [path],
+      })).rejects.toThrow('outside the E2E run')
+      expect(queued).toEqual([])
+      expect(readFileSync(path, 'utf8')).toBe('outside rule\n')
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a rule file whose parent link points outside the private run', async () => {
+    const outside = mkdtempSync(join(scratchRoot, 'outside-rule-link-test-'))
+    const link = join(native.directory, 'rule-link')
+    const path = join(outside, 'operator.rules')
+    writeFileSync(path, 'outside rule\n')
+    symlinkSync(outside, link, 'junction')
+    const { context: remembered, queued } = scriptedContext(() => ({}), [4, 6])
+    try {
+      await expect(exerciseRememberedAllow(remembered, {
+        scope: 'Always',
+        firstCall,
+        secondCall,
+        firstProof: () => {},
+        secondProof: () => {},
+        ruleFiles: [join(link, 'operator.rules')],
+      })).rejects.toThrow('outside the E2E run')
+      expect(queued).toEqual([])
+      expect(readFileSync(path, 'utf8')).toBe('outside rule\n')
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   it('allows under the scope, then runs the covered call in a turn that the observation watches', async () => {
     const { context: remembered, queued } = scriptedContext(() => ({ 5: { turn: 'first' }, 7: { turn: 'second' } }), [4, 6])
     await exerciseRememberedAllow(remembered, {
@@ -858,6 +908,32 @@ describe('exerciseRememberedAllow', () => {
       ruleFiles: [kept],
     })).rejects.toThrow('the covered call raised a request')
     expect(readFileSync(kept, 'utf8')).toBe('original rule\n')
+  })
+
+  it('refuses to restore through a link that the native scenario creates', async () => {
+    const outside = mkdtempSync(join(scratchRoot, 'outside-rule-restore-test-'))
+    const target = join(outside, 'operator.rules')
+    const kept = join(native.directory, 'kept.rules')
+    writeFileSync(target, 'outside rule\n')
+    writeFileSync(kept, 'original rule\n')
+    const { context: remembered } = scriptedContext(() => ({}), [4, 6])
+    try {
+      await expect(exerciseRememberedAllow(remembered, {
+        scope: 'Always',
+        firstCall,
+        secondCall,
+        firstProof: () => {
+          rmSync(kept)
+          symlinkSync(target, kept)
+        },
+        secondProof: () => {},
+        ruleFiles: [kept],
+      })).rejects.toThrow('must not be a symbolic link')
+      expect(readFileSync(target, 'utf8')).toBe('outside rule\n')
+    }
+    finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
 
