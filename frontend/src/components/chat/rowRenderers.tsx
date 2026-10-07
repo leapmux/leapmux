@@ -18,6 +18,7 @@ import {
   useSharedExpandedState,
 } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { rowDrawsResult } from './model/derivations'
 import { flattenNotificationEntries } from './notificationEntries'
 import { renderNotificationBlocks } from './notificationRenderers'
 import { ResultDivider } from './resultDividerRenderers'
@@ -158,7 +159,8 @@ function withCompletionHeader(context: RowRenderContext | undefined): RowRenderC
  * A row the provider could not read at all draws the shared unrecognized card, so the
  * reader still gets the frame. The interruption and failure headers wrap the drawn row
  * exactly as they wrap a legacy one, because they are LeapMux's own statement about
- * the row rather than any provider's.
+ * the row rather than any provider's. The failure header does not wrap a row that
+ * draws its own failure, because that row already states the same outcome.
  *
  * The completion comes from the EXTRACTION, which read LeapMux's own column and the
  * assembled envelope's own statement in that order. This function derived it from two
@@ -177,7 +179,6 @@ export function renderExtractedRow(
   // note replace its body -- read the role off the same object.
   const toolRow = row?.kind === 'tool' ? row : null
   const completion = extraction.completion
-  const toolCompletion = toolRow !== null && (completion === 'interrupted' || completion === 'error')
   // The outcome note is LeapMux's own statement about a tool row, so it is drawn here
   // rather than by any provider.
   const note = toolOutcomeNote(messageMetadata)
@@ -192,6 +193,13 @@ export function renderExtractedRow(
   // interrupted drew one bare sentence with nothing saying which tool it belonged to
   // or that the turn had been stopped.
   const bodySuppressed = note !== null && toolRow?.role === 'result'
+  // A failed tool row that draws its result supplies its own failure header.
+  // A command header states the process exit code.
+  // Keep that header when the stored completion reports the same failure.
+  // An interruption still needs the shared header.
+  // An error completion needs it when the row draws no failure of its own.
+  const rowStatesOwnFailure = toolRow !== null && !bodySuppressed && toolRow.call.status === 'failed' && rowDrawsResult(toolRow)
+  const toolCompletion = toolRow !== null && (completion === 'interrupted' || (completion === 'error' && !rowStatesOwnFailure))
   const rowContext = toolCompletion
     ? withCompletionHeader(context)
     : context
@@ -225,10 +233,10 @@ export function renderExtractedRow(
       </ToolStatusHeader>
     )
   }
-  // The marker states that TEXT was cut. A divider states the turn's outcome in its own
-  // label, and a provider records the turn's completion on it, so a marker there claimed
-  // a cut on every stopped turn, with no text or with complete text.
-  const marker = row?.kind === 'divider' ? null : completionMarker(completion)
+  // The marker describes incomplete text.
+  // A failed tool result states its own failure. A divider states the outcome of the turn.
+  // Neither row needs a text marker.
+  const marker = (rowStatesOwnFailure || row?.kind === 'divider') ? null : completionMarker(completion)
   return marker
     ? (
         <>

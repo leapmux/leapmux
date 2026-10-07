@@ -1053,6 +1053,42 @@ describe('canonical failure word across the two routes', () => {
   })
 })
 
+// The Worker stores a tool result that its frame marks as failed with an error
+// completion (Qoder CLI `is_error`, Codewhale `item.failed`). The row already
+// states that failure, and states it more exactly: the code of the command. The
+// generic header of the completion must not replace it.
+describe('a failed command under an error completion', () => {
+  // Verbatim shape of a Qoder CLI 0.2.x Bash result for `printf ... >&2; exit 7`.
+  const qoderFailedBash = {
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'shell-call', content: 'Exit code 7\nSHELLERR77', is_error: true }] },
+    session_id: 'qoder-session',
+    tool_use_result: { kind: 'completed', stdout: 'SHELLERR77', stderr: '', exitCode: 7, signal: null, interrupted: false, isError: true },
+  }
+
+  function renderFailedRow(completion: MessageCompletion) {
+    const parsed = { ...input(qoderFailedBash, null, AgentProvider.QODER), completion }
+    const plugin = providerFor(AgentProvider.QODER)!
+    return render(() => renderMessageContent(qoderFailedBash, {
+      premeasureMode: true,
+      spanType: 'Bash',
+      sources: testMessageSources({ current: () => parsed }),
+    }, plugin.transcript.classify(parsed), AgentProvider.QODER, completion))
+  }
+
+  it('keeps the exit code of the row in its one failure header', () => {
+    const { container } = renderFailedRow(MessageCompletion.ERROR)
+    expect(container.textContent).toContain('Error (exit 7)')
+    expect(container.textContent?.match(/Error/g)).toHaveLength(1)
+  })
+
+  it('draws the same header as the row without the completion', () => {
+    const withCompletion = renderFailedRow(MessageCompletion.ERROR).container.textContent
+    const withoutCompletion = renderFailedRow(MessageCompletion.UNSPECIFIED).container.textContent
+    expect(withCompletion).toBe(withoutCompletion)
+  })
+})
+
 describe('command output preservation', () => {
   it('keeps HTML and CSS text that a command prints', () => {
     const output = '<div class="toolUseHeader__test">Printed HTML</div>\nAfter HTML'
