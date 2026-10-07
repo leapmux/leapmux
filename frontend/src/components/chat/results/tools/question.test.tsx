@@ -4,7 +4,7 @@ import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
 import { questionRenderer } from './question'
-import { parsedCall } from './renderer'
+import { parsedCall, resolvedCall } from './renderer'
 
 describe('question renderer', () => {
   checkKindModule({
@@ -41,6 +41,32 @@ describe('question renderer', () => {
     const asking = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { status: 'in_progress', request }), 'request')} />)
     expect(asking.container.textContent).toContain('Which env?')
     expect(asking.container.querySelector('[data-tool-output-preview]')).toBeNull()
+  })
+
+  // A result row can stand alone in the transcript, beside the request row of its
+  // call. A dismissal states no answer, so the provider's own note is all it can draw:
+  // a row that drew nothing measured zero height, and the transcript held every later
+  // row hidden behind it.
+  it('draws the note of a result that states no answer', () => {
+    const request = { questions: [{ header: 'Color', question: 'Which color?', options: [{ label: 'Blue' }] }] }
+    const result = { answers: [], note: 'User dismissed the question without answering.' }
+    const dismissed = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { request, result }))} />)
+    const outputs = dismissed.container.querySelectorAll('[data-tool-output-preview]')
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]?.textContent).toContain('User dismissed the question without answering.')
+    const resolved = resolvedCall(toolCallFixture('question', { request, result }))
+    if (!resolved)
+      throw new Error('The dismissed question carries no result of its own kind.')
+    expect(questionRenderer.resultMeta(resolved).copyableContent?.()).toBe('User dismissed the question without answering.')
+  })
+
+  it('draws the answers before the note of a result that states both', () => {
+    const request = { questions: [{ header: 'Color', question: 'Which color?', options: [{ label: 'Blue' }] }] }
+    const result = { answers: [{ header: 'Color', answer: 'Blue' }], note: 'The reader typed nothing else.' }
+    const answered = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { request, result }))} />)
+    const output = answered.container.querySelector('[data-tool-output-preview]')?.textContent ?? ''
+    expect(output.indexOf('Blue')).toBeGreaterThanOrEqual(0)
+    expect(output.indexOf('Blue')).toBeLessThan(output.indexOf('The reader typed nothing else.'))
   })
 
   it('heads several questions with their count', () => {

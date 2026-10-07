@@ -6,6 +6,7 @@ import type { AgentRun } from '../../../model/tools/agent'
 import type { CommandLanguage } from '../../../model/tools/execute'
 import type { FileChangeResult } from '../../../model/tools/fileChange'
 import type { GenericToolResult } from '../../../model/tools/generic'
+import type { QuestionResult } from '../../../model/tools/question'
 import type { SearchResult } from '../../../model/tools/search'
 import type { TaskRequest } from '../../../model/tools/task'
 import type { TriggerRequest } from '../../../model/tools/trigger'
@@ -444,8 +445,8 @@ export const KIMI_TOOL_READERS: ToolCallSpecReaderTable<KimiToolFacts> = {
       return { kind: 'question', request, title }
     if (facts.failed)
       return { kind: 'question', request, title, result: failedResult(facts.text) }
-    const answers = kimiQuestionAnswers(facts.text)
-    return { kind: 'question', request, title, ...(answers ? { result: { answers } } : facts.text ? { result: unparsedResult(facts.text) } : {}) }
+    const result = kimiQuestionResult(facts.text)
+    return { kind: 'question', request, title, ...(result ? { result } : facts.text ? { result: unparsedResult(facts.text) } : {}) }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = kimiRequestFor('task', facts)
@@ -651,10 +652,11 @@ function kimiRunOutcome(status: string): AgentRun['outcome'] {
 }
 
 /**
- * The answers an `AskUserQuestion` result states: `{"answers":{"<question>":"<answer>"}}`,
- * the text the server wrote for the model. A dismissal states an empty map.
+ * The result an `AskUserQuestion` call states: `{"answers":{"<question>":"<answer>"}}`,
+ * the text the server wrote for the model. A dismissal, which an interrupt causes too,
+ * states an empty map and a `note` that says so.
  */
-function kimiQuestionAnswers(text: string): { header: string, answer: string | null }[] | null {
+function kimiQuestionResult(text: string): QuestionResult | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -662,10 +664,15 @@ function kimiQuestionAnswers(text: string): { header: string, answer: string | n
   catch {
     return null
   }
-  const answers = pickObject(isObject(parsed) ? parsed : undefined, 'answers')
+  const native = isObject(parsed) ? parsed : undefined
+  const answers = pickObject(native, 'answers')
   if (!answers)
     return null
-  return Object.entries(answers).map(([header, answer]) => ({ header, answer: typeof answer === 'string' ? answer : null }))
+  const note = pickString(native, 'note').trim()
+  return {
+    answers: Object.entries(answers).map(([header, answer]) => ({ header, answer: typeof answer === 'string' ? answer : null })),
+    ...(note ? { note } : {}),
+  }
 }
 
 /** One Kimi Code tool call, as the kind-discriminated pair. */

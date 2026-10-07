@@ -1,3 +1,4 @@
+import type { QuestionResult } from '../../model/tools/question'
 import type { ToolKindRenderer } from './renderer'
 import Vote from 'lucide-solid/icons/vote'
 import { Show } from 'solid-js'
@@ -6,11 +7,16 @@ import { CollapsibleContent } from '../CollapsibleContent'
 import { questionBodyMarkdown } from '../questionBody'
 import { proseMeta } from './proseResult'
 
-/** The answers a question drew, as the markdown list the row states them in. */
-function answersMarkdown(answers: ReadonlyArray<{ header: string, answer: string | null }>): string {
-  return answers
-    .map(answer => `**${answer.header}** — ${answer.answer ?? '_no answer_'}`)
-    .join('\n\n')
+/**
+ * The result a question drew, as markdown: one entry for each answer, then the
+ * provider's note. A dismissal states only its note, and a result row that drew
+ * nothing measured zero height, which held every later row of the transcript hidden.
+ */
+function resultMarkdown(result: QuestionResult): string {
+  return [
+    ...result.answers.map(answer => `**${answer.header}** — ${answer.answer ?? '_no answer_'}`),
+    ...(result.note ? [result.note] : []),
+  ].join('\n\n')
 }
 
 export const questionRenderer: ToolKindRenderer<'question'> = {
@@ -39,10 +45,10 @@ export const questionRenderer: ToolKindRenderer<'question'> = {
     return <Show when={markdown}>{text => <CollapsibleContent kind="markdown-tool-result" text={text()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}</Show>
   },
   result(call, view) {
-    const text = answersMarkdown(call.result.answers)
+    const text = resultMarkdown(call.result)
     return <Show when={text}>{answers => <CollapsibleContent outputPreview kind="markdown-tool-result" text={answers()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}</Show>
   },
   resultMeta(call) {
-    return proseMeta({ text: answersMarkdown(call.result.answers), format: 'markdown' })
+    return proseMeta({ text: resultMarkdown(call.result), format: 'markdown' })
   },
 }

@@ -319,9 +319,18 @@ describe('kimi question and to-do calls', () => {
     expect(call?.result).toStrictEqual({ answers: [{ header: 'Which?', answer: 'A' }] })
   })
 
-  it('reads a dismissed question as no answers', () => {
+  // Kimi Code 2.x states a dismissal, which an interrupt causes too, as an empty map and
+  // a note. The note is all the result row can draw.
+  it('reads a dismissed question as no answers and the note that states the dismissal', () => {
     const call = resultCall(KIMI_TOOL.AskUserQuestion, { questions: [] }, '{"answers":{},"note":"User dismissed the question without answering."}')
-    expect(call?.result).toStrictEqual({ answers: [] })
+    expect(call?.result).toStrictEqual({ answers: [], note: 'User dismissed the question without answering.' })
+  })
+
+  it('keeps the note beside the answers, and drops a note that holds no text', () => {
+    expect(resultCall(KIMI_TOOL.AskUserQuestion, { questions: [] }, '{"answers":{"Which?":"A"},"note":"Answered."}')?.result)
+      .toStrictEqual({ answers: [{ header: 'Which?', answer: 'A' }], note: 'Answered.' })
+    expect(resultCall(KIMI_TOOL.AskUserQuestion, { questions: [] }, '{"answers":{},"note":"  "}')?.result).toStrictEqual({ answers: [] })
+    expect(resultCall(KIMI_TOOL.AskUserQuestion, { questions: [] }, '{"answers":{},"note":7}')?.result).toStrictEqual({ answers: [] })
   })
 
   it('keeps a question result it cannot read as the words', () => {

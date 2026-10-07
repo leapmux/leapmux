@@ -225,7 +225,10 @@ export function renderExtractedRow(
       </ToolStatusHeader>
     )
   }
-  const marker = completionMarker(completion)
+  // The marker states that TEXT was cut. A divider states the turn's outcome in its own
+  // label, and a provider records the turn's completion on it, so a marker there claimed
+  // a cut on every stopped turn, with no text or with complete text.
+  const marker = row?.kind === 'divider' ? null : completionMarker(completion)
   return marker
     ? (
         <>
