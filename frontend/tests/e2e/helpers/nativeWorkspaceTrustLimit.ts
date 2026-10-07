@@ -92,7 +92,7 @@ export async function exerciseNativeWorkspaceTrustLimit(
   if (options.startup === 'failed' && (typeof options.startupError !== 'string' || options.startupError.trim().length === 0))
     throw new Error('The failed workspace startup requires the native configuration error.')
   // The project follows the rule of the provider. A provider that reads its configuration up to the repository root
-  // then reads this project alone, and not the configuration of the LeapMux checkout around the run directory.
+  // then reads this project alone, and not the sentinel files of the run root above it (`./ancestorInstructions.ts`).
   const project = { directory: newNativeWorkingDir(context, 'native-workspace-trust-'), marker: uniqueMarker('NATIVEWORKSPACECONFIG') }
   await options.projectConfiguration.prepare(project)
   const run = async (privateContext: ManagedNativeScenarioContext, wrapper?: NativeStartupWrapper) => {
@@ -151,7 +151,7 @@ export function instructionFileConfiguration(
     /**
      * Make the directory the root of a git repository of its own, unless the rule of the provider made it one
      * already (`ensureGitRepositoryRoot`). A provider that reads the file from each directory up to the repository
-     * root then stops at the directory, and does not also read the instructions of the LeapMux checkout around it.
+     * root then stops at the directory, and does not also read the sentinel files of the run root above it.
      */
     gitRoot?: boolean
     /** The text by which the provider states the path of the file that it loaded. */

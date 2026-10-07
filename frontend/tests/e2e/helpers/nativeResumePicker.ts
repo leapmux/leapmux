@@ -53,11 +53,10 @@ export interface ResumePickerOptions {
 /**
  * Create a git repository of its own for one directory of a session picker flow, as `<dataDir>/<prefix><UUID>`.
  *
- * The rule of a provider cannot make this layout. It makes a plain directory of the run for most providers, and the
- * run directory sits inside the git repository of the LeapMux checkout. A provider can list the sessions of the whole
- * git repository around a directory: Amp keeps the threads of the git top level of the directory. So each directory of
- * a picker flow is the root of a repository of its own, and the picker of one directory lists only the sessions of
- * that directory.
+ * The rule of a provider cannot make this layout: it makes a plain directory of the run for most providers. A provider
+ * can list the sessions of the whole git repository around a directory, or of the nearest directory that it takes as
+ * the project: Amp keeps the threads of the git top level of the directory. So each directory of a picker flow is the
+ * root of a repository of its own, and the picker of one directory lists only the sessions of that directory.
  */
 export function sessionPickerRepository(dataDir: string, prefix: string): ProviderWorkingDir {
   return deliberateWorkingDir(
