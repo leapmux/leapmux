@@ -1,5 +1,5 @@
 {
-  "_readme": "CodeBuddy Code's stream-json vocabulary (`codebuddy -p --input-format stream-json --output-format stream-json`), for the tables that BOTH the Go provider and the TS renderer plugin read. CodeBuddy's stream is deliberately Claude Code 2.1.220-shaped, but the shapes LeapMux parses differ where it matters, so this contract shares no table with claude-protocol.json. `frameKinds` are the top-level `type` values on stdout. `controlRequestSubtypes` are the request subtypes LeapMux sends and the CLI sends back; both sides dispatch on them. `modes` are the four permission modes get_available_modes advertises. `effortLevels` are the --effort values CodeBuddy owns (not Claude's low/medium/high/ultra set). `systemSubtypes` are the system-line subtypes both sides classify. The can_use_tool answer fields stay in Go:\n- allowed\n- reason\n- interrupt\n- updatedInput\n\nThe browser sends a neutral behavior envelope. The Worker alone translates it into those fields. providers/codebuddy/protocol.go owns them under the contract rule for single-language values.\n\nThe browser owns native result pointer fields in its provider protocol module. The Worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.",
+  "_readme": "CodeBuddy Code's stream-json vocabulary (`codebuddy -p --input-format stream-json --output-format stream-json`), for the tables that BOTH the Go provider and the TS renderer plugin read. CodeBuddy's stream is deliberately Claude Code 2.1.220-shaped, but the shapes LeapMux parses differ where it matters, so this contract shares no table with claude-protocol.json. `frameKinds` are the top-level `type` values on stdout. `controlRequestSubtypes` are the request subtypes LeapMux sends and the CLI sends back; both sides dispatch on them. `modes` are the four permission modes get_available_modes advertises. `effortLevels` are the --effort values CodeBuddy owns (not Claude's low/medium/high/ultra set). `systemSubtypes` are the system-line subtypes both sides classify. `controlAnswer` holds the fields of CodeBuddy's can_use_tool answer, and the generated `CodebuddyCanUseToolAnswer` struct takes its JSON tags from that table. The browser sends a neutral behavior envelope, and the Worker alone translates it into this answer. The Worker stores the translated answer as the saved row of the request, so the browser reads `allowed` and `reason` back to draw the decision. The browser reads neither `interrupt` nor `updatedInput` (see `_unread`).\n\nThe browser owns native result pointer fields in its provider protocol module. The Worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.",
   "_unread": {
     "frameKinds": {
       "ActiveGoal": {
@@ -92,6 +92,20 @@
         ],
         "why": "the worker stores every system frame whole without a branch on its subtype; the browser classifies this one from the stored bytes"
       }
+    },
+    "controlAnswer": {
+      "Interrupt": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the saved row states the decision and the reader's reason; the interrupt flag changes neither, so the browser never reads it"
+      },
+      "UpdatedInput": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the saved row states the decision; the banner drew the input before the answer, and the answer only repeats it to the CLI"
+      }
     }
   },
   "frameKinds": {
@@ -138,5 +152,38 @@
     "Informational": "informational",
     "TaskStarted": "task_started",
     "TaskNotification": "task_notification"
+  },
+  "controlAnswer": {
+    "Allowed": "allowed",
+    "Reason": "reason",
+    "Interrupt": "interrupt",
+    "UpdatedInput": "updatedInput"
+  },
+  "structs": {
+    "CodebuddyCanUseToolAnswer": {
+      "doc": "CodeBuddy's answer to one can_use_tool request. It is the single hard incompatibility with\nClaude Code's stream: the CLI-side parser reads `allowed`, not `behavior`. Probe r5 proved\nthat a `behavior:\"allow\"` answer comes back as \"Permission denied by SDK\", and probe r6\nproved that `allowed:true` runs the tool.\n\nAn allow states `allowed:true` and, when the browser folded an answer into the tool input,\n`updatedInput`. A denial states `allowed:false` and the reason that the model reads.",
+      "table": "controlAnswer",
+      "fields": [
+        {
+          "key": "Allowed",
+          "type": "bool"
+        },
+        {
+          "key": "Reason",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Interrupt",
+          "type": "bool",
+          "omitempty": true
+        },
+        {
+          "key": "UpdatedInput",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    }
   }
 }

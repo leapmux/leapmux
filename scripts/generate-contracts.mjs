@@ -2743,6 +2743,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CodebuddyMode', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'permission modes' },
       { key: 'effortLevels', goTable: 'EffortLevel', tsTable: 'EFFORT_LEVEL', tsType: 'CodebuddyEffortLevel', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'the --effort values CodeBuddy owns' },
       { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'CodebuddySystemSubtype', doc: '`subtype` values of a `system` line' },
+      { key: 'controlAnswer', goTable: 'ControlAnswerField', tsTable: 'CONTROL_ANSWER_FIELD', tsType: 'CodebuddyControlAnswerField', doc: 'fields of the can_use_tool answer, as the worker sends and stores it' },
     ],
   },
   {

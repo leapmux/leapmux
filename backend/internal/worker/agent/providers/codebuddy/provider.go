@@ -69,14 +69,18 @@ func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
 		return nil, false
 	}
-	answer := canUseToolAnswer{Allowed: behavior == agent.ControlBehaviorAllow}
+	answer := contracts.CodebuddyCanUseToolAnswer{Allowed: behavior == agent.ControlBehaviorAllow}
 	if !answer.Allowed {
 		answer.Reason = message
 		if answer.Reason == "" {
 			answer.Reason = agent.ControlRejectedByUserMessage
 		}
 	} else if updatedInput := agent.DecodeControlUpdatedInput(content); updatedInput != nil {
-		answer.UpdatedInput = updatedInput
+		encoded, err := json.Marshal(updatedInput)
+		if err != nil {
+			return nil, false
+		}
+		answer.UpdatedInput = encoded
 	}
 	out := map[string]any{
 		"type":       frameTypeControlResponse,

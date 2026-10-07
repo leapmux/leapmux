@@ -4,6 +4,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/con
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { sendResponse } from '../../controls/types'
 import { codebuddyAskUserQuestions, codebuddyIsAskUserQuestion } from './askUserQuestion'
+import { codebuddyControlResponseSummary } from './controlResponse'
 import { codebuddyExtractControl } from './extractControl'
 import { codebuddyPermissionPresets } from './permissionPresets'
 
@@ -13,10 +14,12 @@ import { codebuddyPermissionPresets } from './permissionPresets'
  * The answer the worker sends is CodeBuddy's own `{"allowed":true}`, so the
  * shared Allow/Deny envelope is what the browser sends and the worker
  * translates. The options stay empty for the same reason: the shared pair is
- * the surface the reader answers.
+ * the surface the reader answers. The saved row holds the translated answer, so
+ * the display reads CodeBuddy's own fields back.
  */
 export const codebuddyControls: ProviderControlCapability = {
   permissionPresets: codebuddyPermissionPresets,
+  controlResponseDisplay: codebuddyControlResponseSummary,
   askUserQuestion: {
     isRequest: codebuddyIsAskUserQuestion,
     extractQuestions: codebuddyAskUserQuestions,

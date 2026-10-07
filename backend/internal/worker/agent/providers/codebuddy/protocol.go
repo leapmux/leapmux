@@ -78,27 +78,6 @@ type codebuddyMediaBlock struct {
 	Source codebuddyMediaSource `json:"source"`
 }
 
-// CodeBuddy's can_use_tool answer. This is the single hard incompatibility with
-// Claude Code's stream: the CLI-side parser reads `allowed`, not `behavior`.
-// Probe r5 proved a `behavior:"allow"` answer comes back as "Permission denied
-// by SDK"; probe r6 proved `allowed:true` runs the tool.
-//
-// The wire shape:
-//
-//	{"type":"control_response","response":{"subtype":"success","request_id":"…",
-//	  "response":{"allowed":true,"updatedInput":{…}}}}
-//
-// and for a denial:
-//
-//	{"type":"control_response","response":{"subtype":"success","request_id":"…",
-//	  "response":{"allowed":false,"reason":"…","interrupt":false}}}
-type canUseToolAnswer struct {
-	Allowed      bool           `json:"allowed"`
-	Reason       string         `json:"reason,omitempty"`
-	Interrupt    bool           `json:"interrupt,omitempty"`
-	UpdatedInput map[string]any `json:"updatedInput,omitempty"`
-}
-
 // controlResponseEnvelope is the outer control_response frame. The inner
 // Response payload differs by request; this type only carries the routing.
 type controlResponseEnvelope struct {

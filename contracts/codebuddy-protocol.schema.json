@@ -11,7 +11,9 @@
     "controlRequestSubtypes",
     "modes",
     "effortLevels",
-    "systemSubtypes"
+    "systemSubtypes",
+    "controlAnswer",
+    "structs"
   ],
   "$defs": {
     "table": {
@@ -140,6 +142,12 @@
     },
     "systemSubtypes": {
       "$ref": "#/$defs/table"
+    },
+    "controlAnswer": {
+      "$ref": "#/$defs/table"
+    },
+    "structs": {
+      "$ref": "#/$defs/structs"
     }
   }
 }
