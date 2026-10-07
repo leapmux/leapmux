@@ -4,11 +4,20 @@ import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset } from '../helpers/ui'
 
-/** How a Copilot agent opens. */
-export const COPILOT_AGENT: ProviderAgent = { provider: AgentProvider.GITHUB_COPILOT, prefix: 'copilot-e2e' }
+/**
+ * How a Copilot agent opens. Its working directory is the root of a git repository of its own.
+ *
+ * Copilot CLI reads its custom instructions (AGENTS.md, CLAUDE.md, GEMINI.md and the `.github/` files) from each
+ * directory between its working directory and the root of its git repository, and from directories above that when no
+ * repository holds the working directory. Its one switch, `--no-custom-instructions`, also turns off the AGENTS.md of
+ * the working directory that `workspace-trust.spec.ts` proves. A repository of its own stops Copilot at the working
+ * directory.
+ */
+export const COPILOT_AGENT: ProviderAgent = { provider: AgentProvider.GITHUB_COPILOT, prefix: 'copilot-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** Build the scenario context of GitHub Copilot. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {

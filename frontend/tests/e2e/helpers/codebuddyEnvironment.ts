@@ -28,6 +28,16 @@ export interface CodebuddyEnvironmentOptions {
  * DISABLE_AUTOUPDATER also turns off CodeBuddy's updater. The `-p` mode that the
  * worker starts never runs it, but a daemon (CODEBUDDY_SESSION_KIND=daemon) does.
  * Claude Code and Letta Code read the same name.
+ *
+ * CODEBUDDY_DISABLE_SYSTEM_REMINDER_MD turns off the memory reminder: the system reminder that
+ * carries the user, project and local memory to the model. CodeBuddy 2.160.0 loads its project
+ * memory from each directory between its working directory and the root of the file system
+ * (`MemoryLoader.loadProjectMemories`): the first of CODEBUDDY.md, CODEBUDDY.mdc, AGENTS.md and
+ * AGENTS.mdc, and the same names in `.codebuddy/`. A git repository does not stop that walk, so
+ * the agent would read the sentinel files of the run root (./ancestorInstructions.ts). The variable
+ * is CodeBuddy's one switch for that memory, and no spec relies on a memory file. Two other readers
+ * of the memory send no sentinel file: the auto-mode classifier, which LeapMux never selects, and the
+ * conditional rules, which take only a file with a `paths` frontmatter.
  */
 export function createCodebuddyEnvironment(options: CodebuddyEnvironmentOptions): Record<string, string> {
   const configDir = join(options.homeDir, '.codebuddy')
@@ -40,6 +50,7 @@ export function createCodebuddyEnvironment(options: CodebuddyEnvironmentOptions)
     DISABLE_GALILEO: '1',
     DISABLE_AUTOUPDATER: '1',
     CODEBUDDY_DISABLE_TRACE_COLLECTOR: '1',
+    CODEBUDDY_DISABLE_SYSTEM_REMINDER_MD: '1',
   }
 }
 

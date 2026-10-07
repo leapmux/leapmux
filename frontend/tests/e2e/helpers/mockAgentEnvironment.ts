@@ -306,7 +306,7 @@ export async function createMockAgentEnvironment(
       ...createOpenCodeEnvironment(openCodeFamily),
       ...createGooseEnvironment({ homeDir, modelID: MOCK_MODELS.goose }),
       ...createReasonixEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateProviderID: REASONIX_ALT_PROVIDER_ID, alternateModelID: MOCK_MODELS.pi }),
-      ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, mcpEchoServer, realHomeDir: options.realHomeDir }),
+      ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, mcpEchoServer, realHomeDir: options.realHomeDir, shimsDirectory: cliShimsDir }),
       ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),

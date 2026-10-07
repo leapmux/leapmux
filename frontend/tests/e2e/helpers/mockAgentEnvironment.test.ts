@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlink
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { findBinary } from './binaryOnPath'
+import { agentSearchPathEnv, findBinary } from './binaryOnPath'
 import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID } from './mockAgentEnvironment'
 import { qoderEndpointCacheRecords } from './qoderSurface'
 
@@ -271,6 +271,20 @@ describe('createMockAgentEnvironment', () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     expect(env.PI_OFFLINE).toBe('1')
     expect(env.PI_SKIP_VERSION_CHECK).toBe('1')
+  })
+
+  // Pi reads AGENTS.md and its relatives from each directory above its working directory, up to the root of the file
+  // system, and only a flag turns that off. Each agent finds Pi through the PATH of the run.
+  it.runIf(process.platform !== 'win32')('gives each agent the private Pi wrapper, which turns off the context files', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const wrapper = join(directory, 'cli-shims', 'pi')
+    const installed = findBinary('pi', { ...process.env, ...agentSearchPathEnv() })
+    if (installed === null) {
+      expect(existsSync(wrapper)).toBe(false)
+      return
+    }
+    expect(findBinary('pi', { PATH: env.PATH })).toBe(wrapper)
+    expect(readFileSync(wrapper, 'utf8')).toContain(`exec '${installed}' --no-context-files "$@"`)
   })
 
   it('routes direct endpoint providers to the mock server', async () => {

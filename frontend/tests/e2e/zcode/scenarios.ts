@@ -2,11 +2,19 @@ import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../hel
 import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { managedNativeContext } from '../helpers/nativeScenario'
+import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
 import { applyPermissionPreset } from '../helpers/ui'
 
-/** How a ZCode agent opens. */
-export const ZCODE_AGENT: ProviderAgent = { provider: AgentProvider.ZCODE, prefix: 'zcode-e2e' }
+/**
+ * How a ZCode agent opens. Its working directory is the root of a git repository of its own.
+ *
+ * ZCode reads the nearest AGENTS.md from its working directory up to the first directory that holds `.git`, and up to
+ * the root of the file system when none does (`findInstructionFile` in the `zcode.cjs` of ZCode). No setting moves that
+ * limit, so a repository of its own stops ZCode at the working directory, where `workspace-trust.spec.ts` puts its own
+ * AGENTS.md.
+ */
+export const ZCODE_AGENT: ProviderAgent = { provider: AgentProvider.ZCODE, prefix: 'zcode-e2e', workingDir: gitRepositoryWorkingDir }
 
 /** Build the scenario context of ZCode. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {

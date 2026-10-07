@@ -30,4 +30,10 @@ describe('createCodebuddyEnvironment', () => {
   it('turns off telemetry, trace collection, and the updater', () => {
     expect(createCodebuddyEnvironment(options())).toMatchObject({ DISABLE_TELEMETRY: '1', DISABLE_GALILEO: '1', DISABLE_AUTOUPDATER: '1', CODEBUDDY_DISABLE_TRACE_COLLECTOR: '1' })
   })
+
+  // CodeBuddy reads CODEBUDDY.md and AGENTS.md from each directory above its working directory, up to the root of the
+  // file system, and a git repository does not stop it. The variable is its one switch for that memory.
+  it('turns off the memory reminder, so the agent sends no instruction file above its working directory', () => {
+    expect(createCodebuddyEnvironment(options())).toMatchObject({ CODEBUDDY_DISABLE_SYSTEM_REMINDER_MD: '1' })
+  })
 })

@@ -44,10 +44,12 @@ export function newProviderWorkingDir(agent: ProviderAgent, prefix = `${agent.pr
  * Create a working directory that is the root of a git repository of its own, inside a new directory of the run whose
  * name starts with `prefix`.
  *
- * Some providers read configuration from the git repository around their working directory: rules, skills, steering
- * documents, hooks, an `AGENTS.md` or an `.mcp.json`. The run directory sits inside the LeapMux checkout, whose root
- * holds such files. A repository of its own holds none of them, so the agent reads none of the configuration of the
- * checkout. The `ProviderAgent` of each such provider states this rule (`./workspace.ts`).
+ * Some providers read configuration from each directory between their working directory and the root of the git
+ * repository around it, and from each directory above it when no repository holds it: rules, skills, steering
+ * documents, hooks, an `AGENTS.md` or an `.mcp.json`. The run root above every working directory holds a sentinel
+ * instruction file of each known name (`./ancestorInstructions.ts`). A repository of its own stops such a provider at
+ * its working directory, so the agent reads none of these files. The `ProviderAgent` of each such provider states this
+ * rule (`./workspace.ts`).
  */
 export function gitRepositoryWorkingDir(prefix: string): ProviderWorkingDir {
   return brand(createGitRepo(createTestDirectory(prefix), 'repo'))
@@ -59,7 +61,8 @@ export function gitRepositoryWorkingDir(prefix: string): ProviderWorkingDir {
  * A rule makes a directory that holds nothing of the test. Some scenarios need more than that:
  *
  * - A path of the run outside the project of the agent. A provider that treats the git worktree of its directory as
- *   its project puts the whole LeapMux checkout, and so the whole run, inside the project of a plain directory.
+ *   its project, and the root of the file system when no worktree holds it, puts the whole run inside the project of
+ *   a plain directory.
  * - A git repository whose root a native command reads before the agent opens.
  * - One repository for each agent, so that the session picker of one directory lists one agent alone.
  * - The directory where the Worker stored a session, which an agent reopens.

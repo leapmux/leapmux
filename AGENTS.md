@@ -402,8 +402,9 @@ Run E2E tests locally before claiming that an E2E change works.
   checkout and the home, and writes a sentinel `AGENTS.md`, `CLAUDE.md` and
   the rest into it (`helpers/ancestorInstructions.ts`). The mock refuses a
   request that holds the sentinel. A provider that reads above its working
-  directory gets `gitRepositoryWorkingDir`, or a setting that excludes the
-  files, as Claude Code's `claudeMdExcludes` does.
+  directory gets `gitRepositoryWorkingDir`, or a setting or flag that turns
+  the files off, as Claude Code's `claudeMdExcludes` and the `pi` wrapper's
+  `--no-context-files` do.
 - **Undo page state in the reset, not the spec.** `resetSharedPage`
   (`fixtures.ts`) restores listeners, routes, cookies, permissions, storage,
   viewport, device metrics and every media-emulation key. A spec's own cleanup

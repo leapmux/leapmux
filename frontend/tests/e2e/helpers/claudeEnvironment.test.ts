@@ -27,10 +27,13 @@ describe('createClaudeEnvironment', () => {
   })
 
   // Claude Code reads CLAUDE.md from each directory above its working directory, up to the root, and a git repository
-  // does not stop it. A spec that opens Claude Code in the checkout would read the developer's own files.
-  it('excludes every Claude Code memory file, so the agent reads no instruction file of the machine', () => {
+  // does not stop it. Its built-in AGENTS.md plugin reads AGENTS.md and .claude/AGENTS.md from the same directories,
+  // through the same loader. A spec that opens Claude Code under the run root would read the sentinel files there.
+  it('excludes every Claude Code memory file and every AGENTS.md, so the agent reads no instruction file above it', () => {
     const env = createClaudeEnvironment({ homeDir, modelURL: 'http://127.0.0.1:4567', modelKey: 'unit-key' })
     const settings = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR!, 'settings.json'), 'utf8'))
-    expect(settings).toEqual({ claudeMdExcludes: ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/.claude/CLAUDE.md', '**/.claude/rules/**'] })
+    expect(settings).toEqual({
+      claudeMdExcludes: ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/.claude/CLAUDE.md', '**/.claude/rules/**', '**/AGENTS.md', '**/.claude/AGENTS.md'],
+    })
   })
 })

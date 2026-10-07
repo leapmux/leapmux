@@ -61,6 +61,16 @@ describe('createOhMyPiEnvironment', () => {
     expect(config).toMatchObject({ startup: { checkUpdate: false }, marketplace: { autoUpdate: 'off' }, edit: { mode: 'replace' } })
   })
 
+  // omp's Cline discovery takes the nearest .clinerules from its working directory up to the root of the file system,
+  // and a git repository does not stop it. The native discovery stays on: it loads the project extensions of
+  // `oh-my-pi/workspace-trust.spec.ts`.
+  it('turns off the Cline discovery, which reads .clinerules above the working directory, and keeps the native one', () => {
+    createOhMyPiEnvironment(options())
+    const config = JSON.parse(readFileSync(join(ohMyPiAgentDirectory(homeDir, 'unit-profile'), 'config.yml'), 'utf8'))
+    expect(config.disabledProviders).toContain('cline')
+    expect(config.disabledProviders).not.toContain('native')
+  })
+
   it('starts the echo server over stdio', () => {
     createOhMyPiEnvironment(options())
     expect(JSON.parse(readFileSync(join(ohMyPiAgentDirectory(homeDir, 'unit-profile'), 'mcp.json'), 'utf8'))).toEqual({

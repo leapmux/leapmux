@@ -1,20 +1,54 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mcpProbeServer } from './mcpProbeServer'
 import { createPiEnvironment, piAgentDirectory } from './piEnvironment'
 
+let runDirectory: string
 let homeDir: string
+let shimsDirectory: string
+let previousPath: string | undefined
 const echoServer = mcpProbeServer('echo_probe', '/srv/echo.mjs')
-const options = (realHomeDir?: string) => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', flashModelID: 'unit-flash', mcpEchoServer: echoServer, realHomeDir })
+const options = (realHomeDir?: string) => ({ homeDir, shimsDirectory, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', flashModelID: 'unit-flash', mcpEchoServer: echoServer, realHomeDir })
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
   mkdirSync(scratch, { recursive: true })
-  homeDir = mkdtempSync(join(scratch, 'pi-environment-test-'))
+  runDirectory = mkdtempSync(join(scratch, 'pi-environment-test-'))
+  homeDir = join(runDirectory, 'home')
+  shimsDirectory = join(runDirectory, 'shims')
+  mkdirSync(homeDir)
+  mkdirSync(shimsDirectory)
+  previousPath = process.env.PATH
+  // An empty search path holds no `pi`, so no launch wrapper is written unless a test puts one there.
+  process.env.PATH = join(runDirectory, 'no-binaries')
 })
 
-afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
+afterEach(() => {
+  if (previousPath === undefined)
+    delete process.env.PATH
+  else
+    process.env.PATH = previousPath
+  rmSync(runDirectory, { recursive: true, force: true })
+})
+
+/** Put a `pi` on the search path that records its arguments, one to a line, and return the file of the record. */
+function installRecordingPi(): string {
+  const binaries = join(runDirectory, 'binaries')
+  mkdirSync(binaries)
+  const record = join(runDirectory, 'started')
+  writeFileSync(join(binaries, 'pi'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(record)}\n`, { mode: 0o755 })
+  process.env.PATH = binaries
+  return record
+}
+
+/** Run the launch wrapper with `args`, and return the arguments that the installed `pi` received. */
+function launch(args: string[], record: string): string[] {
+  execFileSync(join(shimsDirectory, 'pi'), args)
+  return readFileSync(record, 'utf8').split('\n').slice(0, -1)
+}
 
 describe('createPiEnvironment', () => {
   it('writes a provider of the two models, the second of which takes an effort', () => {
@@ -50,5 +84,35 @@ describe('createPiEnvironment', () => {
       mcpServers: { echo_probe: { command: echoServer.command, args: ['/srv/echo.mjs'], exposure: 'direct' } },
     })
     expect(env).toMatchObject({ PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_CODING_AGENT_SESSION_DIR: '' })
+  })
+
+  it('writes no launch wrapper when the search path holds no pi', () => {
+    createPiEnvironment(options())
+    expect(existsSync(join(shimsDirectory, 'pi'))).toBe(false)
+  })
+
+  // Pi reads AGENTS.md and its relatives from each directory above its working directory, up to the root of the file
+  // system, and only the flag turns that off.
+  it.runIf(process.platform !== 'win32')('writes a launch wrapper that starts each session of the installed pi without context files', () => {
+    const record = installRecordingPi()
+    createPiEnvironment(options())
+    expect(launch(['--mode', 'rpc', '--session', 'unit-session'], record)).toEqual(['--no-context-files', '--mode', 'rpc', '--session', 'unit-session'])
+    expect(launch([], record)).toEqual(['--no-context-files'])
+  })
+
+  // A subcommand refuses an option that it does not know, so the wrapper adds none to it.
+  it.runIf(process.platform !== 'win32')('passes a subcommand to the installed pi unchanged', () => {
+    const record = installRecordingPi()
+    createPiEnvironment(options())
+    expect(launch(['install', 'npm:unit-package'], record)).toEqual(['install', 'npm:unit-package'])
+    expect(launch(['config', '--json'], record)).toEqual(['config', '--json'])
+  })
+
+  // The wrapper directory is first on the PATH of each agent. A wrapper that found itself would start itself again,
+  // forever.
+  it.runIf(process.platform !== 'win32')('refuses to wrap a pi in the wrapper directory itself', () => {
+    writeFileSync(join(shimsDirectory, 'pi'), '#!/bin/sh\n', { mode: 0o755 })
+    process.env.PATH = shimsDirectory
+    expect(() => createPiEnvironment(options())).toThrow(`The pi on PATH (${join(shimsDirectory, 'pi')}) is the private wrapper itself`)
   })
 })

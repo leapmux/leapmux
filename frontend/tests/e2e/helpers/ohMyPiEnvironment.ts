@@ -188,6 +188,24 @@ const OH_MY_PI_BUNDLED_PROVIDERS = [
 ]
 
 /**
+ * The discovery providers of omp that the run turns off.
+ *
+ * omp reads `disabledProviders` for its discovery providers too, which find context files,
+ * rules and skills: one setting holds both kinds of id. A discovery provider that the list holds
+ * reads nothing, in the working directory either.
+ *
+ * - `cline`: it takes the nearest `.clinerules` from the working directory up to the root of the
+ *   file system, and a git repository does not stop it (omp 18.6.0, `discovery/cline.ts`). The run
+ *   root holds a sentinel `.clinerules` (./ancestorInstructions.ts), and no spec gives omp one.
+ *
+ * Each other discovery that reads above the working directory stops at the root of the git
+ * repository around it, which `gitRepositoryWorkingDir` makes the working directory itself
+ * (../oh-my-pi/scenarios.ts). The `native` discovery must stay on: it loads the project extensions
+ * of a spec.
+ */
+const OH_MY_PI_DISABLED_DISCOVERY_PROVIDERS = ['cline']
+
+/**
  * omp's settings for a run that reaches the mock endpoint alone, and runs only the
  * turns a test scripts.
  */
@@ -197,7 +215,7 @@ function ohMyPiConfig(options: OhMyPiEnvironmentOptions): Record<string, unknown
     // A subagent runs the task role. Pinning its thinking level stops the per-prompt
     // classifier, which asks the judge role one question before each child turn.
     modelRoles: { default: model, task: `${model}:off` },
-    disabledProviders: OH_MY_PI_BUNDLED_PROVIDERS,
+    disabledProviders: [...OH_MY_PI_BUNDLED_PROVIDERS, ...OH_MY_PI_DISABLED_DISCOVERY_PROVIDERS],
     startup: { checkUpdate: false, setupWizard: false },
     marketplace: { autoUpdate: 'off' },
     dev: { autoqa: false },
