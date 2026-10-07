@@ -1,4 +1,5 @@
 import type { MockModelToolCall } from './mockModelScript'
+import type { TodoStatus } from './providerToolCalls'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -9,11 +10,14 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   AMP_SHELL_WAIT_LIMIT_MS,
+  ampShellCommandStatusToolCall,
   askUserQuestionToolCall,
   backgroundBashToolCall,
   bashToolCall,
   blockGoalToolCall,
   claudeSubagentHandbackToolCall,
+  claudeTaskCreateToolCall,
+  claudeTaskUpdateToolCall,
   claudeWorkflowToolCall,
   clineRunTeammateTaskToolCall,
   clineSpawnTeammateToolCall,
@@ -31,15 +35,21 @@ import {
   codexEscalatedCommandToolCall,
   codexExecToolCall,
   codexWaitAgentToolCall,
+  commandCodeTaskCreateToolCall,
+  commandCodeTaskUpdateToolCall,
   completeGoalToolCall,
   copilotApplyPatchToolCall,
   createGoalToolCall,
   cursorCreatePlanToolCall,
   cursorGenerateImageToolCall,
+  cursorMergeTodosToolCall,
   cursorWebFetchPermissionToolCall,
+  DEEPSEEK_HARNESS_GOAL_ID_CAPTURE,
   deepseekHarnessEscalatedBashToolCall,
+  deepseekHarnessGetGoalToolCall,
   deepseekHarnessReadImageToolCall,
   deepseekHarnessRunCodeToolCall,
+  deepseekHarnessUpdateGoalToolCall,
   diracCondenseToolCall,
   diracEditAnchorCapture,
   diracRespondToolCall,
@@ -74,6 +84,7 @@ import {
   mimoInteractiveBashToolCall,
   mimoTaskToolCall,
   mimoWorkflowToolCall,
+  ohMyPiTodoToolCall,
   ohMyPiYieldToolCall,
   piCodemodeToolCall,
   piEditorProbeToolCall,
@@ -86,6 +97,7 @@ import {
   reasonixInspectCapabilityToolCall,
   reasonixListCapabilitiesToolCall,
   reasonixViewImageToolCall,
+  spawnSubagentBatchToolCall,
   spawnSubagentToolCall,
   updateTodosToolCall,
   WORKFLOW_TOOL_NAMES,
@@ -948,6 +960,9 @@ describe('Cline teammate tool calls', () => {
 const PROVIDERS = (Object.values(AgentProvider) as unknown[])
   .filter((value): value is AgentProvider => typeof value === 'number' && value !== AgentProvider.UNSPECIFIED)
 
+/** Each status that the to-do sidebar draws. */
+const ALL_TODO_STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled', 'deleted', 'abandoned', 'blocked']
+
 /**
  * Each operation, paired with a call that exercises it. The pair is what lets
  * one table drive both directions of the `hasToolFor` contract below.
@@ -962,6 +977,7 @@ const OPERATIONS = [
   { operation: 'exitPlanModeFromFile', call: (p: AgentProvider) => exitPlanModeFromFileToolCall(p, 'call-1', [{ label: 'A', description: 'The first' }, { label: 'B', description: 'The second' }]) },
   { operation: 'askUserQuestion', call: (p: AgentProvider) => askUserQuestionToolCall(p, 'call-1', [{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }, { label: 'B', description: 'The second' }] }]) },
   { operation: 'spawnSubagent', call: (p: AgentProvider) => spawnSubagentToolCall(p, 'call-1', { description: 'Probe the subagent path', prompt: 'Reply with PONG.' }) },
+  { operation: 'spawnSubagentBatch', call: (p: AgentProvider) => spawnSubagentBatchToolCall(p, 'call-1', [{ description: 'First child', prompt: 'Reply with ONE.' }, { description: 'Second child', prompt: 'Reply with TWO.' }]) },
   { operation: 'backgroundBash', call: (p: AgentProvider) => backgroundBashToolCall(p, 'call-1', 'sleep 60') },
   { operation: 'updateTodos', call: (p: AgentProvider) => updateTodosToolCall(p, 'call-1', [{ step: 'First', status: 'pending' }]) },
   { operation: 'createGoal', call: (p: AgentProvider) => createGoalToolCall(p, 'call-1', 'Ship the feature.') },
@@ -1420,17 +1436,77 @@ describe('updateTodosToolCall', () => {
       { step: 'First', status: 'completed' },
       { step: 'Second', status: 'in_progress' },
       { step: 'Third', status: 'pending' },
+      { step: 'Fourth', status: 'cancelled' },
     ])).toEqual({
       id: 'call-1',
       name: 'updateTodos',
       arguments: {
         todos: [
-          { content: 'First', status: 'TODO_STATUS_COMPLETED' },
-          { content: 'Second', status: 'TODO_STATUS_IN_PROGRESS' },
-          { content: 'Third', status: 'TODO_STATUS_PENDING' },
+          { id: '1', content: 'First', status: 'TODO_STATUS_COMPLETED' },
+          { id: '2', content: 'Second', status: 'TODO_STATUS_IN_PROGRESS' },
+          { id: '3', content: 'Third', status: 'TODO_STATUS_PENDING' },
+          { id: '4', content: 'Fourth', status: 'TODO_STATUS_CANCELLED' },
         ],
+        merge: false,
       },
     })
+  })
+
+  // The ZCode 3.14.4 TodoWrite parses each call with a schema that REQUIRES a priority and states no activeForm.
+  it('states the priority that ZCode requires, and no activeForm', () => {
+    expect(updateTodosToolCall(AgentProvider.ZCODE, 'call-1', [{ step: 'One', status: 'in_progress' }]).arguments)
+      .toEqual({ todos: [{ content: 'One', status: 'in_progress', priority: 'medium' }] })
+  })
+
+  it('writes Gemini\'s checklist through the shared vocabulary, with all of its statuses', () => {
+    const todos = [{ description: 'A', status: 'cancelled' as const }, { description: 'B', status: 'blocked' as const }]
+    expect(geminiTodoSnapshotToolCall('call-1', todos)).toEqual(updateTodosToolCall(AgentProvider.GEMINI_CLI, 'call-1', [{ step: 'A', status: 'cancelled' }, { step: 'B', status: 'blocked' }]))
+    expect(geminiTodoSnapshotToolCall('call-1', todos).arguments).toEqual({ todos: [{ description: 'A', status: 'cancelled' }, { description: 'B', status: 'blocked' }] })
+  })
+})
+
+/**
+ * The statuses that each bulk to-do builder accepts, from each native tool schema. Kiro's create command and Oh My Pi's
+ * init command take no status at all, so their builders read none and refuse none.
+ */
+const TODO_STATUSES_BY_PROVIDER: ReadonlyMap<AgentProvider, readonly TodoStatus[]> = new Map([
+  [AgentProvider.CURSOR, ['pending', 'in_progress', 'completed', 'cancelled']],
+  [AgentProvider.OPENCODE, ['pending', 'in_progress', 'completed', 'cancelled']],
+  [AgentProvider.KILO, ['pending', 'in_progress', 'completed', 'cancelled']],
+  [AgentProvider.QODER, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
+  [AgentProvider.GEMINI_CLI, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
+  [AgentProvider.KIRO, ALL_TODO_STATUSES],
+  [AgentProvider.OH_MY_PI, ALL_TODO_STATUSES],
+])
+
+describe('updateTodosToolCall statuses', () => {
+  for (const provider of PROVIDERS.filter(p => hasToolFor(p, 'updateTodos'))) {
+    const accepted = TODO_STATUSES_BY_PROVIDER.get(provider) ?? ['pending', 'in_progress', 'completed']
+    it(`builds each status that the native tool of provider ${provider} accepts, and refuses every other one`, () => {
+      for (const status of ALL_TODO_STATUSES) {
+        const build = () => updateTodosToolCall(provider, 'call-1', [{ step: 'One', status }])
+        if (accepted.includes(status))
+          expect(build, status).not.toThrow()
+        else
+          expect(build, status).toThrow(`accepts no status ${status}`)
+      }
+    })
+  }
+})
+
+describe('cursorMergeTodosToolCall', () => {
+  it('merges the items by their IDs into the list, with Cursor\'s own status words', () => {
+    expect(cursorMergeTodosToolCall('merge-1', [{ id: '2', content: 'Second', status: 'completed' }, { id: '9', content: 'New', status: 'cancelled' }])).toEqual({
+      id: 'merge-1',
+      name: 'updateTodos',
+      arguments: { todos: [{ id: '2', content: 'Second', status: 'TODO_STATUS_COMPLETED' }, { id: '9', content: 'New', status: 'TODO_STATUS_CANCELLED' }], merge: true },
+    })
+  })
+
+  it('refuses an empty merge, an item with no ID, and a status that Cursor lacks', () => {
+    expect(() => cursorMergeTodosToolCall('merge-1', [])).toThrow('at least one item')
+    expect(() => cursorMergeTodosToolCall('merge-1', [{ id: '', content: 'x', status: 'pending' }])).toThrow('nonempty ID')
+    expect(() => cursorMergeTodosToolCall('merge-1', [{ id: '1', content: 'x', status: 'blocked' }])).toThrow('accepts no status blocked')
   })
 })
 
@@ -1562,20 +1638,97 @@ describe('qoder cli vocabulary', () => {
 // These providers state a spawn's foreground or background choice on the native
 // wire. An omitted flag lets a CLI release choose which path the test drives.
 describe('spawnSubagentToolCall background flag', () => {
+  const request = { description: 'Probe the subagent path', prompt: 'Reply with PONG.' }
+
   it.each([
-    [AgentProvider.CODEWHALE, 'detached'],
-    [AgentProvider.GROK_BUILD, 'background'],
-    [AgentProvider.QWEN_CODE, 'run_in_background'],
-  ])('states the flag both ways for provider %s', (provider, flag) => {
-    const request = { description: 'Probe the subagent path', prompt: 'Reply with PONG.' }
-    expect(spawnSubagentToolCall(provider, 'call-1', request).arguments).toMatchObject({ [flag]: false })
+    [AgentProvider.CODEWHALE, 'detached', false],
+    [AgentProvider.GROK_BUILD, 'background', false],
+    [AgentProvider.QWEN_CODE, 'run_in_background', false],
+    [AgentProvider.KIMI_CODE, 'run_in_background', false],
+    [AgentProvider.CODEBUDDY, 'run_in_background', false],
+    [AgentProvider.ZCODE, 'run_in_background', false],
+    [AgentProvider.COMMAND_CODE, 'run_in_background', false],
+    // The existing specs of these providers rely on the native default: a child in the background.
+    [AgentProvider.CLAUDE_CODE, 'run_in_background', true],
+    [AgentProvider.PI, 'run_in_background', true],
+    [AgentProvider.DEEPSEEK_HARNESS, 'run_in_background', true],
+  ])('states the flag %s both ways for provider %s, with %s when the request omits it', (provider, flag, fallback) => {
+    expect(spawnSubagentToolCall(provider, 'call-1', request).arguments).toMatchObject({ [flag]: fallback })
     expect(spawnSubagentToolCall(provider, 'call-1', { ...request, background: true }).arguments).toMatchObject({ [flag]: true })
+    expect(spawnSubagentToolCall(provider, 'call-1', { ...request, background: false }).arguments).toMatchObject({ [flag]: false })
+  })
+
+  it('runs a MiMo Code child through spawn for the background and through run otherwise', () => {
+    const action = (background?: boolean) => (spawnSubagentToolCall(AgentProvider.MIMO_CODE, 'call-1', { ...request, ...(background === undefined ? {} : { background }) }).arguments?.operation as { action: string }).action
+    expect([action(), action(false), action(true)]).toEqual(['run', 'run', 'spawn'])
+  })
+
+  it('refuses a foreground Letta Code child, because Letta runs each child in the background', () => {
+    expect(() => spawnSubagentToolCall(AgentProvider.LETTA, 'call-1', { ...request, background: false })).toThrow('always runs a child in the background')
+    for (const background of [undefined, true]) {
+      const call = spawnSubagentToolCall(AgentProvider.LETTA, 'call-1', { ...request, ...(background === undefined ? {} : { background }) })
+      expect(call.arguments).toEqual({ description: request.description, prompt: request.prompt, subagent_type: 'general-purpose' })
+    }
+  })
+
+  it.each([
+    [AgentProvider.OH_MY_PI, 'async.enabled setting of its profile decides'],
+    [AgentProvider.CURSOR, 'carries no background choice'],
+  ])('refuses either background choice for provider %s, whose spawn call carries none', (provider, reason) => {
+    for (const background of [true, false])
+      expect(() => spawnSubagentToolCall(provider, 'call-1', { ...request, background })).toThrow(reason)
+    expect(() => spawnSubagentToolCall(provider, 'call-1', request)).not.toThrow()
   })
 
   it('leaves the flag to a provider that takes none', () => {
-    const call = spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'call-1', { description: 'd', prompt: 'p', background: true })
+    const call = spawnSubagentToolCall(AgentProvider.KIRO, 'call-1', { description: 'd', prompt: 'p', background: true })
     expect(call.arguments).not.toHaveProperty('background')
     expect(call.arguments).not.toHaveProperty('run_in_background')
+  })
+})
+
+describe('spawnSubagentBatchToolCall', () => {
+  const first = { description: 'Count the files', prompt: 'Count.' }
+  const second = { description: 'List the files', prompt: 'List.' }
+
+  it('starts several children in one call only where the native spawn tool takes a list', () => {
+    expect(PROVIDERS.filter(provider => hasToolFor(provider, 'spawnSubagentBatch'))).toEqual(expect.arrayContaining([AgentProvider.OH_MY_PI, AgentProvider.DIRAC]))
+    expect(PROVIDERS.filter(provider => hasToolFor(provider, 'spawnSubagentBatch'))).toHaveLength(2)
+  })
+
+  it('puts each Oh My Pi child in one task call, with the descriptions as the context of the batch', () => {
+    expect(spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [first, second])).toEqual({
+      id: 'call-1',
+      name: 'task',
+      arguments: {
+        context: 'Count the files\nList the files',
+        tasks: [{ name: 'count_the_files', agent: 'task', task: 'Count.' }, { name: 'list_the_files', agent: 'task', task: 'List.' }],
+      },
+    })
+  })
+
+  it('spawns one Oh My Pi child as a batch of one', () => {
+    expect(spawnSubagentToolCall(AgentProvider.OH_MY_PI, 'call-1', first)).toEqual(spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [first]))
+  })
+
+  it('refuses an empty Oh My Pi batch, two tasks whose names reduce to one identifier, and a background choice', () => {
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [])).toThrow('at least one task')
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [first, { ...second, description: 'COUNT the files!' }])).toThrow('must differ')
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [first, { ...second, background: true }])).toThrow('carries no background choice')
+  })
+
+  it('puts each Dirac child in one use_subagents call', () => {
+    expect(spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [first, second])).toEqual({
+      id: 'call-1',
+      name: 'use_subagents',
+      arguments: { subagents: [{ task_title: 'Count the files', prompt: 'Count.' }, { task_title: 'List the files', prompt: 'List.' }] },
+    })
+    expect(spawnSubagentToolCall(AgentProvider.DIRAC, 'call-1', first)).toEqual(spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [first]))
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [])).toThrow('at least one subagent')
+  })
+
+  it('refuses a provider whose spawn tool starts one child for each call', () => {
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.CLAUDE_CODE, 'call-1', [first, second])).toThrow('has no subagent batch spawn builder')
   })
 })
 
@@ -1806,11 +1959,28 @@ describe('the Oh My Pi tool vocabulary', () => {
     // The omp specs find the registry row by this id (see HELD_CHILD_NAME in
     // ./subagentRegistry.ts). omp takes no background flag in the call: its
     // `async.enabled` setting decides, and the E2E profile turns it off.
-    expect(spawnSubagentToolCall(omp, 'call-1', { description: 'Run the fruit task', prompt: 'List three fruits.', background: true })).toEqual({
+    expect(spawnSubagentToolCall(omp, 'call-1', { description: 'Run the fruit task', prompt: 'List three fruits.' })).toEqual({
       id: 'call-1',
       name: 'task',
       arguments: { context: 'Run the fruit task', tasks: [{ name: 'run_the_fruit_task', agent: 'task', task: 'List three fruits.' }] },
     })
+  })
+
+  it('backgrounds a command through the async flag of bash', () => {
+    expect(backgroundBashToolCall(omp, 'call-1', 'sleep 60')).toEqual({ id: 'call-1', name: 'bash', arguments: { command: 'sleep 60', async: true } })
+    expect(bashToolCall(omp, 'call-1', 'sleep 60').arguments).not.toHaveProperty('async')
+  })
+
+  it('changes the status of one task by its verbatim text', () => {
+    for (const op of ['start', 'done', 'drop'] as const)
+      expect(ohMyPiTodoToolCall('call-1', { op, task: 'Write the parser' })).toEqual({ id: 'call-1', name: 'todo', arguments: { op, task: 'Write the parser' } })
+    expect(ohMyPiTodoToolCall('call-2', { op: 'block', task: 'Write the parser', reason: 'The grammar is missing.' }))
+      .toEqual({ id: 'call-2', name: 'todo', arguments: { op: 'block', task: 'Write the parser', reason: 'The grammar is missing.' } })
+  })
+
+  it('refuses a todo operation with no task text, and a block with no reason', () => {
+    expect(() => ohMyPiTodoToolCall('call-1', { op: 'start', task: '  ' })).toThrow('verbatim text')
+    expect(() => ohMyPiTodoToolCall('call-1', { op: 'block', task: 'Write the parser', reason: ' ' })).toThrow('nonempty reason')
   })
 
   it('opens a to-do list with init, in one phase, and leaves each status to omp', () => {
@@ -1821,8 +1991,8 @@ describe('the Oh My Pi tool vocabulary', () => {
     })
   })
 
-  it('offers no plan-mode, goal or background shell tool, which omp\'s RPC mode does not reach', () => {
-    for (const operation of ['enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'backgroundBash', 'createGoal', 'completeGoal', 'blockGoal'] as const)
+  it('offers no plan-mode or goal tool, which omp\'s RPC mode does not reach', () => {
+    for (const operation of ['enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'createGoal', 'completeGoal', 'blockGoal'] as const)
       expect(hasToolFor(omp, operation), operation).toBe(false)
   })
 })
@@ -2301,5 +2471,124 @@ describe('new native executor and child completion calls', () => {
     const response = '  Native response.\n실제 내용 🧪  '
     expect(geminiCompleteTaskToolCall('native-complete', response)).toEqual({ id: 'native-complete', name: 'complete_task', arguments: { result: { response } } })
     expect(geminiCompleteTaskToolCall('native-empty', '').arguments).toEqual({ result: { response: '' } })
+  })
+})
+
+describe('ampShellCommandStatusToolCall', () => {
+  it('reads a backgrounded command by its PID, with an optional wait', () => {
+    expect(ampShellCommandStatusToolCall('status-1', 4242)).toEqual({ id: 'status-1', name: 'shell_command_status', arguments: { pid: 4242 } })
+    expect(ampShellCommandStatusToolCall('status-2', 4242, 0).arguments).toEqual({ pid: 4242, timeout_ms: 0 })
+    expect(ampShellCommandStatusToolCall('status-3', 4242, AMP_SHELL_WAIT_LIMIT_MS).arguments).toEqual({ pid: 4242, timeout_ms: 60_000 })
+  })
+
+  it.each([0, -1, 1.5, Number.NaN])('refuses the PID %s', (pid) => {
+    expect(() => ampShellCommandStatusToolCall('status-1', pid)).toThrow('positive PID')
+  })
+
+  it.each([-1, 60_001, 2.5])('refuses the wait %s, which Amp states no wait for', (timeoutMs) => {
+    expect(() => ampShellCommandStatusToolCall('status-1', 4242, timeoutMs)).toThrow('from 0 to 60000')
+  })
+})
+
+describe('goal tool calls', () => {
+  it('ends a Codex goal through update_goal inside exec, and states no reason', () => {
+    const complete = completeGoalToolCall(AgentProvider.CODEX, 'goal-1')
+    expect(complete).toMatchObject({ id: 'goal-1', name: 'exec' })
+    expect(complete.input).toBe('const result = await tools.update_goal({"status":"complete"})\ntext(JSON.stringify(result))')
+    const blocked = blockGoalToolCall(AgentProvider.CODEX, 'goal-2', 'The reason stays out.')
+    expect(blocked.input).toBe('const result = await tools.update_goal({"status":"blocked"})\ntext(JSON.stringify(result))')
+  })
+
+  it('completes a Copilot goal through task_complete, and offers no blocked goal', () => {
+    expect(completeGoalToolCall(AgentProvider.GITHUB_COPILOT, 'goal-1')).toEqual({ id: 'goal-1', name: 'task_complete', arguments: { summary: 'The scripted goal is complete.' } })
+    expect(hasToolFor(AgentProvider.GITHUB_COPILOT, 'blockGoal')).toBe(false)
+  })
+
+  it.each([
+    [AgentProvider.PI, 'Pi update_goal'],
+    [AgentProvider.REASONIX, 'Reasonix update_goal'],
+  ])('ends a goal of provider %s through update_goal, with the reason of a blocked goal', (provider, tool) => {
+    expect(completeGoalToolCall(provider, 'goal-1')).toEqual({ id: 'goal-1', name: 'update_goal', arguments: { status: 'complete' } })
+    expect(blockGoalToolCall(provider, 'goal-2', 'The repository is read-only.')).toEqual({ id: 'goal-2', name: 'update_goal', arguments: { status: 'blocked', reason: 'The repository is read-only.' } })
+    expect(() => blockGoalToolCall(provider, 'goal-3', '  ')).toThrow(`${tool} call requires a nonempty reason`)
+  })
+
+  it('starts a Pi goal through create_goal', () => {
+    expect(createGoalToolCall(AgentProvider.PI, 'goal-1', 'Ship the feature.')).toEqual({ id: 'goal-1', name: 'create_goal', arguments: { objective: 'Ship the feature.' } })
+  })
+
+  // A separate verification request ends the goal of each of these providers, and no model tool does.
+  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('offers no goal-ending tool for provider %s', (provider) => {
+    expect(hasToolFor(provider, 'completeGoal')).toBe(false)
+    expect(hasToolFor(provider, 'blockGoal')).toBe(false)
+  })
+
+  it('ends a DeepSeek Harness goal through update_goal with its goal ID and revision', () => {
+    expect(deepseekHarnessGetGoalToolCall('get-1')).toEqual({ id: 'get-1', name: 'get_goal', arguments: {} })
+    expect(deepseekHarnessUpdateGoalToolCall('update-1', { goalId: '{{goalId}}', revision: 1 }, { action: 'complete' }))
+      .toEqual({ id: 'update-1', name: 'update_goal', arguments: { goal_id: '{{goalId}}', revision: 1, action: 'complete' } })
+    expect(deepseekHarnessUpdateGoalToolCall('update-2', { goalId: 'goal-7', revision: 3 }, { action: 'blocked', reason: 'The build server is down.' }))
+      .toEqual({ id: 'update-2', name: 'update_goal', arguments: { goal_id: 'goal-7', revision: 3, action: 'blocked', blocked_reason: 'The build server is down.' } })
+  })
+
+  it('refuses a DeepSeek Harness update with no goal ID, a revision below 1, or a blocked goal with no reason', () => {
+    for (const goal of [{ goalId: '', revision: 1 }, { goalId: ' goal ', revision: 1 }, { goalId: 'goal', revision: 0 }, { goalId: 'goal', revision: 1.5 }])
+      expect(() => deepseekHarnessUpdateGoalToolCall('u', goal, { action: 'complete' }), JSON.stringify(goal)).toThrow('goal ID and a positive integer revision')
+    expect(() => deepseekHarnessUpdateGoalToolCall('u', { goalId: 'goal', revision: 1 }, { action: 'blocked', reason: '' })).toThrow('nonempty reason')
+  })
+
+  it('captures the goal ID from the compact result text of get_goal', () => {
+    const result = JSON.stringify({ goal: { id: 'goal-01J8', revision: 2, objective: 'Ship it.', phase: 'active', roundsStarted: 1 }, activation: 'armed' })
+    expect([...result.matchAll(new RegExp(DEEPSEEK_HARNESS_GOAL_ID_CAPTURE, 'g'))].map(match => match[1])).toEqual(['goal-01J8'])
+    expect(new RegExp(DEEPSEEK_HARNESS_GOAL_ID_CAPTURE).test(JSON.stringify({ goal: null }))).toBe(false)
+  })
+})
+
+describe('askUserQuestionToolCall free text', () => {
+  const question = { question: 'Which color?', header: 'Color', options: [{ label: 'Red', description: 'Use red.' }, { label: 'Blue', description: 'Use blue.' }] }
+
+  it('states that a Codewhale question invites a typed answer', () => {
+    const questions = askUserQuestionToolCall(AgentProvider.CODEWHALE, 'call-1', [{ ...question, freeText: true }, question]).arguments?.questions as Record<string, unknown>[]
+    expect(questions.map(entry => entry.allow_free_text)).toEqual([true, false])
+  })
+
+  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.QODER, AgentProvider.DEEPSEEK_HARNESS, AgentProvider.QWEN_CODE])('keeps the free-text field out of the native question of provider %s, whose schema has none', (provider) => {
+    const questions = askUserQuestionToolCall(provider, 'call-1', [{ ...question, freeText: true }]).arguments?.questions as Record<string, unknown>[]
+    expect(questions[0]).not.toHaveProperty('freeText')
+    expect(questions[0]).toMatchObject({ question: 'Which color?', header: 'Color' })
+  })
+
+  it('states the real header and option descriptions of a Letta question, and no preview', () => {
+    expect(askUserQuestionToolCall(AgentProvider.LETTA, 'call-1', [{ ...question, options: [{ label: 'Red', description: 'Use red.', preview: '```\nred\n```' }, { label: 'Blue', description: 'Use blue.' }] }])).toEqual({
+      id: 'call-1',
+      name: 'AskUserQuestion',
+      arguments: { questions: [{ question: 'Which color?', header: 'Color', options: [{ label: 'Red', description: 'Use red.' }, { label: 'Blue', description: 'Use blue.' }], multiSelect: false }] },
+    })
+  })
+})
+
+describe('the Task family tool calls', () => {
+  it('creates and changes a Claude Code task with the native schema', () => {
+    expect(claudeTaskCreateToolCall('create', 'Inspect', 'Inspect the repository.')).toEqual({ id: 'create', name: 'TaskCreate', arguments: { subject: 'Inspect', description: 'Inspect the repository.' } })
+    expect(claudeTaskCreateToolCall('create', 'Inspect', 'Inspect the repository.', 'Inspecting').arguments).toEqual({ subject: 'Inspect', description: 'Inspect the repository.', activeForm: 'Inspecting' })
+    expect(claudeTaskUpdateToolCall('update', '1', 'deleted')).toEqual({ id: 'update', name: 'TaskUpdate', arguments: { taskId: '1', status: 'deleted' } })
+  })
+
+  it.each([
+    ['Claude Code', claudeTaskCreateToolCall, claudeTaskUpdateToolCall],
+    ['CodeBuddy Code', codebuddyTaskCreateToolCall, codebuddyTaskUpdateToolCall],
+    ['Letta Code', lettaTaskCreateToolCall, lettaTaskUpdateToolCall],
+    ['Command Code', commandCodeTaskCreateToolCall, commandCodeTaskUpdateToolCall],
+  ] as const)('refuses a %s task with no subject or description, and an update with no task ID', (_provider, create, update) => {
+    expect(() => create('create', ' ', 'Inspect the repository.')).toThrow('nonempty subject and description')
+    expect(() => create('create', 'Inspect', '')).toThrow('nonempty subject and description')
+    expect(() => update('update', '', 'completed')).toThrow('the ID of its task')
+  })
+})
+
+describe('the ZCode background command', () => {
+  it('backgrounds the command through the run_in_background flag of the same Bash tool', () => {
+    expect(backgroundBashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60')).toEqual({ id: 'call-1', name: 'Bash', arguments: { command: 'sleep 60', description: 'Run the scripted command in the background', run_in_background: true } })
+    expect(bashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60').arguments).not.toHaveProperty('run_in_background')
   })
 })

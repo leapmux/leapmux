@@ -97,9 +97,14 @@ export interface SubagentRequest {
   /** Execute an actual Cursor child locally with this native model selection. */
   nativeExecution?: { modelId: string }
   /**
-   * Set the native background flag explicitly when that provider accepts it.
-   * The explicit value prevents a changed native default from changing the test.
-   * Other provider builders ignore this field.
+   * Run the child in the background: the spawn call returns before the child ends, and a later notice reports it.
+   *
+   * A builder whose native spawn call carries a background choice states it on every call, so a changed native
+   * default cannot change the test. An absent value takes the default of that builder, which its comment states:
+   * the foreground for most of them, and the background where the existing specs of the provider rely on it.
+   * A builder refuses a value that its native spawn cannot honor: Letta Code always runs a child in the background,
+   * Oh My Pi lets its profile decide, and Cursor's task call carries no background choice. Other provider builders
+   * ignore this field.
    */
   background?: boolean
   /** Hold Cursor's native task completion in the mock service after its start event. */
@@ -108,11 +113,40 @@ export interface SubagentRequest {
   taskProgress?: string
 }
 
+/**
+ * A to-do status that the sidebar draws as a state of its own. Each native tool accepts its own subset, and each
+ * builder refuses a status that its tool does not accept, so a test cannot send a word that the native tool refuses.
+ */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'deleted' | 'abandoned' | 'blocked'
+
+/** The three statuses that every native to-do tool of this table accepts. */
+const BASE_TODO_STATUSES = ['pending', 'in_progress', 'completed'] as const satisfies readonly TodoStatus[]
+
 /** One step of a to-do list, in the shape every provider that keeps one shares. */
 export interface TodoStep {
   step: string
-  status: 'pending' | 'in_progress' | 'completed'
+  status: TodoStatus
 }
+
+/**
+ * The status, when `tool` accepts it. A tool that does not accept the status refuses the whole call, and the
+ * test then fails at the call rather than at a sidebar that the native tool never fed.
+ */
+function acceptedTodoStatus<const Accepted extends readonly TodoStatus[]>(tool: string, accepted: Accepted, status: TodoStatus): Accepted[number] {
+  if (!(accepted as readonly TodoStatus[]).includes(status))
+    throw new Error(`The native ${tool} to-do tool accepts no status ${status}; it accepts ${accepted.join(', ')}.`)
+  return status as Accepted[number]
+}
+
+/** The reason of a blocked goal or task, for a native tool that refuses a blocked status with no reason. */
+function requireReason(tool: string, reason: string): string {
+  if (reason.trim() === '')
+    throw new Error(`The native ${tool} call requires a nonempty reason for its blocked status.`)
+  return reason
+}
+
+/** The status of a task in the Task family of Claude Code, CodeBuddy Code, Letta Code and Command Code. */
+export type TaskFamilyStatus = 'pending' | 'in_progress' | 'completed' | 'deleted'
 
 /** Pi's todo extension changes one task per call and returns the whole list. */
 export type PiTodoRequest
@@ -143,6 +177,12 @@ export interface QuestionRequest {
   header: string
   options: QuestionOption[]
   multiSelect?: boolean
+  /**
+   * The question invites a typed answer beside its options. Only Codewhale's native question states this
+   * (`allow_free_text`), and the other builders ignore it: their native question takes a typed answer, or none, with
+   * no flag of its own.
+   */
+  freeText?: boolean
 }
 
 /** One approach a plan offers. The approval surface lists each one as a choice. */
@@ -177,6 +217,12 @@ interface ProviderToolVocabulary {
   askUserQuestion: ((id: string, questions: QuestionRequest[]) => MockModelToolCall) | null
   /** Spawn a subagent, which opens a registry row and a child transcript. */
   spawnSubagent: ((id: string, request: SubagentRequest) => MockModelToolCall) | null
+  /**
+   * Spawn several subagents in ONE native call, which runs them at the same time.
+   * A null value means the native spawn tool starts one child for each call; a test then sends one spawn call for each
+   * child in one model step.
+   */
+  spawnSubagentBatch: ((id: string, requests: readonly SubagentRequest[]) => MockModelToolCall) | null
   /**
    * Run a native background command and open its shell row.
    * The shell row has no child agent.
@@ -260,6 +306,35 @@ function cursorQuestionToolCall(id: string, questions: QuestionRequest[]): MockM
   }
 }
 
+/** One item of a Cursor to-do call: the ID that a merge addresses, its text, and its status. */
+export interface CursorTodoRequest {
+  id: string
+  content: string
+  status: TodoStatus
+}
+
+/** The statuses of Cursor's TodoStatus enum (cursor-agent 2026.09.28: `TODO_STATUS_PENDING` to `TODO_STATUS_CANCELLED`). */
+const CURSOR_TODO_STATUSES = Object.keys(CURSOR_TODO_STATUS_WORDS) as readonly (keyof typeof CURSOR_TODO_STATUS_WORDS)[]
+
+/** One item in Cursor's own field names and status words. */
+function cursorTodoItem({ id, content, status }: CursorTodoRequest): Record<string, unknown> {
+  if (!id)
+    throw new Error('A native Cursor to-do item requires a nonempty ID.')
+  return { id, content, status: CURSOR_TODO_STATUS_WORDS[acceptedTodoStatus('Cursor updateTodos', CURSOR_TODO_STATUSES, status)] }
+}
+
+/**
+ * Merge items into Cursor's to-do list: `merge: true` changes each item whose ID the list holds, adds each other item,
+ * and keeps every item that the call does not state. The surface writes the flag into UpdateTodosArgs, and the CLI
+ * states it again in its `cursor/update_todos` frame. `updateTodosToolCall` numbers its items from 1, so a merge after
+ * it addresses them as '1', '2', and so on.
+ */
+export function cursorMergeTodosToolCall(id: string, items: readonly CursorTodoRequest[]): MockModelToolCall {
+  if (items.length === 0)
+    throw new Error('A native Cursor to-do merge requires at least one item: Cursor sends no frame for an empty merge.')
+  return { id, name: CURSOR_UPDATE_TODOS_TOOL, arguments: { todos: items.map(cursorTodoItem), merge: true } }
+}
+
 /**
  * Convert a description to an identifier that the provider accepts.
  * These native fields require an identifier beside the prompt:
@@ -279,6 +354,75 @@ function identifierFrom(description: string): string {
   return identifier === '' ? 'scripted_subagent' : identifier
 }
 
+/**
+ * The Markdown checklist that Goose and Copilot read as a whole to-do list. Only an `x` marker reads as completed, and
+ * every other marker reads as pending, so the checklist states no other status.
+ */
+function markdownChecklist(tool: string, steps: readonly TodoStep[]): string {
+  return steps.map(step => `- [${acceptedTodoStatus(tool, BASE_TODO_STATUSES, step.status) === 'completed' ? 'x' : ' '}] ${step.step}`).join('\n')
+}
+
+/**
+ * The statuses of the `todowrite` schema of the OpenCode family. OpenCode 1.18.34 and Kilo 7.8.3 both describe the
+ * field as "Current status of the task: pending, in_progress, completed, cancelled".
+ */
+const OPENCODE_FAMILY_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled'] as const satisfies readonly TodoStatus[]
+
+/**
+ * The statuses that Qoder CLI's `WriteTodos` and Gemini CLI's `write_todos` accept. Qoder CLI 1.1.65 states the enum
+ * `pending, in_progress, completed, cancelled, blocked` in its schema, and the tool documentation of Gemini CLI 0.62.0
+ * states the same five.
+ */
+const CANCELLED_AND_BLOCKED_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled', 'blocked'] as const satisfies readonly TodoStatus[]
+
+/** The one phase that `updateTodosToolCall` gives a whole Oh My Pi list. */
+const OH_MY_PI_TODO_PHASE = 'Plan'
+
+/**
+ * Spawn Oh My Pi children through one `task` call (omp 18.6.0).
+ *
+ * - Each task runs through the bundled task agent, and its name becomes the subagent ID, so it requires an
+ *   identifier. omp refuses two names that differ only in case.
+ * - `context` is the one background text of the batch, which omp requires nonempty: the descriptions, one for each
+ *   line.
+ * - The schema also lists `solutionSpace` for each task. The tool validates leniently and its runtime treats the field
+ *   as optional, so the builder keeps each child's prompt to its scripted task.
+ * - The call carries no background choice. omp runs each child of the call as a background job while its
+ *   `async.enabled` setting is on, and in the call while it is off, as in the E2E profile.
+ */
+function ohMyPiTaskToolCall(id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
+  if (requests.length === 0)
+    throw new Error('The native Oh My Pi task call requires at least one task.')
+  if (requests.some(request => request.background !== undefined))
+    throw new Error('The native Oh My Pi task call carries no background choice; the async.enabled setting of its profile decides.')
+  const names = requests.map(request => identifierFrom(request.description))
+  if (new Set(names.map(name => name.toLowerCase())).size !== names.length)
+    throw new Error(`The native Oh My Pi task names must differ: ${names.join(', ')}.`)
+  return {
+    id,
+    name: 'task',
+    arguments: {
+      context: requests.map(request => request.description).join('\n'),
+      tasks: requests.map((request, index) => ({ name: names[index], agent: 'task', task: request.prompt })),
+    },
+  }
+}
+
+/**
+ * Spawn Dirac children through one `use_subagents` call (dirac-cli 0.5.17). The tool starts every child of the call at
+ * once and returns when all of them end. Its schema sets no item limit, and an empty list fails the call ("Missing
+ * required parameter: subagents"). Each title states the row, in 5 words or 80 characters at most.
+ */
+function diracSubagentsToolCall(id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
+  if (requests.length === 0)
+    throw new Error('The native Dirac use_subagents call requires at least one subagent.')
+  return {
+    id,
+    name: 'use_subagents',
+    arguments: { subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })) },
+  }
+}
+
 /** OpenCode and Kilo share the `todowrite` schema of their protocol family. */
 function openCodeFamilyTodoCall(id: string, steps: TodoStep[]): MockModelToolCall {
   return {
@@ -287,7 +431,7 @@ function openCodeFamilyTodoCall(id: string, steps: TodoStep[]): MockModelToolCal
     arguments: {
       todos: steps.map(({ step, status }) => ({
         content: step,
-        status,
+        status: acceptedTodoStatus('OpenCode family todowrite', OPENCODE_FAMILY_TODO_STATUSES, status),
         priority: 'medium',
         activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
       })),
@@ -377,6 +521,20 @@ function addFilePatch({ path, content }: WriteRequest): string {
  */
 export const AMP_SHELL_WAIT_LIMIT_MS = 60_000
 
+/**
+ * Read a command that Amp's shell_command moved to the background, by the PID of its result. Amp waits up to
+ * `timeoutMs` for the command to end, streams its new output meanwhile, and answers with the same record as
+ * shell_command: `running`, `pid`, the output since the last read, and the `exitCode` once the command ended. Amp
+ * 0.0.1791074829 states a wait from 0 to 60000 milliseconds and a default of 10000.
+ */
+export function ampShellCommandStatusToolCall(id: string, pid: number, timeoutMs?: number): MockModelToolCall {
+  if (!Number.isSafeInteger(pid) || pid <= 0)
+    throw new RangeError('The native Amp shell_command_status call requires the positive PID of a command.')
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > AMP_SHELL_WAIT_LIMIT_MS))
+    throw new RangeError(`The native Amp shell_command_status wait must be an integer from 0 to ${AMP_SHELL_WAIT_LIMIT_MS} milliseconds.`)
+  return { id, name: AMP_SHELL_TOOL.ShellCommandStatus, arguments: { pid, ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }) } }
+}
+
 function codexCommandCall(id: string, request: { cmd: string, sandbox_permissions?: string, justification?: string }): MockModelToolCall {
   return codexExecToolCall(id, `const result = await tools.exec_command(${JSON.stringify(request)})\ntext(JSON.stringify(result))`)
 }
@@ -390,6 +548,15 @@ function codexApplyPatch(id: string, patch: string): MockModelToolCall {
   )
 }
 
+/**
+ * Mark the Codex goal through update_goal, which takes one status word and no other field (codex-rs `ext/goal`,
+ * 0.160.0). The E2E model `gpt-5.6-luna` runs in `code_mode_only`, which offers update_goal only inside exec, as it
+ * offers update_plan. The result reports through text, so a refused status shows in the output of the cell.
+ */
+function codexUpdateGoalToolCall(id: string, status: 'complete' | 'blocked'): MockModelToolCall {
+  return codexExecToolCall(id, `const result = await tools.update_goal(${JSON.stringify({ status })})\ntext(JSON.stringify(result))`)
+}
+
 const TOOL_VOCABULARY = {
   [AgentProvider.CLAUDE_CODE]: {
     bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
@@ -400,7 +567,11 @@ const TOOL_VOCABULARY = {
     exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
     exitPlanModeFromFile: null,
     askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    // Claude Code 2.1.289 in stream-JSON mode offers `run_in_background`, and a child runs in the background when the
+    // call omits it ("Agents run in the background by default"). The E2E children report through a completion
+    // notification ("Async agent launched successfully."), so the default here is that native default.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? true } }),
+    spawnSubagentBatch: null,
     // The native Bash tool uses run_in_background to detach the command.
     // The CLI description states: "You can use the `run_in_background` parameter to run the command in the background."
     backgroundBash: (id, command) => ({
@@ -408,24 +579,26 @@ const TOOL_VOCABULARY = {
       name: 'Bash',
       arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
     }),
-    // TodoWrite replaces the whole list on every call.
-    // Its status field uses the same values that the sidebar renders:
+    // TodoWrite replaces the whole list on every call, and it accepts pending, in_progress and completed.
     //
-    // - pending.
-    // - in_progress.
-    // - completed.
+    // Claude Code 2.1.289 offers no to-do tool for the E2E model (`sonnet` resolves to claude-sonnet-5-5, outside the
+    // list of models that get one). With `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` it offers the Task family
+    // (`claudeTaskCreateToolCall`), and with `CLAUDE_CODE_ENABLE_TASKS=false` also it offers TodoWrite instead. A
+    // native probe of the model request of each setting showed this.
     updateTodos: (id, steps) => ({
       id,
       name: 'TodoWrite',
       arguments: {
-        todos: steps.map(({ step, status }) => ({
-          content: step,
-          status,
-          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+        todos: steps.map(step => ({
+          content: step.step,
+          status: acceptedTodoStatus('Claude Code TodoWrite', BASE_TODO_STATUSES, step.status),
+          activeForm: step.status === 'in_progress' ? `Working on: ${step.step}` : step.step,
         })),
       },
     }),
     createGoal: null,
+    // No model tool ends a Claude Code goal. A separate evaluator request decides it after each turn: it asks whether
+    // the stopping condition holds and reads `{"ok": boolean, "reason": string, "impossible"?: boolean}` (2.1.289).
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
@@ -449,6 +622,8 @@ const TOOL_VOCABULARY = {
     // Script the second call to raise the question.
     // Each question requires an ID that the answer repeats.
     // The native multi_select field controls multiple choices.
+    // The native allow_free_text field states that the question invites a typed answer. Codewhale 0.10.0 offers the
+    // typed "Other" answer on every question all the same: the field is a hint to the model, and no gate.
     askUserQuestion: (id, questions) => ({
       id,
       name: 'request_user_input',
@@ -458,7 +633,7 @@ const TOOL_VOCABULARY = {
           header: question.header,
           question: question.question,
           options: question.options.map(({ label, description }) => ({ label, description })),
-          allow_free_text: false,
+          allow_free_text: question.freeText ?? false,
           multi_select: question.multiSelect ?? false,
         })),
       },
@@ -472,17 +647,19 @@ const TOOL_VOCABULARY = {
       name: 'agent',
       arguments: { action: 'start', name: identifierFrom(description), type: 'explore', prompt, detached: background ?? false },
     }),
+    spawnSubagentBatch: null,
     // The bash tool refuses a background argument.
     // Use the deferred task_shell_start tool for a background command.
     // The first call loads its schema.
     // Script the second call to start the command.
     backgroundBash: (id, command) => ({ id, name: 'task_shell_start', arguments: { command } }),
     // `todo_write` replaces the whole list, and its rows say `content` where the
-    // shared shape says `step`.
+    // shared shape says `step`. The schema of the 0.10.1 source also states `cancelled`; no probe of the installed
+    // 0.10.0 confirmed it, so the builder takes the three statuses alone.
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
-      arguments: { todos: steps.map(({ step, status }) => ({ content: step, status })) },
+      arguments: { todos: steps.map(step => ({ content: step.step, status: acceptedTodoStatus('Codewhale todo_write', BASE_TODO_STATUSES, step.status) })) },
     }),
     // A goal is a thread setting that LeapMux writes, so the model creates none.
     createGoal: null,
@@ -527,17 +704,20 @@ const TOOL_VOCABULARY = {
       namespace: CODEX_COLLABORATION_NAMESPACE,
       arguments: { task_name: identifierFrom(description), message: prompt },
     }),
+    spawnSubagentBatch: null,
     // Codex calls update_plan through exec to update the to-do list.
     // The native argument type lives in codex-rs/protocol/src/plan_tool.rs.
     // The session mode controls plan mode.
     backgroundBash: null,
     updateTodos: (id, steps) => codexExecToolCall(
       id,
-      `await tools.update_plan({ plan: ${JSON.stringify(steps)} })`,
+      `await tools.update_plan({ plan: ${JSON.stringify(steps.map(step => ({ step: step.step, status: acceptedTodoStatus('Codex update_plan', BASE_TODO_STATUSES, step.status) })))} })`,
     ),
+    // LeapMux sets a Codex goal through the side band (`thread/goal/set`), not through the model's create_goal.
     createGoal: null,
-    completeGoal: null,
-    blockGoal: null,
+    completeGoal: id => codexUpdateGoalToolCall(id, 'complete'),
+    // update_goal states no reason, so the builder drops the one that its caller holds.
+    blockGoal: id => codexUpdateGoalToolCall(id, 'blocked'),
     mcpTool: (id, { server, tool, input }) => ({
       id,
       name: tool,
@@ -591,6 +771,7 @@ const TOOL_VOCABULARY = {
       name: 'task',
       arguments: { agent_type: 'explore', name: identifierFrom(description), description, prompt },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     // Copilot update_todo accepts a Markdown checklist in todos.
     // A case-insensitive x marker means completed.
@@ -599,13 +780,14 @@ const TOOL_VOCABULARY = {
       id,
       name: 'update_todo',
       arguments: {
-        todos: steps
-          .map(({ step, status }) => `- [${status === 'completed' ? 'x' : ' '}] ${step}`)
-          .join('\n'),
+        todos: markdownChecklist('Copilot update_todo', steps),
       },
     }),
     createGoal: null,
-    completeGoal: null,
+    // The session goal is the autopilot objective, and the model ends its task through task_complete, whose one field
+    // is a summary (Copilot CLI 1.0.87). An independent reviewer then decides the outcome: completed, continue, or
+    // blocked. The model can state no blocked goal.
+    completeGoal: id => ({ id, name: COPILOT_TOOL.TaskComplete, arguments: { summary: 'The scripted goal is complete.' } }),
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}-${tool}`, arguments: input }),
     codeExecution: null,
@@ -624,22 +806,33 @@ const TOOL_VOCABULARY = {
     askUserQuestion: cursorQuestionToolCall,
     // The Run surface executes a native child when nativeExecution exists.
     // The remote Task report path remains available for service-only scenarios.
-    spawnSubagent: (id, { description, prompt, report, completionGate, taskProgress, nativeExecution }) => ({
-      id,
-      name: CURSOR_TASK_TOOL,
-      arguments: { description, prompt, report: report ?? '' },
-      ...(completionGate !== undefined ? { completionGate } : {}),
-      ...(taskProgress !== undefined ? { taskProgress } : {}),
-      ...(nativeExecution !== undefined ? { nativeExecution } : {}),
-    }),
+    // Cursor's TaskArgs carries no background choice (cursor-agent 2026.09.28): the service states it in the result,
+    // TaskSuccess.is_background, which the mock wire (./cursorWire.ts) does not write. The builder therefore refuses a
+    // background choice.
+    spawnSubagent: (id, { description, prompt, report, completionGate, taskProgress, nativeExecution, background }) => {
+      if (background !== undefined)
+        throw new Error('Cursor\'s task call carries no background choice; its service states it in TaskSuccess.is_background.')
+      return {
+        id,
+        name: CURSOR_TASK_TOOL,
+        arguments: { description, prompt, report: report ?? '' },
+        ...(completionGate !== undefined ? { completionGate } : {}),
+        ...(taskProgress !== undefined ? { taskProgress } : {}),
+        ...(nativeExecution !== undefined ? { nativeExecution } : {}),
+      }
+    },
+    spawnSubagentBatch: null,
     backgroundBash: null,
     // Cursor's `updateTodos` carries `todos` as a list. Its own status words
     // (`TODO_STATUS_IN_PROGRESS`) fold onto the neutral ones the sidebar draws.
+    // `merge: false` replaces the list, and each item states the ID that a later merge
+    // (`cursorMergeTodosToolCall`) addresses: its position, from 1.
     updateTodos: (id, steps) => ({
       id,
       name: CURSOR_UPDATE_TODOS_TOOL,
       arguments: {
-        todos: steps.map(({ step, status }) => ({ content: step, status: CURSOR_TODO_STATUS_WORDS[status] })),
+        todos: steps.map((step, index) => cursorTodoItem({ id: String(index + 1), content: step.step, status: step.status })),
+        merge: false,
       },
     }),
     createGoal: null,
@@ -664,6 +857,7 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     askUserQuestion: null,
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'delegate', arguments: { instructions: prompt, description } }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     // The Goose todo extension accepts a Markdown checklist, such as - [x] done.
     // Its extractor reads the completed and pending states from that checklist.
@@ -671,9 +865,7 @@ const TOOL_VOCABULARY = {
       id,
       name: 'todo__todo_write',
       arguments: {
-        content: steps
-          .map(({ step, status }) => `- [${status === 'completed' ? 'x' : ' '}] ${step}`)
-          .join('\n'),
+        content: markdownChecklist('Goose todo_write', steps),
       },
     }),
     createGoal: null,
@@ -719,7 +911,11 @@ const TOOL_VOCABULARY = {
     }),
     // `coder` is the default type, stated so a change of default cannot change
     // the child. `explore` would prefix the prompt with a git context.
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'coder' } }),
+    // Kimi Code 2.1.1 takes `run_in_background`, and a child runs in the foreground when the call omits it. A background
+    // child needs the TaskList, TaskOutput and TaskStop tools active; without them Kimi refuses the call with
+    // BACKGROUND_AGENT_UNAVAILABLE.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'coder', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
     // The schema requires `description` when `run_in_background` is true.
     backgroundBash: (id, command) => ({
       id,
@@ -730,7 +926,12 @@ const TOOL_VOCABULARY = {
     updateTodos: (id, steps) => ({
       id,
       name: 'TodoList',
-      arguments: { todos: steps.map(({ step, status }) => ({ title: step, status: status === 'completed' ? 'done' : status })) },
+      arguments: {
+        todos: steps.map((step) => {
+          const status = acceptedTodoStatus('Kimi Code TodoList', BASE_TODO_STATUSES, step.status)
+          return { title: step.step, status: status === 'completed' ? 'done' : status }
+        }),
+      },
     }),
     // Outside Never Ask, the server raises a goal-start approval for this call.
     createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
@@ -760,6 +961,7 @@ const TOOL_VOCABULARY = {
       name: 'task',
       arguments: { description, prompt, subagent_type: 'general' },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: openCodeFamilyTodoCall,
     createGoal: null,
@@ -769,7 +971,7 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'execute', arguments: { code: source } }),
     workflowTools: null,
   },
-  // MiMo Code 0.1.14 supplies snake_case input fields in its native schemas.
+  // MiMo Code 0.1.15 supplies snake_case input fields in its native schemas.
   // Two tool names differ from OpenCode:
   //
   // - task updates the to-do list.
@@ -804,13 +1006,15 @@ const TOOL_VOCABULARY = {
     }),
     // The run action waits until the subagent reports.
     // The parent's next ordered model turn receives that report.
-    // The spawn action returns before the child completes.
-    // Its later parent notification requires a matching script rule.
-    spawnSubagent: (id, { description, prompt }) => ({
+    // The spawn action, MiMo's own default, returns before the child completes.
+    // Its later `<actor-notification>` reaches the parent as a user message, which requires a matching script rule.
+    // The builder takes run unless the caller asks for the background.
+    spawnSubagent: (id, { description, prompt, background }) => ({
       id,
       name: 'actor',
-      arguments: { operation: { action: 'run', subagent_type: 'general', description, prompt } },
+      arguments: { operation: { action: background === true ? 'spawn' : 'run', subagent_type: 'general', description, prompt } },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     // The to-do tool acts on ONE item for each call, so it cannot write a list in
     // one call. `mimoTaskToolCall` below states each operation.
@@ -842,6 +1046,7 @@ const TOOL_VOCABULARY = {
       name: 'task',
       arguments: { description, prompt, subagent_type: 'general' },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: openCodeFamilyTodoCall,
     createGoal: null,
@@ -866,12 +1071,17 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: (id, plan) => ({ id, name: 'plan_mode_complete', arguments: { plan } }),
     exitPlanModeFromFile: null,
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    // The `Agent` tool of @tintinweb/pi-subagents 0.19.0 runs a child in the background when the call omits
+    // `run_in_background` (`backgroundByDefault`), and with `false` the call blocks and returns the child's output.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? true } }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: null,
-    createGoal: null,
-    completeGoal: null,
-    blockGoal: null,
+    // pi-goal-x 0.31.9 ends a goal through update_goal. It offers the tool only while a goal is active, paused or
+    // budget-limited. `complete` runs its completion audit first, and `blocked` requires the reason at run time.
+    createGoal: (id, objective) => ({ id, name: 'create_goal', arguments: { objective } }),
+    completeGoal: id => ({ id, name: 'update_goal', arguments: { status: 'complete' } }),
+    blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', reason: requireReason('Pi update_goal', reason) } }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: piNativeMcpToolName(server, tool), arguments: input }),
     codeExecution: (id, source) => piCodemodeToolCall(id, source),
     workflowTools: [PI_TOOL.SubagentWorkflow],
@@ -897,12 +1107,13 @@ const TOOL_VOCABULARY = {
       arguments: { questions: questions.map(({ question, options, multiSelect }) => ({ question, options, multi_select: multiSelect ?? false })) },
     }),
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'spawn_subagent', arguments: { prompt, description, background: background ?? false } }),
+    spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command in the background', background: true } }),
     // `merge: false` replaces the list, so the scripted steps are the whole list.
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
-      arguments: { merge: false, todos: steps.map(({ step, status }, index) => ({ id: String(index + 1), content: step, status })) },
+      arguments: { merge: false, todos: steps.map((step, index) => ({ id: String(index + 1), content: step.step, status: acceptedTodoStatus('Grok Build todo_write', BASE_TODO_STATUSES, step.status) })) },
     }),
     createGoal: null,
     completeGoal: null,
@@ -928,11 +1139,12 @@ const TOOL_VOCABULARY = {
       name: 'agent',
       arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: 'run_shell_command', arguments: { command, description: 'Run the scripted command in the background', is_background: true } }),
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
-      arguments: { todos: steps.map(({ step, status }, index) => ({ id: String(index + 1), content: step, status })) },
+      arguments: { todos: steps.map((step, index) => ({ id: String(index + 1), content: step.step, status: acceptedTodoStatus('Qwen Code todo_write', BASE_TODO_STATUSES, step.status) })) },
     }),
     createGoal: null,
     completeGoal: null,
@@ -975,6 +1187,7 @@ const TOOL_VOCABULARY = {
     // `name` states an agent that Kiro bundles, and `explanation` is the reason the
     // row states.
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'invoke_sub_agent', arguments: { name: KIRO_CHILD_AGENT, prompt, explanation: description } }),
+    spawnSubagentBatch: null,
     // Kiro's Control Process tool starts a background process.
     // No native probe identified its model-facing name.
     // This table supplies no builder because no verified call shape exists here.
@@ -1032,19 +1245,18 @@ const TOOL_VOCABULARY = {
         })),
       },
     }),
-    // The task tool accepts a task list.
-    // Each task runs through the bundled task agent.
-    // Its name field becomes the subagent ID and requires an identifier.
-    spawnSubagent: (id, { description, prompt }) => ({
-      id,
-      name: 'task',
-      arguments: { context: description, tasks: [{ name: identifierFrom(description), agent: 'task', task: prompt }] },
-    }),
-    backgroundBash: null,
+    // The task tool accepts a task list, and one call with several tasks runs them at the same time.
+    spawnSubagent: (id, request) => ohMyPiTaskToolCall(id, [request]),
+    spawnSubagentBatch: ohMyPiTaskToolCall,
+    // The `async` flag of bash backgrounds the command (omp 18.6.0), and a later `async-result` message reports its end.
+    // omp offers the flag only while its `async.enabled` setting is on, and the E2E profile turns that setting off:
+    // the call needs a profile that turns it on.
+    backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, async: true } }),
     // The todo init command creates a list with phases.
     // Oh My Pi sets the first task to in_progress.
     // The init schema accepts no status field, so the builder cannot select the initial statuses.
-    updateTodos: (id, steps) => ({ id, name: 'todo', arguments: { op: 'init', list: [{ phase: 'Plan', items: steps.map(step => step.step) }] } }),
+    // `ohMyPiTodoToolCall` states each later change of status.
+    updateTodos: (id, steps) => ({ id, name: 'todo', arguments: { op: 'init', list: [{ phase: OH_MY_PI_TODO_PHASE, items: steps.map(step => step.step) }] } }),
     // omp starts goal mode from its terminal UI only; RPC offers no goal tool.
     createGoal: null,
     completeGoal: null,
@@ -1071,6 +1283,7 @@ const TOOL_VOCABULARY = {
       name: 'read_only_task',
       arguments: { prompt, description },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     // `todo_write` states the whole list as `todos`.
     updateTodos: (id, steps) => ({
@@ -1079,14 +1292,17 @@ const TOOL_VOCABULARY = {
       arguments: {
         todos: steps.map(({ step, status }) => ({
           content: step,
-          status,
+          status: acceptedTodoStatus('Reasonix todo_write', BASE_TODO_STATUSES, status),
           activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
         })),
       },
     }),
+    // A goal is the objective of a Goal-mode turn, so the model creates none. update_goal of Reasonix 1.38.7 takes
+    // `continue`, `complete` or `blocked`, and it refuses `blocked` with no reason (the captured catalog in
+    // ../reasonix/toolCatalog.fixtures.ts).
     createGoal: null,
-    completeGoal: null,
-    blockGoal: null,
+    completeGoal: id => ({ id, name: 'update_goal', arguments: { status: 'complete' } }),
+    blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', reason: requireReason('Reasonix update_goal', reason) } }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_capability', arguments: { action: 'call', capability_id: `mcp-tool:${server}/${tool}`, arguments: input } }),
     codeExecution: null,
     workflowTools: null,
@@ -1100,20 +1316,32 @@ const TOOL_VOCABULARY = {
     exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
     exitPlanModeFromFile: null,
     askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
-    backgroundBash: null,
-    // ZCode's `TodoWrite` states the whole list as `todos`.
+    // ZCode 3.14.4's Agent takes `run_in_background`, and a child runs in the foreground when the call omits it.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
+    // The SAME Bash tool, with the `run_in_background` flag of its runtime schema. ZCode refuses the flag in an
+    // off-peak turn ("Idle-time tasks do not support background commands").
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
+    }),
+    // ZCode 3.14.4's `TodoWrite` states the whole list as `todos`. Each item REQUIRES `priority` beside `content` and
+    // `status`, and the tool parses the call with that schema before it stores the list. The schema has no
+    // `activeForm`, so the tool would drop one.
     updateTodos: (id, steps) => ({
       id,
       name: 'TodoWrite',
       arguments: {
         todos: steps.map(({ step, status }) => ({
           content: step,
-          status,
-          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+          status: acceptedTodoStatus('ZCode TodoWrite', BASE_TODO_STATUSES, status),
+          priority: 'medium',
         })),
       },
     }),
+    // No model tool ends a ZCode goal. After each goal turn a separate verification request decides it, and it reads
+    // `{"passed": boolean, "reason": string, "nextAction": string}` (3.14.4).
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -1145,7 +1373,9 @@ const TOOL_VOCABULARY = {
     // `Task` runs on Amp's server. The mock's Amp surface answers the child's turn
     // from the scenario its prompt marks.
     spawnSubagent: (id, { description, prompt }) => ({ id, name: AMP_SUBAGENT_TOOL.Task, arguments: { description, prompt } }),
+    spawnSubagentBatch: null,
     // Amp moves the command to the background after timeout_ms.
+    // `ampShellCommandStatusToolCall` reads a backgrounded command again by its PID.
     // A zero wait can return before Amp records the spawned process.
     // Use one second so the native result identifies the process.
     backgroundBash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command, timeout_ms: 1_000 } }),
@@ -1199,6 +1429,7 @@ const TOOL_VOCABULARY = {
       name: CLINE_TOOL.SpawnAgent,
       arguments: { systemPrompt: 'You are a subagent. Do the task, then report the result.', task: `${description}\n\n${prompt}` },
     }),
+    spawnSubagentBatch: null,
     // Cline's commands run in the foreground of their call.
     backgroundBash: null,
     // Cline has no to-do list and no session goal.
@@ -1224,7 +1455,10 @@ const TOOL_VOCABULARY = {
     exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
     exitPlanModeFromFile: null,
     askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    // CodeBuddy Code 2.160.0's Agent takes `run_in_background` unless CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS is set,
+    // which the E2E environment does not set. A child runs in the foreground when the call omits the flag.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({
       id,
       name: 'Bash',
@@ -1232,13 +1466,14 @@ const TOOL_VOCABULARY = {
     }),
     // `TodoWrite` replaces the whole list on every call. Its items take
     // `content`, a required `activeForm` and `status`; the CLI reads the
-    // `newTodos` half as the list to save.
+    // `newTodos` half as the list to save. `codebuddyTaskUpdateToolCall` states
+    // the `deleted` status of the Task family.
     updateTodos: (id, steps) => ({
       id,
       name: 'TodoWrite',
       arguments: {
         oldTodos: [],
-        newTodos: steps.map(({ step, status }) => ({ content: step, activeForm: step, status })),
+        newTodos: steps.map(({ step, status }) => ({ content: step, activeForm: step, status: acceptedTodoStatus('CodeBuddy Code TodoWrite', BASE_TODO_STATUSES, status) })),
       },
     }),
     // `CreateGoal` takes the goal as `condition`, not `objective`.
@@ -1293,6 +1528,7 @@ const TOOL_VOCABULARY = {
       name: 'spawn_subagent',
       arguments: { agent: agentType ?? 'junie-cli-docs', name: description, task: prompt },
     }),
+    spawnSubagentBatch: null,
     // The SAME `bash` tool, with the `background` flag the tool description
     // documents for long-running processes.
     backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, background: true } }),
@@ -1323,23 +1559,28 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
+    // Letta Code 0.34.2 requires a header and, for each option, a label and a description of its own. The schema states
+    // no preview, so the preview stays out.
     askUserQuestion: (id, questions) => ({
       id,
       name: 'AskUserQuestion',
       arguments: {
         questions: questions.map(q => ({
           question: q.question,
-          header: q.question.slice(0, 30),
-          options: q.options.map(o => ({ label: o.label, description: o.label })),
+          header: q.header,
+          options: q.options.map(o => ({ label: o.label, description: o.description })),
           multiSelect: q.multiSelect ?? false,
         })),
       },
     }),
-    spawnSubagent: (id, { description, prompt }) => ({
-      id,
-      name: 'Agent',
-      arguments: { description, prompt, subagent_type: 'general-purpose' },
-    }),
+    // The model calls Letta's Task tool `Agent`. Its schema states no background choice, because each child runs in the
+    // background: "Agents always run in the background" (0.34.2). The builder refuses a foreground request.
+    spawnSubagent: (id, { description, prompt, background }) => {
+      if (background === false)
+        throw new Error('Letta Code always runs a child in the background; its Agent tool takes no foreground choice.')
+      return { id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }
+    },
+    spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: null,
     createGoal: null,
@@ -1399,11 +1640,8 @@ const TOOL_VOCABULARY = {
       },
     }),
     // The native tool takes one array even when the turn starts one child.
-    spawnSubagent: (id, { description, prompt }) => ({
-      id,
-      name: 'use_subagents',
-      arguments: { subagents: [{ task_title: description, prompt }] },
-    }),
+    spawnSubagent: (id, request) => diracSubagentsToolCall(id, [request]),
+    spawnSubagentBatch: diracSubagentsToolCall,
     // Dirac has no separate background-shell tool.
     backgroundBash: null,
     // No to-do tool: the `respond plan` entries are the only checklist.
@@ -1429,17 +1667,19 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: id => ({ id, name: 'ExitPlanMode', arguments: {} }),
     askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({
       id,
       name: 'Bash',
       arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
     }),
     // `WriteTodos` replaces the whole list. Its items take `description` and
-    // `status` only — the schema refuses every other key.
+    // `status` only -- the schema refuses every other key. Qoder CLI 1.1.65's
+    // status enum also holds `cancelled` and `blocked`.
     updateTodos: (id, steps) => ({
       id,
       name: 'WriteTodos',
-      arguments: { todos: steps.map(({ step, status }) => ({ description: step, status })) },
+      arguments: { todos: steps.map(({ step, status }) => ({ description: step, status: acceptedTodoStatus('Qoder CLI WriteTodos', CANCELLED_AND_BLOCKED_TODO_STATUSES, status) })) },
     }),
     createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
     // `UpdateGoal` takes one status word: `complete` or `blocked`. Its schema
@@ -1492,12 +1732,13 @@ const TOOL_VOCABULARY = {
         await: background !== true,
       },
     }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: (id, steps) => ({
       id: droidCallId(id),
       name: 'TodoWrite',
       arguments: {
-        todos: steps.map(s => ({ content: s.step, status: s.status })),
+        todos: steps.map(s => ({ content: s.step, status: acceptedTodoStatus('Factory Droid TodoWrite', BASE_TODO_STATUSES, s.status) })),
       },
     }),
     createGoal: null,
@@ -1517,6 +1758,7 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     askUserQuestion: null,
     spawnSubagent: (id, { description, prompt, agentType, background }) => ({ id, name: COMMAND_CODE_TOOL.Agent, arguments: { description, prompt, subagent_type: agentType ?? 'general', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
     updateTodos: null,
     createGoal: null,
@@ -1534,10 +1776,13 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: (id, plan) => ({ id, name: DEEPSEEK_HARNESS_TOOL.ExitPlanMode, arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map((question, index) => ({ id: `question-${index + 1}`, ...question })) } }),
+    askUserQuestion: (id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, ...question }, index) => ({ id: `question-${index + 1}`, ...question })) } }),
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Subagent, arguments: { description, prompt, run_in_background: background ?? true } }),
+    spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
-    updateTodos: (id, steps) => ({ id, name: DEEPSEEK_HARNESS_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ content: step.step, status: step.status })) } }),
+    updateTodos: (id, steps) => ({ id, name: DEEPSEEK_HARNESS_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ content: step.step, status: acceptedTodoStatus('DeepSeek Harness TodoWrite', BASE_TODO_STATUSES, step.status) })) } }),
+    // update_goal requires the goal ID and the revision that get_goal returns, which the operations here cannot carry:
+    // `deepseekHarnessUpdateGoalToolCall` states that call.
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -1555,8 +1800,9 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: id => geminiPlanApprovalToolCall(id, GEMINI_E2E_PLAN_FILENAME),
     askUserQuestion: null,
     spawnSubagent: (id, { prompt }) => ({ id, name: GEMINI_TOOL.InvokeAgent, arguments: { agent_name: 'generalist', prompt } }),
+    spawnSubagentBatch: null,
     backgroundBash: null,
-    updateTodos: (id, steps) => ({ id, name: GEMINI_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ description: step.step, status: step.status })) } }),
+    updateTodos: (id, steps) => ({ id, name: GEMINI_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ description: step.step, status: acceptedTodoStatus('Gemini CLI write_todos', CANCELLED_AND_BLOCKED_TODO_STATUSES, step.status) })) } }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -1596,6 +1842,7 @@ const TOOL_VOCABULARY = {
       }
       return { id, name: 'subagent', arguments: { message: prompt, label: description } }
     },
+    spawnSubagentBatch: null,
     // The execute schema accepts these fields:
     //
     // - command.
@@ -1704,6 +1951,11 @@ export function spawnSubagentToolCall(provider: AgentProvider, id: string, reque
   return requireBuilder(vocabulary(provider).spawnSubagent, provider, 'subagent spawn')(id, request)
 }
 
+/** Spawn several subagents in one native call, which runs them at the same time. */
+export function spawnSubagentBatchToolCall(provider: AgentProvider, id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
+  return requireBuilder(vocabulary(provider).spawnSubagentBatch, provider, 'subagent batch spawn')(id, requests)
+}
+
 export function updateTodosToolCall(provider: AgentProvider, id: string, steps: TodoStep[]): MockModelToolCall {
   return requireBuilder(vocabulary(provider).updateTodos, provider, 'to-do list update')(id, steps)
 }
@@ -1714,10 +1966,12 @@ export function piTodoToolCall(callId: string, request: PiTodoRequest): MockMode
 }
 
 /**
- * Ask the Cursor CLI for its request context before the turn ends.
+ * Ask the Cursor CLI for its request context again before the turn ends.
  *
  * The CLI states the rules that it loaded from the project in its answer, and the
- * mock records them as `nativeRequest.contextRules` of the same model request.
+ * mock records them as `nativeRequest.contextRules` of the same model request. The
+ * mock asks once at the start of each turn already (`cursorSurface.ts`), so this
+ * call adds only a second answer, which replaces the first.
  */
 export function cursorRequestContextToolCall(id: string): MockModelToolCall {
   return { id, name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {} }
@@ -1855,14 +2109,44 @@ export function codebuddyWorkflowToolCall(id: string, script: string): MockModel
   return { id, name: 'DeferExecuteTool', arguments: { toolName: 'Workflow', params: { script } } }
 }
 
+/**
+ * One TaskCreate call of the Task family. Each provider of the family takes a subject and a description, and Claude
+ * Code and Command Code also take the present-continuous text that a running task shows.
+ */
+function taskFamilyCreateCall(name: string, id: string, task: { subject: string, description: string, activeForm?: string | undefined }): MockModelToolCall {
+  if (task.subject.trim() === '' || task.description.trim() === '')
+    throw new Error(`The native ${name} call requires a nonempty subject and description.`)
+  return { id, name, arguments: { subject: task.subject, description: task.description, ...(task.activeForm === undefined ? {} : { activeForm: task.activeForm }) } }
+}
+
+/** One TaskUpdate call of the Task family, which changes the status of one task by its native ID. */
+function taskFamilyUpdateCall(name: string, id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
+  if (taskId.trim() === '')
+    throw new Error(`The native ${name} call requires the ID of its task.`)
+  return { id, name, arguments: { taskId, status } }
+}
+
+/**
+ * Create one Claude Code task (2.1.289); its result states the task ID. Claude Code offers the Task family, as
+ * TaskCreate, TaskGet, TaskList and TaskUpdate, only under the conditions that the Claude `updateTodos` entry states.
+ */
+export function claudeTaskCreateToolCall(id: string, subject: string, description: string, activeForm?: string): MockModelToolCall {
+  return taskFamilyCreateCall('TaskCreate', id, { subject, description, activeForm })
+}
+
+/** Change one Claude Code task by its native ID. The schema takes `deleted` beside the three list statuses. */
+export function claudeTaskUpdateToolCall(id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
+  return taskFamilyUpdateCall('TaskUpdate', id, taskId, status)
+}
+
 /** Create one CodeBuddy task; its result returns the full native todo list. */
 export function codebuddyTaskCreateToolCall(id: string, subject: string, description: string): MockModelToolCall {
-  return { id, name: 'TaskCreate', arguments: { subject, description } }
+  return taskFamilyCreateCall('TaskCreate', id, { subject, description })
 }
 
 /** Change one CodeBuddy task by its native numeric-string ID. */
-export function codebuddyTaskUpdateToolCall(id: string, taskId: string, status: 'pending' | 'in_progress' | 'completed' | 'deleted'): MockModelToolCall {
-  return { id, name: 'TaskUpdate', arguments: { taskId, status } }
+export function codebuddyTaskUpdateToolCall(id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
+  return taskFamilyUpdateCall('TaskUpdate', id, taskId, status)
 }
 
 /** Ask Letta's vision tool to open a local image. */
@@ -1872,12 +2156,12 @@ export function lettaViewImageToolCall(id: string, path: string): MockModelToolC
 
 /** Create one Letta task; the native result gives its stable task ID. */
 export function lettaTaskCreateToolCall(id: string, subject: string, description: string): MockModelToolCall {
-  return { id, name: 'TaskCreate', arguments: { subject, description } }
+  return taskFamilyCreateCall('TaskCreate', id, { subject, description })
 }
 
 /** Change one Letta task by its native task ID. */
-export function lettaTaskUpdateToolCall(id: string, taskId: string, status: TodoStep['status'] | 'deleted'): MockModelToolCall {
-  return { id, name: 'TaskUpdate', arguments: { taskId, status } }
+export function lettaTaskUpdateToolCall(id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
+  return taskFamilyUpdateCall('TaskUpdate', id, taskId, status)
 }
 
 /** Read the full Letta task list. */
@@ -1999,8 +2283,11 @@ export function zcodeGetWorkflowRunToolCall(id: string, runId: string): MockMode
   return { id, name: 'GetWorkflowRun', arguments: { run_id: runId } }
 }
 
-/** `multiSelect` is required by Claude's schema, so state it rather than omit it. */
-function withMultiSelect(question: QuestionRequest): Record<string, unknown> {
+/**
+ * The question in Claude's own fields. `multiSelect` is required by Claude's schema, so state it rather than omit it.
+ * `freeText` is no field of that schema, so it stays out.
+ */
+function withMultiSelect({ freeText: _freeText, ...question }: QuestionRequest): Record<string, unknown> {
   return { ...question, multiSelect: question.multiSelect ?? false }
 }
 
@@ -2115,6 +2402,30 @@ export function reasonixInspectCapabilityToolCall(id: string, capabilityId: stri
 }
 
 /**
+ * One change of status in Oh My Pi's todo tool (omp 18.6.0). The tool addresses a task by its verbatim text, and it
+ * refuses a task ID.
+ *
+ * - `start`: the task becomes in_progress, and omp moves any other in_progress task back to pending.
+ * - `done`: the task becomes completed.
+ * - `drop`: the task becomes abandoned.
+ * - `block`: the task becomes blocked, and the reason becomes its blocker note.
+ *
+ * After each change, omp makes the first pending task in_progress when no task is.
+ */
+export type OhMyPiTodoOperation
+  = | { op: 'start' | 'done' | 'drop', task: string }
+    | { op: 'block', task: string, reason: string }
+
+/** One call of Oh My Pi's todo tool that changes the status of one task. */
+export function ohMyPiTodoToolCall(id: string, operation: OhMyPiTodoOperation): MockModelToolCall {
+  if (operation.task.trim() === '')
+    throw new Error('The native Oh My Pi todo operation requires the verbatim text of its task.')
+  if (operation.op === 'block')
+    requireReason('Oh My Pi todo block', operation.reason)
+  return { id, name: 'todo', arguments: { ...operation } }
+}
+
+/**
  * The native yield tool sends the child's report to its parent through data.
  * It also ends the child run.
  * Oh My Pi offers it only to a subagent.
@@ -2220,12 +2531,12 @@ export function geminiPlanApprovalToolCall(id: string, filename: string): MockMo
 
 /** Create one native Command Code task. */
 export function commandCodeTaskCreateToolCall(id: string, subject: string, description: string, activeForm?: string): MockModelToolCall {
-  return { id, name: COMMAND_CODE_TOOL.TaskCreate, arguments: { subject, description, ...(activeForm === undefined ? {} : { activeForm }) } }
+  return taskFamilyCreateCall(COMMAND_CODE_TOOL.TaskCreate, id, { subject, description, activeForm })
 }
 
 /** Change one native Command Code task by its actual ID. */
-export function commandCodeTaskUpdateToolCall(id: string, taskId: string, status: TodoStep['status'] | 'deleted'): MockModelToolCall {
-  return { id, name: COMMAND_CODE_TOOL.TaskUpdate, arguments: { taskId, status } }
+export function commandCodeTaskUpdateToolCall(id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
+  return taskFamilyUpdateCall(COMMAND_CODE_TOOL.TaskUpdate, id, taskId, status)
 }
 
 /** Ask the native Command Code runtime to load its deferred tool schemas. */
@@ -2239,8 +2550,46 @@ export function geminiCompleteTaskToolCall(id: string, response: string): MockMo
 }
 
 /** Replace the native Gemini checklist with all supported task statuses. */
-export function geminiTodoSnapshotToolCall(id: string, todos: readonly { description: string, status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'blocked' }[]): MockModelToolCall {
-  return { id, name: GEMINI_TOOL.TodoWrite, arguments: { todos: todos.map(todo => ({ description: todo.description, status: todo.status })) } }
+export function geminiTodoSnapshotToolCall(id: string, todos: readonly { description: string, status: (typeof CANCELLED_AND_BLOCKED_TODO_STATUSES)[number] }[]): MockModelToolCall {
+  return updateTodosToolCall(AgentProvider.GEMINI_CLI, id, todos.map(todo => ({ step: todo.description, status: todo.status })))
+}
+
+/**
+ * The capture source that reads the goal ID from the result of DeepSeek Harness's get_goal, whose text is the compact
+ * JSON `{"goal":{"id":...,"revision":...},...}` (dsh-tool-goal 0.2.0-rc.2). A later update_goal states the ID as the
+ * `{{goalId}}` placeholder of a step with this capture.
+ */
+export const DEEPSEEK_HARNESS_GOAL_ID_CAPTURE = '"goal":\\{"id":"([^"]+)"'
+
+/** Read the current DeepSeek Harness goal, with the ID and the revision that update_goal requires. */
+export function deepseekHarnessGetGoalToolCall(id: string): MockModelToolCall {
+  return { id, name: 'get_goal', arguments: {} }
+}
+
+/** How a DeepSeek Harness update_goal call ends a goal. A blocked goal states its blocking condition. */
+export type DeepseekHarnessGoalEnd = { action: 'complete' } | { action: 'blocked', reason: string }
+
+/**
+ * End the DeepSeek Harness goal through update_goal (dsh-tool-goal 0.2.0-rc.2), which compares the goal ID and the
+ * revision that get_goal returned before it changes the goal.
+ *
+ * - The revision must be a number, so a capture placeholder cannot state it. A goal that LeapMux set and did not edit
+ *   is at revision 1.
+ * - In an automatic goal round, the tool refuses `blocked` before the third consecutive round.
+ */
+export function deepseekHarnessUpdateGoalToolCall(id: string, goal: { goalId: string, revision: number }, end: DeepseekHarnessGoalEnd): MockModelToolCall {
+  if (goal.goalId.trim() === '' || goal.goalId !== goal.goalId.trim() || !Number.isSafeInteger(goal.revision) || goal.revision < 1)
+    throw new Error('The native DeepSeek Harness update_goal call requires a goal ID and a positive integer revision.')
+  return {
+    id,
+    name: 'update_goal',
+    arguments: {
+      goal_id: goal.goalId,
+      revision: goal.revision,
+      action: end.action,
+      ...(end.action === 'blocked' ? { blocked_reason: requireReason('DeepSeek Harness update_goal', end.reason) } : {}),
+    },
+  }
 }
 
 /** Read an image through the native Deepseek Harness image tool. */

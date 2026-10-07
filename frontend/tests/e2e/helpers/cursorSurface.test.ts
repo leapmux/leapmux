@@ -27,7 +27,7 @@ import { connectFrame, takeConnectFrames } from './cursorWire'
 import { waitUnlessDisconnected } from './mockHttp'
 import { mockScenarioPrompt } from './mockModelScenario'
 import { createModelStream } from './modelStream'
-import { bashToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from './providerToolCalls'
+import { bashToolCall, cursorMergeTodosToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from './providerToolCalls'
 
 /** `AgentServerMessage.interaction_update`, and the updates inside it. */
 const FIELD_INTERACTION_UPDATE = 1
@@ -261,7 +261,17 @@ describe('cursorToolCallsFrom', () => {
     ])
   })
 
-  it('reads the cancelled status word, which no shared encoder writes', () => {
+  it('reads the cancelled status word and the merge flag that the shared Cursor merge encoder writes', () => {
+    expect(cursorToolCallsFrom([cursorMergeTodosToolCall('todo-2', [
+      { id: '2', content: 'Second', status: 'cancelled' },
+      { id: '4', content: 'Fourth', status: 'pending' },
+    ])])).toEqual([{ kind: 'todo', call: { callID: 'todo-2', merge: true, todos: [
+      { id: '2', content: 'Second', status: 'cancelled' },
+      { id: '4', content: 'Fourth', status: 'pending' },
+    ] } }])
+  })
+
+  it('reads the cancelled status word of a replacement list', () => {
     const [call] = cursorToolCallsFrom([{ id: 'todo-1', name: CURSOR_UPDATE_TODOS_TOOL, arguments: { todos: [{ content: 'Dropped', status: CURSOR_TODO_STATUS_WORDS.cancelled }] } }])
     expect(call).toEqual({ kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [{ id: '1', content: 'Dropped', status: 'cancelled' }] } })
   })
@@ -519,6 +529,23 @@ describe('serveCursorRun', () => {
     const unhandled: string[] = []
     await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, requestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow('fetch failed')
     expect(unhandled).toEqual(['A native Cursor request context query requires a scenario handler'])
+  })
+
+  it('states the typed text of each answer beside the selected options', async () => {
+    const receipts: { prompt: string, text: string }[] = []
+    const answers = [
+      Buffer.concat([encodeStringField(1, 'question-1'), encodeStringField(2, 'option-red'), encodeStringField(3, 'and a little purple')]),
+      Buffer.concat([encodeStringField(1, 'question-2'), encodeStringField(3, 'neither "size"')]),
+    ]
+    const reply = encodeLengthDelimited(6, Buffer.concat([
+      Uint8Array.from([0x08, ...encodeVarint(300)]),
+      encodeLengthDelimited(3, encodeLengthDelimited(1, encodeLengthDelimited(1, Buffer.concat(answers.map(answer => encodeLengthDelimited(1, answer)))))),
+    ]))
+    await runStreamBody(async () => ({ toolCalls: [{ kind: 'question', callID: 'q-1', title: 'Color', questions: [
+      { id: 'question-1', prompt: 'Which color?', allowMultiple: false, options: [{ id: 'option-red', label: 'Red' }] },
+      { id: 'question-2', prompt: 'Which size?', allowMultiple: false, options: [{ id: 'option-small', label: 'Small' }] },
+    ] }] }), receipts, reply)
+    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'Cursor question selected: option-red; typed: question-1: "and a little purple", question-2: "neither \\"size\\""' }])
   })
 
   it('reports the actual selected option from a native interaction reply', async () => {

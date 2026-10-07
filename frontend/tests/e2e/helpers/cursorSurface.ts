@@ -532,14 +532,25 @@ export interface CursorRunHandlers {
   holdToolCompletion?: (callId: string, gate: string) => Promise<boolean>
 }
 
+/**
+ * The text that the mock answers a question with: the selected option IDs, then the text that the reader typed for
+ * each question that holds some, as `<question ID>: "<text>"`. A test reads the typed text in the model's answer, as
+ * Cursor's own model reads it in the answer of the client.
+ */
+function cursorQuestionSummary(reply: Extract<CursorInteractionReply, { kind: 'question' }>): string {
+  if (reply.rejectedReason)
+    return `Cursor question rejected: ${reply.rejectedReason}`
+  const selected = `Cursor question selected: ${reply.answers.flatMap(answer => answer.selectedOptionIDs).join(', ') || '(none)'}`
+  const typed = reply.answers.flatMap(answer => answer.freeformText === undefined ? [] : [`${answer.questionID}: ${JSON.stringify(answer.freeformText)}`])
+  return typed.length === 0 ? selected : `${selected}; typed: ${typed.join(', ')}`
+}
+
 function cursorInteractionSummary(call: CursorInteractionCall, reply: CursorInteractionReply): string {
   if (call.kind !== reply.kind)
     throw new Error(`Cursor replied to ${call.kind} with ${reply.kind}`)
   switch (reply.kind) {
     case 'question':
-      return reply.rejectedReason
-        ? `Cursor question rejected: ${reply.rejectedReason}`
-        : `Cursor question selected: ${reply.answers.flatMap(answer => answer.selectedOptionIDs).join(', ') || '(none)'}`
+      return cursorQuestionSummary(reply)
     case 'plan':
       return reply.accepted ? 'Cursor plan accepted' : `Cursor plan rejected: ${reply.error ?? 'no reason'}`
     case 'webFetch':
