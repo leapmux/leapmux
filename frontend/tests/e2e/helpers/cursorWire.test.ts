@@ -33,6 +33,8 @@ import {
   cursorTodoStarted,
   cursorTurnEnded,
   cursorUsableModels,
+  cursorWebFetchCompleted,
+  cursorWebFetchStarted,
   takeConnectFrames,
 } from './cursorWire'
 
@@ -483,6 +485,38 @@ describe('cursorGenerateImageStarted and cursorGenerateImageCompleted', () => {
     const fields = readCursorProtobufFields(success).strings
     expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe(call.filePath)
     expect(new TextDecoder().decode(fields.get(2)?.[0])).toBe(call.imageData)
+  })
+})
+
+describe('cursorWebFetchStarted and cursorWebFetchCompleted', () => {
+  const call = { kind: 'webFetch', callID: 'fetch-native', url: 'https://example.invalid/零' } as const
+  const text = (bytes: Uint8Array | undefined): string | undefined => bytes === undefined ? undefined : new TextDecoder().decode(bytes)
+
+  it('opens the native row with its URL and call ID, before any result exists', () => {
+    const update = cursorWebFetchStarted(call)
+    expect(text(descend(update, [1, 2, 1]))).toBe(call.callID)
+    expect(text(descend(update, [1, 2, 2, 57]))).toBe(call.callID)
+    expect(text(descend(update, [1, 2, 2, 37, 1, 1]))).toBe(call.url)
+    expect(text(descend(update, [1, 2, 2, 37, 1, 2]))).toBe(call.callID)
+    expect(descend(update, [1, 2, 2, 37, 2])).toBeUndefined()
+  })
+
+  it('closes an approved fetch with its URL in the success result', () => {
+    const update = cursorWebFetchCompleted(call, { kind: 'webFetch', id: 300, approved: true })
+    expect(text(descend(update, [1, 3, 1]))).toBe(call.callID)
+    expect(text(descend(update, [1, 3, 2, 37, 2, 1, 1]))).toBe(call.url)
+    expect(descend(update, [1, 3, 2, 37, 2, 3])).toBeUndefined()
+  })
+
+  it.each(['User rejected', '', 'Keep 零 🔒'])('closes a refused fetch with its exact reason %j', (reason) => {
+    const update = cursorWebFetchCompleted(call, { kind: 'webFetch', id: 300, approved: false, reason })
+    expect(text(descend(update, [1, 3, 2, 37, 2, 3, 1]))).toBe(reason)
+    expect(descend(update, [1, 3, 2, 37, 2, 1])).toBeUndefined()
+  })
+
+  it('encodes an absent refusal reason as the native empty reason', () => {
+    const update = cursorWebFetchCompleted(call, { kind: 'webFetch', id: 300, approved: false })
+    expect(text(descend(update, [1, 3, 2, 37, 2, 3, 1]))).toBe('')
   })
 })
 

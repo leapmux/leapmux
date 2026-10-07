@@ -23,25 +23,22 @@ import {
  * Cursor's CLI does not use an OpenAI or Anthropic model API. It talks to its
  * own backend over Connect, and its whole turn travels on ONE bidirectional
  * stream: `POST /agent.v1.AgentService/Run`, over HTTP/2, as
- * `application/connect+proto`. Every other call the CLI makes at startup accepts
- * an all-defaults answer, so this module covers the stream alone.
+ * `application/connect+proto`. This module covers that stream and the model
+ * catalog responses that startup needs. Other startup calls accept an
+ * all-defaults answer.
  *
- * WHY A HAND-WRITTEN CODEC. The schema belongs to Cursor, not to this project:
- * `proto/` states LeapMux's own contracts and `contracts/` states values that
- * cross a language boundary, and a reverse-engineered third-party schema is
- * neither. The surface is also tiny -- three message types with one or two
- * fields each to write, and a five-field path to read -- so the field numbers
- * below are stated once, with their source, rather than generated. The
- * schema-free encoders and the reader live in `./cursorProtobuf`.
+ * The schema belongs to Cursor. `proto/` states LeapMux's own contracts.
+ * `contracts/` states values that cross a language boundary.
+ * Cursor's external schema belongs in neither directory.
+ * The mock encodes the native fields that its scripted operations need.
+ * Each field number appears once, with its native source.
+ * The encoders and the reader that need no schema live in `./cursorProtobuf`.
  *
- * WHERE THE NUMBERS COME FROM. The CLI bundle ships `@bufbuild/protobuf` field
- * tables as plain object literals, at
- * `~/.local/share/cursor-agent/versions/<version>/index.js`, each reading
- * `X.typeName="agent.v1.Foo",X.fields=…newFieldList(()=>[{no,name,kind,T}])`.
- * Resolve a minified type reference by searching for the local whose `typeName`
- * MATCHES THE TYPE, never by nearest occurrence -- a one-character local repeats
- * in every neighbouring module, and nearest-match confidently returns the wrong
- * type.
+ * The installed CLI bundle supplies compact schema strings for its protobuf
+ * classes in `~/.local/share/cursor-agent/versions/<version>/index.js`.
+ * Find a descriptor through its module and message name.
+ * Minified identifiers repeat across modules. A nearby class can describe a
+ * different message.
  */
 
 /** `agent.v1.AgentClientMessage.run_request`, the client's whole turn request. */
@@ -341,6 +338,8 @@ const FIELD_UPDATE_TOOL_CALL = 2
 const FIELD_TOOLCALL_TASK = 19
 const FIELD_TOOLCALL_UPDATE_TODOS = 9
 const FIELD_TOOLCALL_GENERATE_IMAGE = 28
+/** `ToolCall.web_fetch_tool_call` in the installed Cursor schema. */
+const FIELD_TOOLCALL_WEB_FETCH = 37
 const FIELD_TOOLCALL_TOOL_CALL_ID = 57
 
 /** `TaskToolCall|1 args #0|2 result #1|3 cloud_agent_bc_id 9?`. */
@@ -443,6 +442,9 @@ export type CursorInteractionReply
     | { kind: 'plan', id: number, accepted: boolean, planURI?: string, error?: string }
     | { kind: 'webFetch', id: number, approved: boolean, reason?: string }
 
+type CursorWebFetchCall = Extract<CursorInteractionCall, { kind: 'webFetch' }>
+type CursorWebFetchReply = Extract<CursorInteractionReply, { kind: 'webFetch' }>
+
 export interface CursorMcpCall {
   callID: string
   server: string
@@ -517,6 +519,37 @@ function encodeToolCallUpdate(field: number, callID: string, toolCall: Uint8Arra
     encodeStringField(FIELD_UPDATE_CALL_ID, callID),
     encodeLengthDelimited(FIELD_UPDATE_TOOL_CALL, toolCall),
   ])))
+}
+
+/**
+ * Encode `WebFetchToolCall|1 args|2 result` from the installed Cursor schema.
+ * `WebFetchResult` uses success at 1 and rejected at 3. `WebFetchRejected` uses reason at 1.
+ */
+function encodeCursorWebFetch(call: CursorWebFetchCall, reply?: CursorWebFetchReply): Uint8Array {
+  const fetch = [encodeLengthDelimited(1, concatBytes([
+    encodeStringField(1, call.url),
+    encodeStringField(2, call.callID),
+  ]))]
+  if (reply) {
+    const result = reply.approved
+      ? encodeLengthDelimited(1, encodeStringField(1, call.url))
+      : encodeLengthDelimited(3, encodeStringField(1, reply.reason ?? ''))
+    fetch.push(encodeLengthDelimited(2, result))
+  }
+  return concatBytes([
+    encodeLengthDelimited(FIELD_TOOLCALL_WEB_FETCH, concatBytes(fetch)),
+    encodeStringField(FIELD_TOOLCALL_TOOL_CALL_ID, call.callID),
+  ])
+}
+
+/** Open the web-fetch row before the CLI answers its permission query. */
+export function cursorWebFetchStarted(call: CursorWebFetchCall): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_STARTED, call.callID, encodeCursorWebFetch(call))
+}
+
+/** Close the web-fetch row with the native approval or refusal. */
+export function cursorWebFetchCompleted(call: CursorWebFetchCall, reply: CursorWebFetchReply): Uint8Array {
+  return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call.callID, encodeCursorWebFetch(call, reply))
 }
 
 /**

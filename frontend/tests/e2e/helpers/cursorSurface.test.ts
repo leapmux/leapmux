@@ -56,6 +56,10 @@ function updateKinds(body: Buffer): string[] {
       kinds.push('setBlob')
       continue
     }
+    if (fields.has(7)) {
+      kinds.push('interactionQuery')
+      continue
+    }
     const update = fields.get(FIELD_INTERACTION_UPDATE)?.[0]
     if (!update) {
       kinds.push(fields.has(2) ? 'execRequest' : 'unknown')
@@ -377,6 +381,35 @@ describe('answerCursorStartup', () => {
 })
 
 describe('serveCursorRun', () => {
+  it.each([true, false])('streams a web fetch around its native approval reply when approved is %s', async (approved) => {
+    const receipts: { prompt: string, text: string }[] = []
+    const result = encodeLengthDelimited(approved ? 1 : 2, approved ? new Uint8Array(0) : encodeStringField(1, 'User rejected'))
+    const reply = encodeLengthDelimited(6, Buffer.concat([
+      Uint8Array.from([0x08, ...encodeVarint(300)]),
+      encodeLengthDelimited(9, result),
+    ]))
+    const body = await runStreamBody(async () => ({ toolCalls: [{ kind: 'webFetch', callID: 'fetch-1', url: 'https://example.invalid/probe' }] }), receipts, reply)
+    expect(updateKinds(body)).toEqual(['setBlob', 'toolStarted', 'interactionQuery', 'toolCompleted', 'setBlob', 'textDelta', 'turnEnded', 'endOfStream'])
+    const updates = takeConnectFrames(new Uint8Array(body)).frames.flatMap(({ payload }) => {
+      const tool = descend(payload, [1, 3, 2, 37])
+      return tool ? [tool] : []
+    })
+    expect(updates).toHaveLength(1)
+    expect(new TextDecoder().decode(descend(updates[0]!, [1, 1])!)).toBe('https://example.invalid/probe')
+    if (approved)
+      expect(descend(updates[0]!, [2, 1])).toBeDefined()
+    else
+      expect(new TextDecoder().decode(descend(updates[0]!, [2, 3, 1])!)).toBe('User rejected')
+    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: approved ? 'Cursor web fetch approved' : 'Cursor web fetch rejected: User rejected' }])
+  })
+
+  it('keeps a web fetch open when its native permission query has no reply', async () => {
+    const receipts: { prompt: string, text: string }[] = []
+    const body = await runStreamBody(async () => ({ toolCalls: [{ kind: 'webFetch', callID: 'fetch-open', url: 'https://example.invalid/open' }] }), receipts)
+    expect(updateKinds(body)).toEqual(['setBlob', 'toolStarted', 'interactionQuery', 'endOfStream'])
+    expect(receipts).toEqual([])
+  })
+
   it('completes actual native child execution from its client-supplied identity and report', async () => {
     const receipts: { prompt: string, text: string }[] = []
     const run = readCursorProtobufFields(clientMessageWithPrompt('Say the mock word.')).strings.get(1)![0]!

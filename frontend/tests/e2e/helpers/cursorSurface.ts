@@ -60,6 +60,8 @@ import {
   cursorTodoStarted,
   cursorTurnEnded,
   cursorUsableModels,
+  cursorWebFetchCompleted,
+  cursorWebFetchStarted,
   takeConnectFrames,
 } from './cursorWire'
 import { mockCredentialReceipt } from './mockCredentials'
@@ -647,6 +649,8 @@ export async function serveCursorRun(
         case 'plan':
         case 'webFetch':
           pendingInteraction = { id: ++nextInteractionId, call: tool }
+          if (tool.kind === 'webFetch')
+            response.write(Buffer.from(connectFrame(cursorWebFetchStarted(tool))))
           response.write(Buffer.from(connectFrame(cursorInteractionQuery(pendingInteraction.id, tool))))
           return 'waiting'
       }
@@ -735,7 +739,10 @@ export async function serveCursorRun(
           continue
         if (reply.id !== pendingInteraction.id)
           throw new Error(`Cursor replied to query ${pendingInteraction.id} with id ${reply.id}`)
-        replies.push(cursorInteractionSummary(pendingInteraction.call, reply))
+        const summary = cursorInteractionSummary(pendingInteraction.call, reply)
+        if (pendingInteraction.call.kind === 'webFetch' && reply.kind === 'webFetch')
+          response.write(Buffer.from(connectFrame(cursorWebFetchCompleted(pendingInteraction.call, reply))))
+        replies.push(summary)
         pendingInteraction = undefined
         if (await advance() === 'finished')
           return
