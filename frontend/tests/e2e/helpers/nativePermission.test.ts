@@ -10,18 +10,45 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { allowNativeOperation, createNativePermissionFileWrite, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, exerciseNativeToolWrite, expectDeclinedToolRow } from './nativePermission'
+import { allowNativeOperation, createNativePermissionFileWrite, declinedToolCallId, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseNativePermissionWrite, exerciseNativeToolWrite, exerciseRememberedAllow, expectDeclinedToolRow, expectDeclinedToolRowAcrossReload, expectSavedRefusalFeedback, toolResultCallId } from './nativePermission'
 import { createOutputGate } from './outputGate'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
 const declinedRow = vi.hoisted(() => ({ assertions: [] as string[] }))
 /** The browser steps of a decision flow, in order. */
-const flow = vi.hoisted(() => ({ events: [] as string[], onAnswer: undefined as ((decision: string) => void) | undefined }))
+const flow = vi.hoisted(() => ({ events: [] as string[], onAnswer: undefined as ((decision: string) => void) | undefined, feedback: '' }))
+/** What the fake bubble list was asked: each filter, in order, and the call ID attribute that its row states. */
+const rowQuery = vi.hoisted(() => ({ filters: [] as unknown[], attribute: null as string | null }))
 vi.mock('./ui', async (importOriginal) => {
   const original = await importOriginal<typeof import('./ui')>()
   const probe = { declinedRowProbe: true }
   // A filtered bubble list is itself a fake row, so a check with or without `first()` reaches the recording `expect`.
-  const bubbles: { declinedRowProbe: true, filter: () => unknown, first: () => unknown } = { declinedRowProbe: true, filter: () => bubbles, first: () => probe }
+  const bubbles: { declinedRowProbe: true, filter: (options: unknown) => unknown, first: () => unknown, and: () => unknown, getAttribute: () => Promise<string | null> } = {
+    declinedRowProbe: true,
+    filter: (options) => {
+      rowQuery.filters.push(options)
+      return bubbles
+    },
+    first: () => probe,
+    and: () => bubbles,
+    getAttribute: async () => rowQuery.attribute,
+  }
+  // The control actions record which scope radio a helper selects, through its group and its own name.
+  const radio = {
+    declinedRowProbe: true,
+    click: async () => {
+      flow.events.push('click')
+    },
+  }
+  const actions = {
+    getByRole: (role: string, options: { name: string }) => {
+      flow.events.push(`${role}:${options.name}`)
+      return { getByRole: (inner: string, innerOptions: { name: string, exact?: boolean }) => {
+        flow.events.push(`${inner}:${innerOptions.name}:${innerOptions.exact === true ? 'exact' : 'loose'}`)
+        return radio
+      } }
+    },
+  }
   return {
     ...original,
     sendMessage: async () => { flow.events.push('send') },
@@ -33,10 +60,21 @@ vi.mock('./ui', async (importOriginal) => {
       flow.events.push(`answer:${decision}`)
       flow.onAnswer?.(decision)
     },
-    enterControlFeedback: async (_page: unknown, text: string) => { flow.events.push(`feedback:${text}`) },
+    enterControlFeedback: async (_page: unknown, text: string) => {
+      flow.feedback = text
+      flow.events.push('feedback')
+    },
     waitForAgentIdle: async () => { flow.events.push('idle') },
+    expectNoControlBanner: async () => { flow.events.push('no-banner') },
+    openWorkspace: async (_page: unknown, workspaceId: string) => { declinedRow.assertions.push(`open:${workspaceId}`) },
+    controlButton: (_page: unknown, action: string) => {
+      flow.events.push(`button:${action}`)
+      return probe
+    },
+    controlActions: () => actions,
     assistantBubbles: () => bubbles,
     messageBubbles: () => bubbles,
+    userBubbles: () => bubbles,
   }
 })
 vi.mock('./nativeScenario', async (importOriginal) => {
@@ -47,15 +85,18 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const original = await importOriginal<typeof import('@playwright/test')>()
   return {
     ...original,
-    // The fake result row records each assertion that the helper makes. Every other value reaches the real `expect`.
-    expect: (value: unknown) => typeof value === 'object' && value !== null && 'declinedRowProbe' in value
+    // The fake result row records each assertion that the helper makes. Every other value reaches the real `expect`,
+    // with the message of the helper.
+    expect: (value: unknown, message?: string) => typeof value === 'object' && value !== null && 'declinedRowProbe' in value
       ? {
           toHaveCount: async (count: number) => { declinedRow.assertions.push(`count:${count}`) },
           toHaveAttribute: async (name: string, text: string) => { declinedRow.assertions.push(`attribute:${name}=${text}`) },
           toContainText: async (text: string) => { declinedRow.assertions.push(`text:${text}`) },
+          toHaveText: async (text: string) => { declinedRow.assertions.push(`exact:${text}`) },
           toBeVisible: async () => { declinedRow.assertions.push('visible') },
+          toBeChecked: async () => { declinedRow.assertions.push('checked') },
         }
-      : original.expect(value),
+      : original.expect(value, message),
   }
 })
 vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-native-shell', arguments: { command } }) }))
@@ -83,6 +124,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   declinedRow.assertions.length = 0
   flow.events.length = 0
+  flow.feedback = ''
+  flow.onAnswer = undefined
+  rowQuery.filters.length = 0
+  rowQuery.attribute = null
   delete context.readToolResult
   mkdirSync(scratchRoot, { recursive: true })
   native.directory = mkdtempSync(join(scratchRoot, 'native-permission-plan-unit-'))
@@ -365,12 +410,16 @@ describe('exerciseAllowThenFeedbackRejection', () => {
       'banner',
       'answer:allow',
       'steps:6',
-      `feedback:${reason}`,
+      'feedback',
       'press:Meta+Enter',
       'steps:7',
       'idle',
       'request:6',
     ])
+    expect(flow.feedback).toBe(reason)
+    // The saved answer is the bubble that holds the lead of a feedback row and the reason.
+    expect(rowQuery.filters).toContainEqual({ hasText: 'Sent feedback:' })
+    expect(rowQuery.filters).toContainEqual({ hasText: reason })
     expect(declinedRow.assertions).toEqual([
       `text:printf approved > ${join(native.directory, 'approved.txt')}`,
       `text:printf rejected > ${join(native.directory, 'rejected.txt')}`,
@@ -483,5 +532,361 @@ describe('expectDeclinedToolRow', () => {
     const { page } = rowPage()
     await expectDeclinedToolRow(page, 'call-1', '')
     expect(declinedRow.assertions.at(-1)).toBe('text:')
+  })
+})
+
+describe('expectDeclinedToolRowAcrossReload', () => {
+  it('requires the declined row, reloads and opens the workspace, and requires the row again', async () => {
+    const page = Object.assign({} as Page, {
+      locator: () => ({ declinedRowProbe: true }),
+      reload: async () => { declinedRow.assertions.push('reload') },
+    })
+    await expectDeclinedToolRowAcrossReload({ page, workspaceId: 'reload-workspace' }, 'call-1', 'The user refused.')
+    const declined = ['count:1', 'attribute:data-tool-status=declined', 'text:Declined', 'text:The user refused.']
+    expect(declinedRow.assertions).toEqual([...declined, 'reload', 'open:reload-workspace', ...declined])
+  })
+
+  it('stops before the reload when the row is not declined', async () => {
+    const failure = new Error('the row is not declined')
+    const page = Object.assign({} as Page, {
+      locator: () => {
+        throw failure
+      },
+      reload: async () => { declinedRow.assertions.push('reload') },
+    })
+    await expect(expectDeclinedToolRowAcrossReload({ page, workspaceId: 'reload-workspace' }, 'call-1')).rejects.toBe(failure)
+    expect(declinedRow.assertions).not.toContain('reload')
+  })
+})
+
+describe('toolResultCallId', () => {
+  const page = Object.assign({} as Page, { locator: (selector: string) => ({ selector }) })
+
+  it('reads the call ID of the one result row that holds the text', async () => {
+    rowQuery.attribute = 'TU-generated-1'
+    expect(await toolResultCallId(page, 'Use the clean target.')).toBe('TU-generated-1')
+    expect(rowQuery.filters).toEqual([{ hasText: 'Use the clean target.' }])
+    expect(declinedRow.assertions).toEqual(['count:1'])
+  })
+
+  it.each(['', '   '])('refuses the blank text %j before it reads the page', async (text) => {
+    await expect(toolResultCallId(page, text)).rejects.toThrow('needs text')
+    expect(rowQuery.filters).toEqual([])
+  })
+
+  it('fails when the row states no call ID', async () => {
+    rowQuery.attribute = ''
+    await expect(toolResultCallId(page, 'Use the clean target.')).rejects.toThrow('states no call ID')
+  })
+})
+
+describe('declinedToolCallId', () => {
+  it('reads the call ID of the one declined result row, whatever text it holds', async () => {
+    const selectors: string[] = []
+    const page = Object.assign({} as Page, { locator: (selector: string) => {
+      selectors.push(selector)
+      return { selector }
+    } })
+    rowQuery.attribute = 'exec-generated-1'
+    expect(await declinedToolCallId(page)).toBe('exec-generated-1')
+    expect(selectors).toEqual(['[data-tool-row-role="result"]', '[data-tool-status="declined"]'])
+    expect(rowQuery.filters).toEqual([])
+    expect(declinedRow.assertions).toEqual(['count:1'])
+  })
+
+  it('fails when the declined row states no call ID', async () => {
+    const page = Object.assign({} as Page, { locator: () => ({}) })
+    await expect(declinedToolCallId(page)).rejects.toThrow('states a declined call states no call ID')
+  })
+})
+
+describe('expectSavedRefusalFeedback', () => {
+  it('requires a visible bubble that holds the feedback lead and the reason', async () => {
+    await expectSavedRefusalFeedback({} as Page, 'Keep the file.')
+    expect(rowQuery.filters).toEqual([{ hasText: 'Sent feedback:' }, { hasText: 'Keep the file.' }])
+    expect(declinedRow.assertions).toEqual(['visible'])
+  })
+})
+
+/**
+ * A context whose script records each queued turn, starts each turn at the next of `starts`, and answers each request
+ * index with the body that `bodies` states for the reason that the reader typed.
+ */
+function scriptedContext(bodies: (feedback: string) => Record<number, unknown>, starts: readonly number[] = [4]) {
+  const queued: unknown[][] = []
+  let turn = 0
+  const modelScript = {
+    prompt: (text: string) => text,
+    queue: async (...steps: unknown[]) => {
+      queued.push(steps)
+      flow.events.push(`queue:${steps.length}`)
+      return starts[turn++] ?? 4
+    },
+    waitForSteps: async (count: number) => { flow.events.push(`steps:${count}`) },
+    requestAt: async (index: number): Promise<MockModelRequestRecord> => {
+      flow.events.push(`request:${index}`)
+      return { protocol: 'openai-chat-completions', path: '/chat/completions', body: bodies(flow.feedback)[index] ?? { messages: [] } }
+    },
+  } as unknown as ModelScript
+  const scripted: ManagedNativeScenarioContext = { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page: {} as Page, modelScript }
+  return { context: scripted, queued }
+}
+
+/** A request body whose user message holds `text`. */
+function holding(text: string): Record<string, unknown> {
+  return { messages: [{ role: 'user', content: text }] }
+}
+
+describe('exerciseNativePermissionReason', () => {
+  const toolCall = { id: 'refused-native', name: 'unit-native-shell', arguments: { command: 'true' } }
+
+  it('refuses with the typed reason and requires it in the request that continues the refused turn', async () => {
+    const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding(feedback) }))
+    const viewProof = vi.fn(async () => {})
+    await exerciseNativePermissionReason(refused, {
+      toolCall,
+      route: 'native-reply',
+      beforeDecision: () => { flow.events.push('before') },
+      expectNotRun: () => { flow.events.push('not-run') },
+      viewProof,
+    })
+    expect(queued).toEqual([[{ toolCalls: [toolCall] }, { text: expect.stringContaining('The refusal reached the model.') }]])
+    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'before', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'not-run', 'request:5'])
+    expect(flow.feedback).toMatch(/^Leave the target as it is\. REASON[0-9a-f]{32}$/)
+    expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible'])
+    expect(viewProof).toHaveBeenCalledExactlyOnceWith(flow.feedback)
+  })
+
+  it('requires the reason in the turn of the next message, and not in the turn that the refusal continues', async () => {
+    const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding('The call was refused.'), 6: holding(feedback) }))
+    await exerciseNativePermissionReason(refused, {
+      toolCall,
+      route: 'next-message',
+      expectNotRun: () => {
+        flow.events.push('not-run')
+      },
+    })
+    expect(queued).toEqual([[
+      { toolCalls: [toolCall] },
+      { text: expect.stringContaining('The refusal reached the model.') },
+      { text: expect.stringContaining('The reason reached the model.') },
+    ]])
+    expect(flow.events).toEqual(['queue:3', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:7', 'idle', 'not-run', 'request:5', 'request:6'])
+    // The refusal answer, the user row of the reason, and the answer to the reason.
+    expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible', 'visible', 'visible'])
+    expect(rowQuery.filters).toContainEqual({ hasText: flow.feedback })
+  })
+
+  it('requires the reason in the first request after a refusal that ends the turn', async () => {
+    const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding(feedback) }))
+    await exerciseNativePermissionReason(refused, { toolCall, route: 'next-message', afterRefusal: 'ends', expectNotRun: () => {} })
+    expect(queued).toEqual([[{ toolCalls: [toolCall] }, { text: expect.stringContaining('The reason reached the model.') }]])
+    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'request:5'])
+    expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible', 'visible'])
+  })
+
+  it('refuses a native reply in a turn that ends before it touches the model or the browser', async () => {
+    await expect(exerciseNativePermissionReason(context, { toolCall, route: 'native-reply', afterRefusal: 'ends', expectNotRun: () => {} }))
+      .rejects
+      .toThrow('reaches the model only in a turn that continues')
+  })
+
+  it('fails when the request that continues the refused turn lacks the reason', async () => {
+    const { context: refused } = scriptedContext(() => ({ 5: holding('The call was refused.') }))
+    const viewProof = vi.fn(async () => {})
+    await expect(exerciseNativePermissionReason(refused, { toolCall, route: 'native-reply', expectNotRun: () => {}, viewProof }))
+      .rejects
+      .toMatchObject({ matcherResult: { name: 'toContain' } })
+    expect(viewProof).not.toHaveBeenCalled()
+  })
+
+  it('fails when the refused turn already carries the reason that must wait for the next message', async () => {
+    const { context: refused } = scriptedContext(feedback => ({ 5: holding(feedback), 6: holding(feedback) }))
+    await expect(exerciseNativePermissionReason(refused, { toolCall, route: 'next-message', expectNotRun: () => {} }))
+      .rejects
+      .toMatchObject({ matcherResult: { name: 'toContain', pass: true } })
+  })
+
+  it('stops before the view proof when the refused call ran', async () => {
+    const { context: refused } = scriptedContext(feedback => ({ 5: holding(feedback) }))
+    const viewProof = vi.fn(async () => {})
+    await expect(exerciseNativePermissionReason(refused, {
+      toolCall,
+      route: 'native-reply',
+      expectNotRun: () => {
+        throw new Error('the refused command wrote its file')
+      },
+      viewProof,
+    })).rejects.toThrow('the refused command wrote its file')
+    expect(viewProof).not.toHaveBeenCalled()
+  })
+})
+
+describe('exerciseRememberedAllow', () => {
+  const firstCall = { id: 'remembered-first', name: 'unit-native-shell', arguments: { command: 'true' } }
+  const secondCall = { id: 'remembered-second', name: 'unit-native-shell', arguments: { command: 'true' } }
+
+  beforeEach(() => {
+    toolTurn.noControl.mockImplementation(async (_context: unknown, options: { testId: string, relatedProof: () => Promise<unknown> }) => {
+      flow.events.push(`observe:${options.testId}`)
+      await options.relatedProof()
+      flow.events.push('observed')
+    })
+  })
+
+  it('allows under the scope, then runs the covered call in a turn that the observation watches', async () => {
+    const { context: remembered, queued } = scriptedContext(() => ({ 5: { turn: 'first' }, 7: { turn: 'second' } }), [4, 6])
+    await exerciseRememberedAllow(remembered, {
+      scope: 'Session',
+      firstCall,
+      secondCall,
+      beforeDecision: () => { flow.events.push('before') },
+      firstProof: (request) => {
+        expect(request.body).toEqual({ turn: 'first' })
+        flow.events.push('first-proof')
+      },
+      secondProof: (request) => {
+        expect(request.body).toEqual({ turn: 'second' })
+        flow.events.push('second-proof')
+      },
+      viewProof: async () => { flow.events.push('view') },
+    })
+    expect(queued).toEqual([
+      [{ toolCalls: [firstCall] }, { text: expect.stringContaining('The first call ran.') }],
+      [{ toolCalls: [secondCall] }, { text: expect.stringContaining('The covered call ran.') }],
+    ])
+    expect(flow.events).toEqual([
+      'queue:2',
+      'send',
+      'steps:5',
+      'banner',
+      'before',
+      'radiogroup:Allow scope',
+      'radio:Session:exact',
+      'click',
+      'answer:allow',
+      'steps:6',
+      'idle',
+      'request:5',
+      'first-proof',
+      'observe:control-banner',
+      'queue:2',
+      'send',
+      'steps:8',
+      'idle',
+      'no-banner',
+      'request:7',
+      'second-proof',
+      'observed',
+      'view',
+    ])
+    expect(declinedRow.assertions).toEqual(['checked', 'count:0', 'visible', 'visible'])
+  })
+
+  it('answers each turn in the step that calls the tool, in the group that the provider draws', async () => {
+    const { context: remembered, queued } = scriptedContext(() => ({}), [4, 5])
+    await exerciseRememberedAllow(remembered, {
+      scopeGroup: 'Allow as',
+      scope: 'Command rule',
+      answerStep: 'same-step',
+      firstCall,
+      secondCall,
+      firstProof: () => { flow.events.push('first-proof') },
+      secondProof: () => { flow.events.push('second-proof') },
+    })
+    expect(queued).toEqual([
+      [{ text: expect.stringContaining('The first call ran.'), toolCalls: [firstCall] }],
+      [{ text: expect.stringContaining('The covered call ran.'), toolCalls: [secondCall] }],
+    ])
+    expect(flow.events).toEqual([
+      'queue:1',
+      'send',
+      'steps:5',
+      'banner',
+      'radiogroup:Allow as',
+      'radio:Command rule:exact',
+      'click',
+      'answer:allow',
+      'steps:5',
+      'idle',
+      'request:4',
+      'first-proof',
+      'observe:control-banner',
+      'queue:1',
+      'send',
+      'steps:6',
+      'idle',
+      'no-banner',
+      'request:5',
+      'second-proof',
+      'observed',
+    ])
+  })
+
+  it('restores each rule file after the scenario, and removes one that the scenario created', async () => {
+    const kept = join(native.directory, 'kept.rules')
+    const created = join(native.directory, 'created.rules')
+    writeFileSync(kept, 'original rule\n')
+    const { context: remembered } = scriptedContext(() => ({}), [4, 6])
+    await exerciseRememberedAllow(remembered, {
+      scope: 'Always',
+      firstCall,
+      secondCall,
+      firstProof: () => {
+        writeFileSync(kept, 'kept rule\n')
+        writeFileSync(created, 'created rule\n')
+      },
+      secondProof: () => {},
+      ruleFiles: [kept, created],
+    })
+    expect(readFileSync(kept, 'utf8')).toBe('original rule\n')
+    expect(existsSync(created)).toBe(false)
+  })
+
+  it('restores each rule file when the covered call fails its proof', async () => {
+    const kept = join(native.directory, 'kept.rules')
+    writeFileSync(kept, 'original rule\n')
+    const { context: remembered } = scriptedContext(() => ({}), [4, 6])
+    await expect(exerciseRememberedAllow(remembered, {
+      scope: 'Always',
+      firstCall,
+      secondCall,
+      firstProof: () => writeFileSync(kept, 'kept rule\n'),
+      secondProof: () => {
+        throw new Error('the covered call raised a request')
+      },
+      ruleFiles: [kept],
+    })).rejects.toThrow('the covered call raised a request')
+    expect(readFileSync(kept, 'utf8')).toBe('original rule\n')
+  })
+})
+
+describe('exerciseNativePermissionWrite', () => {
+  it.runIf(existsSync('/bin/sh'))('allows the actual write, proves its native result, and then runs the view proof', async () => {
+    const queued: Array<{ toolCalls?: Array<{ id: string, arguments: { command: string } }> }> = []
+    let output = ''
+    flow.onAnswer = (decision) => {
+      const call = queued[0]?.toolCalls?.[0]
+      if (decision === 'allow' && call)
+        output = execFileSync('/bin/sh', ['-c', call.arguments.command], { cwd: native.directory, encoding: 'utf8' })
+    }
+    const modelScript = {
+      prompt: (text: string) => text,
+      queue: async (...steps: typeof queued) => {
+        queued.push(...steps)
+        return 4
+      },
+      waitForSteps: async () => {},
+      requestAt: async () => result(queued[0]?.toolCalls?.[0]?.id ?? '', output),
+    } as unknown as ModelScript
+    const viewProof = vi.fn(async () => {
+      // The view proof runs after the native proof, so the write already holds its calculated bytes.
+      const written = readdirSync(native.directory).filter(name => name.startsWith('native-permission-'))
+      expect(written).toHaveLength(1)
+      expect(readFileSync(join(native.directory, written[0]!), 'utf8')).toMatch(/^AFTER[0-9a-f]{32}42$/)
+    })
+    const page = Object.assign({} as Page, { locator: () => ({ declinedRowProbe: true }) })
+    await exerciseNativePermissionWrite({ provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }, { viewProof })
+    expect(viewProof).toHaveBeenCalledOnce()
   })
 })

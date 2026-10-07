@@ -1,16 +1,24 @@
+import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { codexTest } from '../codex-fixtures'
+import { withCleanup } from '../helpers/cleanup'
+import { writeMcpPermissionServer } from '../helpers/mcpPermissionServer'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { declinedToolCallId, exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseRememberedAllow, expectDeclinedToolRowAcrossReload } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { bashToolCall, codexEscalatedCommandToolCall } from '../helpers/providerToolCalls'
+import { bashToolCall, codexEscalatedCommandToolCall, mcpToolCall } from '../helpers/providerToolCalls'
+import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
+import { getGlobalState } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { answerControl, chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsOptionChosen, isMaybeVisible, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { answerControl, chooseSettingsOption, controlActions, controlButton, expectNoControlBanner, expectSettingsOptionChosen, isMaybeVisible, openWorkspace, savedControlAnswer, sendMessage, toolCallRow, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { readCodexExecResult } from './execResult'
+import { CODEX_AGENT, nativeContext } from './scenarios'
 
 function writeCommand(path: string, content: string): string {
   return `printf %s ${quotePosixShellArgument(content)} > ${quotePosixShellArgument(path)}`
@@ -63,7 +71,10 @@ codexTest.describe('codex permission requests', () => {
       nativeProof: () => {
         expect(readFileSync(file, 'utf8')).toBe('approved-42')
       },
-      viewProof: () => expectNoControlBanner(page),
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        await expect(savedControlAnswer(page)).toHaveText('Allow')
+      },
     })
   })
 
@@ -83,6 +94,8 @@ codexTest.describe('codex permission requests', () => {
 
     await waitForControlBanner(page)
     expect(existsSync(file)).toBe(false)
+    // A command approval offers no decline: Codex states `cancel` as its refusal, so the Deny slot reads Cancel.
+    await expect(controlButton(page, 'deny')).toHaveText('Cancel')
     await answerControl(page, 'deny')
     // Codex ends this code-mode cell on denial. It sends no second model request.
     await waitForAgentIdle(page)
@@ -90,8 +103,107 @@ codexTest.describe('codex permission requests', () => {
     expect(existsSync(file)).toBe(false)
     await expectNoControlBanner(page)
     await expectTurnEndedAfter(modelScript, start + 1)
+    await expect(savedControlAnswer(page)).toHaveText('Cancel')
+    // Codex gives the command item an ID of its own, and its declined result row repeats no text of the command. So
+    // the row is found by its state, and the request row of the same item names the file of the refused command.
+    const callId = await declinedToolCallId(page)
+    await expect(toolCallRow(page, callId, 'request')).toContainText('denied-command.txt')
+    await expectDeclinedToolRowAcrossReload(native, callId)
+  })
+
+  // The reply to a command approval carries no reason. The reason follows as the reader's next message, which opens a
+  // turn of its own, because Codex ends the refused turn.
+  codexTest('sends the reader\'s typed refusal reason as the next message', async ({ native, authenticatedCodexWorkspace }) => {
+    const { page } = native
+    const workingDir = authenticatedCodexWorkspace.workingDir
+    expect(workingDir).toBeTruthy()
+    const file = join(workingDir!, 'reason-command.txt')
+    await waitForSettingsHydrated(page, 'permissionMode')
+    await expectSettingsOptionChosen(page, 'permissionMode-on-request')
+    await exerciseNativePermissionReason(native, {
+      toolCall: codexEscalatedCommandToolCall('reason-command', writeCommand(file, 'reason-42')),
+      route: 'next-message',
+      afterRefusal: 'ends',
+      expectNotRun: () => expect(existsSync(file)).toBe(false),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Cancel'),
+    })
+  })
+
+  // Codex proposes a command rule for an escalated command. The Command rule pill sends that amendment, and Codex
+  // writes it to the rule file of its home, so the same command runs in the next turn with no approval.
+  codexTest('a command rule covers the same escalated command in the next turn', async ({ native, authenticatedCodexWorkspace, leapmuxServer }) => {
+    const { page } = native
+    const codexHome = leapmuxServer.agentEnv?.CODEX_HOME
+    if (!codexHome)
+      throw new Error('The command rule scenario requires the isolated Codex home.')
+    assertPrivateNativePath(codexHome, getGlobalState().tmpDir)
+    const workingDir = authenticatedCodexWorkspace.workingDir
+    expect(workingDir).toBeTruthy()
+    const file = join(workingDir!, 'rule-command.txt')
+    // Each run appends the marker, so the file states how many runs happened.
+    const command = `printf %s rule-42 >> ${quotePosixShellArgument(file)}`
+    await waitForSettingsHydrated(page, 'permissionMode')
+    await expectSettingsOptionChosen(page, 'permissionMode-on-request')
+    await exerciseRememberedAllow(native, {
+      scopeGroup: 'Allow as',
+      scope: 'Command rule',
+      firstCall: codexEscalatedCommandToolCall('rule-first', command),
+      secondCall: codexEscalatedCommandToolCall('rule-second', command),
+      beforeDecision: () => expect(existsSync(file)).toBe(false),
+      firstProof: () => expect(readFileSync(file, 'utf8')).toBe('rule-42'),
+      secondProof: () => expect(readFileSync(file, 'utf8')).toBe('rule-42rule-42'),
+      ruleFiles: [join(codexHome, 'rules', 'default.rules')],
+    })
+  })
+
+  // Codex asks before an MCP tool through an MCP elicitation that states `codex_approval_kind`, which is a path of its
+  // own beside the command approval. The server of the configuration asks for each of its tools.
+  codexTest('denies an MCP tool before the server receives it', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const codexHome = leapmuxServer.agentEnv?.CODEX_HOME
+    if (!codexHome)
+      throw new Error('The MCP permission scenario requires the isolated Codex home.')
+    assertPrivateNativePath(codexHome, getGlobalState().tmpDir)
+    const directory = newProviderWorkingDir(CODEX_AGENT, 'codex-mcp-permission-')
+    const server = writeMcpPermissionServer(directory)
+    await withAskingMcpServer(codexHome, server, async () => {
+      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      await openProviderAgent(leapmuxServer, context.workspaceId, CODEX_AGENT, { workingDir: directory })
+      await openWorkspace(page, context.workspaceId)
+      await exerciseNativePermissionDecision(context, {
+        toolCall: mcpToolCall(context.provider, 'codex-mcp-deny', { server: server.name, tool: 'touch', input: {} }),
+        decision: 'deny',
+        beforeDecision: async (banner) => {
+          await expect(banner).toContainText('touch')
+          // Codex listed the tools of the server, so the server runs and only the refusal keeps the call from it.
+          expect(existsSync(server.ready)).toBe(true)
+        },
+        nativeProof: () => expect(existsSync(server.called)).toBe(false),
+        viewProof: () => expectNoControlBanner(page),
+      })
+    })
   })
 })
+
+/**
+ * Add `server` to the Codex configuration of the run, with each of its tools set to ask before it runs, and restore
+ * the configuration afterwards. An agent reads the configuration when it starts, so `run` opens its own agent.
+ */
+async function withAskingMcpServer(codexHome: string, server: McpProbeServer, run: () => Promise<void>): Promise<void> {
+  const path = join(codexHome, 'config.toml')
+  const original = readFileSync(path, 'utf8')
+  const section = [
+    '',
+    `[mcp_servers.${server.name}]`,
+    `command = ${JSON.stringify(server.command)}`,
+    `args = [${server.args.map(argument => JSON.stringify(argument)).join(', ')}]`,
+    'default_tools_approval_mode = "prompt"',
+    '',
+  ].join('\n')
+  await withCleanup(async () => {
+    writeFileSync(path, `${original}${section}`, { mode: 0o600 })
+    await run()
+  }, async () => writeFileSync(path, original, { mode: 0o600 }))
+}
 
 /**
  * The command that the approval test scripts. It removes a directory that does not exist, so a run changes nothing,
@@ -136,8 +248,8 @@ codexTest.describe('codex approval UI', () => {
       const remembering = allowChoices.getByRole('radio').nth(1)
       await remembering.click()
       await expect(remembering).toBeChecked()
-      // Return to the one-turn decision before approval. A browser test must not
-      // persist a real Codex command or host rule in the developer's account state.
+      // Return to the one-turn decision before approval. A kept command rule would stay
+      // in the Codex home of the run and answer the requests of later specs.
       await once.click()
       await expect(once).toBeChecked()
     }

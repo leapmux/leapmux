@@ -1,18 +1,22 @@
 import { randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { geminiTest } from '../gemini-fixtures'
 import { cssAttributeValue } from '../helpers/cssAttribute'
-import { createNativePermissionFileWrite, exerciseNativePermissionDecision, exerciseNativePermissionWrite, expectDeclinedToolRow } from '../helpers/nativePermission'
+import { createNativePermissionFileWrite, exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseNativePermissionWrite, exerciseRememberedAllow, expectDeclinedToolRow, expectDeclinedToolRowAcrossReload } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
-import { writeToolCall } from '../helpers/providerToolCalls'
-import { messageBubbles, openWorkspace, toolCallRow } from '../helpers/ui'
+import { bashToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { quotePosixShellArgument } from '../helpers/shellArguments'
+import { messageBubbles, openWorkspace, savedControlAnswer, toolCallRow } from '../helpers/ui'
 
 geminiTest('requires a native permission decision before a real file change', async ({ native }) => {
-  await exerciseNativePermissionWrite(native)
+  await exerciseNativePermissionWrite(native, {
+    // The saved row reads the name of Gemini's own `proceed_once` option.
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow'),
+  })
 })
 
 /**
@@ -39,10 +43,9 @@ geminiTest('sends the exact native refusal after a Deny decision and keeps the f
     },
     // Gemini renders the call as <tool>__<call ID>. The refused call reads declined before and after a reload.
     viewProof: async () => {
-      await expectDeclinedToolRow(page, `${GEMINI_TOOL.RunShellCommand}__${callId}`, refusal)
-      await page.reload()
-      await openWorkspace(page, native.workspaceId)
-      await expectDeclinedToolRow(page, `${GEMINI_TOOL.RunShellCommand}__${callId}`, refusal)
+      // The saved row reads the name of Gemini's own `cancel` option.
+      await expect(savedControlAnswer(page)).toHaveText('Reject')
+      await expectDeclinedToolRowAcrossReload(native, `${GEMINI_TOOL.RunShellCommand}__${callId}`, refusal)
     },
   })
 })
@@ -88,5 +91,33 @@ geminiTest('reads a denied file write as declined, with its file and no proposed
         await expect(callRows.filter({ hasText: proposed.trim() })).toHaveCount(0)
       }
     },
+  })
+})
+
+// The ACP reply selects an option, and an option carries no text. The reason follows as the reader's next message.
+geminiTest('sends the reader\'s typed refusal reason as the next message', async ({ native }) => {
+  const file = join((await currentNativeAgent(native)).workingDir, 'native-reason-write.txt')
+  await exerciseNativePermissionReason(native, {
+    toolCall: bashToolCall(native.provider, 'gemini-reason-write', `printf refused > ${quotePosixShellArgument(file)}`),
+    route: 'next-message',
+    expectNotRun: () => expect(existsSync(file)).toBe(false),
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Reject'),
+  })
+})
+
+// Gemini's request offers "Allow for this session", and Gemini keeps it in the session, so the same command later
+// runs with no request.
+geminiTest('a session answer covers the same command in the next turn', async ({ native }) => {
+  const file = join((await currentNativeAgent(native)).workingDir, 'native-session-write.txt')
+  // Each run appends the marker, so the file states how many runs happened.
+  const command = `printf gemini-session >> ${quotePosixShellArgument(file)}`
+  await exerciseRememberedAllow(native, {
+    scope: 'Session',
+    firstCall: bashToolCall(native.provider, 'gemini-session-first', command),
+    secondCall: bashToolCall(native.provider, 'gemini-session-second', command),
+    beforeDecision: () => expect(existsSync(file)).toBe(false),
+    firstProof: () => expect(readFileSync(file, 'utf8')).toBe('gemini-session'),
+    secondProof: () => expect(readFileSync(file, 'utf8')).toBe('gemini-sessiongemini-session'),
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow for this session'),
   })
 })

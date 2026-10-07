@@ -1,13 +1,13 @@
 import type { ProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseRememberedAllow } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { deliberateWorkingDir } from '../helpers/providerWorkingDir'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { openWorkspace } from '../helpers/ui'
+import { openWorkspace, savedControlAnswer } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { createGitRepo } from '../helpers/worktree'
 import { opencodeTest } from '../opencode-fixtures'
@@ -51,6 +51,8 @@ opencodeTest('asks before a shell command touches a file outside the working dir
     nativeProof: () => {
       expect(existsSync(file)).toBe(false)
     },
+    // The saved row reads the name of OpenCode's own `once` option.
+    viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow once'),
   })
 })
 
@@ -67,5 +69,50 @@ opencodeTest('keeps exact outside-directory bytes after a native Deny decision',
     prompt: 'Run the exact shell command in the scripted tool call.',
     bannerText: command,
     expectUnchanged: () => expect(readFileSync(file, 'utf8')).toBe(original),
+  })
+})
+
+// The ACP reply selects an option, and an option carries no text. OpenCode ends the turn after a refusal, so the
+// reason follows as the reader's next message, which opens a turn of its own.
+opencodeTest('sends the reader\'s typed refusal reason as the next message', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
+  const original = `KEEP_THE_OUTSIDE_FILE_${randomUUID()}\n`
+  const { workingDir, file } = projectBesideProbe('opencode-reason-permission-', original)
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, OPENCODE_AGENT, { workingDir })
+  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const command = `rm ../${basename(file)}`
+  await exerciseNativePermissionReason(context, {
+    toolCall: bashToolCall(context.provider, 'opencode-reason-removal', command),
+    route: 'next-message',
+    afterRefusal: 'ends',
+    beforeDecision: banner => expect(banner).toContainText(command),
+    expectNotRun: () => expect(readFileSync(file, 'utf8')).toBe(original),
+    viewProof: () => expect(savedControlAnswer(page)).toHaveText('Reject'),
+  })
+})
+
+// OpenCode keeps an always answer for the outside directory that its request states, so a later removal in the same
+// directory asks nothing.
+opencodeTest('an always answer covers a later removal in the same outside directory', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
+  const { workingDir, file: first } = projectBesideProbe('opencode-always-permission-', 'remove the first file')
+  const second = join(dirname(first), 'opencode-always-second.txt')
+  writeFileSync(second, 'remove the second file')
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, OPENCODE_AGENT, { workingDir })
+  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await exerciseRememberedAllow(context, {
+    scope: 'Always',
+    firstCall: bashToolCall(context.provider, 'opencode-always-first', `rm ../${basename(first)}`),
+    secondCall: bashToolCall(context.provider, 'opencode-always-second', `rm ../${basename(second)}`),
+    beforeDecision: () => {
+      expect(existsSync(first)).toBe(true)
+      expect(existsSync(second)).toBe(true)
+    },
+    firstProof: () => {
+      expect(existsSync(first)).toBe(false)
+      expect(existsSync(second)).toBe(true)
+    },
+    secondProof: () => expect(existsSync(second)).toBe(false),
+    viewProof: () => expect(savedControlAnswer(page)).toHaveText('Always allow'),
   })
 })

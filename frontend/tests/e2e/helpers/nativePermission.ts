@@ -1,24 +1,26 @@
 import type { Locator, Page } from '@playwright/test'
-import type { MockModelRequestRecord, MockModelToolCall } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { NativeMessageSnapshot } from './nativeMessages'
-import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeAnswerStep, NativeScenarioContext } from './nativeScenario'
 import type { GatedOutput } from './outputGate'
 import { Buffer } from 'node:buffer'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
+import { CONTROL_RESPONSE_FEEDBACK_LEAD } from '../../../src/components/chat/persistedControlResponse'
+import { withCleanup } from './cleanup'
 import { expectTurnEndedAfter } from './modelScriptFixture'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { readNativeMessageSnapshot } from './nativeMessages'
-import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
+import { currentNativeAgent, nativeScenarioModelContextText, nativeTextStep, nativeToolOutcome, toolTurnSteps } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
 import { runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { retryUntilPass } from './retryUntilPass'
 import { isFileNameComponent } from './runDirectory'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
-import { answerControl, assistantBubbles, enterControlFeedback, messageBubbles, openWorkspace, PLATFORM_MOD, sendMessage, toolCallRow, waitForAgentIdle, waitForControlBanner } from './ui'
+import { answerControl, assistantBubbles, controlActions, controlButton, enterControlFeedback, expectNoControlBanner, messageBubbles, openWorkspace, PLATFORM_MOD, sendMessage, toolCallRow, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /** A real native operation retains its file guard and the exact result proof. */
 export interface NativePermissionOperationPlan {
@@ -173,7 +175,7 @@ export async function exerciseAllowThenFeedbackRejection(context: NativeScenario
 
   // The reason reached the model inside the same turn, and the saved answer shows it.
   expect(JSON.stringify((await context.modelScript.requestAt(start + 2)).body)).toContain(reason)
-  await expect(messageBubbles(context.page).filter({ hasText: 'Sent feedback:' }).filter({ hasText: reason }).first()).toBeVisible()
+  await expectSavedRefusalFeedback(context.page, reason)
   await expect(assistantBubbles(context.page).filter({ hasText: answer })).toBeVisible()
   expect(existsSync(rejected)).toBe(false)
 }
@@ -189,6 +191,233 @@ export async function expectDeclinedToolRow(page: Page, renderedCallId: string, 
   await expect(row).toContainText('Declined')
   if (refusal !== undefined)
     await expect(row).toContainText(refusal)
+}
+
+/**
+ * Require the result row of one refused call to state a declined call, then reload the page and require it again.
+ * The Worker stores the refusal, so a reload must draw the same declined row.
+ */
+export async function expectDeclinedToolRowAcrossReload(
+  context: Pick<ManagedNativeScenarioContext, 'page' | 'workspaceId'>,
+  renderedCallId: string,
+  refusal?: string,
+): Promise<void> {
+  await expectDeclinedToolRow(context.page, renderedCallId, refusal)
+  await context.page.reload()
+  await openWorkspace(context.page, context.workspaceId)
+  await expectDeclinedToolRow(context.page, renderedCallId, refusal)
+}
+
+/** Locate every visible tool result row. */
+function toolResultRows(page: Page): Locator {
+  return messageBubbles(page).and(page.locator('[data-tool-row-role="result"]'))
+}
+
+/** Read the call ID of the one row of `rows`, which `what` describes for the failure message. */
+async function soleRowCallId(rows: Locator, what: string): Promise<string> {
+  await expect(rows, `exactly one tool result row ${what}`).toHaveCount(1)
+  const callId = await rows.getAttribute('data-tool-call-id')
+  if (!callId)
+    throw new Error(`The tool result row that ${what} states no call ID.`)
+  return callId
+}
+
+/**
+ * Read the call ID of the one visible tool result row that holds `text`.
+ * A provider that gives a call an ID of its own, such as Amp or Fast Agent, cannot find its row by the scripted ID, so
+ * the caller finds it by text that only that row holds, such as the refusal of the call.
+ */
+export async function toolResultCallId(page: Page, text: string): Promise<string> {
+  if (text.trim() === '')
+    throw new Error('A tool result row needs text to find it, because every row holds an empty text.')
+  return soleRowCallId(toolResultRows(page).filter({ hasText: text }), 'holds the text')
+}
+
+/**
+ * Read the call ID of the one visible tool result row that states a declined call.
+ * A provider whose result row of a refused call holds no text of the call, such as Codex, cannot find the row by its
+ * text, so the caller finds it by its state. The page must show one refused call only.
+ */
+export async function declinedToolCallId(page: Page): Promise<string> {
+  return soleRowCallId(toolResultRows(page).and(page.locator('[data-tool-status="declined"]')), 'states a declined call')
+}
+
+/**
+ * How a reason that the reader types for a refusal reaches the model:
+ *
+ * - `native-reply`: the reply to the request carries the reason. The runtime hands it to the model in the request that
+ *   continues the refused turn, as the result of the refused call.
+ * - `next-message`: the reply carries no reason. LeapMux queues the reason as the reader's next message, which waits
+ *   until the refused turn ends and then opens a turn of its own. The transcript draws it as a user row.
+ */
+export type NativeRefusalReasonRoute = 'native-reply' | 'next-message'
+
+/** What {@link exerciseNativePermissionReason} runs around one native permission request that the reader refuses. */
+export interface NativePermissionReason {
+  toolCall: MockModelToolCall
+  route: NativeRefusalReasonRoute
+  /**
+   * What the runtime does after the refusal:
+   *
+   * - `continues`: it asks the model again in the same turn, with the refusal as the result of the call. This is the
+   *   default.
+   * - `ends`: it ends the turn with no further model request.
+   *
+   * A reason in the native reply reaches the model only in a turn that continues.
+   */
+  afterRefusal?: 'continues' | 'ends'
+  /** Check the banner of the request, and the target of the tool before the decision. */
+  beforeDecision?: (banner: Locator) => void | Promise<void>
+  /** Prove that the refused call never ran. The scenario calls it after the last turn ended. */
+  expectNotRun: () => void | Promise<void>
+  /**
+   * Prove provider-owned view state after the last turn ended, such as the saved answer of the request. It receives
+   * the reason that the reader typed.
+   */
+  viewProof?: (reason: string) => Promise<void>
+}
+
+/**
+ * Refuse an actual native permission request with a reason that the reader types, and prove that the reason reaches
+ * the model by its route.
+ *
+ * Text in the composer turns Deny into Send feedback, which refuses the request with that text. The scenario then
+ * requires the reason in the model request that its route states. For `next-message` in a turn that continues, the
+ * scenario also requires that the request of the refused turn holds no reason, because the queue holds the message
+ * until the turn ends.
+ */
+export async function exerciseNativePermissionReason(context: NativeScenarioContext, options: NativePermissionReason): Promise<void> {
+  const continues = (options.afterRefusal ?? 'continues') === 'continues'
+  if (options.route === 'native-reply' && !continues)
+    throw new Error('A reason in the native reply reaches the model only in a turn that continues after the refusal.')
+  // A test can refuse two requests in one session, so each run gets its own reason and its own answers.
+  const reason = `Leave the target as it is. ${uniqueMarker('REASON')}`
+  const refusalAnswer = `The refusal reached the model. ${uniqueMarker('REFUSAL')}`
+  const reasonAnswer = `The reason reached the model. ${uniqueMarker('FOLLOWUP')}`
+  const steps: MockModelStep[] = [{ toolCalls: [options.toolCall] }]
+  if (continues)
+    steps.push(nativeTextStep(context, refusalAnswer))
+  if (options.route === 'next-message')
+    steps.push(nativeTextStep(context, reasonAnswer))
+  const start = await context.modelScript.queue(...steps)
+  await sendMessage(context.page, context.modelScript.prompt('Run the scripted permission probe.'))
+  await context.modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(context.page)
+  await options.beforeDecision?.(banner)
+  await enterControlFeedback(context.page, reason)
+  await expect(controlButton(context.page, 'deny')).toHaveText('Send feedback')
+  await answerControl(context.page, 'deny')
+  await expect(banner).toHaveCount(0)
+  await context.modelScript.waitForSteps(start + steps.length)
+  await waitForAgentIdle(context.page)
+  await options.expectNotRun()
+
+  const nextMessageAfterRefusal = options.route === 'next-message' && continues
+  if (nextMessageAfterRefusal) {
+    expect(nativeScenarioModelContextText(context, await context.modelScript.requestAt(start + 1)), 'the refused turn continues without the reason').not.toContain(reason)
+  }
+  const reasonRequest = await context.modelScript.requestAt(start + (nextMessageAfterRefusal ? 2 : 1))
+  expect(nativeScenarioModelContextText(context, reasonRequest), 'the model reads the reason').toContain(reason)
+  if (continues)
+    await expect(assistantBubbles(context.page).filter({ hasText: refusalAnswer }).first()).toBeVisible()
+  if (options.route === 'next-message') {
+    await expect(userBubbles(context.page).filter({ hasText: reason }).first()).toBeVisible()
+    await expect(assistantBubbles(context.page).filter({ hasText: reasonAnswer }).first()).toBeVisible()
+  }
+  await options.viewProof?.(reason)
+}
+
+/**
+ * Require the saved answer of a refused request to show the reader's reason as the feedback that it sent.
+ * A provider whose reply carries the reason saves the refusal this way, and the row reads `Sent feedback:` and the
+ * reason.
+ */
+export async function expectSavedRefusalFeedback(page: Page, reason: string): Promise<void> {
+  await expect(messageBubbles(page).filter({ hasText: CONTROL_RESPONSE_FEEDBACK_LEAD }).filter({ hasText: reason }).first()).toBeVisible()
+}
+
+/** What {@link exerciseRememberedAllow} runs: one allow under a remembered scope, and a later call that the rule covers. */
+export interface RememberedAllow {
+  /** The radio group of the scope pills. The shared permission row draws `Allow scope`, and the Codex row draws `Allow as`. */
+  scopeGroup?: 'Allow scope' | 'Allow as'
+  /** The label of the scope pill that keeps the rule, such as `Session` or `Always`. */
+  scope: string
+  /** The call that the reader allows under the scope. */
+  firstCall: MockModelToolCall
+  /** The later call that the kept rule covers. It runs in a turn of its own, and that turn raises no request. */
+  secondCall: MockModelToolCall
+  /**
+   * Where each turn states its answer. The default is `next-step`. Cursor states it in the step that calls the tool,
+   * because one Run exchange holds the whole turn.
+   */
+  answerStep?: NativeAnswerStep
+  /** Check the banner of the first call, and the target before the decision. */
+  beforeDecision?: (banner: Locator) => void | Promise<void>
+  /**
+   * Prove the native result of a call from the model request that the last step of its turn answered. In a
+   * `next-step` turn that request holds the result of the call.
+   */
+  firstProof: (request: MockModelRequestRecord) => void | Promise<void>
+  secondProof: (request: MockModelRequestRecord) => void | Promise<void>
+  /** Prove provider-owned view state after both turns, such as the saved answer of the request. */
+  viewProof?: () => Promise<void>
+  /**
+   * The files in which the native agent keeps the rule beyond the session. The scenario restores each one after it
+   * ends, whether it passed or failed: the HOME of the run serves every later spec of the shard, and a kept rule would
+   * answer the requests that those specs require.
+   */
+  ruleFiles?: readonly string[]
+}
+
+/**
+ * Allow an actual native permission request under a remembered scope, then prove that the kept rule covers a later
+ * call: that call runs in the next turn, and the turn raises no request at any time.
+ */
+export async function exerciseRememberedAllow(context: ManagedNativeScenarioContext, options: RememberedAllow): Promise<void> {
+  const saved = (options.ruleFiles ?? []).map(path => ({ path, content: existsSync(path) ? readFileSync(path) : undefined }))
+  await withCleanup(async () => {
+    const firstAnswer = `The first call ran. ${uniqueMarker('FIRST')}`
+    const firstSteps = toolTurnSteps([options.firstCall], nativeTextStep(context, firstAnswer), options.answerStep)
+    const first = await context.modelScript.queue(...firstSteps)
+    await sendMessage(context.page, context.modelScript.prompt('Run the scripted call once.'))
+    await context.modelScript.waitForSteps(first + 1)
+    const banner = await waitForControlBanner(context.page)
+    await options.beforeDecision?.(banner)
+    // The scope pills sit in the control actions of the composer, not in the banner.
+    const scope = controlActions(context.page).getByRole('radiogroup', { name: options.scopeGroup ?? 'Allow scope' }).getByRole('radio', { name: options.scope, exact: true })
+    await scope.click()
+    await expect(scope).toBeChecked()
+    await answerControl(context.page, 'allow')
+    await expect(banner).toHaveCount(0)
+    await context.modelScript.waitForSteps(first + firstSteps.length)
+    await waitForAgentIdle(context.page)
+    await options.firstProof(await context.modelScript.requestAt(first + firstSteps.length - 1))
+    await expect(assistantBubbles(context.page).filter({ hasText: firstAnswer }).first()).toBeVisible()
+
+    // The observation fails if a banner shows at any time in the second turn.
+    await expectNoNativeControl(context, {
+      testId: 'control-banner',
+      relatedProof: async () => {
+        const secondAnswer = `The covered call ran. ${uniqueMarker('SECOND')}`
+        const secondSteps = toolTurnSteps([options.secondCall], nativeTextStep(context, secondAnswer), options.answerStep)
+        const second = await context.modelScript.queue(...secondSteps)
+        await sendMessage(context.page, context.modelScript.prompt('Run the scripted call again.'))
+        await context.modelScript.waitForSteps(second + secondSteps.length)
+        await waitForAgentIdle(context.page)
+        await expectNoControlBanner(context.page)
+        await options.secondProof(await context.modelScript.requestAt(second + secondSteps.length - 1))
+        await expect(assistantBubbles(context.page).filter({ hasText: secondAnswer }).first()).toBeVisible()
+      },
+    })
+    await options.viewProof?.()
+  }, async () => {
+    for (const { path, content } of saved) {
+      if (content === undefined)
+        rmSync(path, { force: true })
+      else
+        writeFileSync(path, content)
+    }
+  })
 }
 
 /**
@@ -247,7 +476,7 @@ export async function exerciseNativePermissionRefusal(context: ManagedNativeScen
 /** Require native Allow before a real file change and calculated command output. */
 export async function exerciseNativePermissionWrite(
   context: ManagedNativeScenarioContext,
-  options: { prepare?: () => Promise<void> } = {},
+  options: { prepare?: () => Promise<void>, viewProof?: () => Promise<void> } = {},
 ): Promise<void> {
   await options.prepare?.()
   const scenario = await nativeWriteScenario(context)
@@ -258,6 +487,7 @@ export async function exerciseNativePermissionWrite(
       expect(readFileSync(scenario.file, 'utf8')).toBe(scenario.before)
     },
     nativeProof: scenario.prove,
+    ...(options.viewProof ? { viewProof: options.viewProof } : {}),
   })
 }
 

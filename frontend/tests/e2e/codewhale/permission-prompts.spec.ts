@@ -3,11 +3,11 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 
 import { codewhaleTest } from '../codewhale-fixtures'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { expectNoControlBanner, toolRows } from '../helpers/ui'
+import { expectNoControlBanner, savedControlAnswer, toolRows } from '../helpers/ui'
 
 codewhaleTest.describe('Codewhale approvals', () => {
   // The Ask posture asks before a command that writes. A read-only command runs
@@ -35,6 +35,7 @@ codewhaleTest.describe('Codewhale approvals', () => {
       viewProof: async () => {
         await expectNoControlBanner(native.page)
         await expect(toolRows(native.page).filter({ hasText: 'approved-42' }).first()).toBeVisible()
+        await expect(savedControlAnswer(native.page)).toHaveText('Allow')
       },
     })
   })
@@ -50,7 +51,24 @@ codewhaleTest.describe('Codewhale approvals', () => {
         expect(nativeToolResult(request, 'deny-call')).toContain('denied by user')
         expect(existsSync(denied)).toBe(false)
       },
-      viewProof: () => expectNoControlBanner(native.page),
+      viewProof: async () => {
+        await expectNoControlBanner(native.page)
+        await expect(savedControlAnswer(native.page)).toHaveText('Deny')
+      },
+    })
+  })
+
+  // The approval route of the runtime carries no reason. The Worker queues the reason as the reader's next message,
+  // which opens a turn of its own after the refused turn.
+  codewhaleTest('sends the reader\'s typed refusal reason as the next message', async ({ native }) => {
+    const denied = join((await currentNativeAgent(native)).workingDir, 'reason-denied.txt')
+    await exerciseNativePermissionReason(native, {
+      toolCall: bashToolCall(native.provider, 'reason-call', 'touch reason-denied.txt'),
+      route: 'next-message',
+      beforeDecision: banner => expect(banner).toContainText('touch reason-denied.txt'),
+      expectNotRun: () => expect(existsSync(denied)).toBe(false),
+      // The saved row states the decision alone, because the reason is the row of the next message.
+      viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Deny'),
     })
   })
 })

@@ -3,10 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { ampTest } from '../amp-fixtures'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectDeclinedToolRowAcrossReload, expectSavedRefusalFeedback, toolResultCallId } from '../helpers/nativePermission'
 import { nativeToolOutcome } from '../helpers/nativeScenario'
 import { bashToolCall, editToolCall } from '../helpers/providerToolCalls'
-import { chatText, controlButton, enterControlFeedback, expectNoControlBanner, sendMessage } from '../helpers/ui'
+import { chatText, expectNoControlBanner, sendMessage } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 /**
@@ -36,25 +36,20 @@ ampTest.describe('Amp permissions', () => {
     })
   })
 
+  // The Worker's helper refuses with the reason, and Amp hands the reason to the model as the result of the call.
   ampTest('refuses a command with the reader\'s reason, which reaches the model', async ({ askingAmpWorkspace, page, modelScript, leapmuxServer }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId })
-    const reason = 'Use the clean target instead.'
-    await exerciseNativePermissionDecision(context, {
+    await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'echo "amp-$((50 + 5))"'),
-      decision: 'deny',
-      beforeDecision: async (banner) => {
-        await expect(banner).toContainText('echo "amp-$((50 + 5))"')
-        // Text in the composer turns Deny into Send feedback, which refuses with it.
-        await enterControlFeedback(page, reason)
-        await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
-      },
-      // The Worker's helper refused with the reason, and Amp handed the reason to the model as the result of the
-      // call. The command never ran.
-      nativeProof: request => expect(JSON.stringify(request.body)).toContain(reason),
-      viewProof: async () => {
+      route: 'native-reply',
+      beforeDecision: banner => expect(banner).toContainText('echo "amp-$((50 + 5))"'),
+      // The command text states no `amp-55`, so only a run could put it on the page.
+      expectNotRun: async () => expect(await chatText(page)).not.toContain('amp-55'),
+      viewProof: async (reason) => {
         await expectNoControlBanner(page)
-        await expect.poll(() => chatText(page)).toContain(reason)
-        expect(await chatText(page)).not.toContain('amp-55')
+        await expectSavedRefusalFeedback(page, reason)
+        // Amp gives the call an ID of its own, so the row is found by the refusal that its result states.
+        await expectDeclinedToolRowAcrossReload(context, await toolResultCallId(page, reason), reason)
       },
     })
   })

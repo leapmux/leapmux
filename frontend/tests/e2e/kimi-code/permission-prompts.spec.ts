@@ -1,11 +1,10 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseRememberedAllow, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { answerControl, controlActions, expectNoControlBanner, expectSettingsChip, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
+import { expectNoControlBanner, expectSettingsChip, savedControlAnswer, toolRows, waitForSettingsHydrated } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 
 kimiTest.describe('answers Kimi Code approvals', () => {
@@ -32,6 +31,7 @@ kimiTest.describe('answers Kimi Code approvals', () => {
       viewProof: async () => {
         await expectNoControlBanner(native.page)
         await expect(toolRows(native.page).filter({ hasText: 'kimi-allowed-output-42' }).first()).toBeVisible()
+        await expect(savedControlAnswer(native.page)).toHaveText('Allow')
       },
     })
   })
@@ -53,7 +53,22 @@ kimiTest.describe('answers Kimi Code approvals', () => {
         expect(nativeToolResult(request, 'deny-call')).toContain('was not run because the user rejected the approval request')
         expect(existsSync(marker), 'the denied command never ran in the working directory').toBe(false)
       },
-      viewProof: () => expectNoControlBanner(native.page),
+      viewProof: async () => {
+        await expectNoControlBanner(native.page)
+        await expect(savedControlAnswer(native.page)).toHaveText('Deny')
+      },
+    })
+  })
+
+  // The reason rides in the feedback of Kimi Code's own rejection, and Kimi Code adds it to the result of the call.
+  kimiTest('a typed refusal reason reaches the model with the denial', async ({ native, authenticatedKimiWorkspace }) => {
+    const marker = join(authenticatedKimiWorkspace.workingDir, 'kimi-reason-marker')
+    await exerciseNativePermissionReason(native, {
+      toolCall: bashToolCall(native.provider, 'reason-call', 'touch kimi-reason-marker'),
+      route: 'native-reply',
+      beforeDecision: banner => expect(banner).toContainText('touch kimi-reason-marker'),
+      expectNotRun: () => expect(existsSync(marker)).toBe(false),
+      viewProof: reason => expectSavedRefusalFeedback(native.page, reason),
     })
   })
 
@@ -69,43 +84,19 @@ kimiTest.describe('answers Kimi Code approvals', () => {
   // rule of `echo "x-$((40 + 2))"` never matches that command, and Kimi asks
   // again in the next turn, where no reader answers.
   kimiTest('an approval for the session covers the same command in the next turn', async ({ native }) => {
-    const { page, modelScript } = native
     const command = 'echo kimi-session-scope-$((40 + 2))'
     const marker = 'kimi-session-scope-42'
-    const first = await modelScript.queue(
-      { toolCalls: [bashToolCall(native.provider, 'scope-first', command)] },
-      { text: 'The first run finished.' },
-    )
-    await sendMessage(page, modelScript.prompt('Run the command once.'))
-    await modelScript.waitForSteps(first + 1)
-
-    await waitForControlBanner(page)
-    // The scope pills sit in the control actions of the composer, not in the banner.
-    const scope = controlActions(page).getByRole('radiogroup', { name: 'Allow scope' })
-    await scope.getByRole('radio', { name: 'Session' }).click()
-    await expect(scope.getByRole('radio', { name: 'Session' })).toBeChecked()
-    await answerControl(page, 'allow')
-    await expectNoControlBanner(page)
-    await modelScript.waitForSteps(first + 2)
-    await waitForAgentIdle(page)
-
-    // The observation fails if a banner shows at any time in the second turn.
-    let second = 0
-    await expectNoNativeControl(native, {
-      testId: 'control-banner',
-      relatedProof: async () => {
-        second = await modelScript.queue(
-          { toolCalls: [bashToolCall(native.provider, 'scope-second', command)] },
-          { text: 'The second run finished.' },
-        )
-        await sendMessage(page, modelScript.prompt('Run the same command again.'))
-        await modelScript.waitForSteps(second + 2)
-        await waitForAgentIdle(page)
+    await exerciseRememberedAllow(native, {
+      scope: 'Session',
+      firstCall: bashToolCall(native.provider, 'scope-first', command),
+      secondCall: bashToolCall(native.provider, 'scope-second', command),
+      // The result of each call carries the marker. A refusal prints no marker.
+      firstProof: request => expect(nativeToolResult(request, 'scope-first'), 'the first run printed the marker').toContain(marker),
+      secondProof: request => expect(nativeToolResult(request, 'scope-second'), 'the second run printed the marker').toContain(marker),
+      viewProof: async () => {
+        await expect(toolRows(native.page).filter({ hasText: marker })).not.toHaveCount(0)
+        await expect(savedControlAnswer(native.page)).toHaveText('Allow for this session')
       },
     })
-    await expectNoControlBanner(page)
-    await expect(toolRows(page).filter({ hasText: marker })).not.toHaveCount(0)
-    // The result of the second call carries the marker. A refusal prints no marker.
-    expect(nativeToolResult(await modelScript.requestAt(second + 1), 'scope-second'), 'the second run printed the marker').toContain(marker)
   })
 })

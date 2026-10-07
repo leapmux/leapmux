@@ -1,9 +1,9 @@
 import { expect } from '@playwright/test'
 
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { chatText, expectNoControlBanner } from '../helpers/ui'
+import { chatText, expectNoControlBanner, savedControlAnswer } from '../helpers/ui'
 
 import { ohMyPiTest } from '../ohmypi-fixtures'
 import { nativeContext } from './scenarios'
@@ -29,6 +29,8 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
       viewProof: async () => {
         await expectNoControlBanner(page)
         await expect.poll(() => chatText(page)).toContain('omp-42')
+        // The saved row reads omp's own `Approve` answer as the word of the button.
+        await expect(savedControlAnswer(page)).toHaveText('Allow')
       },
     })
   })
@@ -49,7 +51,22 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
         await expectNoControlBanner(page)
         await expect.poll(() => chatText(page)).toContain('Tool call denied by user')
         expect(await chatText(page)).not.toContain('omp-55')
+        await expect(savedControlAnswer(page)).toHaveText('Deny')
       },
+    })
+  })
+
+  // omp's select dialog answers with one choice, which carries no text. The reason follows as the reader's next
+  // message, which opens a turn of its own after the refused turn.
+  ohMyPiTest('sends the reader\'s typed refusal reason as the next message', async ({ askingOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingOhMyPiWorkspace.workspaceId })
+    await exerciseNativePermissionReason(context, {
+      toolCall: bashToolCall(context.provider, 'reason-call', 'echo "omp-$((60 + 6))"'),
+      route: 'next-message',
+      beforeDecision: banner => expect(banner).toContainText('echo "omp-$((60 + 6))"'),
+      // The command text states no `omp-66`, so only a run could put it on the page.
+      expectNotRun: async () => expect(await chatText(page)).not.toContain('omp-66'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Deny'),
     })
   })
 })

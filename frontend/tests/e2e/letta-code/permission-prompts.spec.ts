@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chatText, expectNoControlBanner, savedControlAnswer } from '../helpers/ui'
@@ -53,6 +53,23 @@ lettaTest.describe('Letta Code control requests', () => {
         await expectNoControlBanner(page)
         // A denial with no reason keeps the decision word alone.
         await expect(savedControlAnswer(page)).toHaveText('Deny')
+      },
+    })
+  })
+
+  // The reason rides in the `message` of Letta's own approval_response, and Letta hands it to the model.
+  lettaTest('a typed refusal reason reaches the model with the denial', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+    const output = join(askingLettaWorkspace.workingDir, 'letta-reason-out.txt')
+    await exerciseNativePermissionReason(context, {
+      // `tee` writes a file, so Letta asks before the call, as for the denial above.
+      toolCall: bashToolCall(context.provider, 'reason-call', 'echo "letta-reason-not-run" | tee letta-reason-out.txt'),
+      route: 'native-reply',
+      beforeDecision: banner => expect(banner).toContainText('Bash'),
+      expectNotRun: () => expect(existsSync(output)).toBe(false),
+      viewProof: async (reason) => {
+        await expectNoControlBanner(page)
+        await expectSavedRefusalFeedback(page, reason)
       },
     })
   })

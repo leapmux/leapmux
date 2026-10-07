@@ -3,9 +3,9 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codebuddyTest } from '../codebuddy-fixtures'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { answerControl, controlButton, enterControlFeedback, expectNoControlBanner, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, expectNoControlBanner, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code control requests', () => {
@@ -23,7 +23,11 @@ codebuddyTest.describe('CodeBuddy Code control requests', () => {
       nativeProof: () => {
         expect(readFileSync(output, 'utf8')).toBe('CODEBUDDY_ALLOWED')
       },
-      viewProof: () => expectNoControlBanner(page),
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        // The saved row reads CodeBuddy's own `allowed` answer as the word of the button.
+        await expect(savedControlAnswer(page)).toHaveText('Allow')
+      },
     })
   })
 
@@ -45,30 +49,25 @@ codebuddyTest.describe('CodeBuddy Code control requests', () => {
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     expect(existsSync(output)).toBe(false)
+    // The Worker gives a bare denial a placeholder reason, which is no reason of the reader's.
+    await expect(savedControlAnswer(page)).toHaveText('Deny')
   })
 })
 
 codebuddyTest.describe('CodeBuddy Code control answers', () => {
+  // The reason rides in the `reason` of CodeBuddy's own answer, and CodeBuddy hands it to the model.
   codebuddyTest('a denied command does not run, and the reason reaches the model', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
     const marker = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-denied-marker')
-    const reason = 'the probe is not wanted here'
-    await exerciseNativePermissionDecision(context, {
+    await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'touch codebuddy-denied-marker'),
-      decision: 'deny',
-      beforeDecision: async (banner) => {
-        await expect(banner).toContainText('touch codebuddy-denied-marker')
-        // Typing turns the deny button into "Send feedback", which sends the typed
-        // text as the denial reason.
-        await enterControlFeedback(page, reason)
-        await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
+      route: 'native-reply',
+      beforeDecision: banner => expect(banner).toContainText('touch codebuddy-denied-marker'),
+      expectNotRun: () => expect(existsSync(marker), 'the denied command never ran').toBe(false),
+      viewProof: async (reason) => {
+        await expectNoControlBanner(page)
+        await expectSavedRefusalFeedback(page, reason)
       },
-      nativeProof: (request) => {
-        expect(existsSync(marker), 'the denied command never ran').toBe(false)
-        // The model reads the reason in the request that follows the denial.
-        expect(JSON.stringify(request.body)).toContain(reason)
-      },
-      viewProof: () => expectNoControlBanner(page),
     })
   })
 })

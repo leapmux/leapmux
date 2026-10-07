@@ -6,9 +6,9 @@ import { CLINE_SPAWN_WARNING } from '../../../src/components/chat/providers/clin
 import { CLINE_DECLINE_REASON } from '../../../src/generated/contracts/cline-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectDeclinedToolRowAcrossReload, expectSavedRefusalFeedback, toolResultCallId } from '../helpers/nativePermission'
 import { bashToolCall, readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { chatText, controlButton, enterControlFeedback, expectNoControlBanner, expectSettingsChip, messageBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { chatText, expectNoControlBanner, expectSettingsChip, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 /**
@@ -32,31 +32,24 @@ clineTest.describe('Cline control requests', () => {
       viewProof: async () => {
         await expectNoControlBanner(page)
         await expect.poll(() => chatText(page)).toContain('cline-42')
+        await expect(savedControlAnswer(page)).toHaveText('Allow')
       },
     })
   })
 
+  // Cline hands the reason to the model as the call's error, and the refused call reads declined.
   clineTest('refuses a command with the reader\'s reason, which reaches the model', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
     const marker = join(askingClineWorkspace.workingDir, 'refused.txt')
-    const reason = 'Use the clean target instead.'
-    await exerciseNativePermissionDecision(context, {
+    await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', `printf refused > ${marker}`),
-      decision: 'deny',
-      beforeDecision: async (banner) => {
-        await expect(banner).toContainText(`printf refused > ${marker}`)
-        // Text in the composer turns Deny into Send feedback, which refuses with it.
-        await enterControlFeedback(page, reason)
-        await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
-      },
-      // Cline hands the reason to the model as the call's error. The command never ran.
-      nativeProof: (request) => {
-        expect(JSON.stringify(request.body)).toContain(reason)
-        expect(existsSync(marker)).toBe(false)
-      },
-      viewProof: async () => {
+      route: 'native-reply',
+      beforeDecision: banner => expect(banner).toContainText(`printf refused > ${marker}`),
+      expectNotRun: () => expect(existsSync(marker)).toBe(false),
+      viewProof: async (reason) => {
         await expectNoControlBanner(page)
-        await expect(messageBubbles(page).filter({ hasText: reason }).first()).toBeVisible()
+        await expectSavedRefusalFeedback(page, reason)
+        await expectDeclinedToolRowAcrossReload(context, await toolResultCallId(page, reason), reason)
       },
     })
   })
@@ -91,7 +84,11 @@ clineTest.describe('Cline control requests', () => {
       },
       // A refusal with no words of the reader's gives the model LeapMux's own reason.
       nativeProof: request => expect(JSON.stringify(request.body)).toContain(CLINE_DECLINE_REASON.Tool),
-      viewProof: () => expectNoControlBanner(page),
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        // LeapMux's own reason is no reason of the reader's, so the saved row states the decision alone.
+        await expect(savedControlAnswer(page)).toHaveText('Deny')
+      },
     })
   })
 })

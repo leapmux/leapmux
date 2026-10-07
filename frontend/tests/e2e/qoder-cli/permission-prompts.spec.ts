@@ -4,10 +4,10 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { answerControl, controlButton, enterControlFeedback, expectNoControlBanner, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
+import { answerControl, expectNoControlBanner, savedControlAnswer, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
 import { qoderTest } from '../qoder-fixtures'
 import { expectQoderModeChip, nativeContext } from './scenarios'
 
@@ -26,7 +26,10 @@ qoderTest.describe('Qoder CLI control requests', () => {
       nativeProof: () => {
         expect(readFileSync(output, 'utf8')).toBe('hi')
       },
-      viewProof: () => expectNoControlBanner(page),
+      viewProof: async () => {
+        await expectNoControlBanner(page)
+        await expect(savedControlAnswer(page)).toHaveText('Allow')
+      },
     })
   })
 
@@ -48,6 +51,7 @@ qoderTest.describe('Qoder CLI control requests', () => {
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     expect(existsSync(output)).toBe(false)
+    await expect(savedControlAnswer(page)).toHaveText('Deny')
   })
 })
 
@@ -82,24 +86,22 @@ qoderTest.describe('Qoder CLI settings', () => {
 })
 
 qoderTest.describe('Qoder CLI control answers', () => {
-  qoderTest('a denied write does not run, and the typed reason dismisses the banner', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
+  // The reason rides in the `message` and `reason` of Qoder's own decision, and Qoder hands it to the model.
+  qoderTest('a denied write does not run, and the typed reason reaches the model', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
     const marker = join(askingQoderWorkspace.workingDir, 'qoder-denied-marker')
-    await exerciseNativePermissionDecision(context, {
+    await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'printf x > qoder-denied-marker'),
-      decision: 'deny',
+      route: 'native-reply',
       beforeDecision: async (banner) => {
         await expect(banner).toContainText('qoder-denied-marker')
         expect(existsSync(marker)).toBe(false)
-        // Typing turns the deny button into "Send feedback", which sends the typed
-        // text as the denial reason.
-        await enterControlFeedback(page, 'the probe is not wanted here')
-        await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
       },
-      nativeProof: () => {
-        expect(existsSync(marker), 'the denied command never ran').toBe(false)
+      expectNotRun: () => expect(existsSync(marker), 'the denied command never ran').toBe(false),
+      viewProof: async (reason) => {
+        await expectNoControlBanner(page)
+        await expectSavedRefusalFeedback(page, reason)
       },
-      viewProof: () => expectNoControlBanner(page),
     })
   })
 })
