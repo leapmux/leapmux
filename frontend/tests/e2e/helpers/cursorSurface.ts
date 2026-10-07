@@ -220,14 +220,15 @@ export function createCursorSurface(host: MockModelScriptHost, instructionFiles:
       // The request of the turn, and the witness that its record keeps. The rules that the CLI states later reach both.
       let turnContext: ModelRequestContext | undefined
       let runWitness: CursorRunRequestWitness | undefined
+      const receiveContextRules = (rules: readonly CursorContextRule[]) => {
+        if (!turnContext)
+          throw new Error('The native Cursor request context arrived before its turn.')
+        if (runWitness)
+          runWitness.contextRules = rules.map(rule => ({ ...rule }))
+        instructionFiles.check(turnContext, rules, 'known-escape')
+      }
       await serveCursorRun(request, response, {
-        contextRules: (rules) => {
-          if (!turnContext)
-            throw new Error('The native Cursor request context arrived before its turn.')
-          if (runWitness)
-            runWitness.contextRules = rules.map(rule => ({ ...rule }))
-          instructionFiles.check(turnContext, rules, 'known-escape')
-        },
+        contextRules: receiveContextRules,
         answer: async (prompt, requestFrame) => {
           const conversationID = cursorConversationIdOf(requestFrame)
           const currentScenarioID = scenarioIDFromTexts([prompt])
@@ -284,7 +285,7 @@ export function createCursorSurface(host: MockModelScriptHost, instructionFiles:
             reasoning: step.reasoning,
             toolCalls,
             usage: step.usage,
-            ...(witness ? { requestContextRules: (rules: readonly CursorContextRule[]) => { witness.contextRules = rules.map(rule => ({ ...rule })) } } : {}),
+            requestContextRules: receiveContextRules,
             ...(step.stream ? { stream: answer.stream(response, request) } : {}),
           }
         },

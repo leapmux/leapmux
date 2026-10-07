@@ -29,7 +29,7 @@ import { connectFrame, takeConnectFrames } from './cursorWire'
 import { waitUnlessDisconnected } from './mockHttp'
 import { mockScenarioPrompt } from './mockModelScenario'
 import { createModelStream } from './modelStream'
-import { bashToolCall, cursorMergeTodosToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from './providerToolCalls'
+import { bashToolCall, cursorMergeTodosToolCall, cursorRequestContextToolCall, editToolCall, readToolCall, updateTodosToolCall, writeToolCall } from './providerToolCalls'
 
 /** `AgentServerMessage.interaction_update`, and the updates inside it. */
 const FIELD_INTERACTION_UPDATE = 1
@@ -855,7 +855,7 @@ async function startOwnedCursor(host: MockModelScriptHost, guard: InstructionFil
     surface,
     url,
     settled,
-    run: async (conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = []) => {
+    run: async (conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = [], laterRules: readonly (readonly NativeInstructionFile[])[] = []) => {
       const opening = clientMessageWithPrompt(prompt)
       const runRequest = descend(opening, [1])
       if (!runRequest)
@@ -868,7 +868,11 @@ async function startOwnedCursor(host: MockModelScriptHost, guard: InstructionFil
         method: 'POST',
         headers: { 'content-type': 'application/connect+proto' },
         // The surface numbers its first query of the turn 301.
-        body: Buffer.concat([Buffer.from(connectFrame(nativeRun)), Buffer.from(connectFrame(cursorRequestContextReply(301, rules)))]),
+        body: Buffer.concat([
+          Buffer.from(connectFrame(nativeRun)),
+          Buffer.from(connectFrame(cursorRequestContextReply(301, rules))),
+          ...laterRules.map((given, index) => Buffer.from(connectFrame(cursorRequestContextReply(302 + index, given)))),
+        ]),
         ...(signal ? { signal } : {}),
       })
       return Buffer.from(await response.arrayBuffer())
@@ -996,6 +1000,26 @@ describe('createCursorSurface', () => {
     const bytes = await owned.run('unmatched-conversation', 'A bare prompt with no marker.', undefined, rules)
     expect(updateKinds(bytes)).not.toContain('textDelta')
     expect(checks.map(check => ({ files: check.files, scenarioID: check.context.scenarioID }))).toEqual([{ files: rules, scenarioID: 'ambient' }])
+  })
+
+  it('checks every scripted context reply and keeps the latest rules on the original turn witness', async () => {
+    const contexts: ModelRequestContext[] = []
+    const checks: InstructionFileCheck[] = []
+    const owned = await startOwnedCursor(cursorScriptHost(new Set(['surface-later-rules']), contexts, () => ({
+      text: 'Rules answer',
+      toolCalls: [
+        cursorRequestContextToolCall('context-first'),
+        cursorRequestContextToolCall('context-second'),
+      ],
+    })), recordingGuard(checks))
+    const initial = [{ path: '/run-root/work/AGENTS.md', content: 'Initial rules.' }]
+    const later = [{ path: '/outside/CLAUDE.md', content: 'Outside rules.' }]
+
+    await owned.run('later-rules-conversation', mockScenarioPrompt('surface-later-rules', 'Read every context reply.'), undefined, initial, [later, []])
+
+    expect(checks.map(check => check.files)).toEqual([initial, later, []])
+    expect(checks.every(check => check.context === contexts[0] && check.policy === 'known-escape')).toBe(true)
+    expect(contexts[0]?.nativeRequest?.contextRules).toEqual([])
   })
 
   it('leaves unrelated paths unanswered and never selects a script for startup calls', async () => {

@@ -19,7 +19,7 @@ import { MOCK_COPILOT_GITHUB_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MODEL_KEY } fro
 import { mockScenarioPrompt, readScenarioStatus } from './mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
-import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition } from './providerToolCalls'
+import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition, cursorRequestContextToolCall } from './providerToolCalls'
 
 const servers: MockModelServer[] = []
 const credentialCases: { label: string, headers: Record<string, string>, credential: MockModelCredential }[] = [
@@ -90,8 +90,8 @@ function chat(server: MockModelServer, content: string, stream = true): Promise<
 }
 
 /** Send the native Cursor Run frame with the conversation that owns the prompt, and read the whole answer. */
-async function cursorRun(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = []): Promise<void> {
-  const response = await cursorResponse(server, conversationID, prompt, signal, rules)
+async function cursorRun(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = [], laterRules: readonly (readonly { path: string, content: string }[])[] = []): Promise<void> {
+  const response = await cursorResponse(server, conversationID, prompt, signal, rules, laterRules)
   expect(response.status).toBe(200)
   await response.arrayBuffer()
 }
@@ -100,13 +100,17 @@ async function cursorRun(server: MockModelServer, conversationID: string, prompt
  * Open a native Cursor turn, and answer the request context query that the surface sends at the start of the turn
  * with `rules`. The surface numbers that query 301.
  */
-function cursorResponse(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = []): Promise<Response> {
+function cursorResponse(server: MockModelServer, conversationID: string, prompt: string, signal?: AbortSignal, rules: readonly { path: string, content: string }[] = [], laterRules: readonly (readonly { path: string, content: string }[])[] = []): Promise<Response> {
   const action = encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, encodeStringField(1, prompt))))
   const frame = encodeLengthDelimited(1, Buffer.concat([Buffer.from(action), Buffer.from(encodeStringField(5, conversationID))]))
   return fetch(`${server.url}${CURSOR_RUN_PATH}`, {
     method: 'POST',
     headers: { 'content-type': 'application/connect+proto' },
-    body: Buffer.concat([Buffer.from(connectFrame(frame)), Buffer.from(connectFrame(cursorRequestContextReply(301, rules)))]),
+    body: Buffer.concat([
+      Buffer.from(connectFrame(frame)),
+      Buffer.from(connectFrame(cursorRequestContextReply(301, rules))),
+      ...laterRules.map((given, index) => Buffer.from(connectFrame(cursorRequestContextReply(302 + index, given)))),
+    ]),
     ...(signal ? { signal } : {}),
   })
 }
@@ -1736,6 +1740,29 @@ describe('createMockModelServer Amp service', () => {
       const escape = await readScenarioStatus(server.url, 'cursor-escape')
       expect(escape.unexpectedRequests).toEqual([])
       expect(escape.requests[0]?.nativeRequest?.contextRules).toEqual([{ path: join(runRoot, 'AGENTS.md'), content: ANCESTOR_INSTRUCTION_SENTINEL }])
+    })
+
+    it('records each refused Cursor rule from a later scripted context query', async () => {
+      const server = await createMockModelServer({ models: MOCK_MODEL_IDS, runRoot })
+      servers.push(server)
+      await registerScenario(server, 'cursor-later-outside', { steps: [{
+        text: 'Rules answer',
+        toolCalls: [
+          cursorRequestContextToolCall('context-first'),
+          cursorRequestContextToolCall('context-second'),
+        ],
+      }] })
+      const initial = [{ path: join(runRoot, 'work', 'AGENTS.md'), content: 'Private rules.' }]
+      const outside = join(dirname(runRoot), 'AGENTS.md')
+      const later = [{ path: outside, content: 'Outside rules.' }]
+
+      await cursorRun(server, 'later-outside-conversation', mockScenarioPrompt('cursor-later-outside', 'Read the updated rules.'), undefined, initial, [later, later])
+
+      expect(server.ancestorInstructionRequests()).toBe(2)
+      const status = await readScenarioStatus(server.url, 'cursor-later-outside')
+      expect(status.unexpectedRequests).toHaveLength(2)
+      expect(status.unexpectedRequests.every(request => request.reason.includes(outside))).toBe(true)
+      expect(status.requests[0]?.nativeRequest?.contextRules).toEqual(later)
     })
 
     it('logs a refused guidance file of a thread that no scenario marks', async () => {
