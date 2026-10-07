@@ -126,8 +126,8 @@ type turnState struct {
 	// lastText is the text of the turn's last assistant message, the `result`
 	// that Amp states when a process ends after one turn.
 	lastText string
-	// toolUses counts the tool results of the turn, which the turn-end row
-	// carries.
+	// toolUses counts the tool results of the turn. The turn-end row carries it
+	// together with the calls that the turn outlived (see endTurn).
 	toolUses int
 }
 

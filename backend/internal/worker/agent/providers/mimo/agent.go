@@ -78,9 +78,10 @@ type Agent struct {
 	permissionPolicy string
 
 	turnActive bool
-	// interruptRequested marks a turn that an abort ended, so its end reads as
-	// interrupted rather than failed.
-	interruptRequested bool
+	// interruptRequests records the stop attempts of the current turn.
+	// A failed request removes only its own attempt.
+	interruptRequests map[uint64]struct{}
+	interruptAttempt  uint64
 	// turnFailure holds the session.error that failed the running turn. The turn
 	// end persists it as the divider, which states the reason.
 	turnFailure []byte

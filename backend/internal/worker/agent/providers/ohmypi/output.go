@@ -166,6 +166,8 @@ type messageUpdateEnvelope struct {
 type messageEndEnvelope struct {
 	Message struct {
 		Role string `json:"role"`
+		// StopReason is how an assistant message ended (OhMyPiStopReason*).
+		StopReason string `json:"stopReason"`
 		// Steering marks the user message of a steer that omp took into a run.
 		Steering    bool            `json:"steering"`
 		CustomType  string          `json:"customType"`
@@ -451,6 +453,9 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 			content = a.assistantMessageContent(raw)
 			a.rememberAskCalls(message.Content)
 		}
+		if a.messageTextCut(c, message.StopReason, message.Content) {
+			content.Completion = agent.MessageCompletionInterrupted
+		}
 		a.persistThinking(c, message.Content)
 		if err := c.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
 			slog.Error("omp persist message_end", "agent_id", a.AgentID(), "error", err)
@@ -484,6 +489,42 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 		// inspectable card rather than disappearing.
 		a.persistRaw(c, raw)
 	}
+}
+
+// messageTextCut reports whether a stop cut the text of one assistant message.
+//
+// omp ends a message that a stop cut with its partial text, so the row draws that
+// text, and its completion states the stop. omp spells the stop two ways (see
+// turnState.interruptRequested): `aborted`, and `error` while a tool still ran,
+// which only the worker's own note on the session's turn tells apart from a
+// failure. A message with no visible text keeps no completion: the marker states
+// truncated text, and its row draws none.
+func (a *Agent) messageTextCut(c *conversation, stopReason string, content json.RawMessage) bool {
+	switch stopReason {
+	case contracts.OhMyPiStopReasonAborted:
+	case contracts.OhMyPiStopReasonError:
+		if !c.isRoot() {
+			return false
+		}
+		a.Mu.Lock()
+		noted := a.turn.interruptRequested
+		a.Mu.Unlock()
+		if !noted {
+			return false
+		}
+	default:
+		return false
+	}
+	var blocks []contentBlock
+	if json.Unmarshal(content, &blocks) != nil {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type == contentBlockText && strings.TrimSpace(block.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // persistRaw persists a frame this build cannot read, so the reader can still

@@ -25,6 +25,10 @@ const mimoStreamStopWait = 5 * time.Second
 func (a *Agent) Interrupt() error {
 	a.Mu.Lock()
 	stopped, active, sessionID := a.StoppedLocked(), a.turnActive, a.sessionID
+	var attempt uint64
+	if !stopped && active && sessionID != "" {
+		attempt = a.noteInterruptLocked()
+	}
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
@@ -32,17 +36,28 @@ func (a *Agent) Interrupt() error {
 	if !active || sessionID == "" {
 		return nil
 	}
+	// The event stream can finish the cut text before the abort request returns.
+	// Record the stop before the request leaves.
 	if err := a.rpc.abort(a.Context(), sessionID); err != nil {
-		// The abort stopped nothing, so the turn still runs.
+		a.Mu.Lock()
+		delete(a.interruptRequests, attempt)
+		a.Mu.Unlock()
 		return fmt.Errorf("abort the MiMo turn: %w", err)
 	}
-	a.Mu.Lock()
-	if a.turnActive {
-		a.interruptRequested = true
-	}
-	a.Mu.Unlock()
 	a.clock.AfterFunc(mimoAbortGrace, a.reconcileTurn, mimoAbortGraceTimerTag)
 	return nil
+}
+
+// noteInterruptLocked records a stop against the current turn.
+// The caller holds a.Mu. Attempt IDs continue across turns, so an old failure
+// cannot remove a later turn's stop.
+func (a *Agent) noteInterruptLocked() uint64 {
+	a.interruptAttempt++
+	if a.interruptRequests == nil {
+		a.interruptRequests = make(map[uint64]struct{})
+	}
+	a.interruptRequests[a.interruptAttempt] = struct{}{}
+	return a.interruptAttempt
 }
 
 // Stop ends the server and every process below it, and then finishes what the
@@ -128,7 +143,7 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.Mu.Lock()
 	held := a.takeUnreportedFailureLocked()
 	a.turnActive = false
-	a.interruptRequested = false
+	a.interruptRequests = nil
 	a.sessionSwitching = false
 	a.compactionAck = nil
 	a.manualCompactionID = ""

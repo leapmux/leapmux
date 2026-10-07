@@ -379,20 +379,20 @@ func (env piAgentEndEnvelope) isRetryableFailure() bool {
 	// turn's final outcome; earlier assistant entries are intra-turn.
 	for i := len(env.Messages) - 1; i >= 0; i-- {
 		msg := env.Messages[i]
-		if msg.Role != RoleAssistant {
+		if msg.Role != contracts.PiRoleAssistant {
 			continue
 		}
-		return msg.StopReason == StopReasonError && msg.ErrorMessage == piRetryableWebSocketError
+		return msg.StopReason == contracts.PiStopReasonError && msg.ErrorMessage == piRetryableWebSocketError
 	}
 	return false
 }
 
 func (env piAgentEndEnvelope) retainedCompletion() agent.MessageCompletion {
 	for i := len(env.Messages) - 1; i >= 0; i-- {
-		if env.Messages[i].Role != RoleAssistant {
+		if env.Messages[i].Role != contracts.PiRoleAssistant {
 			continue
 		}
-		if env.Messages[i].StopReason == StopReasonError {
+		if env.Messages[i].StopReason == contracts.PiStopReasonError {
 			return agent.MessageCompletionError
 		}
 		break
@@ -404,6 +404,9 @@ func (env piAgentEndEnvelope) retainedCompletion() agent.MessageCompletion {
 // message becomes a row of its own before it (see persistPiThinking).
 func (a *Agent) handlePiMessageEnd(raw []byte) {
 	content := a.piMessageEndContent(raw)
+	if a.piMessageTextCut(raw) {
+		content.Completion = agent.MessageCompletionInterrupted
+	}
 	// Update child status from the nested custom message before persisting it.
 	piApplySubagentNotification(a.sink, raw)
 	a.persistPiThinking(raw)
@@ -412,6 +415,44 @@ func (a *Agent) handlePiMessageEnd(raw []byte) {
 		return
 	}
 	a.generationBuffer.Reset()
+}
+
+// piMessageTextCut reports whether a stop cut the text of one assistant message_end.
+//
+// Pi ends a message that a stop cut with its partial text, so the row draws that text,
+// and its completion states the stop. Pi spells the stop two ways (see
+// noteInterruptRequested): `aborted`, and `error` while a tool still ran, which only
+// LeapMux's own note tells apart from a failure. A message with no visible text keeps
+// no completion: the marker states truncated text, and its row draws none.
+func (a *Agent) piMessageTextCut(raw []byte) bool {
+	var envelope struct {
+		Message struct {
+			Role       string           `json:"role"`
+			StopReason string           `json:"stopReason"`
+			Content    []piContentBlock `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Message.Role != contracts.PiRoleAssistant {
+		return false
+	}
+	switch envelope.Message.StopReason {
+	case contracts.PiStopReasonAborted:
+	case contracts.PiStopReasonError:
+		a.Mu.Lock()
+		noted := a.interruptRequested
+		a.Mu.Unlock()
+		if !noted {
+			return false
+		}
+	default:
+		return false
+	}
+	for _, block := range envelope.Message.Content {
+		if block.Type == ContentBlockText && strings.TrimSpace(block.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // persistPiThinking persists the visible thinking of one assistant message as a
@@ -452,7 +493,7 @@ func piMessageThinking(raw []byte) string {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.Message.Role != RoleAssistant {
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Message.Role != contracts.PiRoleAssistant {
 		return ""
 	}
 	// A string content holds no blocks, so it holds no thinking.
@@ -1034,6 +1075,7 @@ func (a *Agent) withdrawTimedOutPiDialog(id string) {
 		delete(a.questionDialogs, id)
 		delete(a.customQuestionAnswers, dialog.Key)
 	}
+	delete(a.openDialogs, id)
 	a.Mu.Unlock()
 	a.sink.CancelControlRequest(id)
 }
@@ -1064,6 +1106,9 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		if answered {
 			return
 		}
+		// Recorded BEFORE the publish, for the same reason as the deadline below: an
+		// answer that the reader sends at once must find the dialog to forget.
+		a.rememberOpenDialog(head.ID)
 		// Pi answers a dialog whose deadline passes itself, with its default, and
 		// tells the host nothing, so the worker withdraws the card when that
 		// deadline passes. The deadline is armed BEFORE the publish, so an answer
@@ -1071,6 +1116,7 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		a.dialogDeadlines.Arm(a.deadlineClock(), head.ID, head.deadline(), func() { a.withdrawTimedOutPiDialog(head.ID) })
 		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: raw, SourceSeq: a.piControlSourceSeq(question)}); err != nil {
 			a.dialogDeadlines.Disarm(head.ID)
+			a.forgetOpenDialog(head.ID)
 			slog.Error("publish pi control request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 			// Pi offers cancellation but no error response for extension dialogs.
 			response, marshalErr := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": head.ID, "cancelled": true})

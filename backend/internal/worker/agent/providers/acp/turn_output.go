@@ -75,6 +75,11 @@ type acpTurnOutput struct {
 	nextToolUpdateOrder uint64
 	spawnSpansReleased  map[string]struct{}
 	turnToolUses        int
+	// endedTools is the tool calls that a final update ended in this turn, so a
+	// repeated final update counts the call no second time (see completeTool). A
+	// prompt boundary keeps it, because a call of the prompt that ended before the
+	// boundary must not count for the agent turn after it.
+	endedTools map[string]struct{}
 	// promptBoundary is set while an agent turn waits behind a prompt, and nil
 	// otherwise.
 	promptBoundary *acpPromptBoundary
@@ -287,6 +292,7 @@ func (o *acpTurnOutput) takeUnownedOutputLocked() (assistantText, thoughtText st
 	o.turnAssistantText.Reset()
 	o.turnThoughtText.Reset()
 	o.turnToolUses = 0
+	o.endedTools = nil
 	return assistantText, thoughtText
 }
 
@@ -307,10 +313,10 @@ func (o *acpTurnOutput) dropPromptBoundaryLocked() bool {
 
 // drainPromptTurn drains the output of the prompt that ends now. With no
 // boundary, that is the whole turn output. With a boundary, it is only the tool
-// calls that the prompt left open, and bounded is true: the prompt's text was
+// calls that the prompt left open, and hasPromptBoundary is true: the prompt's text was
 // persisted at the boundary, and everything else belongs to the agent turn that
 // waits, which keeps it.
-func (o *acpTurnOutput) drainPromptTurn() (snapshot acpTurnSnapshot, bounded bool) {
+func (o *acpTurnOutput) drainPromptTurn() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
 	boundary := o.promptBoundary
@@ -353,6 +359,7 @@ func (o *acpTurnOutput) resetTurnLocked() {
 	o.nextToolUpdateOrder = 0
 	o.spawnSpansReleased = nil
 	o.turnToolUses = 0
+	o.endedTools = nil
 }
 
 func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
@@ -442,9 +449,20 @@ func (o *acpTurnOutput) toolUpdateStateLocked(toolCallID string, size int) *acpT
 // completeTool records that one tool call ended, and counts it for the turn
 // that it belongs to: a call that the prompt left open at a boundary counts for
 // the prompt, and any other call for the running turn.
+//
+// A call counts once. An agent can repeat the final update of one call: Junie
+// sends its own `failed` update for a command that a stop ended, then one more
+// for each exit report of the client terminal.
 func (o *acpTurnOutput) completeTool(toolCallID string) string {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
+	if _, ended := o.endedTools[toolCallID]; ended {
+		return o.forgetToolLocked(toolCallID)
+	}
+	if o.endedTools == nil {
+		o.endedTools = make(map[string]struct{})
+	}
+	o.endedTools[toolCallID] = struct{}{}
 	if boundary := o.promptBoundary; boundary != nil {
 		if _, ofPrompt := boundary.openTools[toolCallID]; ofPrompt {
 			delete(boundary.openTools, toolCallID)

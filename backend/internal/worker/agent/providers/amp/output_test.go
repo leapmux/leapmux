@@ -441,7 +441,7 @@ func TestProbeInterruptTranscript(t *testing.T) {
 	assert.JSONEq(t, lines[5], string(ends[0].Content), "the turn end is Amp's own result")
 	count, ok := agent.DefaultTurnEndToolUses(agent.ResolveMessageContent(ampProvider{}, agent.MessageContent{Original: ends[0].Content, Metadata: ends[0].Metadata}))
 	require.True(t, ok)
-	assert.EqualValues(t, 1, count, "one call ended with a result")
+	assert.EqualValues(t, 2, count, "the turn made two calls: one ended with a result, and the stop ended the other")
 
 	var closing []agenttest.Message
 	for _, row := range h.rows() {
@@ -847,6 +847,8 @@ func TestTurnEndClosesTheCallsItOutlived(t *testing.T) {
 	assert.Equal(t, "tool_use", rowBlocks(t, closing[0].Content)[0].(map[string]any)["type"], "the closing row is the call's own row")
 	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusStopped}, h.sink.BackgroundTaskStatuses("TU-task"))
 	assert.ElementsMatch(t, []string{"TU-shell", "TU-task"}, h.sink.ClosedSpans())
+	// The turn made both calls, so its divider counts both, although neither ended with a result.
+	assert.Equal(t, []int{2}, agenttest.TurnToolUseCounts(t, h.turnEnds()))
 }
 
 func TestDiscardedOutputPersistsNothing(t *testing.T) {

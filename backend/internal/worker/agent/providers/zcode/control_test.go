@@ -1133,6 +1133,15 @@ func TestZCodeProvider_TurnEndToolUsesReadsTheStatedCount(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = provider.TurnEndToolUses([]byte(`not json`))
 	assert.False(t, ok)
+
+	// The Worker's own count, which every divider carries, outranks the native one: a
+	// stopped turn states toolCallCount 0 for the call that the stop cut.
+	count, ok = provider.TurnEndToolUses([]byte(`{"type":"turn.completed","payload":{"toolCallCount":0,"resultType":"cancelled"},"num_tool_uses":1}`))
+	assert.True(t, ok)
+	assert.Equal(t, int32(1), count)
+	count, ok = provider.TurnEndToolUses([]byte(`{"type":"turn.failed","payload":{"toolCallCount":3},"num_tool_uses":2}`))
+	assert.True(t, ok)
+	assert.Equal(t, int32(2), count)
 }
 
 // ZCode's handle is an opaque TOKEN from session/list, so the token rule applies and

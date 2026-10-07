@@ -155,8 +155,18 @@ func (a *Agent) handleResult(raw []byte) {
 	// its outcome.
 	stopRequested := len(a.interruptRequests) > 0
 	a.interruptRequests = nil
-	interrupted := stopRequested && result.statesAbortedTurn()
+	permissionStop := a.permissionInterruptPending
+	a.permissionInterruptPending = false
+	sessionID := a.sessionID
+	interrupted := stopRequested && (result.statesAbortedTurn() || permissionStop && codebuddyPermissionInterruptedResult(result))
 	a.mu.Unlock()
+	// The SDK refusal must finish the main run before the global stop cancels
+	// child tasks and workflows. Send that stop before the input queue resumes.
+	if permissionStop {
+		if err := a.sendInterruptControl(sessionID); err != nil {
+			slog.Error("codebuddy: stop child tasks after the permission interrupt", "agent_id", a.AgentID(), "error", err)
+		}
+	}
 	content := agent.WithToolUseCount(agent.MessageContent{Original: raw}, toolUses)
 	if interrupted {
 		content.Completion = agent.MessageCompletionInterrupted
@@ -328,8 +338,25 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 		slog.Warn("codebuddy: malformed control_request", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	var request struct {
+		Subtype   string `json:"subtype"`
+		AgentID   string `json:"agent_id"`
+		ToolUseID string `json:"tool_use_id"`
+	}
+	permission := json.Unmarshal(envelope.Request, &request) == nil && request.Subtype == contracts.CodebuddyControlRequestSubtypeCanUseTool && request.AgentID == ""
+	if permission {
+		a.mu.Lock()
+		_, permission = a.turnToolCalls[request.ToolUseID]
+		a.mu.Unlock()
+	}
 	a.persistRaw(raw)
+	// Recorded BEFORE the publish, so an answer that the reader sends at once finds the
+	// permission to forget.
+	if permission {
+		a.rememberOpenPermission(envelope.RequestID)
+	}
 	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: envelope.RequestID, Payload: raw}); err != nil {
+		a.forgetOpenPermission(envelope.RequestID)
 		slog.Error("codebuddy: publish control request", "agent_id", a.AgentID(), "request_id", envelope.RequestID, "error", err)
 		response, marshalErr := json.Marshal(map[string]any{
 			"type":     frameTypeControlResponse,
@@ -356,6 +383,7 @@ func (a *Agent) handleInboundControlCancel(raw []byte) {
 		return
 	}
 	a.persistRaw(raw)
+	a.forgetOpenPermission(envelope.RequestID)
 	a.sink.CancelControlRequest(envelope.RequestID)
 }
 

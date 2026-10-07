@@ -124,6 +124,38 @@ func syncTestPeer(t *testing.T, a *testAgent) {
 	require.NoError(t, err)
 }
 
+func TestACPCancelPrecedesControlWithdrawalWhenTheProviderRequiresIt(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"interrupt", "clear"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			a, sink, requests := newRetiringTestAgent(t)
+			a.hooks.CancelBeforeControlWithdrawal = true
+			a.promptActive = true
+			a.HandleOutput(permissionRequest(t, 40, "session-1"))
+			a.HandleOutput(elicitationRequest(t, 41, "session-1"))
+			require.Len(t, sink.PublishedControls(), 2)
+			if operation == "interrupt" {
+				require.NoError(t, a.Interrupt())
+			} else {
+				_, err := a.ClearContext()
+				require.NoError(t, err)
+			}
+			syncTestPeer(t, a)
+			lines := requests()
+			cancel := indexOfMethod(lines, MethodSessionCancel)
+			require.NotEqual(t, -1, cancel)
+			for _, id := range []int{40, 41} {
+				answer := indexOfAnswer(t, lines, id)
+				require.NotEqual(t, -1, answer)
+				assert.Less(t, cancel, answer, "cancel stops the model before the answer releases its control")
+			}
+			assert.ElementsMatch(t, []string{"jsonrpc:40", "jsonrpc:41"}, sink.CanceledControls())
+			assert.Zero(t, a.OutstandingControlCountForTest())
+		})
+	}
+}
+
 // permissionRequest is a session/request_permission that sessionID raises. An
 // empty sessionID leaves the field out.
 func permissionRequest(t *testing.T, id int, sessionID string) []byte {

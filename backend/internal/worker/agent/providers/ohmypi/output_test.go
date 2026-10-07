@@ -188,6 +188,71 @@ func TestMessageEndRoles(t *testing.T) {
 	})
 }
 
+// omp ends the assistant message that a stop cut with its partial text and a stop
+// reason: `aborted`, or `error` while a tool still ran (see turnState). The row keeps
+// omp's frame and states the stop, so the text draws its interruption marker.
+func TestAMessageEndThatAStopCutStatesTheStop(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		stopReason string
+		noted      bool
+	}{
+		"a clean abort":                        {stopReason: contracts.OhMyPiStopReasonAborted},
+		"a clean abort that LeapMux asked for": {stopReason: contracts.OhMyPiStopReasonAborted, noted: true},
+		"an abort while a tool ran":            {stopReason: contracts.OhMyPiStopReasonError, noted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(`{"type":"agent_start"}`)
+			if tc.noted {
+				r.agent.Mu.Lock()
+				r.agent.turn.interruptRequested = true
+				r.agent.Mu.Unlock()
+			}
+			frame := `{"type":"message_end","message":{"role":"assistant","stopReason":"` + tc.stopReason + `","content":[{"type":"text","text":"Half a sen"}]}}`
+			r.emit(frame)
+
+			messages := r.sink.Messages()
+			require.Len(t, messages, 1)
+			assert.JSONEq(t, frame, string(messages[0].Content), "omp's own frame is the row")
+			assert.Equal(t, agent.MessageCompletionInterrupted, messages[0].Completion)
+		})
+	}
+}
+
+// The marker states truncated TEXT, so a message whose text no stop cut keeps none.
+func TestAMessageEndThatNoStopCutStatesNoStop(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		message string
+		noted   bool
+	}{
+		"a failure that nobody asked for":     {message: `{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"Half"}]}`},
+		"a message that finished at the stop": {message: `{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Whole."}]}`, noted: true},
+		"a cut message with a tool call only": {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"toolCall","id":"call-1","name":"bash"}]}`, noted: true},
+		"a cut message with blank text":       {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":" "}]}`, noted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(`{"type":"agent_start"}`)
+			if tc.noted {
+				r.agent.Mu.Lock()
+				r.agent.turn.interruptRequested = true
+				r.agent.Mu.Unlock()
+			}
+			r.emit(`{"type":"message_end","message":` + tc.message + `}`)
+
+			messages := r.sink.Messages()
+			require.Len(t, messages, 1)
+			assert.Equal(t, agent.MessageCompletion(""), messages[0].Completion)
+		})
+	}
+}
+
 // assembledRow decodes one row that the worker wrote in LeapMux's assembled-message
 // envelope.
 func assembledRow(t *testing.T, message agenttest.Message) map[string]string {

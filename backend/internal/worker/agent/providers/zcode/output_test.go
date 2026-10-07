@@ -107,6 +107,79 @@ func TestHandleZCodeOutput_TurnCompleted_PersistsTheDividerAndResetsSpans(t *tes
 	assert.Contains(t, supplemental, "context_usage", "the supplement retains usage for a reconnect")
 }
 
+// The divider of every user turn states the turn's tool count, so the reader sees how
+// many calls the turn made. The count is ZCode's own toolCallCount.
+func TestHandleZCodeOutput_TurnCompleted_StatesTheToolCountOnTheDivider(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.turnActive = true
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"response":"done","toolCallCount":3,"resultType":"success"}`))
+
+	assert.Equal(t, []int{3}, agenttest.TurnToolUseCounts(t, sink.Messages()))
+}
+
+// ZCode 2.x reports a stopped turn as turn.completed with resultType "cancelled", and
+// that report carries toolCallCount 0. The text that the stop cut keeps its marker.
+func TestHandleZCodeOutput_CancelledTurnKeepsItsPartialTextAsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.turnActive = true
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"assistantMessageId":"message-1","kind":"text_delta","delta":"partial answer"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted,
+		`{"response":"","toolCallCount":0,"resultType":"cancelled","duration":1883}`))
+
+	require.Equal(t, 2, sink.MessageCount())
+	assert.JSONEq(t, `{
+		"type":"assembled_message","kind":"text","text":"partial answer","completion":"interrupted"
+	}`, string(sink.Messages()[0].Content))
+	assert.True(t, sink.Messages()[1].TurnEnd)
+	assert.Equal(t, []int{0}, agenttest.TurnToolUseCounts(t, sink.Messages()))
+}
+
+// A call that still runs when a stop cancels its turn closes as interrupted, not as
+// failed, and the divider counts it: the turn made the call.
+func TestHandleZCodeOutput_CancelledTurnClosesARunningCallAsInterruptedAndCountsIt(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.turnActive = true
+	a.toolCalls["running"] = &zcodeToolCall{name: "Bash", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"started","toolCallId":"running","toolName":"Bash"}}`)}
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted,
+		`{"response":"","toolCallCount":0,"resultType":"cancelled","duration":316}`))
+
+	require.Equal(t, 2, sink.MessageCount())
+	closing := sink.Messages()[0]
+	assert.Equal(t, "running", closing.SpanID)
+	assert.True(t, closing.Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, closing.Completion)
+	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, sink.Messages()))
+}
+
+// A completed turn closes a call that never reported its end as failed, and the native
+// count already holds that call, so the divider states the native count alone.
+func TestHandleZCodeOutput_CompletedTurnClosesALostCallAsFailedAndKeepsTheNativeCount(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.turnActive = true
+	a.toolCalls["lost"] = &zcodeToolCall{name: "Read", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"lost","toolName":"Read"}}`)}
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"response":"done","toolCallCount":2,"resultType":"success"}`))
+
+	require.Equal(t, 2, sink.MessageCount())
+	assert.Equal(t, agent.MessageCompletionError, sink.Messages()[0].Completion)
+	assert.Equal(t, []int{2}, agenttest.TurnToolUseCounts(t, sink.Messages()))
+}
+
 // A background turn's completion must leave the user's turn and its open spans
 // alone, and record its own outcome as a notification instead.
 func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnDoesNotEndTheUsersTurn(t *testing.T) {

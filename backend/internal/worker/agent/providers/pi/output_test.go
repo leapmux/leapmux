@@ -579,6 +579,74 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 	assert.JSONEq(t, string(raw), string(msg.Content))
 }
 
+// Pi ends the assistant message that a stop cut with its partial text and a stop
+// reason: `aborted` for a clean abort, and `error` while a tool still ran (see
+// noteInterruptRequested). The row keeps Pi's frame and states the stop.
+func TestHandlePiOutput_MessageEnd_MarksTheTextThatAStopCut(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		stopReason string
+		noted      bool
+	}{
+		"a clean abort":                        {stopReason: "aborted"},
+		"a clean abort that LeapMux asked for": {stopReason: "aborted", noted: true},
+		"an abort while a tool ran":            {stopReason: contracts.PiStopReasonError, noted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			a.Mu.Lock()
+			a.currentTurnActive = true
+			a.Mu.Unlock()
+			if tc.noted {
+				a.noteInterruptRequested()
+			}
+
+			raw := []byte(`{"type":"message_end","message":{"role":"assistant","stopReason":"` + tc.stopReason + `","content":[{"type":"text","text":"Half a sen"}]}}`)
+			handlePiOutput(a, providerkit.ParseLine(raw))
+
+			require.Equal(t, 1, sink.MessageCount())
+			assert.JSONEq(t, string(raw), string(sink.Messages()[0].Content), "the row keeps Pi's own frame")
+			assert.Equal(t, agent.MessageCompletionInterrupted, sink.Messages()[0].Completion)
+		})
+	}
+}
+
+// The marker states truncated TEXT, so a message whose text a stop did not cut keeps
+// none: a real failure, a message that finished, and a cut message with no text.
+func TestHandlePiOutput_MessageEnd_LeavesAMessageThatNoStopCut(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		message string
+		noted   bool
+	}{
+		"a failure that nobody asked for":     {message: `{"role":"assistant","stopReason":"error","content":[{"type":"text","text":"Half"}]}`},
+		"a message that finished at the stop": {message: `{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Whole."}]}`, noted: true},
+		"a cut message with a tool call only": {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"toolCall","id":"call-1","name":"bash"}]}`, noted: true},
+		"a cut message with blank text":       {message: `{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":"  "}]}`, noted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			a.Mu.Lock()
+			a.currentTurnActive = true
+			a.Mu.Unlock()
+			if tc.noted {
+				a.noteInterruptRequested()
+			}
+
+			handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_end","message":`+tc.message+`}`)))
+
+			require.Equal(t, 1, sink.MessageCount())
+			assert.Equal(t, agent.MessageCompletion(""), sink.Messages()[0].Completion)
+		})
+	}
+}
+
 // piReasoningRow is the assembled-message envelope of one completed thinking row.
 func piReasoningRow(text string) map[string]string {
 	return map[string]string{

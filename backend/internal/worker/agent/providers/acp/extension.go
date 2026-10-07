@@ -101,6 +101,10 @@ type Hooks struct {
 	// open request, which is right for Cursor's question: its turn owns the
 	// question, and Cursor defines no outcome for a withdrawn one.
 	AnswerlessControlsOutliveTurns bool
+	// CancelBeforeControlWithdrawal sends session/cancel before the answers that
+	// release open controls. A provider sets it when an answer can resume the
+	// model loop before the cancel arrives.
+	CancelBeforeControlWithdrawal bool
 	// RetireSession stops the work that an outgoing session left running, for an
 	// agent that offers a route to that work beside session/close. A context
 	// clear calls it once with the id of the session that it replaced, after the

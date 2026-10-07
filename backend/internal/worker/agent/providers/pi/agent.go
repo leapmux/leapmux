@@ -3,6 +3,7 @@ package pi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -69,6 +70,10 @@ type Agent struct {
 	questionDialogs       map[string]*piQuestionSource
 	customQuestionAnswers map[piQuestionKey]*piCustomQuestionAnswer
 	questionGeneration    uint64
+	// openDialogs is the published dialogs that Pi still waits on, so an interrupt
+	// can answer each one (see settleOpenDialogs). Guarded by a.Mu.
+	openDialogs    map[string]struct{}
+	dialogCancelMu sync.Mutex
 	// freshImplementationPending records that a plan menu was answered with
 	// the fresh-implementation choice, so the settings dialog that follows is
 	// answered by the worker rather than published. Guarded by a.Mu. See
@@ -385,12 +390,22 @@ func (a *Agent) Wait() error {
 }
 
 // Interrupt aborts the running Pi turn by sending the `abort`
-// command. Pi's wire format uses {type:"abort"} per the
-// piProvider.IsInterrupt classifier; sendPiCommand applies the
+// command, then answers each dialog that Pi still waits on (see
+// settleOpenDialogs). Pi's wire format uses {type:"abort"} per the
+// piProvider.IsInterrupt classifier; beginPiCommand applies the
 // envelope.
 //
-// No-op when no turn is active so scripts can invoke this without
-// probing currentTurnActive first.
+// The dialogs are answered AFTER the abort is written and BEFORE its
+// answer is awaited. Pi answers the abort only when the agent is idle,
+// and an open dialog keeps it busy. Pi handles each stdin line as it
+// arrives, so the abort marks the run aborted first, and the tool that
+// a cancelled dialog releases then ends a run that Pi already stopped.
+// A dialog answered before the abort would let the run go on to its
+// next model request.
+//
+// With no turn active it sends no abort, so scripts can invoke it without
+// probing currentTurnActive first. It still answers each open dialog,
+// because no abort settles a dialog that waits outside a turn.
 func (a *Agent) Interrupt() error {
 	a.noteInterruptRequested()
 	a.Mu.Lock()
@@ -402,12 +417,17 @@ func (a *Agent) Interrupt() error {
 		return fmt.Errorf("agent is stopped")
 	}
 	if !turnActive {
-		return nil
+		return a.settleOpenDialogs()
 	}
+	wait, err := a.beginPiCommand(CommandAbort, nil)
+	if err != nil {
+		return err
+	}
+	settleErr := a.settleOpenDialogs()
 	// Short timeout — Pi acks aborts quickly; longer waits would just
 	// extend the apparent latency of a user-driven interrupt.
-	_, err := a.sendPiCommand(CommandAbort, nil, 1*time.Second)
-	return err
+	_, err = wait(1 * time.Second)
+	return errors.Join(settleErr, err)
 }
 
 // noteInterruptRequested records that the user stopped the RUNNING turn.

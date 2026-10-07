@@ -110,7 +110,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.sessionID = session.ID
 	a.sessionSwitching = false
 	a.turnActive = false
-	a.interruptRequested = false
+	a.interruptRequests = nil
 	a.lastTurnFailed = false
 	a.TurnToolUses = 0
 	clear(a.messages)

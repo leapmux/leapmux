@@ -122,23 +122,24 @@ type systemInitMessage struct {
 type resultMessage struct {
 	Result     json.RawMessage                `json:"result"`
 	IsError    bool                           `json:"is_error"`
+	Errors     []string                       `json:"errors"`
 	SessionID  string                         `json:"session_id"`
 	Usage      *codebuddyUsage                `json:"usage"`
 	ModelUsage map[string]codebuddyModelUsage `json:"modelUsage"`
 	Meta       struct {
 		ContextUsed *int64 `json:"codebuddy.ai/contextUsed"`
 	} `json:"_meta"`
-	// TerminalReason is set by CodeBuddy 2.158.0 and later on the `result` of an
+	// AbortReason is set by CodeBuddy 2.158.0 and later on the `result` of an
 	// aborted turn, and on no other `result`.
-	TerminalReason string `json:"terminal_reason"`
+	AbortReason string `json:"terminal_reason"`
 }
 
 // The `terminal_reason` values that state a turn ended in an abort, as CodeBuddy
 // spells them. CodeBuddy 2.160.0 writes the first when a stop arrives while the
 // model streams, and the second when it arrives while a tool runs.
 const (
-	codebuddyTerminalReasonAbortedStreaming = "aborted_streaming"
-	codebuddyTerminalReasonAbortedTools     = "aborted_tools"
+	codebuddyAbortReasonAbortedStreaming = "aborted_streaming"
+	codebuddyAbortReasonAbortedTools     = "aborted_tools"
 )
 
 // statesAbortedTurn reports whether a `result` states that the stop took effect, so
@@ -156,8 +157,8 @@ const (
 // therefore ends as a finished turn. No other field states the abort, and the
 // provider keeps no table of CLI versions.
 func (r *resultMessage) statesAbortedTurn() bool {
-	return r.TerminalReason == codebuddyTerminalReasonAbortedStreaming ||
-		r.TerminalReason == codebuddyTerminalReasonAbortedTools
+	return r.AbortReason == codebuddyAbortReasonAbortedStreaming ||
+		r.AbortReason == codebuddyAbortReasonAbortedTools
 }
 
 type codebuddyUsage struct {

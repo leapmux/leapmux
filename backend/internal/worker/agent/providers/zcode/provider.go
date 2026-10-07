@@ -157,21 +157,23 @@ func (p zcodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSes
 	return zcodeStoredSessions(ctx, q, p.storageQuery)
 }
 
-// TurnEndToolUses reads the tool-call count off ZCode's turn end, which states it
-// directly.
+// TurnEndToolUses reads the tool-call count of a turn end. The Worker's own count,
+// which finishZCodeTurn writes onto every divider, comes first: a stopped turn's
+// turn.completed states toolCallCount 0 for the call that the stop cut. ZCode's own
+// toolCallCount answers for a turn end that carries no Worker count.
 func (zcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	var env zcodeEventEnvelope
-	if err := json.Unmarshal(content, &env); err != nil {
-		return agent.DefaultTurnEndToolUses(content)
+	if count, ok := agent.DefaultTurnEndToolUses(content); ok {
+		return count, true
 	}
-	if env.Type != contracts.ZCodeEventTurnCompleted || len(env.Payload) == 0 {
-		return agent.DefaultTurnEndToolUses(content)
+	var env zcodeEventEnvelope
+	if err := json.Unmarshal(content, &env); err != nil || env.Type != contracts.ZCodeEventTurnCompleted || len(env.Payload) == 0 {
+		return 0, false
 	}
 	var payload struct {
 		ToolCallCount *int32 `json:"toolCallCount"`
 	}
 	if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.ToolCallCount == nil {
-		return agent.DefaultTurnEndToolUses(content)
+		return 0, false
 	}
 	return *payload.ToolCallCount, true
 }

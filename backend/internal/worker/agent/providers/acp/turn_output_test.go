@@ -43,6 +43,71 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	assert.Zero(t, turn.completedToolUses)
 }
 
+// endToolCall feeds one final update of a call, as the conversation does: the merge
+// ends the call's state, then the call counts for its turn.
+func endToolCall(output *acpTurnOutput, toolCallID string) {
+	output.mergeToolUpdate(toolCallID, map[string]json.RawMessage{
+		"toolCallId": json.RawMessage(`"` + toolCallID + `"`),
+		"status":     json.RawMessage(`"failed"`),
+	}, true, json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"`+toolCallID+`","status":"failed"}`))
+	output.completeTool(toolCallID)
+}
+
+// Junie sends its own `failed` update for a command that a stop ended, then one more
+// `failed` update for each exit report of the client terminal. The turn made one call.
+func TestACPTurnOutputCountsACallOnceWhenItsFinalUpdateRepeats(t *testing.T) {
+	t.Parallel()
+
+	var output acpTurnOutput
+	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"tool-1"`)},
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"in_progress"}`))
+	for range 3 {
+		endToolCall(&output, "tool-1")
+	}
+	endToolCall(&output, "tool-2")
+
+	turn := output.drainTurn()
+	assert.Equal(t, 2, turn.completedToolUses, "each call counts once, however many final updates it gets")
+	assert.Empty(t, turn.incompleteTools)
+}
+
+// A repeated final update that arrives after the turn drained counts for no turn: the
+// next turn drops the count that no turn owned when it starts.
+func TestACPTurnOutputDropsARepeatedFinalUpdateAfterTheTurn(t *testing.T) {
+	t.Parallel()
+
+	var output acpTurnOutput
+	endToolCall(&output, "tool-1")
+	assert.Equal(t, 1, output.drainTurn().completedToolUses)
+
+	endToolCall(&output, "tool-1")
+	output.turnMu.Lock()
+	output.takeUnownedOutputLocked()
+	output.turnMu.Unlock()
+	endToolCall(&output, "tool-2")
+	assert.Equal(t, 1, output.drainTurn().completedToolUses, "the next turn counts its own call alone")
+}
+
+// A call that the prompt left open at a boundary counts for the prompt once, also when
+// its final update repeats after the boundary.
+func TestACPTurnOutputCountsACallOfThePromptOnceAcrossTheBoundary(t *testing.T) {
+	t.Parallel()
+
+	var output acpTurnOutput
+	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"tool-1"`)},
+		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"tool-1","status":"in_progress"}`))
+	output.turnMu.Lock()
+	output.markPromptBoundaryLocked()
+	output.turnMu.Unlock()
+	endToolCall(&output, "tool-1")
+	endToolCall(&output, "tool-1")
+
+	prompt, hasPromptBoundary := output.drainPromptTurn()
+	require.True(t, hasPromptBoundary)
+	assert.Equal(t, 1, prompt.completedToolUses, "the prompt made the call once")
+	assert.Zero(t, output.drainTurn().completedToolUses, "the agent turn after the boundary made no call")
+}
+
 func TestACPTurnOutputSerializesSessionReplacementWithAppend(t *testing.T) {
 	t.Parallel()
 

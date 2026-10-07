@@ -278,12 +278,19 @@ func (a *Agent) handleTextPart(sessionID string, part mimoPart) {
 	}
 	a.Mu.Lock()
 	delete(a.parts, part.ID)
+	// MiMo ends a part that an abort cut the way it ends a finished one, so the stop
+	// that the turn is under is what tells the two apart. A part that ended before the
+	// stop was persisted at its own end.
+	completion := agent.MessageCompletionComplete
+	if len(a.interruptRequests) > 0 {
+		completion = agent.MessageCompletionInterrupted
+	}
 	a.Mu.Unlock()
 	if state.skip {
 		a.openChildTranscript(sessionID, part, state)
 		return
 	}
-	a.persistTextPart(part.ID, state, part.Text, agent.MessageCompletionComplete)
+	a.persistTextPart(part.ID, state, part.Text, completion)
 }
 
 // openChildTranscript writes a subagent's first instruction as the opening row
@@ -728,7 +735,7 @@ func (a *Agent) beginTurn() {
 	held := a.unattributed
 	a.unattributed = nil
 	a.turnActive = true
-	a.interruptRequested = false
+	a.interruptRequests = nil
 	a.turnFailure = nil
 	a.lastTurnFailed = false
 	a.TurnToolUses = 0
@@ -779,13 +786,13 @@ func (a *Agent) endTurn(idle []byte) {
 	completion := agent.MessageCompletionComplete
 	divider := idle
 	switch {
-	case a.interruptRequested:
+	case len(a.interruptRequests) > 0:
 		completion = agent.MessageCompletionInterrupted
 	case a.turnFailure != nil:
 		completion = agent.MessageCompletionError
 		divider = a.turnFailure
 	}
-	failed := a.turnFailure != nil && !a.interruptRequested
+	failed := a.turnFailure != nil && len(a.interruptRequests) == 0
 	a.Mu.Unlock()
 
 	// Each call that this closes clears its own output count. A subagent's call
@@ -801,7 +808,7 @@ func (a *Agent) endTurn(idle []byte) {
 
 	a.Mu.Lock()
 	a.turnActive = false
-	a.interruptRequested = false
+	a.interruptRequests = nil
 	a.turnFailure = nil
 	a.lastTurnFailed = failed
 	a.pruneFinishedLocked()
@@ -911,7 +918,7 @@ func (a *Agent) handleSessionError(event mimoEvent) {
 	case errorNameAborted:
 		a.Mu.Lock()
 		if a.turnActive {
-			a.interruptRequested = true
+			a.noteInterruptLocked()
 		}
 		a.Mu.Unlock()
 		return

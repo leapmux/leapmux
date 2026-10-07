@@ -276,7 +276,7 @@ func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	if payload.Usage != nil {
 		a.recordZCodeUsage(*payload.Usage)
 	}
-	a.finishZCodeTurn(event, payload.ToolCallCount)
+	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: payload.ResultType == contracts.ZCodeResultCancelled})
 	// A completed turn is not an error, so any pending auto-continue for one is stale.
 	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, false, event.persistBytes())
 }
@@ -309,8 +309,8 @@ func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
 		completion = agent.MessageCompletionInterrupted
 	}
 	a.flushZCodeGeneration(completion)
-	a.persistIncompleteZCodeTools(completion)
-	a.finishZCodeTurn(event, 0)
+	closed := a.persistIncompleteZCodeTools(completion)
+	a.finishZCodeTurn(event, zcodeTurnEnd{closedCalls: closed})
 	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, zcodeFailureIsRetryable(payload), content)
 }
 
@@ -328,13 +328,27 @@ func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
 	return payload.Error.Retryable != nil && *payload.Error.Retryable
 }
 
+// zcodeTurnEnd is what one turn end states beside its event.
+type zcodeTurnEnd struct {
+	// toolCallCount is ZCode's own count of the turn's calls, or 0 when the event
+	// states none. A stopped turn states 0 for a call that the stop cut.
+	toolCallCount int32
+	// cancelled states that a stop ended the turn. ZCode reports a stopped turn as
+	// turn.completed with resultType "cancelled".
+	cancelled bool
+	// closedCalls is the calls of the turn that the caller already closed at the
+	// turn end, because they never reported their own end.
+	closedCalls int
+}
+
 // finishZCodeTurn closes out a turn: persist the divider, reset the spans, and
 // refresh the authoritative usage.
 //
 // A BACKGROUND turn takes none of it. Its completion says nothing about the user's
 // turn, and closing the spans there would tear down the cards of tool calls the
 // user's own turn is still running.
-func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
+func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, end zcodeTurnEnd) {
+	toolCallCount := end.toolCallCount
 	a.Mu.Lock()
 	background := a.backgroundTurn
 	// The turn reported its own end, so the stop's window has nothing left to watch.
@@ -384,9 +398,16 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 		a.persistZCodeNotification(event)
 		return
 	}
+	closed := end.closedCalls
 	if event.Type == contracts.ZCodeEventTurnCompleted {
-		a.flushZCodeGeneration(agent.MessageCompletionComplete)
-		a.persistIncompleteZCodeTools(agent.MessageCompletionError)
+		// A completed turn finished its text, and a call that never reported its end
+		// was lost. A stop cut both, so they end as interrupted.
+		text, calls := agent.MessageCompletionComplete, agent.MessageCompletionError
+		if end.cancelled {
+			text, calls = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
+		}
+		a.flushZCodeGeneration(text)
+		closed += a.persistIncompleteZCodeTools(calls)
 	}
 
 	// Recover any tool call that never reached a final update (an aborted turn), so
@@ -394,7 +415,15 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 	a.ResetCumulativeOutput()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 
-	if err := a.sink.PersistTurnEnd(zcodeTurnContent(content, a.usageSnapshot()), agent.SpanInfo{}); err != nil {
+	// ZCode's own count holds every call of the turn when it states one. Without it,
+	// the turn made the calls that reported their end and the calls closed here.
+	a.Mu.Lock()
+	toolUses := a.TurnToolUses
+	a.Mu.Unlock()
+	if toolCallCount == 0 {
+		toolUses += closed
+	}
+	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(zcodeTurnContent(content, a.usageSnapshot()), toolUses), agent.SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 	a.sink.ResetSpans()
@@ -719,7 +748,10 @@ func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUp
 	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil)
 }
 
-func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) {
+// persistIncompleteZCodeTools closes each announced call that never reported its end,
+// with completion, and returns how many it closed. A turn end counts them as calls of
+// the turn (see finishZCodeTurn).
+func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) int {
 	a.Mu.Lock()
 	toolCallIDs := make([]string, 0, len(a.toolCalls))
 	frames := make(map[string][]byte)
@@ -745,7 +777,7 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 	}
 	a.Mu.Unlock()
 	if a.IsDiscardingOutput() {
-		return
+		return len(toolCallIDs)
 	}
 	sort.Slice(toolCallIDs, func(left, right int) bool {
 		if orders[toolCallIDs[left]] != orders[toolCallIDs[right]] {
@@ -775,6 +807,7 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 		a.children.forgetTitle(toolCallID)
 		a.toolCallPrompts.Take(toolCallID)
 	}
+	return len(toolCallIDs)
 }
 
 // applyZCodeToolBatch backfills the calls a batch summary lists.

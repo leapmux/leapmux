@@ -16,7 +16,9 @@
     "planDialogs",
     "planActions",
     "supplement",
-    "resultFields"
+    "resultFields",
+    "roles",
+    "stopReasons"
   ],
   "$defs": {
     "table": {
@@ -163,6 +165,12 @@
     },
     "structs": {
       "$ref": "#/$defs/structs"
+    },
+    "roles": {
+      "$ref": "#/$defs/table"
+    },
+    "stopReasons": {
+      "$ref": "#/$defs/table"
     }
   }
 }

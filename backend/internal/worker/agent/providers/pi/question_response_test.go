@@ -75,6 +75,23 @@ func TestPiCustomQuestionAnswerCanRetryAfterWriteFailure(t *testing.T) {
 	assert.Len(t, strings.Split(strings.TrimSpace(output.String()), "\n"), 2)
 }
 
+func TestPiFailedQuestionAnswerKeepsTheDialogForInterrupt(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"1. A — first", "custom"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			a, sink, output := piQuestionResponseFixture()
+			a.SetStdinForTest(agenttest.FailingStdin{})
+			reply := []byte(`{"type":"extension_ui_response","id":"select","value":"` + value + `"}`)
+			require.Error(t, a.SendRawInput(reply))
+			a.SetStdinForTest(agenttest.NopStdin(output))
+			require.NoError(t, a.Interrupt())
+			assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","cancelled":true}`, output.String())
+			assert.Equal(t, []string{"select"}, sink.CanceledControls())
+		})
+	}
+}
+
 type piBlockedQuestionWriter struct {
 	entered chan struct{}
 	release chan struct{}

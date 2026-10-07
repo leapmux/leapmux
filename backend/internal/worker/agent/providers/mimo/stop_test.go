@@ -2,6 +2,7 @@ package mimo
 
 import (
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,6 +91,99 @@ func TestInterruptEndsATurnWhoseIdleNeverArrives(t *testing.T) {
 	assert.Equal(t, contracts.MiMoEventSessionStatus, rowTypes(t, messages)[0], "the divider reads as the idle MiMo would send")
 }
 
+// MiMo ends the text part that an abort cut with a final update that states the part's
+// end, as it ends a finished part. That update can arrive while the abort request still
+// waits for its answer. The text keeps the interruption marker all the same.
+func TestInterruptMarksTheTextThatTheAbortCut(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	clock := useMockClock(t, a)
+	feed(a,
+		statusEvent(t, contracts.MiMoStatusTypeBusy),
+		messageEvent(t, "msg_1", roleAssistant, mainActorID, false),
+		textPartEvent(t, partTypeText, "prt_t", "msg_1", "", false),
+		deltaEvent(t, "prt_t", "msg_1", "Half a sen"),
+	)
+	server.handle("POST /session/ses_test/abort", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		feed(a, textPartEvent(t, partTypeText, "prt_t", "msg_1", "Half a sen", true))
+		writeJSON(w, http.StatusOK, `true`)
+	})
+
+	interruptOnClock(t, a, clock)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2, "the cut text, then the divider")
+	_, text, completion := assembledText(t, messages[0].Content)
+	assert.Equal(t, "Half a sen", text)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	assert.True(t, messages[1].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionInterrupted, messages[1].Completion)
+}
+
+// A part that ended before the reader stopped the turn finished, so it keeps no marker.
+func TestInterruptKeepsATextThatEndedBeforeItComplete(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	clock := useMockClock(t, a)
+	feed(a,
+		statusEvent(t, contracts.MiMoStatusTypeBusy),
+		messageEvent(t, "msg_1", roleAssistant, mainActorID, false),
+		textPartEvent(t, partTypeText, "prt_t", "msg_1", "", false),
+		deltaEvent(t, "prt_t", "msg_1", "A whole sentence."),
+		textPartEvent(t, partTypeText, "prt_t", "msg_1", "A whole sentence.", true),
+	)
+
+	interruptOnClock(t, a, clock)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	_, _, completion := assembledText(t, messages[0].Content)
+	assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+}
+
+func TestFailedInterruptLeavesTheLaterTurnInterruptIntact(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	clock := useMockClock(t, a)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+	firstArrived := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	defer close(releaseFirst)
+	var attempts atomic.Int32
+	server.handle("POST /session/ses_test/abort", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		if attempts.Add(1) == 1 {
+			close(firstArrived)
+			<-releaseFirst
+			writeJSON(w, http.StatusInternalServerError, `{"error":"the first abort failed"}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, `true`)
+	})
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- a.Interrupt() }()
+	select {
+	case <-firstArrived:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("The first abort did not reach the server.")
+	}
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle), statusEvent(t, contracts.MiMoStatusTypeBusy),
+		messageEvent(t, "msg_2", roleAssistant, mainActorID, false),
+		textPartEvent(t, partTypeText, "prt_t2", "msg_2", "", false),
+		deltaEvent(t, "prt_t2", "msg_2", "Second partial answer"))
+	interruptOnClock(t, a, clock)
+	releaseFirst <- struct{}{}
+	require.Error(t, <-firstResult)
+	feed(a, textPartEvent(t, partTypeText, "prt_t2", "msg_2", "Second partial answer", true), statusEvent(t, contracts.MiMoStatusTypeIdle))
+	messages := sink.Messages()
+	require.Len(t, messages, 3)
+	_, text, completion := assembledText(t, messages[1].Content)
+	assert.Equal(t, "Second partial answer", text)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	assert.Equal(t, agent.MessageCompletionInterrupted, messages[2].Completion)
+}
+
 func TestInterruptThatFailsKeepsTheTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, server := newSinkTestAgent(t)
@@ -98,7 +192,7 @@ func TestInterruptThatFailsKeepsTheTurn(t *testing.T) {
 	server.respond("POST /session/ses_test/abort", http.StatusInternalServerError, `{}`)
 
 	assert.ErrorContains(t, a.Interrupt(), "abort the MiMo turn")
-	assert.False(t, a.interruptRequested)
+	assert.Empty(t, a.interruptRequests)
 	assertNoTimer(t, clock, "the abort stopped nothing, so no check follows")
 	assert.Equal(t, []bool{true}, sink.TurnActives())
 }
@@ -113,7 +207,7 @@ func TestInterruptWithoutASessionSendsNothing(t *testing.T) {
 
 	require.NoError(t, a.Interrupt())
 	assert.Empty(t, server.allRequests())
-	assert.False(t, a.interruptRequested)
+	assert.Empty(t, a.interruptRequests)
 	assertNoTimer(t, clock, "no abort means no check after the grace")
 }
 

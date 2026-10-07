@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { PI_EVENT } from '~/generated/contracts/pi-protocol'
+import { PI_EVENT, PI_ROLE } from '~/generated/contracts/pi-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
@@ -155,7 +155,7 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
     // Messages API style), distinct from the proto-side MessageSource that
     // describes who persisted the row. Read the wire field by name.
     const messageRole = pickString(pickObject(parent, 'message'), 'role')
-    if (messageRole !== 'assistant')
+    if (messageRole !== PI_ROLE.Assistant)
       return { kind: 'hidden' }
     // The worker persists the message's thinking as a reasoning row of its own,
     // before this row, so this row draws the text alone.

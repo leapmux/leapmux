@@ -231,8 +231,8 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 // of the text now counts the agent turn, so it stays open.
 func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	main := b.main()
-	turn, bounded := b.drainPromptTurn()
-	if !bounded {
+	turn, hasPromptBoundary := b.drainPromptTurn()
+	if !hasPromptBoundary {
 		main.persistCompletedText(agent.AssembledMessageKindReasoning, turn.thoughtText)
 		main.persistCompletedText(agent.AssembledMessageKindText, turn.assistantText)
 	}
@@ -267,8 +267,8 @@ func acpTextProgressScope(kind agent.AssembledMessageKind) string {
 // waiting behind it closes only the tool calls that it left open, and the
 // progress of the agent turn stays (see BeginAgentTurn).
 func (b *Base) finishIncompleteACPPrompt(completion agent.MessageCompletion) {
-	turn, bounded := b.drainPromptTurn()
-	if !bounded {
+	turn, hasPromptBoundary := b.drainPromptTurn()
+	if !hasPromptBoundary {
 		b.finishACPTurn(turn, completion)
 		return
 	}
@@ -3294,8 +3294,14 @@ func (b *Base) Interrupt() error {
 	// Noted BEFORE the cancel goes out, so a result the provider sends the instant
 	// it receives one is already known to belong to a stop.
 	b.noteACPInterruptRequested()
-	// The answers go FIRST. The agent blocks on them, so a cancel that arrives while
-	// one is outstanding stops nothing until the block is released.
+	if b.hooks.CancelBeforeControlWithdrawal {
+		if err := b.cancelSession(); err != nil {
+			return err
+		}
+		b.withdrawTurnControls()
+		return nil
+	}
+	// Other providers block their cancel on an open control. Release that control first.
 	// releaseOutgoingSession keeps the same order for a context clear, which
 	// already holds sessionMu and so cannot cancel through WithSessionID.
 	b.withdrawTurnControls()

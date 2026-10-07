@@ -36,12 +36,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			}, query, a.observeNativeMode)
 			controls.transcript = transcript
 			return acp.Hooks{
-				Sink:                 transcript,
-				InitialModel:         opts.Model(),
-				ModelSetter:          a.setNativeModel,
-				ModeChannel:          acp.ModeChannelPermissionMode,
-				ModeSetter:           a.setNativePermissionMode,
-				SessionUpdateHandler: a.handleSessionUpdate,
+				// Gemini resumes the model after a cancelled permission answer.
+				// Stop the prompt before the answer releases its permission wait.
+				CancelBeforeControlWithdrawal: true,
+				Sink:                          transcript,
+				InitialModel:                  opts.Model(),
+				ModelSetter:                   a.setNativeModel,
+				ModeChannel:                   acp.ModeChannelPermissionMode,
+				ModeSetter:                    a.setNativePermissionMode,
+				SessionUpdateHandler:          a.handleSessionUpdate,
 				ClearProviderState: func() {
 					a.stopChildTranscript(agent.MessageCompletionInterrupted)
 					a.resetNativeModes()

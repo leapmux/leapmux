@@ -2468,6 +2468,8 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', readers: ['ts'], readersWhy: 'the browser detects the plan-approval dialog by title; the worker answers only the FRESH-implementation dialog, whose two titles stay hand-written in providers/pi/protocol.go because no browser code reads them', doc: 'plan approval dialog titles' },
       { key: 'planActions', goTable: 'PlanAction', tsTable: 'PLAN_ACTION', tsType: 'PiPlanAction', doc: 'plan approval response values' },
+      { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'PiRole', doc: 'message roles that both readers compare' },
+      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'PiStopReason', doc: 'assistant stop reasons that both readers compare' },
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
       { key: 'assistantEvents', frameKind: 'name', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
       { key: 'customTypes', frameKind: 'name', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },

@@ -468,7 +468,10 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 			Completion: completion,
 			Metadata:   turnMetadata(usage, turnDurationMs(turn, endedAt)),
 		}
-		if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, turn.toolUses), agent.SpanInfo{}); err != nil {
+		// The turn made each call it outlived as well, so the count holds them beside
+		// the calls that ended with a result: a stop that ended a running command
+		// still states that the turn ran one.
+		if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, turn.toolUses+len(open)), agent.SpanInfo{}); err != nil {
 			slog.Error("amp persist turn end", "agent_id", a.agentID, "error", err)
 		}
 	}

@@ -33,9 +33,15 @@ type Agent struct {
 	turnToolCalls             map[string]struct{}
 	interruptRequests         map[uint64]struct{}
 	interruptAttempt          uint64
+	// openPermissions is the can_use_tool requests that CodeBuddy still waits on, so
+	// an interrupt can refuse each one (see refuseOpenPermissions).
+	openPermissions map[string]struct{}
+	// permissionInterruptPending holds the global stop until the main run ends.
+	permissionInterruptPending bool
+	permissionWriteMu          sync.Mutex
 
 	// hasGoalCommand records whether the running CLI advertises /goal in its
-	// `slash_commands` list. It gates the goal controls on the CLI's own
+	// `slash_commands` list. The goal controls require the CLI's own
 	// statement, never on a version table.
 	hasGoalCommand bool
 	// goalCommandKnown records whether the init frame arrived at all. Absent is
@@ -44,7 +50,7 @@ type Agent struct {
 	goalCommandKnown bool
 
 	// pendingControl routes a control_response to the caller waiting on its
-	// request id. See control.go.
+	// request id. See sendControlAndWait.
 	pendingControlMu sync.Mutex
 	pendingControl   map[string]chan<- codebuddyControlResult
 	tasks            codebuddyTaskIndex
@@ -110,6 +116,10 @@ func (a *Agent) setTurnActive(active bool) {
 		a.interruptRequests = nil
 	}
 	a.active = active
+	if !active {
+		clear(a.openPermissions)
+		a.permissionInterruptPending = false
+	}
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
 	a.mu.Unlock()
@@ -246,15 +256,25 @@ func codebuddySteerOutcome(resp codebuddyControlResult, err error) error {
 	}
 }
 
-// Interrupt aborts the running turn with CodeBuddy's own control_request.
+// Interrupt stops the turn through a waiting permission or a control request.
+// CodeBuddy's permission refusal carries interrupt:true and stops the native run.
+// Send the global stop after the native run ends, before the next input enters.
 func (a *Agent) Interrupt() error {
+	a.permissionWriteMu.Lock()
+	defer a.permissionWriteMu.Unlock()
 	if a.IsStopped() {
 		return fmt.Errorf("the CodeBuddy process is stopped")
 	}
 	a.mu.Lock()
+	if a.permissionInterruptPending {
+		a.mu.Unlock()
+		return nil
+	}
 	sessionID := a.sessionID
 	revision := a.activityRev
 	requested := a.active
+	permissionStop := requested && len(a.openPermissions) > 0
+	a.permissionInterruptPending = permissionStop
 	a.interruptAttempt++
 	attempt := a.interruptAttempt
 	if requested {
@@ -264,20 +284,28 @@ func (a *Agent) Interrupt() error {
 		a.interruptRequests[attempt] = struct{}{}
 	}
 	a.mu.Unlock()
-	body, err := json.Marshal(map[string]any{
-		"subtype":    "interrupt",
-		"session_id": sessionID,
-		"reason":     "user",
-	})
-	if err != nil {
-		return err
-	}
-	if err := a.sendControlFire(string(body)); err != nil {
+	forgetFailedAttempt := func() {
 		a.mu.Lock()
 		if requested && a.active && a.activityRev == revision {
 			delete(a.interruptRequests, attempt)
+			a.permissionInterruptPending = false
 		}
 		a.mu.Unlock()
+	}
+	if permissionStop {
+		refused, err := a.refuseOpenPermissions()
+		if err != nil && !refused {
+			forgetFailedAttempt()
+		}
+		if err != nil || refused {
+			return err
+		}
+		a.mu.Lock()
+		a.permissionInterruptPending = false
+		a.mu.Unlock()
+	}
+	if err := a.sendInterruptControl(sessionID); err != nil {
+		forgetFailedAttempt()
 		return err
 	}
 	return nil

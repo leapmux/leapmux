@@ -80,13 +80,3 @@ const (
 	ContentBlockText     = "text"
 	ContentBlockThinking = "thinking"
 )
-
-// Pi message roles — the `role` field on entries inside `agent_end.messages`
-// and on `message_end.message`. Only assistant entries carry the final
-// stop-reason for a turn.
-const RoleAssistant = "assistant"
-
-// Pi assistant stop reasons — the `stopReason` field on the final
-// assistant entry of an `agent_end` envelope. "error" pairs with a
-// non-empty `errorMessage` describing the failure.
-const StopReasonError = "error"

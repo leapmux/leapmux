@@ -245,6 +245,13 @@ func (b *Base) withdrawTurnControls() {
 // instant it receives one is already known to belong to a stop.
 func (b *Base) releaseOutgoingSession(sessionID string) error {
 	b.noteACPInterruptRequested()
+	if b.hooks.CancelBeforeControlWithdrawal && b.PromptActive() {
+		if err := b.sendSessionCancel(sessionID); err != nil {
+			return err
+		}
+		b.withdrawTurnControls()
+		return nil
+	}
 	b.withdrawTurnControls()
 	if !b.PromptActive() {
 		return nil
