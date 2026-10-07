@@ -175,7 +175,7 @@ func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		require.NoError(t, ch.sendGate.Send(context.Background(), ch.ctx, bigPlain, writeChunk(1)))
+		require.NoError(t, ch.sendGate.Send(context.Background(), ch.ctx, 1, bigPlain, writeChunk(1)))
 	}()
 
 	select {
@@ -188,9 +188,10 @@ func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 	// lets small win the between-chunk acquire (synchronous Send would deadlock).
 	smallDone := make(chan error, 1)
 	go func() {
-		smallDone <- ch.sendGate.Send(context.Background(), ch.ctx, smallPlain, writeChunk(2))
+		smallDone <- ch.sendGate.Send(context.Background(), ch.ctx, 2, smallPlain, writeChunk(2))
 	}()
-	time.Sleep(20 * time.Millisecond)
+	require.Eventually(t, func() bool { return ch.sendGate.FrameWaiters() == 1 },
+		30*time.Second, time.Millisecond, "the small send must wait before the first frame returns")
 	close(holdFirst)
 
 	select {

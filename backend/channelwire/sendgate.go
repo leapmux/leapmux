@@ -11,67 +11,86 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// SendGate serializes one channel's outbound frames.
+// SendGate serializes the outbound frames of one channel.
 //
-// Two permits, because two invariants need two different scopes:
+// Three permits protect three invariants:
 //
-//   - frame is held across ONE chunk's encrypt + write. The Noise transport
-//     nonce is an implicit counter and the peer decrypts in strict arrival
-//     order, so ciphertext order MUST equal wire order; one chunk is the
-//     smallest scope that guarantees it -- and the smallest that lets another
-//     sender's chunk land between messages.
-//   - chunked is held across a whole MULTI-chunk message. The Hub relay admits
-//     at most ONE chunked sequence per channel+direction and tears the channel
-//     down on a second (internal/hub/channelmgr.chunkTracker.Track), and both
-//     peer receivers bound live reassembly by contracts.DefaultMaxIncompleteChunked. A
-//     single-chunk message never takes it, which is exactly what lets a 32 KiB
-//     tunnel frame or a flow-control grant overtake a multi-megabyte message.
+//   - Each correlation ID holds a sequence permit for a complete message.
+//     Stream events reuse an ID. Their chunks must never mix.
+//   - The frame permit covers one chunk's encryption and write.
+//     The Noise nonce is implicit, so ciphertext order must match wire order.
+//   - The chunked permit covers a complete message with multiple chunks.
+//     The hub admits one such sequence per channel and direction.
+//     Another ID's single-chunk message can overtake this message.
 //
-// It lives here because both Go senders of this wire contract need it and
-// neither can see the other's copy -- the same reason SendChannelFrames does.
-// The browser (frontend/src/lib/channel.ts) needs no counterpart: its
-// sendEncryptedMessage chunk loop is synchronous JavaScript, so the event loop
-// already makes it atomic and the Hub's one-sequence rule holds for free.
-//
-// Its zero value is a usable gate: the permits are created on first use, so a
-// struct that embeds one by value needs no constructor. That matches
-// ctxutil.Mutex and tunnel.latchedErr -- and it is load-bearing here, because
-// channelSender is built by struct literal in dispatcher_test.go and
-// session_test.go.
+// The worker and tunnel senders share this mechanism. Browser sends need no
+// permit because their synchronous chunk loop prevents event-loop interleaving.
+// The zero value works. Tests can construct a sender without a constructor.
 type SendGate struct {
-	once    sync.Once
-	frame   chan struct{}
-	chunked chan struct{}
+	once            sync.Once
+	frame           chan struct{}
+	chunked         chan struct{}
+	sequenceMu      sync.Mutex
+	sequences       map[uint64]*sendSequence
+	sequenceWaiters atomic.Int32
+	chunkedWaiters  atomic.Int32
 	// frameWaiters counts senders parked on the frame permit. Production
 	// never reads it; see FrameWaiters for why it exists.
 	frameWaiters atomic.Int32
 }
 
-// FrameWaiters reports how many senders are currently parked waiting for
-// the frame permit.
-//
-// A TEST SEAM, and the only reason it is exported. Proving that a small
-// send overtakes a multi-chunk send requires the small send to be QUEUED
-// before the big send releases the permit between chunks. Nothing else
-// makes that observable, and a sleep sized to "queued by now" is a flake
-// the moment the machine is loaded: the sleep expires, the big send
-// re-acquires first, and the assertion about ordering fails for a reason
-// that has nothing to do with the code under test.
-//
-// The count rises just before a sender parks and falls when it wakes, so
-// poll it (require.Eventually) rather than reading it once.
+type sendSequence struct {
+	permit chan struct{}
+	users  int
+}
+
+// FrameWaiters reports the callers that wait for the frame permit.
+// Tests use this count to release a held frame after another sender waits.
+// The count excludes the caller that holds the permit.
 func (g *SendGate) FrameWaiters() int {
 	return int(g.frameWaiters.Load())
 }
 
-// ErrSendAborted reports that a send gave up waiting for a permit rather than
-// failing on the wire.
-//
-// The distinction is load-bearing: tunnel.Channel.sendInnerContext cancels the
-// whole channel on an encrypt/write failure, and must NOT do so because one
-// caller's context ended before its first chunk. An acquire failure AFTER the
-// first chunk can only be the lifetime ending -- i.e. the channel is already
-// cancelled -- so "never cancel on ErrSendAborted" is correct at both points.
+// SendWaiters lets a test wait for a send before it releases a held frame.
+func (g *SendGate) SendWaiters() int {
+	return g.FrameWaiters() + int(g.sequenceWaiters.Load()) + int(g.chunkedWaiters.Load())
+}
+
+// acquireSequence prevents messages with the same correlation ID from mixing their chunks.
+// The reference count includes each waiter. The last caller removes the sequence.
+func (g *SendGate) acquireSequence(ctx, lifetime context.Context, correlationID uint64) (func(), error) {
+	g.sequenceMu.Lock()
+	if g.sequences == nil {
+		g.sequences = make(map[uint64]*sendSequence)
+	}
+	sequence := g.sequences[correlationID]
+	if sequence == nil {
+		sequence = &sendSequence{permit: make(chan struct{}, 1)}
+		g.sequences[correlationID] = sequence
+	}
+	sequence.users++
+	g.sequenceMu.Unlock()
+	releaseUser := func() {
+		g.sequenceMu.Lock()
+		sequence.users--
+		if sequence.users == 0 {
+			delete(g.sequences, correlationID)
+		}
+		g.sequenceMu.Unlock()
+	}
+	if err := acquire(sequence.permit, &g.sequenceWaiters, ctx, lifetime); err != nil {
+		releaseUser()
+		return nil, err
+	}
+	return func() {
+		<-sequence.permit
+		releaseUser()
+	}, nil
+}
+
+// ErrSendAborted reports that a send stopped before it acquired a permit.
+// A caller cancellation before the first frame does not damage the channel.
+// After the first frame, only the transport lifetime can stop permit acquisition.
 var ErrSendAborted = errors.New("channel send aborted before the frame was written")
 
 func (g *SendGate) init() {
@@ -81,17 +100,11 @@ func (g *SendGate) init() {
 	})
 }
 
-// acquire takes permit, giving up with ErrSendAborted (wrapping the cause) when
-// ctx or lifetime ends first. A nil lifetime is simply not observed.
-//
-// The non-blocking fast path comes first so an uncontended acquire under an
-// already-cancelled ctx still succeeds, matching ctxutil.Mutex.Lock. ctxutil.Mutex
-// itself is not reused here: it bounds an acquire by ONE context, and this needs
-// two (operation + transport lifetime) without allocating a linked context per
-// frame -- which is exactly the per-frame allocation this change exists to remove.
-//
-// waiting counts the callers parked on this permit, for the test seam on
-// FrameWaiters. Pass nil for a permit no test observes.
+// acquire takes a permit or returns ErrSendAborted when a context ends.
+// A nil lifetime adds no cancellation source.
+// The fast path permits an uncontended acquisition with a cancelled context.
+// This matches ctxutil.Mutex. Two contexts require this separate mechanism.
+// Tests observe waiting. Pass nil when no test needs the count.
 func acquire(permit chan struct{}, waiting *atomic.Int32, ctx, lifetime context.Context) error {
 	select {
 	case permit <- struct{}{}:
@@ -127,23 +140,22 @@ func (g *SendGate) WithFrame(ctx, lifetime context.Context, fn func() error) err
 	return fn()
 }
 
-// Send splits plaintext and puts every chunk on the wire through sendChunk,
-// under the two permits described on the type.
-//
-// ctx gates ENTRY ONLY -- the chunked-permit acquire and the FIRST chunk's
-// frame-permit acquire. Once a chunk is on the wire the message is COMMITTED:
-// abandoning it midway leaves the peer holding a partial reassembly it can never
-// complete (pinning its bytes, burning one of its contracts.DefaultMaxIncompleteChunked
-// slots, and occupying the Hub's single in-flight chunked sequence) for the
-// channel's life. So every chunk after the first waits on lifetime alone.
-//
-// lifetime may be nil for a sender whose transport has no separate lifetime to
-// observe. Pass context.Background() for ctx when entry needs no bound.
-func (g *SendGate) Send(ctx, lifetime context.Context, plaintext []byte,
+// Send splits plaintext and writes each chunk through sendChunk.
+// A sequence permit prevents another message with the same ID from entering.
+// The operation context controls acquisition only before the first frame.
+// Each later frame observes only the transport lifetime.
+// A caller cancellation must not leave an incomplete message at the receiver.
+// Pass nil for a sender without a separate transport lifetime.
+func (g *SendGate) Send(ctx, lifetime context.Context, correlationID uint64, plaintext []byte,
 	sendChunk func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error) error {
 	g.init()
+	releaseSequence, err := g.acquireSequence(ctx, lifetime, correlationID)
+	if err != nil {
+		return err
+	}
+	defer releaseSequence()
 	if len(plaintext) > contracts.MaxPlaintextPerChunk {
-		if err := acquire(g.chunked, nil, ctx, lifetime); err != nil {
+		if err := acquire(g.chunked, &g.chunkedWaiters, ctx, lifetime); err != nil {
 			return err
 		}
 		defer func() { <-g.chunked }()
@@ -152,7 +164,7 @@ func (g *SendGate) Send(ctx, lifetime context.Context, plaintext []byte,
 	return SendChannelFrames(plaintext, func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
 		entryCtx := ctx
 		if committed {
-			// Committed: only the transport's own lifetime may abort us now.
+			// Only the transport lifetime can stop a message after its first frame.
 			entryCtx = context.Background()
 		}
 		if err := acquire(g.frame, &g.frameWaiters, entryCtx, lifetime); err != nil {

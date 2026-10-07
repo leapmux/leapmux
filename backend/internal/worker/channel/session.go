@@ -1035,7 +1035,7 @@ func (s *channelSender) sendEncryptedAfter(requestID uint64, envelope *leapmuxv1
 			len(data), s.maxReassembled, ErrMessageRejected)
 	}
 
-	return s.gate.Send(context.Background(), s.lifetime, data,
+	return s.gate.Send(context.Background(), s.lifetime, requestID, data,
 		func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
 			ciphertext, err := s.session.Encrypt(chunk)
 			if err != nil {

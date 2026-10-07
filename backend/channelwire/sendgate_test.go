@@ -70,7 +70,7 @@ func TestSendGateSingleChunkOvertakesMultiChunk(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		require.NoError(t, gate.Send(context.Background(), nil, big, rec.send(1)))
+		require.NoError(t, gate.Send(context.Background(), nil, 1, big, rec.send(1)))
 	}()
 
 	select {
@@ -84,9 +84,10 @@ func TestSendGateSingleChunkOvertakesMultiChunk(t *testing.T) {
 	// between-chunk acquire — calling Send synchronously here would deadlock.
 	smallDone := make(chan error, 1)
 	go func() {
-		smallDone <- gate.Send(context.Background(), nil, small, rec.send(2))
+		smallDone <- gate.Send(context.Background(), nil, 2, small, rec.send(2))
 	}()
-	time.Sleep(20 * time.Millisecond) // let the small Send park on acquire
+	require.Eventually(t, func() bool { return gate.SendWaiters() == 1 },
+		30*time.Second, time.Millisecond, "the small send must wait before the frame returns")
 	close(rec.holdFirst)
 
 	select {
@@ -105,6 +106,108 @@ func TestSendGateSingleChunkOvertakesMultiChunk(t *testing.T) {
 	assert.Equal(t, 2, got[1].id)
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, got[1].flags)
 	assert.Equal(t, 1, got[2].id)
+}
+
+func TestSendGateSameCorrelationKeepsMessagesSeparate(t *testing.T) {
+	var gate SendGate
+	rec := &recordingSender{holdFirst: make(chan struct{}), started: make(chan struct{})}
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(rec.holdFirst) }) })
+	largeDone := make(chan error, 1)
+	go func() {
+		largeDone <- gate.Send(context.Background(), nil, 0, make([]byte, contracts.MaxPlaintextPerChunk+100), rec.send(1))
+	}()
+	select {
+	case <-rec.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the large message did not start")
+	}
+	smallDone := make(chan error, 1)
+	go func() {
+		smallDone <- gate.Send(context.Background(), nil, 0, []byte("small"), rec.send(2))
+	}()
+	require.Eventually(t, func() bool { return gate.SendWaiters() == 1 },
+		30*time.Second, time.Millisecond, "the same correlation must wait before the frame returns")
+	release.Do(func() { close(rec.holdFirst) })
+	for _, done := range []chan error{largeDone, smallDone} {
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the send did not finish")
+		}
+	}
+	got := rec.snapshot()
+	require.Len(t, got, 3)
+	assert.Equal(t, []int{1, 1, 2}, []int{got[0].id, got[1].id, got[2].id},
+		"a small message must follow all chunks of a message with the same correlation")
+	assert.Empty(t, gate.sequences, "the final caller releases the sequence")
+}
+
+func TestSendGateSequenceCancellationReleasesTheWaiter(t *testing.T) {
+	for _, cancelLifetime := range []bool{false, true} {
+		t.Run(map[bool]string{false: "operation", true: "lifetime"}[cancelLifetime], func(t *testing.T) {
+			var gate SendGate
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+			holderDone := make(chan error, 1)
+			const id = ^uint64(0)
+			go func() {
+				holderDone <- gate.Send(context.Background(), nil, id, nil,
+					func([]byte, leapmuxv1.ChannelMessageFlags) error {
+						close(started)
+						<-release
+						return nil
+					})
+			}()
+			select {
+			case <-started:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the sequence holder did not start")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entry, lifetime := ctx, context.Context(nil)
+			if cancelLifetime {
+				entry, lifetime = context.Background(), ctx
+			}
+			waiterDone := make(chan error, 1)
+			var frames atomic.Int32
+			go func() {
+				waiterDone <- gate.Send(entry, lifetime, id, []byte("waiter"),
+					func([]byte, leapmuxv1.ChannelMessageFlags) error { frames.Add(1); return nil })
+			}()
+			require.Eventually(t, func() bool { return gate.SendWaiters() == 1 },
+				30*time.Second, time.Millisecond)
+			cancel()
+			select {
+			case err := <-waiterDone:
+				require.ErrorIs(t, err, ErrSendAborted)
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(30 * time.Second):
+				t.Fatal("the cancelled sequence waiter did not return")
+			}
+			assert.Zero(t, frames.Load())
+			assert.Zero(t, gate.SendWaiters())
+			gate.sequenceMu.Lock()
+			assert.Equal(t, 1, gate.sequences[id].users)
+			gate.sequenceMu.Unlock()
+			releaseOnce.Do(func() { close(release) })
+			select {
+			case err := <-holderDone:
+				require.NoError(t, err)
+			case <-time.After(30 * time.Second):
+				t.Fatal("the sequence holder did not return")
+			}
+			assert.Empty(t, gate.sequences)
+			require.NoError(t, gate.Send(context.Background(), nil, id, []byte("next"),
+				func([]byte, leapmuxv1.ChannelMessageFlags) error { frames.Add(1); return nil }))
+			assert.Equal(t, int32(1), frames.Load())
+			assert.Empty(t, gate.sequences)
+		})
+	}
 }
 
 func TestSendGateConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
@@ -129,11 +232,11 @@ func TestSendGateConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
 
 	big := make([]byte, 2*contracts.MaxPlaintextPerChunk+1)
 	var wg sync.WaitGroup
-	for range 2 {
+	for i := range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			require.NoError(t, gate.Send(context.Background(), nil, big, send))
+			require.NoError(t, gate.Send(context.Background(), nil, uint64(i), big, send))
 		}()
 	}
 	wg.Wait()
@@ -164,7 +267,7 @@ func TestSendGateSerializesSendChunkInvocations(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			payload := []byte{byte(i)}
-			require.NoError(t, gate.Send(context.Background(), nil, payload, send))
+			require.NoError(t, gate.Send(context.Background(), nil, uint64(i), payload, send))
 		}(i)
 	}
 	wg.Wait()
@@ -181,7 +284,7 @@ func TestSendGateCtxCancelBeforeFirstChunkEmitsNothing(t *testing.T) {
 	cancel()
 
 	var calls atomic.Int32
-	err := gate.Send(ctx, nil, []byte("x"), func([]byte, leapmuxv1.ChannelMessageFlags) error {
+	err := gate.Send(ctx, nil, 1, []byte("x"), func([]byte, leapmuxv1.ChannelMessageFlags) error {
 		calls.Add(1)
 		return nil
 	})
@@ -197,7 +300,7 @@ func TestSendGateCtxCancelAfterFirstChunkDoesNotAbandon(t *testing.T) {
 	big := make([]byte, contracts.MaxPlaintextPerChunk+10)
 	var calls atomic.Int32
 
-	err := gate.Send(ctx, nil, big, func([]byte, leapmuxv1.ChannelMessageFlags) error {
+	err := gate.Send(ctx, nil, 1, big, func([]byte, leapmuxv1.ChannelMessageFlags) error {
 		n := calls.Add(1)
 		if n == 1 {
 			cancel() // cancel after the first chunk is committed
@@ -216,7 +319,7 @@ func TestSendGateLifetimeUnwedgesParkedSender(t *testing.T) {
 	life, endLife := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- gate.Send(context.Background(), life, []byte("x"),
+		done <- gate.Send(context.Background(), life, 1, []byte("x"),
 			func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil })
 	}()
 
@@ -237,7 +340,7 @@ func TestSendGateLifetimeUnwedgesParkedSender(t *testing.T) {
 
 func TestSendGateZeroValueAndNilLifetime(t *testing.T) {
 	var gate SendGate
-	require.NoError(t, gate.Send(context.Background(), nil, []byte("ok"),
+	require.NoError(t, gate.Send(context.Background(), nil, 1, []byte("ok"),
 		func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil }))
 }
 
@@ -265,7 +368,7 @@ func TestSendGateWithFrameSerializesAgainstSend(t *testing.T) {
 
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- gate.Send(context.Background(), nil, []byte("x"),
+		sendDone <- gate.Send(context.Background(), nil, 1, []byte("x"),
 			func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil })
 	}()
 
@@ -291,7 +394,7 @@ func TestSendGateWithFramePropagatesFnErrorAndReleases(t *testing.T) {
 	err := gate.WithFrame(context.Background(), nil, func() error { return boom })
 	require.ErrorIs(t, err, boom)
 
-	require.NoError(t, gate.Send(context.Background(), nil, []byte("ok"),
+	require.NoError(t, gate.Send(context.Background(), nil, 1, []byte("ok"),
 		func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil }),
 		"frame permit must be free after WithFrame returns an error")
 }
@@ -332,15 +435,16 @@ func TestSendGateSendChunkErrorReleasesBothPermits(t *testing.T) {
 	multiChunk := make([]byte, 2*contracts.MaxPlaintextPerChunk) // forces the chunked permit + >1 frame
 
 	boom := errors.New("write failed")
-	err := gate.Send(context.Background(), nil, multiChunk,
+	err := gate.Send(context.Background(), nil, 1, multiChunk,
 		func([]byte, leapmuxv1.ChannelMessageFlags) error { return boom })
 	require.ErrorIs(t, err, boom, "the sendChunk failure must surface")
+	assert.Empty(t, gate.sequences, "a failed send must release its sequence")
 
 	// If either permit leaked, this second send parks forever rather than
 	// completing -- so bound it and fail loudly on a wedge.
 	done := make(chan error, 1)
 	go func() {
-		done <- gate.Send(context.Background(), nil, multiChunk,
+		done <- gate.Send(context.Background(), nil, 1, multiChunk,
 			func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil })
 	}()
 	select {
