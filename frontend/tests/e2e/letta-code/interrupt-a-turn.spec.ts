@@ -1,8 +1,10 @@
 import { expect } from '@playwright/test'
+import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { userBubbles } from '../helpers/ui'
 import { lettaTest } from '../letta-fixtures'
+import { nativeContext } from './scenarios'
 
 lettaTest('stops a native model turn and resumes its paused queue', async ({ native }) => {
   // `abort_message` stops Letta's loop at once (`WAITING_ON_INPUT` and an `Interrupted`
@@ -14,6 +16,12 @@ lettaTest('stops a native model turn and resumes its paused queue', async ({ nat
 
 lettaTest('stops an actual native tool and accepts the next queued turn', async ({ native }) => {
   await exerciseInterruptTurn(native, { kind: 'tool' })
+})
+
+// Letta Code's question lets its turn go on and end, so a question holds no turn. A permission request does.
+lettaTest('withdraws a waiting permission and accepts the next queued turn', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+  await exerciseControlInterrupt(context, { control: 'permission' })
 })
 
 lettaTest('draws the message that the reader sends after an interrupt once', async ({ native }) => {

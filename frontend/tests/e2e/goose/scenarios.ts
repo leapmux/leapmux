@@ -1,10 +1,13 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { ProviderAgent } from '../helpers/workspace'
+import { GOOSE_MODE } from '../../../src/generated/contracts/goose-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { managedNativeContext } from '../helpers/nativeScenario'
+import { expectNativeOptionValue, managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { goosePermissionJudgmentToolCall } from '../helpers/providerToolCalls'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
+import { uniqueMarker } from '../helpers/shellArguments'
 import { applyPermissionPreset } from '../helpers/ui'
 
 /** How a Goose agent opens. */
@@ -27,6 +30,20 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
  */
 export async function bypassToolRequests(context: Pick<ManagedNativeScenarioContext, 'page'>): Promise<void> {
   await applyPermissionPreset(context.page, 'bypass')
+}
+
+/**
+ * Make Goose ask before each native tool, in the Smart Approve mode that a new session starts in.
+ * Smart Approve asks Goose's permission-safety classifier about each tool call, as one more model request. The rule
+ * answers that no call is read-only, so each call raises a permission request.
+ */
+export async function askBeforeEachTool(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer' | 'modelScript'>): Promise<void> {
+  await expectNativeOptionValue(context, 'permissionMode', GOOSE_MODE.SmartApprove)
+  await context.modelScript.rule({
+    name: `goose-native-tool-judge-${uniqueMarker()}`,
+    when: { system: 'permission-safety classifier' },
+    respond: { toolCalls: [goosePermissionJudgmentToolCall('goose-tool-judge', [])] },
+  })
 }
 
 /** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */

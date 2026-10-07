@@ -1,19 +1,15 @@
 import type { Page } from '@playwright/test'
 import type { ModelScript } from '../helpers/modelScriptFixture'
+import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
-import { AgentActivityState, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
-import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
-import { pickQuestionOption } from '../helpers/nativeQuestion'
-import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { ASKED_QUESTIONS_CALL_ID, askQuestions, pickQuestionOption } from '../helpers/nativeQuestion'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { retryUntilPass } from '../helpers/retryUntilPass'
-import { currentIdleReceipt, observeSettledReceipts } from '../helpers/turnEndSound'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectAssistantAnswer, expectNoControlBanner, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, questionPagination, resumePausedQueue, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
+import { agentTabs, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, questionPagination, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
 
 // The mock scripts the actual native question tool. The banner must show these exact options.
 
@@ -45,25 +41,9 @@ const SIZE_Q: QuestionRequest = {
   ],
 }
 
-/** Script a native question and return the preceding request count for its actual answer proof. */
-async function askQuestions(
-  page: Page,
-  script: ModelScript,
-  questions: QuestionRequest[],
-  options: { gate?: string } = {},
-): Promise<number> {
-  const before = (await script.status()).requests.length
-  await script.fallback({ text: 'You answered the questions.' })
-  await script.queue({
-    toolCalls: [askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'ask-user', questions)],
-    ...(options.gate === undefined ? {} : { gate: options.gate }),
-  })
-  await sendMessage(page, script.prompt('Use AskUserQuestion and tell me what I answered.'))
-  if (options.gate === undefined)
-    await script.waitForSteps()
-  else
-    await script.waitForGate(options.gate)
-  return before
+/** The question context of the agent that these tests open: a Claude Code agent that this test's script drives. */
+function claude(page: Page, modelScript: ModelScript): NativeScenarioContext {
+  return { page, modelScript, provider: AgentProvider.CLAUDE_CODE }
 }
 
 /** Prove selected answers in the new native call-ID result, then require completion in the browser. */
@@ -74,7 +54,7 @@ async function expectQuestionAnswers(page: Page, script: ModelScript, before: nu
   if (!request)
     throw new Error('The question answer reached no following native model request.')
   expect(request.protocol).toBe('anthropic-messages')
-  const answer = nativeToolResult(request, 'ask-user')
+  const answer = nativeToolResult(request, ASKED_QUESTIONS_CALL_ID)
   for (const value of values)
     expect(answer).toContain(value)
   await expectNoControlBanner(page)
@@ -90,7 +70,7 @@ async function submitAnswers(page: Page): Promise<void> {
 claudeTest.describe('Control Request - AskUserQuestion', () => {
   claudeTest('single question - select an option and submit', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message that triggers AskUserQuestion
-    const before = await askQuestions(page, modelScript, [COLOR_Q_3])
+    const before = await askQuestions(claude(page, modelScript), [COLOR_Q_3])
 
     // Wait for the control banner
     const banner = await waitForControlBanner(page)
@@ -114,7 +94,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     const status = await modelScript.status()
     const answerRequest = status.requests.slice(before).find(request => request.fallback === true)
     expect(answerRequest?.protocol).toBe('anthropic-messages')
-    const answer = nativeToolResult(answerRequest, 'ask-user')
+    const answer = nativeToolResult(answerRequest, ASKED_QUESTIONS_CALL_ID)
     expect(answer).toContain('Blue')
     expect(answer).not.toContain('Red color')
     expect(answer).not.toContain('Green color')
@@ -122,7 +102,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
 
   claudeTest('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message with 2 questions
-    const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
+    const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
     const banner = await waitForControlBanner(page)
 
@@ -152,7 +132,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
   })
 
   claudeTest('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace, modelScript }) => {
-    const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
+    const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
     const banner = await waitForControlBanner(page)
 
@@ -175,7 +155,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
   })
 
   claudeTest('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace, modelScript }) => {
-    const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
+    const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
     await waitForControlBanner(page)
 
@@ -193,7 +173,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
   })
 
   claudeTest('Stop button rejects the request', async ({ page, authenticatedWorkspace, modelScript }) => {
-    await askQuestions(page, modelScript, [COLOR_Q_2])
+    await askQuestions(claude(page, modelScript), [COLOR_Q_2])
 
     await waitForControlBanner(page)
 
@@ -217,7 +197,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
 
     // Trigger AskUserQuestion only on the second agent.
     await secondAgentTab.click()
-    const before = await askQuestions(page, modelScript, [COLOR_Q_2, SIZE_Q])
+    const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
     const secondBanner = await waitForControlBanner(page)
     await expect(secondBanner.getByText('Pick a color')).toBeVisible()
@@ -252,7 +232,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     // Hold the actual response until agent 2 is selected. The new question must notify the hidden agent's tab.
     const gate = 'claude-question-background-tab'
     await tabs.first().click()
-    await askQuestions(page, modelScript, [COLOR_Q_2], { gate })
+    await askQuestions(claude(page, modelScript), [COLOR_Q_2], { gate })
     try {
       await tabs.nth(1).click()
       await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
@@ -289,7 +269,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
       await expect(tabs).toHaveCount(2)
       // Hold the response until the other workspace becomes active. Agent 1 must retain its badge after return.
       await tabs.first().click()
-      await askQuestions(page, modelScript, [COLOR_Q_2], { gate })
+      await askQuestions(claude(page, modelScript), [COLOR_Q_2], { gate })
       await tabs.nth(1).click()
       await workspaceRowTitle(page, ws1).click()
       await waitForWorkspaceReady(page)
@@ -320,29 +300,10 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
   })
 })
 
-const COLOR_QUESTION: QuestionRequest = {
-  question: 'Pick a color',
-  header: 'Color',
-  options: [
-    { label: 'Red', description: 'Red color' },
-    { label: 'Blue', description: 'Blue color' },
-    { label: 'Green', description: 'Green color' },
-  ],
-}
-
-/** Script one `AskUserQuestion` call and send the turn that makes it. */
-async function askColor(page: Parameters<typeof sendMessage>[0], script: ModelScript): Promise<void> {
-  // What the test does with the banner decides how many turns follow.
-  await script.fallback({ text: 'You answered the question.' })
-  await script.queue({ toolCalls: [askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'ask-color', [COLOR_QUESTION])] })
-  await sendMessage(page, script.prompt('Use AskUserQuestion and tell me what I answered.'))
-  await script.waitForSteps()
-}
-
 claudeTest.describe('Control Request Draft Persistence', () => {
   claudeTest('AskUserQuestion custom text draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Trigger AskUserQuestion.
-    await askColor(page, modelScript)
+    await askQuestions(claude(page, modelScript), [COLOR_Q_3])
 
     // Wait for the control banner.
     await waitForControlBanner(page)
@@ -375,7 +336,7 @@ claudeTest.describe('Control Request Draft Persistence', () => {
     // Clear the editor and send a message to trigger AskUserQuestion.
     await page.keyboard.press(`${PLATFORM_MOD}+a`)
     await page.keyboard.press('Backspace')
-    await askColor(page, modelScript)
+    await askQuestions(claude(page, modelScript), [COLOR_Q_3])
 
     // Wait for the control banner.
     await waitForControlBanner(page)
@@ -400,55 +361,5 @@ claudeTest.describe('Control Request Draft Persistence', () => {
     const restoredEditor = composerEditor(page)
     await expect(restoredEditor).toContainText('control request draft text')
     await expect(restoredEditor).not.toContainText('conversation draft text')
-  })
-})
-
-claudeTest.describe('Agent Settings', () => {
-  claudeTest('interrupt via control request', async ({ native }) => {
-    const { page, modelScript, leapmuxServer } = native
-    await expect(composerEditor(page)).toBeVisible()
-
-    // Send a quick message to ensure the agent is fully started
-    const first = await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(first + 1)
-    await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-
-    const agent = await currentNativeAgent(native)
-    await askQuestions(page, modelScript, [COLOR_Q_2])
-    const banner = await waitForControlBanner(page)
-    await expect(banner).toContainText('Pick a color')
-    // The open question holds the Worker in WAITING_FOR_USER. The move into that
-    // state was the turn's settle edge (see agentActivity.store `apply`).
-    await retryUntilPass(async () => {
-      expect((await nativeAgentById(native, agent.id))?.activityState, 'the Worker holds the agent waiting for the user').toBe(AgentActivityState.WAITING_FOR_USER)
-    })
-    const after = await observeSettledReceipts(page)
-    await banner.getByTestId('control-interrupt').click()
-    await retryUntilPass(async () => {
-      expect((await nativeAgentById(native, agent.id))?.activityState, 'the Worker reports the interrupted agent as idle').toBe(AgentActivityState.IDLE)
-    })
-    // The interrupt withdraws the question, so no banner stays on the page, visible or hidden.
-    await expectNoControlBanner(page)
-    await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
-    // The thinking indicator is already absent in WAITING_FOR_USER, and the Worker API
-    // reports the state before the browser applies it. The Interrupt button shows only
-    // while the browser holds WORKING or WAITING_FOR_USER, so its absence proves that
-    // the browser applied the IDLE report. The browser records a receipt in the same
-    // task as that state change, so the check below cannot run before it.
-    await expect(interruptButton(page)).toHaveCount(0)
-    // WAITING_FOR_USER to IDLE is not a settle edge, because the agent was not
-    // working. The stop therefore rings no second alert and records no receipt.
-    expect(await currentIdleReceipt(page, { agentId: agent.id, after })).toBeUndefined()
-    await retryUntilPass(async () => {
-      expect((await readNativeInputQueue(leapmuxServer, agent.id)).paused, 'the Worker pauses the input queue after the interrupt').toBe(true)
-    })
-    await resumePausedQueue(page)
-
-    // Verify the agent is still responsive after interrupt by sending another message
-    const next = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(next + 1)
-    await expectAssistantAnswer(page)
   })
 })

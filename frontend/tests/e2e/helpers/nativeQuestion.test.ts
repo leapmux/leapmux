@@ -5,7 +5,7 @@ import type { NativeScenarioContext } from './nativeScenario'
 import type { QuestionRequest } from './providerToolCalls'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { chooseQuestionOption, exerciseQuestionAnswer, pickQuestionOption } from './nativeQuestion'
+import { ASKED_QUESTIONS_ANSWER, ASKED_QUESTIONS_CALL_ID, askQuestions, chooseQuestionOption, exerciseQuestionAnswer, pickQuestionOption } from './nativeQuestion'
 import { askUserQuestionToolCall } from './providerToolCalls'
 
 /** The browser steps that the helper takes, in order. */
@@ -82,15 +82,26 @@ function toolResultRequest(stepIndex: number, callId: string, content: string): 
 /** A script whose queue starts at `offset`, as after an earlier turn of the same test. */
 function fakeScript(offset: number, records: Record<number, MockModelRequestRecord>) {
   const queued: MockModelStep[] = []
+  const fallbacks: MockModelStep[] = []
   const script = {
+    queued,
+    fallbacks,
     prompt: (text: string) => `MARKED:${text}`,
     queue: vi.fn(async (...steps: MockModelStep[]) => {
       const index = offset + queued.length
       queued.push(...steps)
       return index
     }),
-    waitForSteps: vi.fn(async (count: number) => {
-      browser.events.push(`steps:${count}`)
+    fallback: vi.fn(async (step: MockModelStep) => {
+      browser.events.push('fallback')
+      fallbacks.push(step)
+    }),
+    status: vi.fn(async () => ({ requests: Object.values(records) })),
+    waitForSteps: vi.fn(async (count?: number) => {
+      browser.events.push(`steps:${count ?? 'all'}`)
+    }),
+    waitForGate: vi.fn(async (gate: string) => {
+      browser.events.push(`gate:${gate}`)
     }),
     requestAt: vi.fn(async (stepIndex: number) => {
       browser.events.push(`request:${stepIndex}`)
@@ -203,6 +214,47 @@ describe('pickQuestionOption', () => {
     const { banner, getByTestId } = questionBanner()
     await expect(pickQuestionOption(banner, '')).rejects.toThrow('needs a label')
     expect(getByTestId).not.toHaveBeenCalled()
+  })
+})
+
+describe('askQuestions', () => {
+  it('queues the native question call after a fallback answer, sends the turn, and waits until the call arrives', async () => {
+    const { script, queued } = fakeScript(2, { 0: toolResultRequest(0, 'earlier', 'one'), 1: toolResultRequest(1, 'earlier', 'two') })
+    const before = await askQuestions(context(script), [COLOR])
+    expect(before).toBe(2)
+    expect(queued).toEqual([{ toolCalls: [askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, ASKED_QUESTIONS_CALL_ID, [COLOR])] }])
+    expect(script.fallbacks).toEqual([{ text: ASKED_QUESTIONS_ANSWER }])
+    expect(browser.events).toEqual(['fallback', 'send:MARKED:Ask the scripted questions and tell me what I answered.', 'steps:all'])
+    expect(script.waitForGate).not.toHaveBeenCalled()
+  })
+
+  it('holds the question call at the gate and waits for the gate, not for the steps', async () => {
+    const { script, queued } = fakeScript(0, {})
+    await askQuestions(context(script), [COLOR], { gate: 'question-gate' })
+    expect(queued).toEqual([{
+      toolCalls: [askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, ASKED_QUESTIONS_CALL_ID, [COLOR])],
+      gate: 'question-gate',
+    }])
+    expect(browser.events.at(-1)).toBe('gate:question-gate')
+    expect(script.waitForSteps).not.toHaveBeenCalled()
+  })
+
+  it('answers each later request through the text step of a provider that answers with a tool', async () => {
+    const { script } = fakeScript(0, {})
+    const answerStep = { toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text: ASKED_QUESTIONS_ANSWER } }] }
+    const textStep = vi.fn(() => answerStep)
+    await askQuestions(context(script, { textStep }), [COLOR])
+    expect(textStep).toHaveBeenCalledExactlyOnceWith(ASKED_QUESTIONS_ANSWER)
+    expect(script.fallbacks).toEqual([answerStep])
+  })
+
+  it('refuses a call with no question before it reads or changes the script', async () => {
+    const { script } = fakeScript(0, {})
+    await expect(askQuestions(context(script), [])).rejects.toThrow('at least one question')
+    expect(script.status).not.toHaveBeenCalled()
+    expect(script.fallback).not.toHaveBeenCalled()
+    expect(script.queue).not.toHaveBeenCalled()
+    expect(browser.events).toEqual([])
   })
 })
 

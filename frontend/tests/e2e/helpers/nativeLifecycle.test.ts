@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { MockModelRequestRecord } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { InterruptTurnOptions, NativeResumeEvidence } from './nativeLifecycle'
 import type { NativeResumeIdentity, NativeResumeTexts } from './nativeResume'
@@ -15,9 +15,11 @@ import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
+import { INTERRUPTION_MARKER } from '../../../src/components/chat/assembledMessage'
 import { AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { exerciseAgentStartup, exerciseInterruptTurn, exerciseSessionResume, heldToolScript } from './nativeLifecycle'
+import { textChunks } from './mockModelScript'
+import { exerciseAgentStartup, exerciseInterruptedPartialAnswer, exerciseInterruptTurn, exerciseSessionResume, heldToolScript, interruptedToolTotals } from './nativeLifecycle'
 import { stopProcess } from './process'
 import { gitRepositoryWorkingDir } from './providerWorkingDir'
 
@@ -25,6 +27,10 @@ const resume = vi.hoisted(() => ({
   events: [] as string[],
   userRows: [] as string[],
   assistantRows: [] as string[],
+  /** The texts of the visible message contents, whatever their role. */
+  contentRows: [] as string[],
+  /** The screen-reader texts of the counts in the visible thinking indicator, such as "8 tokens". */
+  progressCounts: [] as string[],
   priorSessionId: '1df17a24-50da-4090-a7e9-87b38feec450',
   send: vi.fn<(context: ManagedNativeScenarioContext, prompt: string, answer: string) => Promise<MockModelRequestRecord>>(),
   current: vi.fn<(context: ManagedNativeScenarioContext) => Promise<AgentInfo>>(),
@@ -87,15 +93,19 @@ function control(label: string): Locator {
   })
 }
 
-function rows(kind: 'user' | 'assistant') {
+type RowKind = 'user' | 'assistant' | 'content'
+
+/** The fake rows of one kind that hold every text of `texts`. Each `filter` adds one text, as a locator filter does. */
+function rows(kind: RowKind, texts: readonly string[] = []) {
+  const source = { user: resume.userRows, assistant: resume.assistantRows, content: resume.contentRows }[kind]
+  const matching = () => source.filter(text => texts.every(part => text.includes(part))).length
   return {
-    filter: ({ hasText }: { hasText: string }) => ({
-      resumeProbe: 'rows',
-      kind,
-      readCount: () => (kind === 'user' ? resume.userRows : resume.assistantRows).filter(text => text.includes(hasText)).length,
-      // The helper counts the pre-close answer bubbles through the locator's own count.
-      count: async () => (kind === 'user' ? resume.userRows : resume.assistantRows).filter(text => text.includes(hasText)).length,
-    }),
+    resumeProbe: 'rows',
+    kind,
+    readCount: matching,
+    // The helper counts the pre-close answer bubbles through the locator's own count.
+    count: async () => matching(),
+    filter: ({ hasText }: { hasText: string }) => rows(kind, [...texts, hasText]),
   }
 }
 
@@ -103,12 +113,20 @@ vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   assistantBubbles: () => rows('assistant'),
   userBubbles: () => rows('user'),
+  messageContents: () => rows('content'),
   tabById: (_page: Page, id: string) => control(id),
+  interruptButton: () => control('interrupt-button'),
+  sendMessage: async (_page: Page, text: string) => {
+    resume.events.push(`send:${text}`)
+  },
+  waitForAgentIdle: async () => {
+    resume.events.push('idle')
+  },
 }))
 
 vi.mock('@playwright/test', async importOriginal => ({
   ...await importOriginal<typeof import('@playwright/test')>(),
-  expect: (value: unknown) => {
+  expect: Object.assign((value: unknown, message?: string) => {
     if (typeof value === 'object' && value !== null && 'resumeProbe' in value) {
       if (value.resumeProbe === 'control' && 'label' in value && typeof value.label === 'string') {
         const label = value.label
@@ -125,7 +143,7 @@ vi.mock('@playwright/test', async importOriginal => ({
         return {
           toHaveCount: async (expected: number) => {
             resume.events.push(`count:${kind}`)
-            expect(readCount()).toBe(expected)
+            expect(readCount(), message).toBe(expected)
           },
         }
       }
@@ -145,8 +163,16 @@ vi.mock('@playwright/test', async importOriginal => ({
         },
       }
     }
-    return expect(value)
-  },
+    return expect(value, message)
+  }, {
+    // One read, because each fake states its final value at once.
+    poll: (read: () => unknown, options?: { message?: string }) => ({
+      toBe: async (expected: unknown) => {
+        resume.events.push('poll')
+        expect(await read(), options?.message).toBe(expected)
+      },
+    }),
+  }),
 }))
 
 type ResumePhase = NativeResumeEvidence['phase']
@@ -805,5 +831,196 @@ describe('exerciseInterruptTurn', () => {
 
   it('types a kind that holds either value, as a spec that loops over both kinds passes it', () => {
     expectTypeOf<{ kind: 'model' | 'tool' }>().toExtend<InterruptTurnOptions>()
+  })
+})
+
+describe('interruptedToolTotals', () => {
+  it.each(['1 tool', '1 tool · $0.0042'])('accepts the totals %j of one stopped tool', (totals) => {
+    expect(totals).toMatch(interruptedToolTotals(1))
+  })
+
+  it.each([
+    ['', 'no tool'],
+    ['2 tools', 'two tools'],
+    ['11 tools', 'a count that holds "1 tool"'],
+    ['1 tools', 'a wrong plural'],
+    ['1 tool · ', 'an empty cost'],
+    ['1 tool · $0.042', 'a cost with three decimals'],
+    ['$0.0042', 'a cost alone'],
+  ])('refuses the totals %j: %s', (totals) => {
+    expect(totals).not.toMatch(interruptedToolTotals(1))
+  })
+
+  it.each(['2 tools', '2 tools · $0.0042'])('accepts exactly two native calls in %j', (totals) => {
+    expect(totals).toMatch(interruptedToolTotals(2))
+  })
+
+  it.each(['1 tool', '2 tool', '12 tools', '2 tools · $0.042'])('refuses incorrect two-call totals %j', (totals) => {
+    expect(totals).not.toMatch(interruptedToolTotals(2))
+  })
+
+  it.each([0, -1, 0.5, Number.NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])('refuses an invalid count %j', (count) => {
+    expect(() => interruptedToolTotals(count)).toThrow('positive safe integer')
+  })
+
+  it('keeps the exact count for a very large safe integer', () => {
+    expect(`${Number.MAX_SAFE_INTEGER} tools`).toMatch(interruptedToolTotals(Number.MAX_SAFE_INTEGER))
+    expect('1 tool').not.toMatch(interruptedToolTotals(Number.MAX_SAFE_INTEGER))
+  })
+})
+
+describe('exerciseInterruptedPartialAnswer', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    resume.events.length = 0
+    resume.assistantRows.length = 0
+    resume.contentRows.length = 0
+    resume.progressCounts = ['8 tokens']
+  })
+
+  /**
+   * A model script that records each call, and the steps that the scenario queues. At the gate, `arrive` puts the
+   * interrupted answer on the page, so the rows are there when the scenario reads them after the interrupt.
+   */
+  function partialScript(arrive: (marker: string) => void) {
+    const queued: MockModelStep[] = []
+    const script = {
+      prompt: (text: string) => `MARKED:${text}`,
+      queue: vi.fn(async (...steps: MockModelStep[]) => {
+        queued.push(...steps)
+        return 3
+      }),
+      allowUnconsumed: vi.fn((reason: string) => {
+        resume.events.push(`allow-unconsumed:${reason}`)
+      }),
+      waitForGate: vi.fn(async (gate: string) => {
+        resume.events.push(`gate:${gate}`)
+        arrive(gate.replace('native-partial-answer-', ''))
+      }),
+      releaseGateIfHeld: vi.fn(async (gate: string) => {
+        resume.events.push(`release:${gate}`)
+        return true
+      }),
+    }
+    return { script, queued }
+  }
+
+  /** A context whose page reads the fake counts and records a reload. */
+  function partialContext(script: ReturnType<typeof partialScript>['script']): ManagedNativeScenarioContext {
+    const page = Object.assign({} as Page, {
+      locator: (selector: string) => {
+        if (selector !== '[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
+          throw new Error(`The scenario read the unexpected locator ${selector}.`)
+        return { allTextContents: async () => [...resume.progressCounts] }
+      },
+      reload: async () => {
+        resume.events.push('reload')
+        return null
+      },
+    })
+    return {
+      page,
+      provider: AgentProvider.CODEX,
+      providerAgent: CODEX,
+      workspaceId: 'partial-unit-workspace',
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'partial-unit-worker' },
+      modelScript: script as unknown as ModelScript,
+    }
+  }
+
+  /** The release event of the gate of the scenario, whatever its marker. */
+  const RELEASE = /^release:native-partial-answer-\w+$/
+
+  it('streams the head as one chunk, interrupts after the counter shows it, and proves the marker live and after a reload', async () => {
+    const { script, queued } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const prepare = vi.fn(async () => {
+      resume.events.push('prepare')
+    })
+    await exerciseInterruptedPartialAnswer(partialContext(script), { prepare })
+    const step = queued[0]
+    const marker = step?.text?.match(/^PARTIALHEAD(\w+) /)?.[1]
+    if (queued.length !== 1 || !step || !marker)
+      throw new Error('The scenario queued no single streamed answer with a marked head.')
+    const gate = `native-partial-answer-${marker}`
+    expect(step).toEqual({
+      text: `PARTIALHEAD${marker} NEVERSTREAMED${marker} ends the answer.`,
+      stream: { chunkChars: `PARTIALHEAD${marker}`.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] },
+    })
+    // The gate holds after the first chunk, which is the head and nothing else.
+    expect(textChunks(step)[0]).toBe(`PARTIALHEAD${marker}`)
+    expect(resume.events).toEqual([
+      'prepare',
+      'allow-unconsumed:The interrupt ends the streamed answer after its first chunk.',
+      'send:MARKED:Stream the scripted answer.',
+      `gate:${gate}`,
+      'poll',
+      'click:interrupt-button',
+      'idle',
+      'count:assistant',
+      'count:content',
+      'count:content',
+      'reload',
+      'count:assistant',
+      'count:content',
+      'count:content',
+      `release:${gate}`,
+    ])
+  })
+
+  it('fails when the divider of the turn draws the marker too, as a text the stop never cut', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`, `Turn interrupted (1.2s)\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`, `Turn interrupted (1.2s)\n${INTERRUPTION_MARKER}`)
+    })
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script))).rejects.toThrow('the chat draws the marker once, on the cut text')
+    expect(resume.events).not.toContain('reload')
+    expect(resume.events.at(-1)).toMatch(RELEASE)
+  })
+
+  it('releases the gate and interrupts nothing while the counter shows no token', async () => {
+    const { script } = partialScript(() => {})
+    resume.progressCounts = ['512 B']
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script))).rejects.toThrow('the live token counter shows that the Worker received the first chunk')
+    expect(resume.events).not.toContain('click:interrupt-button')
+    expect(resume.events.at(-1)).toMatch(RELEASE)
+  })
+
+  it('fails and releases the gate when the partial answer keeps no marker', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}`)
+    })
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script))).rejects.toThrow('the partial answer keeps its interruption marker')
+    expect(resume.events).not.toContain('reload')
+    expect(resume.events.at(-1)).toMatch(RELEASE)
+  })
+
+  it('fails when a row draws the text after the gate, which never streamed', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker} NEVERSTREAMED${marker} ends the answer.`)
+    })
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script))).rejects.toThrow('no row draws the text that never streamed')
+    expect(resume.events).not.toContain('reload')
+  })
+
+  it('fails after the reload when the stored answer lost its marker', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const context = partialContext(script)
+    // The stored row states the partial text as complete, so the reloaded page draws no marker.
+    context.page.reload = async () => {
+      resume.events.push('reload')
+      for (const rows of [resume.assistantRows, resume.contentRows])
+        rows.splice(0, rows.length, ...rows.map(row => row.replace(INTERRUPTION_MARKER, '')))
+      return null
+    }
+    await expect(exerciseInterruptedPartialAnswer(context)).rejects.toThrow('the partial answer keeps its interruption marker')
+    expect(resume.events.filter(event => event === 'count:assistant')).toHaveLength(2)
+    expect(resume.events.at(-1)).toMatch(RELEASE)
   })
 })

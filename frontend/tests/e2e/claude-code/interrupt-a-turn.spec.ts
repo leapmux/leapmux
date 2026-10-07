@@ -1,4 +1,5 @@
 import { claudeTest } from '../claude-fixtures'
+import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
 import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 
 for (const kind of ['model', 'tool'] as const) {
@@ -6,3 +7,7 @@ for (const kind of ['model', 'tool'] as const) {
     await exerciseInterruptTurn(native, { kind })
   })
 }
+
+claudeTest('interrupt via control request', async ({ native }) => {
+  await exerciseControlInterrupt(native, { control: 'question' })
+})

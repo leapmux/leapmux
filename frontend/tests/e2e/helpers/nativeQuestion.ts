@@ -104,3 +104,40 @@ export function chooseQuestionOption(label: string): (banner: Locator) => Promis
     await controlButton(banner.page(), 'submit').click()
   }
 }
+
+/** The ID of the native question call that {@link askQuestions} scripts. The request after it holds the answer. */
+export const ASKED_QUESTIONS_CALL_ID = 'ask-user'
+
+/** The answer of each model request that follows the question call of {@link askQuestions}. */
+export const ASKED_QUESTIONS_ANSWER = 'You answered the questions.'
+
+/**
+ * Script one native question call, send the turn that makes it, and return the number of model requests before the
+ * turn. The caller finds the request that carries the answer after that number.
+ *
+ * The helper waits for the model request that supplies the question call. With `gate`, the question call holds at the gate instead,
+ * and the turn returns when the call waits there, so the caller decides when the banner appears.
+ *
+ * A fallback answers each request after the question call with {@link ASKED_QUESTIONS_ANSWER}. What the reader does
+ * with the banner decides how many requests follow: an answer, a refusal and a stop each lead to a different count.
+ */
+export async function askQuestions(
+  context: NativeScenarioContext,
+  questions: readonly QuestionRequest[],
+  options: { gate?: string } = {},
+): Promise<number> {
+  if (questions.length === 0)
+    throw new Error('A native question call needs at least one question.')
+  const before = (await context.modelScript.status()).requests.length
+  await context.modelScript.fallback(nativeTextStep(context, ASKED_QUESTIONS_ANSWER))
+  await context.modelScript.queue({
+    toolCalls: [askUserQuestionToolCall(context.provider, ASKED_QUESTIONS_CALL_ID, [...questions])],
+    ...(options.gate === undefined ? {} : { gate: options.gate }),
+  })
+  await sendMessage(context.page, context.modelScript.prompt('Ask the scripted questions and tell me what I answered.'))
+  if (options.gate === undefined)
+    await context.modelScript.waitForSteps()
+  else
+    await context.modelScript.waitForGate(options.gate)
+  return before
+}

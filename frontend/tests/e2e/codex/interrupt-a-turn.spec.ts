@@ -1,39 +1,59 @@
 import { expect } from '@playwright/test'
+import { CODEX_ITEM, CODEX_METHOD, CODEX_RAW_ITEM } from '../../../src/generated/contracts/codex-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { codexTest } from '../codex-fixtures'
-import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
+import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { currentNativeAgent } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, requireRegistryRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, interruptButton, sendMessage, waitForAgentIdle } from '../helpers/ui'
-
-const INTERRUPTION_MARKER = 'Text truncated by interruption.'
+import { chooseSettingsOption, interruptButton, sendMessage, waitForSettingsIdle } from '../helpers/ui'
 
 codexTest('resumes the input queue and reaches the same native session after interruption', async ({ native }) => {
   await exerciseInterruptTurn(native)
 })
 
-codexTest.describe('generation progress', () => {
-  codexTest('keeps interrupted model text and its marker after reload', async ({ authenticatedCodexWorkspace, page, modelScript }) => {
-    void authenticatedCodexWorkspace
-    // STREAMED, not merely delayed. This test interrupts a turn mid-answer and
-    // then asserts that the partial text survived, so the answer has to be
-    // arriving while the interrupt lands: a step delivered in one piece leaves
-    // nothing to truncate, and the token counter the assertion below reads never
-    // moves. 240 pieces at 250 ms is a minute of answer, far longer than the
-    // interrupt needs.
-    const essay = 'Sorting algorithms compare, partition, and merge, and each choice costs time or space. '.repeat(30)
-    await modelScript.queue({ text: essay, stream: { chunkChars: 10, delayMs: 250 } })
-    modelScript.allowUnconsumed('the interrupt ends the turn before the streamed answer completes')
-    await sendMessage(page, modelScript.prompt('Write a detailed explanation of sorting algorithms. Use no tools and start the answer immediately.'))
+codexTest('stops an actual native tool and reaches the same native session after interruption', async ({ native }, testInfo) => {
+  // Codex emits a raw functions.exec call and its nested commandExecution call.
+  // Both native calls count, even when the interrupt stops the command.
+  await exerciseInterruptTurn(native, { kind: 'tool', expectedToolUses: 2 })
+  const agent = await currentNativeAgent(native)
+  const snapshot = await readNativeMessageSnapshot(native, agent.id)
+  const frames = snapshot.messages.map(nativeMessageBody)
+  const wrapper = frames.find((frame) => {
+    if (!isObject(frame) || pickString(frame, 'method') !== CODEX_METHOD.RawResponseItemCompleted)
+      return false
+    const item = pickObject(pickObject(frame, 'params'), 'item')
+    return pickString(item, 'type') === CODEX_RAW_ITEM.CustomToolCall && pickString(item, 'call_id') === 'held-native-tool'
+  })
+  const command = frames.find((frame) => {
+    const item = pickObject(isObject(frame) ? frame : undefined, 'item')
+    return pickString(item, 'type') === CODEX_ITEM.CommandExecution && pickString(item, 'command').includes('interrupt-started-')
+  })
+  expect(wrapper, 'the native execution wrapper reaches the Worker').toBeDefined()
+  expect(command, 'the wrapper starts a separate native shell call').toBeDefined()
+  await testInfo.attach('native-interrupted-codex-calls', {
+    body: JSON.stringify({ wrapper, command }, null, 2),
+    contentType: 'application/json',
+  })
+})
 
-    const indicator = page.locator('[data-testid="thinking-indicator"]:visible')
-    await expect(indicator).toContainText('tokens')
-    await interruptButton(page).click()
-    await waitForAgentIdle(page)
+// Codex offers its question tool in the plan collaboration mode alone, as the agent-questions spec states.
+codexTest('withdraws a waiting question and reaches the same native session after interruption', async ({ native }) => {
+  await exerciseControlInterrupt(native, {
+    control: 'question',
+    prepare: async () => {
+      await chooseSettingsOption(native.page, 'collaboration_mode-plan')
+      await waitForSettingsIdle(native.page)
+    },
+  })
+})
 
-    await expect(assistantBubbles(page).filter({ hasText: INTERRUPTION_MARKER }).first()).toBeVisible()
-    await page.reload()
-    await expect(assistantBubbles(page).filter({ hasText: INTERRUPTION_MARKER }).first()).toBeVisible()
+codexTest.describe('codex interrupted partial answer', () => {
+  codexTest('keeps interrupted model text and its marker after reload', async ({ native }) => {
+    await exerciseInterruptedPartialAnswer(native)
   })
 })
 

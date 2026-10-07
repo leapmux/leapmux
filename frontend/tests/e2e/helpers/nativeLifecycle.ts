@@ -9,10 +9,12 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
+import { INTERRUPTION_MARKER } from '../../../src/components/chat/assembledMessage'
 import { AgentInputState, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
+import { parseGenerationCounters } from './generationProgress'
 import { newNativeWorkingDir } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
@@ -101,6 +103,7 @@ interface InterruptTurnCommonOptions extends LifecyclePreparation {
 /** Interrupt a held model request. This is the default kind. */
 interface InterruptedModelTurnOptions extends InterruptTurnCommonOptions {
   kind?: 'model'
+  expectedToolUses?: never
   /**
    * Where the turn holds: before its response (the default), or after the
    * first streamed text chunk. Goose 1.53.0 ends a turn on `session/cancel` only
@@ -119,6 +122,8 @@ interface InterruptedModelTurnOptions extends InterruptTurnCommonOptions {
  */
 interface InterruptedToolTurnOptions extends InterruptTurnCommonOptions {
   kind: 'tool'
+  /** Count every native call, including an execution wrapper around the shell tool. */
+  expectedToolUses?: number
   holdModelTurn?: never
   heldModelTurnEnd?: never
 }
@@ -126,6 +131,15 @@ interface InterruptedToolTurnOptions extends InterruptTurnCommonOptions {
 /** How `exerciseInterruptTurn` holds the turn that it interrupts. */
 export type InterruptTurnOptions = InterruptedModelTurnOptions | InterruptedToolTurnOptions
 
+/**
+ * Match the exact native tool count and the cost when the provider states one.
+ * The anchors exclude a different count that contains the expected digits.
+ */
+export function interruptedToolTotals(toolUses: number): RegExp {
+  if (!Number.isSafeInteger(toolUses) || toolUses < 1)
+    throw new Error('An interrupted tool turn needs a positive safe integer for its tool count.')
+  return new RegExp(`^${toolUses} tool${toolUses === 1 ? '' : 's'}(?: · \\$\\d+\\.\\d{4})?$`)
+}
 /** Verify native interruption and a usable next turn without changing the session. */
 export async function exerciseInterruptTurn(
   context: ManagedNativeScenarioContext,
@@ -139,6 +153,7 @@ export async function exerciseInterruptTurn(
     throw new Error('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
   if (requested.holdModelTurn !== undefined && requested.kind === 'tool')
     throw new Error('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
+  const toolTotals = interruptedToolTotals(options.expectedToolUses ?? 1)
   await options.prepare?.()
   const marker = uniqueMarker()
   await sendNativeAnswer(context, `Keep INTERRUPTCONTEXT${marker} for this session.`, `INTERRUPTANSWER${marker}`)
@@ -188,6 +203,9 @@ export async function exerciseInterruptTurn(
       await expect(divider).toHaveText(options.divider)
     else
       await expect(divider).toContainText('interrupted')
+    // Each provider counts the tool that the stop ended in the totals of the turn.
+    if (options.kind === 'tool')
+      await expect(divider.getByTestId('result-divider-totals'), 'the divider counts the stopped native calls').toHaveText(toolTotals)
     // The divider states that the runtime ended the turn, so it read the late answer
     // already. That answer belongs to a cancelled turn, and no row may draw it.
     if (answerArrivesAfterStop)
@@ -208,6 +226,50 @@ export async function exerciseInterruptTurn(
   for (const contextMarker of options.continuation?.contextMarkers ?? [])
     expect(nativeScenarioModelContextText(context, next)).toContain(contextMarker)
   expect((await currentNativeAgent(context)).agentSessionId).toBe(before.agentSessionId)
+}
+
+/**
+ * Interrupt a streamed answer after its first chunk, and prove that the partial answer keeps its interruption marker,
+ * live and after a reload.
+ *
+ * The answer holds after its first chunk, which is exactly `PARTIALHEAD<marker>`. The rest never streams, so no row may
+ * draw it, and the chat draws the marker on the cut text alone. The live token counter proves that the Worker received
+ * the first chunk before the interrupt: without it,
+ * an interrupt that arrives first leaves no partial text, and nothing proves the marker. Each provider that calls this
+ * scenario reports the progress of its model text (its `generation-progress` spec states `supported: true`).
+ */
+export async function exerciseInterruptedPartialAnswer(context: ManagedNativeScenarioContext, options: LifecyclePreparation = {}): Promise<void> {
+  await options.prepare?.()
+  const marker = uniqueMarker()
+  const head = `PARTIALHEAD${marker}`
+  const tail = `NEVERSTREAMED${marker}`
+  const text = `${head} ${tail} ends the answer.`
+  const gate = `native-partial-answer-${marker}`
+  try {
+    await context.modelScript.queue({ ...nativeTextStep(context, text), text, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } })
+    context.modelScript.allowUnconsumed('The interrupt ends the streamed answer after its first chunk.')
+    await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer.'))
+    await context.modelScript.waitForGate(gate)
+    // The first child of each count holds its text for a screen reader, such as "8 tokens". The odometer beside it
+    // draws each digit as a strip of all ten, so its text states no number.
+    const counts = context.page.locator('[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
+    await expect.poll(async () => (await counts.allTextContents()).some(count => (parseGenerationCounters(count).tokens ?? 0) > 0), {
+      message: 'the live token counter shows that the Worker received the first chunk',
+    }).toBe(true)
+    await interruptButton(context.page).click()
+    await waitForAgentIdle(context.page)
+    for (const reload of [false, true]) {
+      if (reload)
+        await context.page.reload()
+      await expect(assistantBubbles(context.page).filter({ hasText: head }).filter({ hasText: INTERRUPTION_MARKER }), 'the partial answer keeps its interruption marker').toHaveCount(1)
+      await expect(messageContents(context.page).filter({ hasText: tail }), 'no row draws the text that never streamed').toHaveCount(0)
+      // The marker states the cut text alone. The divider states the stop in its own label.
+      await expect(messageContents(context.page).filter({ hasText: INTERRUPTION_MARKER }), 'the chat draws the marker once, on the cut text').toHaveCount(1)
+    }
+  }
+  finally {
+    await context.modelScript.releaseGateIfHeld(gate)
+  }
 }
 
 /** Read the native process ownership of one actual held tool. */
