@@ -45,10 +45,12 @@ func (a *Agent) rememberOpenPermission(requestID string) {
 
 // forgetOpenPermission drops a permission that CodeBuddy no longer waits on: the reader
 // answered it, or the CLI withdrew it.
-func (a *Agent) forgetOpenPermission(requestID string) {
+func (a *Agent) forgetOpenPermission(requestID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	_, open := a.openPermissions[requestID]
 	delete(a.openPermissions, requestID)
+	return open
 }
 
 // refuseOpenPermissions refuses each permission that CodeBuddy still waits on, with a
@@ -62,11 +64,17 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 	for requestID := range a.openPermissions {
 		requestIDs = append(requestIDs, requestID)
 	}
-	clear(a.openPermissions)
 	a.mu.Unlock()
 	// Refuse in a stable order, so one interrupt always writes the same lines.
 	slices.Sort(requestIDs)
-	for i, requestID := range requestIDs {
+	refused := false
+	for _, requestID := range requestIDs {
+		a.mu.Lock()
+		_, open := a.openPermissions[requestID]
+		a.mu.Unlock()
+		if !open {
+			continue
+		}
 		frame, err := json.Marshal(map[string]any{
 			"type": frameTypeControlResponse,
 			"response": map[string]any{
@@ -77,17 +85,19 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 		})
 		if err != nil {
 			slog.Error("codebuddy: encode the interrupt refusal", "agent_id", a.AgentID(), "error", err)
-			return i > 0, err
+			return refused, err
 		}
 		if err := a.Process.SendRawInput(frame); err != nil {
-			for _, pending := range requestIDs[i:] {
-				a.rememberOpenPermission(pending)
-			}
-			return i > 0, err
+			return refused, err
 		}
-		a.sink.CancelControlRequest(requestID)
+		refused = true
+		// A native cancel or turn end can retire the request during the write.
+		// A failed write retains only the requests that still wait.
+		if a.forgetOpenPermission(requestID) {
+			a.sink.CancelControlRequest(requestID)
+		}
 	}
-	return len(requestIDs) > 0, nil
+	return refused, nil
 }
 
 // SendRawInput forwards one raw stdin frame. A control_response that answers a waiting

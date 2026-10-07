@@ -120,6 +120,56 @@ func TestCodebuddyInterruptKeepsAPermissionWhenItsRefusalFails(t *testing.T) {
 	assert.True(t, open)
 }
 
+type permissionRetiringWriter struct {
+	retire func()
+	output *bytes.Buffer
+	err    error
+}
+
+func (w permissionRetiringWriter) Write(data []byte) (int, error) {
+	w.retire()
+	if w.err != nil {
+		return 0, w.err
+	}
+	return w.output.Write(data)
+}
+
+func TestCodebuddyFailedRefusalDoesNotRestoreARetiredPermission(t *testing.T) {
+	t.Parallel()
+	for name, retire := range map[string]func(*Agent){
+		"native cancellation": func(a *Agent) {
+			a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"perm_1"}`))
+		},
+		"turn end": func(a *Agent) { a.setTurnActive(false) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, _, _ := permissionFixture(t)
+			a.HandleOutput(canUseTool("perm_1"))
+			failure := errors.New("the refusal write failed")
+			a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{retire: func() { retire(a) }, err: failure}))
+			require.ErrorIs(t, a.Interrupt(), failure)
+			a.mu.Lock()
+			assert.Empty(t, a.openPermissions, "the failed write must not restore a retired permission")
+			a.mu.Unlock()
+		})
+	}
+}
+
+func TestCodebuddyRefusalSkipsAPermissionRetiredDuringAnEarlierWrite(t *testing.T) {
+	t.Parallel()
+	a, controls, stdin := permissionFixture(t)
+	a.HandleOutput(canUseTool("perm_a"))
+	a.HandleOutput(canUseTool("perm_b"))
+	a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{
+		retire: func() { a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"perm_b"}`)) },
+		output: stdin,
+	}))
+	require.NoError(t, a.Interrupt())
+	assert.Equal(t, []string{"perm_a"}, permissionRefusals(t, stdinFrames(t, stdin)))
+	assert.Equal(t, []string{"perm_b", "perm_a"}, controls.CanceledControls())
+}
+
 func TestCodebuddyFailedAnswerKeepsTheNativePermissionOpen(t *testing.T) {
 	t.Parallel()
 	a, _, _ := permissionFixture(t)
