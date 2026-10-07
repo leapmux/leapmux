@@ -35,9 +35,8 @@ func (codebuddyProvider) IsInterrupt(content string) bool {
 // ResolveControlResponse turns the browser's neutral decision into CodeBuddy's
 // native answer.
 //
-// CodeBuddy's can_use_tool parser reads `allowed`, NOT Claude's `behavior`. This
-// translation is the single hard incompatibility with providers/claude and the
-// reason the packages stay separate. The browser sends
+// CodeBuddy's can_use_tool parser reads `allowed` and rejects a `behavior`
+// envelope. The browser sends
 // {response:{request_id, response:{behavior, message}}}; the worker forwards
 // {response:{request_id, response:{allowed, reason, interrupt, updatedInput}}}.
 func (p codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
@@ -54,14 +53,14 @@ func (p codebuddyProvider) ResolveControlResponse(ctx agent.ControlResponseConte
 }
 
 // translateCanUseToolAnswer rewrites the neutral behavior envelope into
-// CodeBuddy's `allowed` object. ok is false for a payload this shape cannot
-// read, in which case the caller forwards the bytes unchanged. Only a payload
+// CodeBuddy's `allowed` object. A payload that this reader cannot decode gives
+// ok=false. The caller then forwards the bytes unchanged. Only a payload
 // that actually states allow or deny is translated: a foreign shape (a JSON-RPC
 // result, an elicitation reply) passes through untouched.
 //
-// An allow forwards the `updatedInput` the browser folded its answer into: an
-// AskUserQuestion reply arrives as the whole tool input with `answers` added,
-// and CodeBuddy merges that object into the tool call. A deny carries the
+// An allow forwards the nonempty `updatedInput` that the browser supplied.
+// An AskUserQuestion reply supplies the whole tool input with `answers` added.
+// CodeBuddy merges that object into the tool call. A deny carries the
 // user's reason in `reason`, which is the field CodeBuddy's own permission
 // reader takes.
 func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
@@ -75,7 +74,7 @@ func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
 		if answer.Reason == "" {
 			answer.Reason = agent.ControlRejectedByUserMessage
 		}
-	} else if updatedInput := agent.DecodeControlUpdatedInput(content); updatedInput != nil {
+	} else if updatedInput := agent.DecodeControlUpdatedInput(content); len(updatedInput) > 0 {
 		encoded, err := json.Marshal(updatedInput)
 		if err != nil {
 			return nil, false

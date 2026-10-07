@@ -386,7 +386,7 @@ function settingDefaults(u) {
 export function emitGoUserSettings(u) {
   const keyDecls = Object.entries(u.settings)
     .map(([name, s]) => ({ name: `SettingKey${settingPascal(name)}`, value: jsonString(s.protoKey) }))
-  const bounds = settingsOfKind(u, 'int', 'float').flatMap(([name, s]) => [
+  const limits = settingsOfKind(u, 'int', 'float').flatMap(([name, s]) => [
     { name: `Setting${settingPascal(name)}Min`, value: String(s.min) },
     { name: `Setting${settingPascal(name)}Max`, value: String(s.max) },
   ])
@@ -413,7 +413,7 @@ ${goConstBlock(settingDefaults(u))}
 // The inclusive limits of every numeric setting. The hub refuses a value
 // outside them, and the browser discards one.
 const (
-${goConstBlock(bounds)}
+${goConstBlock(limits)}
 )
 
 ${enums}

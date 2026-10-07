@@ -7,17 +7,16 @@ import { controlDecisionWords, feedbackOrLabel, label } from '../../persistedCon
 import { codebuddyExtractControl } from './extractControl'
 
 /**
- * The saved answer of one CodeBuddy control request.
+ * Read the saved answer of one CodeBuddy control request.
  *
- * The saved response is CodeBuddy's own can_use_tool answer, which the worker translated
- * from the browser's neutral envelope: `{response:{response:{allowed, reason}}}`. The
- * shared fallback reads only that neutral envelope, so without this reader every
- * CodeBuddy answer read "Responded" and a typed reason disappeared.
+ * The Worker stores CodeBuddy's native can_use_tool answer as
+ * `{response:{response:{allowed, reason}}}`. The browser sends a neutral envelope with
+ * `behavior`. The shared neutral reader expects `behavior` and cannot decode this answer.
+ * This reader reads CodeBuddy's saved fields to show the decision and refusal reason.
  *
- * An answer reads the words its own buttons carried: Allow and Deny for a permission,
- * Approve and Reject for a plan. A denial with the reader's own reason reads as the
- * feedback that reached the model. The reason that the worker fills in for a bare denial
- * is no reason of the reader's, so that denial reads the decision word alone.
+ * Permission answers use Allow and Deny. Plan answers use Approve and Reject.
+ * A denial with the reader's reason shows feedback. A bare denial shows the decision word
+ * and omits the Worker's default reason.
  */
 export function codebuddyControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const answer = pickObject(pickObject(cr.response, 'response', undefined), 'response', undefined)

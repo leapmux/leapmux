@@ -104,7 +104,7 @@
         "sides": [
           "ts"
         ],
-        "why": "the saved row states the decision; the banner drew the input before the answer, and the answer only repeats it to the CLI"
+        "why": "The browser draws a saved decision from allowed and reason. The CLI consumes the updated tool input."
       }
     }
   },
@@ -161,7 +161,7 @@
   },
   "structs": {
     "CodebuddyCanUseToolAnswer": {
-      "doc": "CodeBuddy's answer to one can_use_tool request. It is the single hard incompatibility with\nClaude Code's stream: the CLI-side parser reads `allowed`, not `behavior`. Probe r5 proved\nthat a `behavior:\"allow\"` answer comes back as \"Permission denied by SDK\", and probe r6\nproved that `allowed:true` runs the tool.\n\nAn allow states `allowed:true` and, when the browser folded an answer into the tool input,\n`updatedInput`. A denial states `allowed:false` and the reason that the model reads.",
+      "doc": "CodeBuddy's answer to one can_use_tool request. The CLI reads `allowed` and rejects a\n`behavior` envelope. The Worker translates the browser's neutral decision into this answer.\n\nAn allow states `allowed:true`. It carries nonempty `updatedInput` when the browser\nsupplies an answer through the tool input. A denial states `allowed:false` and the reason\nthat the model reads.",
       "table": "controlAnswer",
       "fields": [
         {

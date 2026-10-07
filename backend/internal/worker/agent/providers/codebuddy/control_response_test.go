@@ -51,6 +51,13 @@ func TestCodebuddyTranslateAllowWithoutAnUpdateStatesTheOriginalShape(t *testing
 	assert.Equal(t, map[string]any{"allowed": true}, nativeAnswer(t, translated))
 }
 
+func TestCodebuddyTranslateAllowOmitsAnEmptyUpdate(t *testing.T) {
+	t.Parallel()
+	translated, ok := translateCanUseToolAnswer(browserAnswer(t, "approval:empty", "allow", "", map[string]any{}))
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"allowed": true}, nativeAnswer(t, translated))
+}
+
 func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -81,13 +88,17 @@ func TestCodebuddyTranslateAllowForwardsUpdatedInput(t *testing.T) {
 	updated := map[string]any{
 		"questions": []any{map[string]any{"question": "Color?"}},
 		"answers":   map[string]any{"Color?": "Red"},
+		"count":     float64(0),
+		"enabled":   false,
+		"text":      "",
+		"optional":  nil,
 	}
 	translated, ok := translateCanUseToolAnswer(browserAnswer(t, "approval:1", "allow", "", updated))
 	require.True(t, ok)
 	native := nativeAnswer(t, translated)
 	assert.Equal(t, true, native["allowed"])
 	require.IsType(t, map[string]any{}, native["updatedInput"])
-	assert.Equal(t, "Red", native["updatedInput"].(map[string]any)["answers"].(map[string]any)["Color?"])
+	assert.Equal(t, updated, native["updatedInput"])
 }
 
 func TestCodebuddyTranslateDenyCarriesTheReason(t *testing.T) {
