@@ -1,3 +1,4 @@
+import type { CommandResult } from '../../../model/commandResult'
 import type { SearchToolKind } from '../../../model/searchResult'
 import type { ACPToolCallAdapter } from '../../acp/extractors/toolCall'
 import { rawTodosToItems } from '~/components/chat/normalizers/todo'
@@ -5,6 +6,7 @@ import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { REASONIX_CAPABILITY_ACTION, REASONIX_CAPABILITY_PREFIX, REASONIX_TOOL, REASONIX_TOOL_RECORD } from '~/generated/contracts/reasonix-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { parseUnifiedDiffCached } from '../../../diff'
+import { withCommandExit } from '../../../model/commandResult'
 import { fileEditDiffFromHunks, fileEditHasDiff } from '../../../model/fileEditDiff'
 import { mcpToolCallRequest, parseMcpContentItem, parseMcpToolName, splitPrefixedPair } from '../../../model/mcpToolCall'
 import { failedResult, unparsedResult } from '../../../model/toolCall'
@@ -25,6 +27,41 @@ import { isReasonixTool, REASONIX_TOOL_KINDS, REASONIX_TOOL_NAME } from '../tool
  * that does.
  */
 const REASONIX_MCP_CAPABILITY_PREFIX = 'mcp-tool:'
+
+/**
+ * The execution facts of a `bash` record. Only this plugin reads them, so the field stays
+ * here and not in `contracts/reasonix-protocol.json`, which holds the fields that the
+ * worker reads also.
+ */
+const REASONIX_TOOL_EXECUTION = 'tool_execution'
+
+/**
+ * The line that Reasonix 1.38.7 puts before the output of a command that exits nonzero:
+ * its tool error, `command exited: %w`, around the Go `exit status N`.
+ */
+const REASONIX_EXIT_STATUS_LINE = /^error: command exited: exit status (\d+)\n/
+
+/**
+ * Read the native exit from `tool_execution.exitCode`.
+ * Remove a host failure line only when it agrees with that nonzero exit.
+ * A native failed frame can supply the line when no structured exit exists.
+ * Keep successful output and lines that contradict the structured exit.
+ * A failure of another cause, such as a signal, keeps its reason line.
+ */
+function reasonixShellCommand(command: CommandResult, saved: Record<string, unknown> | undefined, nativeFailed: boolean): CommandResult {
+  const statedCode = pickObject(saved, REASONIX_TOOL_EXECUTION)?.exitCode
+  const failureLine = REASONIX_EXIT_STATUS_LINE.exec(command.output)
+  const failureCode = failureLine ? Number(failureLine[1]) : Number.NaN
+  const validFailureLine = Number.isSafeInteger(failureCode) ? failureLine : null
+  const structuredCode = typeof statedCode === 'number' && Number.isSafeInteger(statedCode) ? statedCode : undefined
+  const hostFailureLine = validFailureLine !== null && (structuredCode !== undefined
+    ? structuredCode !== 0 && structuredCode === failureCode
+    : statedCode === undefined && nativeFailed)
+  const exitCode = structuredCode ?? (hostFailureLine ? failureCode : undefined)
+  const output = (hostFailureLine && validFailureLine ? command.output.slice(validFailureLine[0].length) : command.output).replace(/\n\[receipt r_[\da-z_]+\]$/u, '')
+  const trimmed = { ...command, output }
+  return exitCode === undefined || !Number.isSafeInteger(exitCode) ? trimmed : withCommandExit(trimmed, { exitCode })
+}
 
 /** The search result one completed glob or grep states, from the words it printed. */
 function reasonixSearchResult(name: Extract<SearchToolKind, 'glob' | 'grep'>, output: string) {
@@ -171,7 +208,10 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
   }
   if (name === REASONIX_TOOL_NAME.Bash) {
     const base = acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name])
-    return { ...base, name, title: pickString(input, 'description') || base.title }
+    const commands = base.result !== undefined && 'commands' in base.result ? base.result : undefined
+    const only = commands?.commands.length === 1 ? commands.commands[0] : undefined
+    const shell = commands && only ? { result: { ...commands, commands: [reasonixShellCommand(only, saved, facts.lifecycle.frameStatus === 'failed')] } } : {}
+    return { ...base, name, title: pickString(input, 'description') || base.title, ...shell }
   }
   if (name === REASONIX_TOOL_NAME.Ls) {
     // ONE branch for the two states, and no request of its own: the table already

@@ -68,4 +68,19 @@ describe('codebuddyToolCall', () => {
     expect(call.status).toBe('failed')
     expect(call.degradation).toBeUndefined()
   })
+
+  it('draws a shell result as a command with the stated exit', () => {
+    const call = codebuddyToolCall(facts({ toolName: 'Bash', args: { command: 'exit 7' }, resultText: 'record', commandExit: { exitCode: 7 } }))
+    expect(call.result).toStrictEqual({ commands: [{ output: 'record', exitCode: 7 }], unresolvedTerminals: [] })
+  })
+
+  it('keeps a landed shell result with empty text as a command that printed nothing', () => {
+    const call = codebuddyToolCall(facts({ toolName: 'Bash', args: { command: 'true' }, resultText: '' }))
+    expect(call.result).toStrictEqual({ commands: [{ output: '' }], unresolvedTerminals: [] })
+  })
+
+  it('states no shell result while the command runs', () => {
+    const call = codebuddyToolCall(facts({ toolName: 'Bash', args: { command: 'sleep 9' }, lifecycle: { ...SYNTHETIC_TOOL_LIFECYCLE, frameStatus: 'in_progress', rowFinal: false, resultFrameLanded: false } }))
+    expect(call.result).toBeUndefined()
+  })
 })

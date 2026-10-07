@@ -1,3 +1,4 @@
+import type { CommandResult } from '../../../model/commandResult'
 import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ChatRow } from '../../../model/row'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
@@ -100,6 +101,18 @@ function droidToolRow(
     return toolCallRow(call, 'request', span.visibleRows)
   }
 
+  // A command result states how the command ended, which only the command body draws.
+  const commandText = kind === 'execute' && hasInput && isResult ? droidCommandText(resultContent) : undefined
+  if (commandText !== undefined) {
+    const call = createToolCall(envelope, {
+      kind: 'execute',
+      name,
+      request: toolRequestFor('execute', args, {}, {}),
+      result: { commands: [droidCommandResult(commandText)], unresolvedTerminals: [] },
+    })
+    return toolCallRow(call, 'result', span.visibleRows)
+  }
+
   // Other result rows keep the generic card because their request row already shows the typed input.
   // A request row receives the typed request for its declared kind.
   const requestKind = hasInput && !isResult ? kind : 'other'
@@ -117,6 +130,41 @@ function droidToolRow(
       : {}),
   })
   return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+}
+
+/**
+ * The trailer that Droid 0.233.0 writes after the output of every finished command. The
+ * Droid binary reads the code with the same pattern.
+ */
+const DROID_EXIT_TRAILER = /\[Process exited with code (-?\d+)\]\s*$/
+
+/** The text of a command result, or undefined for a result that holds anything but text. */
+function droidCommandText(content: readonly McpContentItem[]): string | undefined {
+  let text = ''
+  for (const item of content) {
+    if (item.type !== 'text')
+      return undefined
+    text += item.text
+  }
+  return text
+}
+
+/**
+ * One command and the code of its native trailer.
+ *
+ * The row shows command output without the native status trailer.
+ * A matching failure preamble states the same exit, so the row omits it also.
+ */
+function droidCommandResult(text: string): CommandResult {
+  const trailer = DROID_EXIT_TRAILER.exec(text)
+  const exitCode = trailer ? Number(trailer[1]) : Number.NaN
+  if (!trailer || !Number.isSafeInteger(exitCode))
+    return { output: text }
+  let output = text.slice(0, trailer.index).replace(/\r?\n\r?\n$/u, '')
+  const failure = `Error: Command failed (exit code: ${exitCode})\n`
+  if (exitCode !== 0 && output.startsWith(failure))
+    output = output.slice(failure.length)
+  return { output, exitCode }
 }
 
 /** Read Droid's result blocks without turning a picture into JSON text. */

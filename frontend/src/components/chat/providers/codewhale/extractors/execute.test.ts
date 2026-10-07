@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
-import { codewhaleCommandResult, codewhaleExecuteRequest } from './execute'
+import { codewhaleCommandResult, codewhaleExecuteRequest, codewhaleFailedCommand } from './execute'
 
 describe('codewhaleExecuteRequest', () => {
   it('reads the command, the description and the working directory', () => {
@@ -63,5 +63,38 @@ describe('codewhaleCommandResult', () => {
     expect(codewhaleCommandResult('out', {})).toStrictEqual({ output: 'out' })
     expect(codewhaleCommandResult('out', { exit_code: '1', duration_ms: -5 })).toStrictEqual({ output: 'out' })
     expect(codewhaleCommandResult('out', { exit_code: 1.5 })).toStrictEqual({ output: 'out' })
+  })
+
+  it('preserves output without an unsafe structured exit code', () => {
+    expect(codewhaleCommandResult('out', { exit_code: Number.MAX_SAFE_INTEGER + 1 }))
+      .toStrictEqual({ output: 'out' })
+  })
+})
+
+describe('codewhaleFailedCommand', () => {
+  it('reads the output and the code of a command that exited nonzero, and keeps the duration', () => {
+    expect(codewhaleFailedCommand('Failed to execute tool: oops\n\n\nCommand exited with code 7', { duration_ms: 12 })).toStrictEqual({ output: 'oops', exitCode: 7, durationMs: 12 })
+  })
+
+  it('keeps a negative code', () => {
+    expect(codewhaleFailedCommand('Failed to execute tool: killed\nCommand exited with code -9', {})).toStrictEqual({ output: 'killed', exitCode: -9 })
+  })
+
+  // The same words inside the output belong to the command. Only the last line is the
+  // trailer of the runtime.
+  it('reads the last trailer and keeps the same words inside the output', () => {
+    expect(codewhaleFailedCommand('Failed to execute tool: Command exited with code 1\nmore\n\n\nCommand exited with code 2', {}))
+      .toStrictEqual({ output: 'Command exited with code 1\nmore', exitCode: 2 })
+  })
+
+  it.each([
+    ['a refusal', 'Tool \'bash\' denied by user'],
+    ['a timeout', 'Failed to execute tool: operation timed out after 5s'],
+    ['a trailer with no prefix', 'oops\n\n\nCommand exited with code 7'],
+    ['a code that is not an integer', 'Failed to execute tool: oops\nCommand exited with code 7.5'],
+    ['a code past the safe integers', 'Failed to execute tool: oops\nCommand exited with code 99999999999999999999'],
+    ['an empty text', ''],
+  ])('reads no command from %s', (_case, text) => {
+    expect(codewhaleFailedCommand(text, {})).toBeUndefined()
   })
 })

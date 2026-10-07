@@ -78,7 +78,10 @@ describe('droidExtractRow', () => {
     expect(row.call.result.content).toEqual([{ type: 'text', text: 'plain output' }])
   })
 
-  it.each(['Read', 'Execute'])('keeps the matched native opener name on a nameless %s result', (name) => {
+  it.each([
+    ['Read', 'other', { content: [{ type: 'text', text: 'native preview' }] }],
+    ['Execute', 'execute', { commands: [{ output: 'native preview' }], unresolvedTerminals: [] }],
+  ])('keeps the matched native opener name on a nameless %s result', (name, kind, expectedResult) => {
     const request = resolvedDroidFrame({ type: 'tool_call', toolUse: { id: 'native-call', name, input: { command: 'native command' } } })
     const result = resolvedDroidFrame({ type: 'tool_result', toolUseId: 'native-call', content: 'native preview' })
     const span: ToolSpanContext = { request, result, role: 'result', visibleRows: { request: true, result: true } }
@@ -88,7 +91,46 @@ describe('droidExtractRow', () => {
     if (row?.kind !== 'tool')
       throw new Error('The native Droid result requires a tool row.')
     expect(row.call.name).toBe(name)
-    expect(isGenericToolResult(row.call.result)).toBe(true)
+    expect(row.call.kind).toBe(kind)
+    expect(row.call.result).toStrictEqual(expectedResult)
+  })
+
+  describe('an Execute result', () => {
+    // Droid 0.233.0 ends the result of every finished command with the trailer
+    // `[Process exited with code N]`, and the binary reads the code with the same
+    // pattern. A failed command also opens with `Error: Command failed (exit code: N)`.
+    function executeRow(content: unknown, isError: boolean) {
+      const request = resolvedDroidFrame({ type: 'tool_call', toolUse: { id: 'call_shell', name: 'Execute', input: { command: 'printf x >&2; exit 7', summary: 'Run the scripted command' } } })
+      const result = resolvedDroidFrame({ type: 'tool_result', toolUseId: 'call_shell', content, isError })
+      const span: ToolSpanContext = { request, result, role: 'result', visibleRows: { request: true, result: true } }
+      const row = droidExtractRow({ resolved: result, category: classifyDroidMessage({ ...result, agentProvider: AgentProvider.DROID }), span })
+      if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+        throw new Error('The native Droid Execute result requires an execute row.')
+      return row.call
+    }
+
+    it('draws a command result with the code of the native trailer', () => {
+      const content = 'Error: Command failed (exit code: 7)\nSHELLERR77\n\n\n[Process exited with code 7]'
+      const call = executeRow(content, true)
+      expect(call.status).toBe('failed')
+      expect(call.request).toMatchObject({ command: 'printf x >&2; exit 7' })
+      expect(call.result).toStrictEqual({ commands: [{ output: 'SHELLERR77\n', exitCode: 7 }], unresolvedTerminals: [] })
+    })
+
+    it('reads the zero code of a command that succeeded', () => {
+      const content = 'SHELL42\n\n\n[Process exited with code 0]'
+      expect(executeRow(content, false).result).toStrictEqual({ commands: [{ output: 'SHELL42\n', exitCode: 0 }], unresolvedTerminals: [] })
+    })
+
+    it('reads only the last trailer, and keeps the same words inside the output', () => {
+      const content = '[Process exited with code 3]\nprinted\n\n\n[Process exited with code 0]'
+      expect(executeRow(content, false).result).toStrictEqual({ commands: [{ output: '[Process exited with code 3]\nprinted\n', exitCode: 0 }], unresolvedTerminals: [] })
+    })
+
+    it('states no code for a result without the trailer, and joins the text blocks', () => {
+      expect(executeRow([{ type: 'text', text: 'partial' }, { type: 'text', text: ' output' }], false).result)
+        .toStrictEqual({ commands: [{ output: 'partial output' }], unresolvedTerminals: [] })
+    })
   })
 
   it('refuses tool names and arguments from a different native opener', () => {

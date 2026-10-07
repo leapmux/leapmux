@@ -54,7 +54,43 @@ describe('lettaExtractRow', () => {
     const row = nativeToolRow({ name: 'Bash', args: JSON.stringify({ command: 'printf computed >&2; exit 7' }), status: 'error', result: 'SHELLERR77', role: 'result' })
     expect(row.call.name).toBe('Bash')
     expect(row.call.status).toBe('failed')
-    expect(row.call.result).toMatchObject({ failure: true, text: 'SHELLERR77' })
+    expect(row.call.result).toStrictEqual({ commands: [{ output: 'SHELLERR77' }], unresolvedTerminals: [] })
+  })
+
+  describe('a Bash result', () => {
+    // Letta Code 0.34.2 (`bash` in the CLI bundle) begins the text of a failed
+    // foreground command with `${detail}\n`, where the detail is `Exit code: N`.
+    const bash = (status: string, result: string) => nativeToolRow({ name: 'Bash', args: JSON.stringify({ command: 'printf x >&2; exit 7' }), status, result, role: 'result' })
+
+    it('draws a command result with the code of a failed command, and only its output', () => {
+      const row = bash('error', 'Exit code: 7\nSHELLERR77\n')
+      expect(row.call.kind).toBe('execute')
+      expect(row.call.status).toBe('failed')
+      expect(row.call.request).toStrictEqual({ command: 'printf x >&2; exit 7' })
+      expect(row.call.result).toStrictEqual({ commands: [{ output: 'SHELLERR77\n', exitCode: 7 }], unresolvedTerminals: [] })
+    })
+
+    it('reads the code after the recovery note, and keeps the note for the reader', () => {
+      const row = bash('error', 'Note: working directory /gone no longer exists; running in /work instead.\nExit code: 2\nout')
+      expect(row.call.result).toStrictEqual({ commands: [{ output: 'Note: working directory /gone no longer exists; running in /work instead.\nout', exitCode: 2 }], unresolvedTerminals: [] })
+    })
+
+    it('keeps a failure detail that states no code, such as a signal', () => {
+      const row = bash('error', 'Terminated by signal before exiting\npartial')
+      expect(row.call.status).toBe('failed')
+      expect(row.call.result).toStrictEqual({ commands: [{ output: 'Terminated by signal before exiting\npartial' }], unresolvedTerminals: [] })
+    })
+
+    it('keeps the whole output of a successful command, whose first line can hold the same words', () => {
+      const row = bash('success', 'Exit code: 3\nprinted')
+      expect(row.call.status).toBe('completed')
+      expect(row.call.result).toStrictEqual({ commands: [{ output: 'Exit code: 3\nprinted' }], unresolvedTerminals: [] })
+    })
+
+    it('keeps the generic card for a result whose call states no command', () => {
+      const row = nativeToolRow({ name: 'Bash', args: '{}', status: 'error', result: 'Exit code: 7\nout', role: 'result' })
+      expect(row.call.kind).toBe('other')
+    })
   })
 
   it('preserves an empty replacement in a completed native edit', () => {
@@ -155,7 +191,7 @@ describe('lettaExtractRow', () => {
 
   it('keeps the bytes that another tool returns, although they match a question receipt', () => {
     const row = nativeToolRow({ name: 'Bash', args: JSON.stringify({ command: 'cat receipt.json' }), status: 'success', result: QUESTION_RECEIPT, role: 'result' })
-    expect(row.call.result).toEqual({ content: [{ type: 'text', text: QUESTION_RECEIPT }] })
+    expect(row.call.result).toEqual({ commands: [{ output: QUESTION_RECEIPT }], unresolvedTerminals: [] })
   })
 
   // A kind renderer reads its own request fields without a guard. Raw arguments carry
@@ -176,7 +212,7 @@ describe('lettaExtractRow', () => {
     expect(row.call.kind).toBe('execute')
     expect(row.call.request).toEqual({ command: 'printf done', description: 'Print done' })
     expect(row.call.status).toBe('completed')
-    expect(row.call.result).toEqual({ unparsed: true, text: 'done' })
+    expect(row.call.result).toEqual({ commands: [{ output: 'done' }], unresolvedTerminals: [] })
   })
 
   it('shows the native child Read call with its exact tool id and path', () => {
@@ -239,7 +275,7 @@ describe('letta native result boundaries', () => {
   it.each(['', 0, false, null])('retains present client-end output without replacing %j', (tool_return) => {
     const row = pairedLettaNativeRow({ ...request, tool_name: 'Bash', tool_args: '{"command":"native command"}' }, { ...result, message_type: 'client_tool_end', tool_return }, 'result')
     expect(row.call.status).toBe('completed')
-    expect(row.call.result).toMatchObject({ content: [{ type: 'text', text: typeof tool_return === 'string' ? tool_return : JSON.stringify(tool_return) }] })
+    expect(row.call.result).toStrictEqual({ commands: [{ output: typeof tool_return === 'string' ? tool_return : JSON.stringify(tool_return) }], unresolvedTerminals: [] })
   })
 
   it('retains a matching composite error and its zero output', () => {

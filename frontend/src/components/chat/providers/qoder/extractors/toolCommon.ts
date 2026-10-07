@@ -1,9 +1,10 @@
-import type { CommandExit } from '../../../model/commandResult'
+import type { CommandExit, CommandResult } from '../../../model/commandResult'
 import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ToolCall, ToolCallEnvelope, ToolCallLifecycleFacts, ToolCallSpecReaderTable, ToolCallSpecVariant } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
+import { splitExitCodeMarker } from '../../../model/exitCodeMarker'
 import { failedResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 
 import { toolRequestFor } from '../../defaultToolRequests'
@@ -68,10 +69,11 @@ export function anthropicToolCall(facts: AnthropicToolFacts): ToolCall {
   const spec = readToolCallSpec(ANTHROPIC_TOOL_READERS, kind, facts)
   const resultText = facts.resultContent.length > 0 ? '' : facts.resultText
   if (spec.kind === 'execute') {
+    const command = qoderFailedCommand(resultText, facts)
     return createToolCall(envelope, {
       ...spec,
       ...(facts.lifecycle.resultFrameLanded
-        ? { result: { commands: [{ output: resultText, ...facts.commandExit }], unresolvedTerminals: [] } }
+        ? { result: { commands: [command], unresolvedTerminals: [] } }
         : {}),
       ...(facts.resultContent.length > 0 ? { extraContent: facts.resultContent } : {}),
     })
@@ -83,6 +85,22 @@ export function anthropicToolCall(facts: AnthropicToolFacts): ToolCall {
       : {}),
     ...(facts.resultContent.length > 0 ? { extraContent: facts.resultContent } : {}),
   })
+}
+
+/**
+ * One command and how it ended.
+ *
+ * Qoder CLI begins the result text of a FAILED command with the `Exit code N` line, as
+ * Claude Code does. The code then reaches the reader in the row header, so the body
+ * draws only what the command printed. The structured `tool_use_result` code wins when
+ * the record states one. A successful result keeps every line, because the same words
+ * there belong to the output of the command.
+ */
+function qoderFailedCommand(text: string, facts: Pick<AnthropicToolFacts, 'isError' | 'commandExit'>): CommandResult {
+  const marked = facts.isError ? splitExitCodeMarker(text) : { output: text }
+  const statedExit = typeof facts.commandExit.exitCode === 'number' || facts.commandExit.signal !== undefined
+  const exit: CommandExit = !statedExit && marked.exitCode !== undefined ? { exitCode: marked.exitCode } : facts.commandExit
+  return { output: marked.output, ...exit }
 }
 
 /** Select the native block for one call, or the first block when no call ID exists. */

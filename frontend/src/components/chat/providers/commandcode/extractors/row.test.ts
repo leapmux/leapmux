@@ -77,6 +77,43 @@ describe('commandCodeExtractRow', () => {
     expect(row?.kind === 'tool' ? row.call.result : null).toBeUndefined()
   })
 
+  describe('a shell command that exits nonzero', () => {
+    // Command Code 1.74.1 completes the call and begins its text with the code: `Exit code:
+    // N`, with an optional reading of the code in parentheses on the same line or on the
+    // next one, and an optional `Signal:` line, before the output.
+    const request = resolved(event('tool_queued', { toolCallId: 'shell', toolName: 'shell_command', input: { command: 'printf x >&2; exit 7' } }))
+    function command(text: string) {
+      const row = extract(event('tool_completed', { toolCallId: 'shell', toolName: 'shell_command', result: [{ type: 'text', text }] }), { span: { ...emptySpan, request, role: 'result', visibleRows: { request: true, result: true } } })
+      if (row?.kind !== 'tool' || row.call.kind !== 'execute' || row.call.result === undefined || !('commands' in row.call.result))
+        throw new Error('The native shell result must remain an execute row with a command.')
+      return row.call.result.commands[0]
+    }
+
+    it('reads the code of the native first line and draws only the output', () => {
+      expect(command('Exit code: 7\nSHELLERR77\n')).toStrictEqual({ output: 'SHELLERR77\n', exitCode: 7 })
+    })
+
+    it.each([
+      ['a reading on the same line', 'Exit code: 1 (no matches)\nout'],
+      ['a reading on its own line', 'Exit code: 1\n(no matches)\nout'],
+      ['a signal line', 'Exit code: 1\nSignal: SIGTERM\nout'],
+    ])('reads the code before %s, and drops the line', (_case, text) => {
+      expect(command(text)).toStrictEqual({ output: 'out', exitCode: 1 })
+    })
+
+    it('reads a failed command that printed nothing', () => {
+      expect(command('Exit code: 3')).toStrictEqual({ output: '', exitCode: 3 })
+    })
+
+    it('keeps a successful output, which states no code', () => {
+      expect(command('SHELL42\n')).toStrictEqual({ output: 'SHELL42\n' })
+    })
+
+    it('keeps a zero code in the text as output, because the native text states only a nonzero code', () => {
+      expect(command('Exit code: 0\nout')).toStrictEqual({ output: 'Exit code: 0\nout' })
+    })
+  })
+
   it('keeps denied and failed native tools distinct', () => {
     const denied = extract(event('tool_hook_blocked', { toolCallId: 'call', toolName: 'write_file', hookOutput: 'Native permission is required.' }))
     expect(denied?.kind === 'tool' ? denied.call.status : null).toBe('declined')

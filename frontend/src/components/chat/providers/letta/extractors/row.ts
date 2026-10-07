@@ -1,3 +1,4 @@
+import type { CommandResult } from '../../../model/commandResult'
 import type { ChatRow } from '../../../model/row'
 import type { ToolCall, ToolCallEnvelope, ToolCallLifecycleFacts } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
@@ -141,6 +142,10 @@ function lettaToolRow(
       return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
     }
   }
+  // A shell call states its command, so its result row draws the command result: the
+  // output, and the code of a command that failed.
+  if (kind === 'execute' && hasInput && resultText !== undefined)
+    return toolCallRow(lettaShellCall({ ...facts, resultText }), isResult ? 'result' : 'request', span.visibleRows)
   // A result row, a call that states no input and a call whose declared kind has
   // no reading here keep the generic result card. Native status remains
   // independent of its text.
@@ -212,6 +217,35 @@ function lettaDeclaredCall<K extends ToolKind>(kind: K, facts: LettaToolFacts): 
     name: facts.name,
     request: toolRequestFor(kind, facts.args, null, LETTA_TOOL_REQUEST_OVERRIDES),
     ...(facts.resultText !== undefined ? { result: facts.failed ? failedResult(facts.resultText) : unparsedResult(facts.resultText) } : {}),
+  })
+}
+
+/**
+ * The line that Letta Code 0.34.2 writes before the output of a failed foreground
+ * command (`bash` in the CLI bundle): the detail `Exit code: N`. A recovery note can
+ * stand before it.
+ */
+const LETTA_EXIT_LINE = /^((?:Note: [^\n]*\n)?)Exit code: (-?\d+)(?:\n|$)/
+
+/**
+ * One shell call: the request its arguments state, and its output with the code of a
+ * failed command.
+ *
+ * Only a call that the native status marks as failed reads the line: a successful
+ * command can print the same words, and they are its output. A failure detail that
+ * states no code, such as a signal, stays in the output, where the reader sees why.
+ */
+function lettaShellCall(facts: LettaToolFacts & { resultText: string }): ToolCall {
+  const exitLine = facts.failed ? LETTA_EXIT_LINE.exec(facts.resultText) : null
+  const exitCode = exitLine ? Number(exitLine[2]) : Number.NaN
+  const command: CommandResult = exitLine && Number.isSafeInteger(exitCode)
+    ? { output: `${exitLine[1] ?? ''}${facts.resultText.slice(exitLine[0].length)}`, exitCode }
+    : { output: facts.resultText }
+  return createToolCall(facts.envelope, {
+    kind: 'execute',
+    name: facts.name,
+    request: toolRequestFor('execute', facts.args, null, LETTA_TOOL_REQUEST_OVERRIDES),
+    result: { commands: [command], unresolvedTerminals: [] },
   })
 }
 

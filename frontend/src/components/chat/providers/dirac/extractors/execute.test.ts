@@ -60,6 +60,18 @@ describe('diracCommandExit', () => {
 })
 
 describe('diracExecuteSpec', () => {
+  it.each([
+    [0, 'Command executed successfully (exit code 0).\nOutput:\nSHELL42', 'SHELL42'],
+    [7, 'Command failed with exit code 7.\nOutput:\nSHELLERR77', 'SHELLERR77'],
+  ])('removes the native model preamble for exit %s', (exitCode, output, expected) => {
+    const spec = sharedSpec()
+    if (spec.kind !== 'execute' || !spec.result || !('commands' in spec.result))
+      throw new Error('The fixture requires one command.')
+    spec.result.commands[0]!.output = output
+    const result = diracExecuteSpec(nativeFacts({ output, exitCode }), () => spec)
+    expect(result).toMatchObject({ result: { commands: [{ output: expected, exitCode }] } })
+  })
+
   it('changes only the native exit and keeps the original result fields', () => {
     const facts = nativeFacts()
     const spec = sharedSpec()

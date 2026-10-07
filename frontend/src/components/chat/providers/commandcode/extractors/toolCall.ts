@@ -1,3 +1,4 @@
+import type { CommandResult } from '../../../model/commandResult'
 import type { ToolCall, ToolCallEnvelope, ToolCallSpecVariant } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
@@ -30,6 +31,30 @@ function generic<K extends ToolKind>(kind: K, facts: ToolFacts): ToolCall {
     ...(facts.landed ? { result: facts.failed ? failedResult(facts.text) : unparsedResult(facts.text) } : {}),
   }
   return createToolCall(facts.envelope, spec)
+}
+
+/**
+ * The lines that Command Code 1.74.1 writes before the output of a command that exits
+ * nonzero (`formatResult2` and its sibling in the CLI bundle): `Exit code: N`, a
+ * reading of the code in parentheses on the same line or on the next one, and the
+ * `Signal:` line. A command that succeeds gets no such line, so a zero code never
+ * opens the text.
+ */
+const COMMAND_CODE_EXIT_LINES = /^Exit code: (-?\d+)(?: \([^\n]*\))?(?:\n\([^\n]*\))?(?:\nSignal: [^\n]*)?(?:\n|$)/
+
+/**
+ * One shell command and its code.
+ *
+ * Command Code completes the call whatever the code is, and states the code only in
+ * these lines. A successful command can print the same words as its first line, and
+ * nothing tells the two apart; the zero code is the one case that this reading excludes.
+ */
+function commandCodeShellResult(text: string): CommandResult {
+  const lines = COMMAND_CODE_EXIT_LINES.exec(text)
+  const exitCode = lines ? Number(lines[1]) : 0
+  if (!lines || !Number.isSafeInteger(exitCode) || exitCode === 0)
+    return { output: text }
+  return { output: text.slice(lines[0].length), exitCode }
 }
 
 export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null {
@@ -78,7 +103,7 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
         kind: 'execute',
         request,
         label: 'Shell',
-        ...(facts.landed ? { result: { commands: [{ output: facts.text }], unresolvedTerminals: [] } } : {}),
+        ...(facts.landed ? { result: { commands: [commandCodeShellResult(facts.text)], unresolvedTerminals: [] } } : {}),
       })
     }
     case 'read': {

@@ -1,6 +1,7 @@
+import type { CommandExit } from '../../../model/commandResult'
 import type { ToolCall, ToolCallEnvelope, ToolCallLifecycleFacts, ToolCallSpecReaderTable, ToolCallSpecVariant } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
-import { isObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
 import { failedResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 
@@ -54,6 +55,31 @@ export interface CodebuddyToolFacts {
   resultText: string
   isError: boolean
   lifecycle: ToolCallLifecycleFacts
+  /** How a shell command ended, when its result states it. */
+  commandExit?: CommandExit
+  /** The inline output that the native shell renderer supplies. */
+  commandOutput?: string
+}
+
+/** The native shell tool, whose result is a command result. */
+const CODEBUDDY_SHELL_TOOL = 'Bash'
+
+/**
+ * How a shell command ended, from the `_meta.rawResponse` of a live result block.
+ *
+ * CodeBuddy Code 2.160.0 states `exitCode` and `signal` there. The record text states
+ * them as well, but a record line cannot be told apart from the same words in the
+ * output, so this reads the structured response only.
+ */
+export function codebuddyCommandExit(block: Record<string, unknown> | undefined): CommandExit | undefined {
+  const response = pickObject(pickObject(block, '_meta'), 'rawResponse')
+  if (!response)
+    return undefined
+  const code = response.exitCode
+  if (typeof code === 'number' && Number.isSafeInteger(code))
+    return { exitCode: code }
+  const signal = response.signal
+  return typeof signal === 'string' && signal.trim() !== '' ? { signal } : undefined
 }
 
 /** Ordinary REPL refusals and spill references can use text instead of the native JSON envelope. */
@@ -89,6 +115,14 @@ export function codebuddyToolCall(facts: CodebuddyToolFacts): ToolCall {
     lifecycle: { ...facts.lifecycle, providerOutcome: facts.lifecycle.providerOutcome ?? (isError ? 'failed' : null) },
   }
   const spec = readToolCallSpec(CODEBUDDY_TOOL_READERS, kind, facts)
+  // A shell result uses its native inline output when available.
+  // The original record remains the fallback for a spill or missing output.
+  if (spec.kind === 'execute' && facts.toolName === CODEBUDDY_SHELL_TOOL && facts.lifecycle.resultFrameLanded) {
+    return createToolCall(envelope, {
+      ...spec,
+      result: { commands: [{ output: facts.commandOutput ?? facts.resultText, ...facts.commandExit }], unresolvedTerminals: [] },
+    })
+  }
   return createToolCall(envelope, {
     ...spec,
     ...(facts.resultText ? { result: isError ? failedResult(facts.resultText) : unparsedResult(facts.resultText) } : {}),

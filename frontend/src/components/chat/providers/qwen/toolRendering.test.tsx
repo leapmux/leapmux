@@ -179,16 +179,15 @@ describe('qwen tool rendering', () => {
       expect(call?.kind === 'execute' && call.result && 'commands' in call.result && call.result.commands).toEqual([{ output: 'done', truncated: false }])
     })
 
-    // A failed call keeps the shared failure body: the record of a command that
-    // Qwen did not run to an end is not the answer.
-    it('keeps the shared body of a command that failed', () => {
+    // A native refusal does not run the command, so it keeps the refusal body.
+    it('keeps the refusal body of a command that the user cancelled', () => {
       const call = finishedCall('run_shell_command', 'execute', { command: 'x' }, {
         status: 'failed',
-        content: acpTextContent('The command was refused.'),
+        content: acpTextContent('Tool "run_shell_command" was canceled by the user.'),
         rawOutput: { type: 'shell_result', exitCode: 0, output: 'from the record' },
       })
       expect(JSON.stringify(call?.result)).not.toContain('from the record')
-      expect(JSON.stringify(call?.result)).toContain('The command was refused.')
+      expect(JSON.stringify(call?.result)).toContain('Tool \\"run_shell_command\\" was canceled by the user.')
     })
   })
 

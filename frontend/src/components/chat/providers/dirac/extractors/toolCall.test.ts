@@ -11,10 +11,11 @@ const outputFileCallID = '1790904331507-2'
 const outputFileSessionID = 'native-session'
 const outputFilePath = '/private/tmp/dirac/large-output-1790904331563-6032d56.log'
 const outputFileExcerpt = `Command executed successfully (exit code 0).\nOutput:\nnative first42\n... [Output truncated to 10.0 KB to avoid context flooding (7.2 KB truncated). Use more specific commands if you need to see more output.] ...\nnative tail42\nFull output saved to: ${outputFilePath}`
+const outputFilePreview = `native first42\n... [Output truncated to 10.0 KB to avoid context flooding (7.2 KB truncated). Use more specific commands if you need to see more output.] ...\nnative tail42\nFull output saved to: ${outputFilePath}`
 const outputFileComplete = `native first42\n\n${'native middle77 文\n'.repeat(1000)}native tail42\n`
 
 describe('diracToolCallAdapter', () => {
-  it('keeps the native log path and original result preview in Copy', () => {
+  it('keeps the native log path and output preview in Copy without the status preamble', () => {
     const native = {
       sessionUpdate: 'tool_call_update',
       toolCallId: outputFileCallID,
@@ -37,11 +38,11 @@ describe('diracToolCallAdapter', () => {
     expect(call?.kind).toBe('execute')
     if (!call || call.kind !== 'execute')
       throw new Error('The native Dirac command produced another tool kind.')
-    expect(typedResult(call)?.commands[0]?.output).toBe(outputFileExcerpt)
+    expect(typedResult(call)?.commands[0]?.output).toBe(outputFilePreview)
     expect(typedResult(call)?.commands[0]?.output).not.toContain('native middle77')
     expect(call.outputFilePaths).toEqual([outputFilePath])
     const meta = providerToolMeta(AgentProvider.DIRAC, native, options)
-    expect(meta?.copyableContent()).toBe(outputFileExcerpt)
+    expect(meta?.copyableContent()).toBe(outputFilePreview)
     expect(meta?.copyableContent()).not.toContain('native middle77')
     expect(meta?.hasCopyable).toBe(true)
     expect(JSON.stringify({ native, supplementalContent })).toBe(before)
@@ -129,8 +130,8 @@ describe('registered native Dirac command exit', () => {
       throw new Error('The native path fixture requires a command call.')
     expect(call.outputFilePaths).toEqual([outputFilePath])
     expect(typedResult(call)?.commands[0]?.exitCode).toBe(0)
-    expect(typedResult(call)?.commands[0]?.output).toBe(outputFileExcerpt)
-    expect(providerToolMeta(AgentProvider.DIRAC, native, nativeExitOptions)?.copyableContent()).toBe(outputFileExcerpt)
+    expect(typedResult(call)?.commands[0]?.output).toBe(outputFilePreview)
+    expect(providerToolMeta(AgentProvider.DIRAC, native, nativeExitOptions)?.copyableContent()).toBe(outputFilePreview)
   })
 
   it('preserves a native exit beside an interrupted retained completion', () => {

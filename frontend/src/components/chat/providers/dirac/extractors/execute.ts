@@ -32,5 +32,11 @@ export function diracExecuteSpec(facts: ACPToolFacts, base: () => ToolCallSpec):
   const command = spec.result.commands[0]
   if (exit === undefined || command === undefined)
     return spec
-  return { ...spec, result: { ...spec.result, commands: [withCommandExit(command, exit)] } }
+  const raw = pickObject(facts.tool, 'rawOutput')
+  const text = typeof raw?.output === 'string' ? raw.output : undefined
+  const prefix = exit.exitCode === 0
+    ? 'Command executed successfully (exit code 0).\nOutput:\n'
+    : typeof exit.exitCode === 'number' ? `Command failed with exit code ${exit.exitCode}.\nOutput:\n` : undefined
+  const output = text !== undefined && prefix !== undefined && text.startsWith(prefix) ? text.slice(prefix.length) : command.output
+  return { ...spec, result: { ...spec.result, commands: [withCommandExit({ ...command, output }, exit)] } }
 }

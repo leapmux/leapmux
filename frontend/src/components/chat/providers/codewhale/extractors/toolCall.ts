@@ -20,7 +20,7 @@ import { codewhaleQuestionsFromToolInput } from '../askUserQuestion'
 import { CODEWHALE_RESULT_METADATA } from '../protocol'
 import { codewhaleMcpToolName, codewhaleToolKind } from '../toolKinds'
 import { codewhaleAgentRequest, codewhaleAgentRuns } from './agent'
-import { codewhaleCommandResult, codewhaleExecuteRequest } from './execute'
+import { codewhaleCommandResult, codewhaleExecuteRequest, codewhaleFailedCommand } from './execute'
 import { codewhaleMutationChanges, codewhaleRequestedChanges } from './fileEdit'
 import { codewhaleToolContent, codewhaleToolMediaImages } from './image'
 import { codewhaleListResult } from './list'
@@ -401,6 +401,10 @@ export const CODEWHALE_TOOL_READERS: ToolCallSpecReaderTable<CodewhaleToolFacts>
     // code, and its words are the reason.
     if (facts.metadata[CODEWHALE_RESULT_METADATA.ExitCode] !== undefined || !(facts.failed || facts.interrupted))
       return { kind: 'execute', request, result: { commands: [codewhaleCommandResult(facts.text, facts.metadata)], unresolvedTerminals: [] } }
+    // A command that ran and exited nonzero states its code only in its words.
+    const ranAndFailed = facts.failed ? codewhaleFailedCommand(facts.text, facts.metadata) : undefined
+    if (ranAndFailed)
+      return { kind: 'execute', request, result: { commands: [ranAndFailed], unresolvedTerminals: [] } }
     return { kind: 'execute', request, result: codewhaleFailure(facts) }
   },
   glob: (facts): ToolCallSpecVariant<'glob'> => {

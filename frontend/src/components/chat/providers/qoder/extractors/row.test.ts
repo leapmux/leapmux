@@ -101,6 +101,47 @@ describe('qoderExtractRow', () => {
     expect(JSON.stringify(row.call.result)).not.toContain('Image file: shot.png')
   })
 
+  describe('a failed native Bash result', () => {
+    // Verbatim shape of a Qoder CLI result for `printf 'SHELLERR%s\n' 77 >&2; exit 7`: the
+    // result text begins with the `Exit code N` line, and `tool_use_result` states the code.
+    const failedRequest = {
+      type: 'assistant',
+      session_id: 'native-session',
+      message: { content: [{ type: 'tool_use', id: 'failed-call', name: 'Bash', input: { command: 'printf \'SHELLERR%s\\n\' 77 >&2; exit 7' } }] },
+    }
+    function failedResult(toolUseResult: Record<string, unknown> | undefined, content = 'Exit code 7\nSHELLERR77') {
+      return {
+        type: 'user',
+        session_id: 'native-session',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'failed-call', content, is_error: true }] },
+        ...(toolUseResult === undefined ? {} : { tool_use_result: toolUseResult }),
+      }
+    }
+    function command(result: Record<string, unknown>) {
+      const request = prepareMessage(makeMessage({ agentProvider: AgentProvider.QODER, content: rawContent(failedRequest), spanId: 'failed-call', spanType: 'Bash' }))
+      const prepared = prepareMessage(makeMessage({ agentProvider: AgentProvider.QODER, content: rawContent(result), spanId: 'failed-call', spanType: 'Bash' }))
+      const extraction = extractPreparedRow(prepared, { span: { request: request.resolved, result: prepared.resolved, role: 'result', visibleRows: { request: true, result: true } } })
+      if (extraction.kind !== 'row' || extraction.row.kind !== 'tool' || extraction.row.call.kind !== 'execute')
+        throw new Error('The failed native Qoder Bash result produced no execute row.')
+      return { status: extraction.row.call.status, command: typedResult(extraction.row.call)?.commands[0] }
+    }
+
+    it('draws the command output without the exit code line, and keeps the code of the native record', () => {
+      const result = command(failedResult({ kind: 'completed', stdout: 'SHELLERR77', stderr: '', exitCode: 7, signal: null, interrupted: false, isError: true }))
+      expect(result.status).toBe('failed')
+      expect(result.command).toMatchObject({ output: 'SHELLERR77', exitCode: 7 })
+    })
+
+    it('reads the code from the exit code line when the native record states none', () => {
+      expect(command(failedResult(undefined)).command).toMatchObject({ output: 'SHELLERR77', exitCode: 7 })
+    })
+
+    it('keeps a successful output that begins with the same words, which is the output of the command', () => {
+      const result = command({ ...failedResult({ kind: 'completed', stdout: 'Exit code 3\nprinted', stderr: '', exitCode: 0 }, 'Exit code 3\nprinted'), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'failed-call', content: 'Exit code 3\nprinted', is_error: false }] } })
+      expect(result.command).toMatchObject({ output: 'Exit code 3\nprinted', exitCode: 0 })
+    })
+  })
+
   it('marks a failed native tool result as failed', () => {
     const result = resolvedQoderFrame({
       type: 'user',

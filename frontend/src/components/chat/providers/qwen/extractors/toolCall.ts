@@ -41,10 +41,14 @@ function qwenShellCommand(tool: Record<string, unknown>): CommandResult | undefi
   if (!raw)
     return undefined
   const output = [pickString(raw, 'output'), pickString(raw, 'error')].filter(Boolean).join('\n')
+  return { output, ...qwenShellExit(raw), truncated: pickBoolean(raw, 'truncated') === true }
+}
+
+/** How a command ended, as its shell record states it. */
+function qwenShellExit(raw: Record<string, unknown>): CommandExit {
   const signal = typeof raw.signal === 'string' || typeof raw.signal === 'number' ? String(raw.signal) : ''
   const code = pickNumber(raw, 'exitCode')
-  const exit: CommandExit = code !== null ? { exitCode: code } : signal ? { signal } : {}
-  return { output, ...exit, truncated: pickBoolean(raw, 'truncated') === true }
+  return code !== null && Number.isSafeInteger(code) ? { exitCode: code } : signal ? { signal } : {}
 }
 
 /** The answers one finished question dialog states, one for each question it asked. */
@@ -163,7 +167,7 @@ function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSp
   if (name === QWEN_TOOL.RunShellCommand || name === QWEN_TOOL_NAME.Monitor) {
     const remapFacts = acpRemapFacts(facts, { tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind: 'execute' })
     const spec = acpSpecFor(remapFacts, 'execute')
-    const shell = facts.finished && facts.status !== 'failed' ? qwenShellCommand(facts.tool) : undefined
+    const shell = facts.finished && spec.result !== undefined && 'commands' in spec.result ? qwenShellCommand(facts.tool) : undefined
     return shell && spec.result !== undefined && 'commands' in spec.result
       ? { ...spec, name, result: { ...spec.result, commands: [shell] } }
       : { ...spec, name }

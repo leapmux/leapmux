@@ -6,7 +6,8 @@ import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
 import { retainedOutcome } from '../../registry'
 import { storedFunctionArgs, storedFunctionCallID, storedFunctionFailed, storedFunctionOutputText } from '../storedFunction'
-import { anthropicBlock, anthropicBlocks, anthropicBlockText, codebuddyToolCall } from './toolCommon'
+import { codebuddyCommandOutput } from './execute'
+import { anthropicBlock, anthropicBlocks, anthropicBlockText, codebuddyCommandExit, codebuddyToolCall } from './toolCommon'
 
 /**
  * Read one CodeBuddy row into the shared row model.
@@ -110,6 +111,8 @@ function toolSpanRow(
   const args = isObject(input) ? input : {}
   const resultText = result ? resultContentText(result) : ''
   const isError = result?.is_error === true
+  const commandExit = codebuddyCommandExit(result)
+  const commandOutput = codebuddyCommandOutput(result, resultText)
 
   const role = span.role === 'result' || (span.role === 'other' && !use) ? 'result' : 'request'
   const call = codebuddyToolCall({
@@ -118,6 +121,8 @@ function toolSpanRow(
     args,
     resultText,
     isError,
+    ...(commandExit === undefined ? {} : { commandExit }),
+    ...(commandOutput === undefined ? {} : { commandOutput }),
     lifecycle: {
       frameStatus: result ? 'completed' : 'in_progress',
       providerOutcome: null,

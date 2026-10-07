@@ -74,6 +74,25 @@ describe('codewhaleToolCall', () => {
       expect(failing.result).toStrictEqual({ commands: [{ output: 'boom', exitCode: 2 }], unresolvedTerminals: [] })
     })
 
+    // Codewhale 0.10.0 fails the item of a command that exits nonzero, states no
+    // `exit_code`, and wraps the output: its tool-failure prefix, then the output, then
+    // the exit trailer.
+    it('reads the exit code of a command that ran and failed from the native trailer, and draws only its output', () => {
+      const failing = call(toolFailed(CODEWHALE_TOOL.Bash, { command: 'printf x >&2; exit 7' }, 'Failed to execute tool: SHELLERR77\n\n\nCommand exited with code 7'), { spanType: CODEWHALE_TOOL.Bash })
+      expect(failing.status).toBe('failed')
+      expect(failing.result).toStrictEqual({ commands: [{ output: 'SHELLERR77', exitCode: 7 }], unresolvedTerminals: [] })
+    })
+
+    it('reads a failed command that printed nothing', () => {
+      const failing = call(toolFailed(CODEWHALE_TOOL.Bash, { command: 'exit 3' }, 'Failed to execute tool: \n\n\nCommand exited with code 3'), { spanType: CODEWHALE_TOOL.Bash })
+      expect(failing.result).toStrictEqual({ commands: [{ output: '', exitCode: 3 }], unresolvedTerminals: [] })
+    })
+
+    it('keeps the words of a failure that states no exit trailer', () => {
+      const timedOut = call(toolFailed(CODEWHALE_TOOL.Bash, { command: 'sleep 9' }, 'Failed to execute tool: operation timed out after 5s'), { spanType: CODEWHALE_TOOL.Bash })
+      expect(timedOut.result).toStrictEqual({ failure: true, text: 'Failed to execute tool: operation timed out after 5s' })
+    })
+
     it('states the reason of a command that never ran', () => {
       const denied = call(toolFailed(CODEWHALE_TOOL.Bash, { command: 'touch x' }, 'Tool \'bash\' denied by user'), { spanType: CODEWHALE_TOOL.Bash })
       expect(denied.status).toBe('failed')
