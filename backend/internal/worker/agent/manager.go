@@ -69,14 +69,15 @@ type Manager struct {
 	startupSlots chan struct{}
 }
 
-// cachedCatalog is the last-known option-group set for a not-running agent, stamped
-// with the model it was built for. OptionGroups serves it only when the requested
-// current model still matches: an offline model edit (which rewrites options.model but
-// not the persisted catalog) would otherwise keep serving the prior model's effort
-// group instead of rebuilding for the new model.
+// cachedCatalog holds the last catalog and the model that supplies it.
+// Offline reads can reuse or rebuild groups from that model.
+// process identifies the concrete provider that supplied a live sample.
+// A persisted catalog has no process.
+// Only that same live process can reuse the sample for a publication.
 type cachedCatalog struct {
-	groups []*leapmuxv1.AvailableOptionGroup
-	model  string
+	groups  []*leapmuxv1.AvailableOptionGroup
+	model   string
+	process Agent
 }
 
 // lifecycleEntry is a per-agent mutex whose refcount is guarded by Manager.mu.
@@ -392,7 +393,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 	m.agents[opts.AgentID] = provider
 	m.exitDone[provider] = done
 	if len(groups) > 0 {
-		m.cachedOptionGroups[opts.AgentID] = cachedCatalog{groups: groups, model: confirmedOptions[OptionIDModel]}
+		m.cachedOptionGroups[opts.AgentID] = cachedCatalog{groups: groups, model: optionids.CurrentValue(groups, OptionIDModel), process: provider}
 	}
 	m.mu.Unlock()
 
@@ -1006,6 +1007,42 @@ func (m *Manager) OptionGroups(agentID string, provider leapmuxv1.AgentProvider,
 	return m.registry.withModelGroupDefaultMarked(m.registry.optionGroupsFromCached(cached, provider, currentModel), provider)
 }
 
+// LiveOptionGroups samples one live provider's catalog for a settings publication.
+// It returns nil if the provider exits or changes during the sample.
+// An empty sample uses only that process's existing live cache.
+// It uses no persisted catalog or static fallback.
+// The returned groups are read-only, as OptionGroups documents.
+// The process can exit after this snapshot, so a publication must carry no lifecycle status.
+func (m *Manager) LiveOptionGroups(agentID string, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
+	m.mu.RLock()
+	p := m.agents[agentID]
+	_, exiting := m.exiting[p]
+	m.mu.RUnlock()
+	if p == nil || exiting {
+		return nil
+	}
+
+	live := p.OptionGroups()
+	m.mu.Lock()
+	_, exiting = m.exiting[p]
+	if m.agents[agentID] != p || exiting {
+		m.mu.Unlock()
+		return nil
+	}
+	if len(live) > 0 {
+		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), process: p}
+	} else {
+		cached := m.cachedOptionGroups[agentID]
+		if cached.process == p {
+			live = cached.groups
+		} else {
+			live = nil
+		}
+	}
+	m.mu.Unlock()
+	return m.registry.withModelGroupDefaultMarked(live, provider)
+}
+
 // resolveLiveCatalog returns a RUNNING agent's served option-group catalog -- the provider's live
 // catalog (refreshing the shared cache), or, on a transiently-empty live read, the shared cached
 // catalog -- with the model default re-marked. `running` reports whether the agent was registered;
@@ -1114,7 +1151,7 @@ func (m *Manager) refreshCachedCatalog(agentID string, p Agent, live []*leapmuxv
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.agents[agentID] == p {
-		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel)}
+		m.cachedOptionGroups[agentID] = cachedCatalog{groups: live, model: optionids.CurrentValue(live, OptionIDModel), process: p}
 	}
 }
 

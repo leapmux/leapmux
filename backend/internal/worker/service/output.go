@@ -251,11 +251,16 @@ type OutputHandler struct {
 	// the same call, and pruned by ForgetActivity. See indexTreeChild.
 	treeChildren sync.Map // rootAgentID -> *sync.Map[childAgentID]struct{}
 
-	// rootSinks tracks the root agentOutputSink per root agent id so CleanupAgent
-	// can prune a closed child from its parent's childSinks cache (which would
-	// otherwise retain the child's SpanTracker + OutputHandler ref for the
-	// parent's lifetime). Populated by NewSink; entry per root.
+	// rootSinks stores each root's current sink.
+	// NewSink creates each entry. CleanupAgent removes it.
+	// Child cleanup reads this registry to release the parent's child sink.
+	// Otherwise the parent retains the child's tracker and handler until the parent ends.
+	// Settings refreshes use this registry as their source identity also.
 	rootSinks sync.Map // rootAgentID -> *agentOutputSink
+	// rootSinkMu serializes source replacement with settings settlement.
+	// rootSinkMutations counts mutation holders and waiters for controlled tests.
+	rootSinkMu        sync.RWMutex
+	rootSinkMutations atomic.Int64
 	// sinksByAgent indexes both root and child sinks for replay lookup.
 	sinksByAgent sync.Map // agentID -> *agentOutputSink
 
@@ -470,7 +475,10 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	// not retained for the parent's lifetime. A root id is its own root: clear
 	// its whole childSinks map (every child dies with the root). A child id is
 	// pruned from whichever root sink cached it.
-	if root, ok := h.rootSinks.LoadAndDelete(agentID); ok {
+	unlockRootSinks := h.lockRootSinkMutation()
+	root, removed := h.rootSinks.LoadAndDelete(agentID)
+	unlockRootSinks()
+	if removed {
 		agentIDs := root.(*agentOutputSink).closeProgressTree()
 		for _, id := range agentIDs {
 			h.sinksByAgent.Delete(id)
@@ -717,8 +725,11 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	}, s.currentMessageSessionID)
+	unlockRootSinks := h.lockRootSinkMutation()
 	h.sinksByAgent.Store(agentID, s)
-	if previous, replaced := h.rootSinks.Swap(agentID, s); replaced {
+	previous, replaced := h.rootSinks.Swap(agentID, s)
+	unlockRootSinks()
+	if replaced {
 		agentIDs := previous.(*agentOutputSink).closeProgressTree()
 		for _, id := range agentIDs {
 			if id != agentID {
@@ -728,6 +739,17 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		h.clearProgressFor(agentIDs)
 	}
 	return agent.NewProviderServices(s)
+}
+
+// lockRootSinkMutation records admission before it waits for settings settlement.
+// Release this lock before taking childMu or calling providers or watchers.
+func (h *OutputHandler) lockRootSinkMutation() func() {
+	h.rootSinkMutations.Add(1)
+	h.rootSinkMu.Lock()
+	return func() {
+		h.rootSinkMu.Unlock()
+		h.rootSinkMutations.Add(-1)
+	}
 }
 
 func (h *OutputHandler) clearProgressFor(agentIDs []string) {
@@ -1218,11 +1240,70 @@ func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 }
 
 func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
+	settlement, accepted := s.settleSettingsRefresh(refresh)
+	if !accepted {
+		return
+	}
+	if !settlement.optionsChanged {
+		if !settlement.startupWindow {
+			s.broadcastChangedCatalog()
+		}
+		return
+	}
+	if !s.isCurrentSettingsSource() {
+		return
+	}
+	sc := s.buildStatusChange(settlement.row, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, settlement.row.AgentSessionID)
+
+	// A config update can change an option and extend the catalog in the same event.
+	// That event takes this path instead of BroadcastStatusActive.
+	// Persist its groups also, so the offline picker keeps the discovered choices.
+	// persistLiveCatalog shares the catalog lock and the no-op and empty-catalog guards.
+	// Startup leaves this write to the final handoff, which preserves the user's pending choice.
+	if !settlement.startupWindow {
+		s.persistLiveCatalog(sc.GetOptionGroups())
+	}
+	if !s.isCurrentSettingsSource() {
+		return
+	}
+	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+		AgentId: s.agentID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
+}
+
+type settingsRefreshSettlement struct {
+	row            db.Agent
+	startupWindow  bool
+	optionsChanged bool
+}
+
+// currentSettingsSource reads the source identity while rootSinkMu stays locked.
+func (s *agentOutputSink) currentSettingsSource() bool {
+	current, registered := s.h.rootSinks.Load(s.rootAgentID)
+	return registered && current == s.turnPublisherSink()
+}
+
+func (s *agentOutputSink) isCurrentSettingsSource() bool {
+	s.h.rootSinkMu.RLock()
+	defer s.h.rootSinkMu.RUnlock()
+	return s.currentSettingsSource()
+}
+
+// settleSettingsRefresh serializes the options read and write with source replacement.
+// Release rootSinkMu before taking catalogMu or calling providers or watchers.
+// A catalog write takes catalogMu first, then rootSinkMu, to keep one lock order.
+func (s *agentOutputSink) settleSettingsRefresh(refresh optionmap.Map) (settingsRefreshSettlement, bool) {
+	s.h.rootSinkMu.RLock()
+	defer s.h.rootSinkMu.RUnlock()
+	if !s.currentSettingsSource() {
+		return settingsRefreshSettlement{}, false
+	}
 	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		slog.Error("failed to fetch agent for settings broadcast",
 			"agent_id", s.agentID, "error", err)
-		return
+		return settingsRefreshSettlement{}, false
 	}
 
 	// Fold the refreshed values into the persisted options map using the wire
@@ -1235,8 +1316,8 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 	//     model when the server advertises none.
 	//   - A provider that cleared an option sends it as an empty value so the key
 	//     is removed (e.g. an ACP option the agent stopped surfacing).
-	// Every provider reports concrete values for what it manages, so this matches
-	// the previous behavior without naming any axis specially.
+	// Every provider reports concrete values for its managed axes.
+	// The merge treats every axis the same.
 	//
 	// The merge-and-no-op-detect happens in exactly ONE place per path: the running-agent
 	// path delegates it to casPersistAgentOptions (which returns wrote=false on a no-op);
@@ -1246,8 +1327,10 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 	if !startupWindow {
 		// Persist via a compare-and-swap so two concurrent refreshes -- the ACP reader
 		// goroutine folding a server-initiated config_option_update and an RPC-driven
-		// UpdateSettings -- can't lose each other's option writes. They share no lock on
-		// this path, so each merges onto the snapshot it read; a CAS that misses (the row
+		// UpdateSettings -- can't lose each other's option writes.
+		// The registry read lock does not serialize option writers.
+		// The RPC writer does not take it. Each writer merges onto its own snapshot.
+		// A CAS that misses (the row
 		// moved on between read and write) re-reads, re-merges, and retries instead of
 		// overwriting the other writer's keys with a stale full-map blob.
 		//
@@ -1261,11 +1344,11 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 		if err != nil {
 			slog.Error("failed to persist refreshed settings",
 				"agent_id", s.agentID, "error", err)
-			return
+			return settingsRefreshSettlement{}, false
 		}
 		if !wrote {
-			s.broadcastChangedCatalog()
-			return
+			dbAgent.Options = settled
+			return settingsRefreshSettlement{row: dbAgent}, true
 		}
 		newOptions = settled
 	} else {
@@ -1286,15 +1369,16 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 		// reflect the provider's just-confirmed catalog so the frontend isn't stuck on
 		// stale launch values, while the DB write is deferred (above) precisely so a
 		// mid-startup user change isn't clobbered. The transient where a concurrent DB read
-		// sees the older options is reconciled at runAgentStartup's handoff. Do NOT "fix"
-		// the divergence by gating the broadcast on a DB write -- that reintroduces the clobber.
+		// sees the older options is reconciled at runAgentStartup's handoff.
+		// Keep this broadcast independent of a DB write.
+		// A write here would replace the user's startup choice.
 		stored := parseOptions(dbAgent.Options)
 		newOptions = marshalOptions(mergeOptions(stored, refresh))
 		// Skip the broadcast when the refresh is a no-op (the startup readback often just
 		// confirms the stored row), sparing a pointless frontend reactivity tick. Compare
 		// canonicalized forms on both sides so key ordering can't read as a change.
 		if newOptions == marshalOptions(stored) {
-			return
+			return settingsRefreshSettlement{row: dbAgent, startupWindow: true}, true
 		}
 	}
 
@@ -1302,48 +1386,26 @@ func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 	// startup window, would persist), avoiding a second GetAgentByID round-trip before we
 	// build the status-change event below.
 	dbAgent.Options = newOptions
-
-	sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID)
-
-	// Persist the live catalog too, not just the option VALUES above. A single server-initiated
-	// config_option_update that BOTH changes an option value AND grows the catalog (e.g. an ACP
-	// dynamic-model provider whose model list arrives post-handshake and the user switches to a
-	// just-revealed model in the same update) routes here -- the value change wins the
-	// mutually-exclusive switch in handleACPConfigOptionUpdate, so the listChanged branch that
-	// would persist the catalog via BroadcastStatusActive never runs. Without persisting here the
-	// grown catalog is lost from the option_groups column, and the post-exit offline picker serves
-	// the stale, narrower catalog. persistLiveCatalog shares BroadcastStatusActive's catalogMu +
-	// no-op/never-truncate guards, so the common value-only refresh costs one proto.Equal diff and
-	// no write. Skipped in the startup window for the same reason the options DB write is deferred
-	// above: runAgentStartup's handoff persists the confirmed catalog atomically, and a mid-startup
-	// write here could clobber a user change.
-	if !startupWindow {
-		s.persistLiveCatalog(sc.GetOptionGroups())
-	}
-
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
-	})
+	return settingsRefreshSettlement{row: dbAgent, startupWindow: startupWindow, optionsChanged: true}, true
 }
 
 // broadcastChangedCatalog persists and broadcasts a changed live catalog when the row already holds the refreshed values.
 // UpdateAgentSettings stores the requested values before the provider applies them.
 // The provider's confirmation can match those values while its model supplies a new effort ladder.
 // The RPC response contains option values only.
-// Factory Droid's model options contain no effort subgroups, so only this broadcast supplies its new ladder to the browser.
+// A model catalog can omit effort subgroups, so only this broadcast supplies its new ladder to the browser.
 // Without the broadcast, the browser keeps the previous model's levels.
 //
 // A stopped agent supplies no live catalog, so this path changes nothing for it.
 // catalogMu serializes the comparison and the write with persistCatalogAndBuildStatus.
 // A concurrent BroadcastStatusActive thus cannot replace this catalog with an older one.
-// The network broadcast runs outside that lock.
+// The network broadcast runs outside that lock and carries no lifecycle status.
 func (s *agentOutputSink) broadcastChangedCatalog() {
-	if s.h.agents == nil || !s.h.agents.HasAgent(s.agentID) {
+	if s.h.agents == nil {
 		return
 	}
 	sc := s.buildChangedCatalogStatus()
-	if sc == nil {
+	if sc == nil || !s.isCurrentSettingsSource() {
 		return
 	}
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
@@ -1352,12 +1414,14 @@ func (s *agentOutputSink) broadcastChangedCatalog() {
 	})
 }
 
-// buildChangedCatalogStatus persists a changed live catalog and returns the ACTIVE status change that carries it.
-// It returns nil for an unchanged catalog or a closed tab.
+// buildChangedCatalogStatus persists a changed live catalog and returns a catalog-only status change.
+// It returns nil for an unchanged catalog, a closed tab, or an ended process.
 // It returns nil when the row read fails also.
-// Compare the view before building the full status change, because that step reads git status.
-// Most refreshes change no catalog.
+// One live sample supplies both the comparison and the published catalog.
 func (s *agentOutputSink) buildChangedCatalogStatus() *leapmuxv1.AgentStatusChange {
+	if s.h.agents == nil || !s.isCurrentSettingsSource() {
+		return nil
+	}
 	s.catalogMu.Lock()
 	defer s.catalogMu.Unlock()
 
@@ -1370,11 +1434,22 @@ func (s *agentOutputSink) buildChangedCatalogStatus() *leapmuxv1.AgentStatusChan
 	if existing.ClosedAt.Valid {
 		return nil
 	}
-	live := optionGroupsView(s.h.agents, &existing, nil)
+	current := resolveProviderDefaults(s.h.agents.Registry(), parseOptions(existing.Options), existing.AgentProvider)
+	live := overlayOptionGroupCurrents(s.h.agents.LiveOptionGroups(s.agentID, existing.AgentProvider), current)
+	s.h.rootSinkMu.RLock()
+	defer s.h.rootSinkMu.RUnlock()
+	if !s.currentSettingsSource() {
+		return nil
+	}
 	if len(live) == 0 || optionGroupsEqual(parseOptionGroups(existing.OptionGroups), live) {
 		return nil
 	}
-	sc := s.buildStatusChange(existing, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, existing.AgentSessionID)
+	sc := &leapmuxv1.AgentStatusChange{
+		AgentId:       s.agentID,
+		AgentProvider: s.agentProvider,
+		WorkerOnline:  true,
+		OptionGroups:  live,
+	}
 	s.persistCatalogIfChanged(existing, sc.GetOptionGroups())
 	return sc
 }
@@ -1385,10 +1460,15 @@ func (s *agentOutputSink) buildChangedCatalogStatus() *leapmuxv1.AgentStatusChan
 // persistCatalogIfChanged no-op/never-truncate guards. Used by PersistSettingsRefresh, whose
 // value-change broadcast does not flow through BroadcastStatusActive yet can still carry a
 // freshly grown catalog. The catalog passed in is the same one just broadcast, so the persisted
-// row matches the event the frontend received.
+// row matches the event that the caller will broadcast.
 func (s *agentOutputSink) persistLiveCatalog(live []*leapmuxv1.AvailableOptionGroup) {
 	s.catalogMu.Lock()
 	defer s.catalogMu.Unlock()
+	s.h.rootSinkMu.RLock()
+	defer s.h.rootSinkMu.RUnlock()
+	if !s.currentSettingsSource() {
+		return
+	}
 
 	existing, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {

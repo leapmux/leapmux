@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -680,7 +682,7 @@ func TestPersistSettingsRefresh_SkipsCatalogPersistDuringStartup(t *testing.T) {
 // Its catalog still describes storedModel.
 // The fixture returns the service and the agent's sink.
 // It returns the agent's watch writer also.
-func liveSwitchFixture(t *testing.T, storedModel string) (*Service, *testResponseWriter, agent.ProviderServices) {
+func liveSwitchFixture(t *testing.T, storedModel string, wrap ...func(agent.Agent) agent.Agent) (*Service, *testResponseWriter, agent.ProviderServices) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
@@ -699,7 +701,16 @@ func liveSwitchFixture(t *testing.T, storedModel string) (*Service, *testRespons
 	starter := &switchingStarter{models: fixtureModels()}
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: "agent-1", AgentProvider: provider, WorkingDir: t.TempDir(), Options: options,
-	}, sink, starter.start)
+	}, sink, func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		process, err := starter.start(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		for _, apply := range wrap {
+			process = apply(process)
+		}
+		return process, nil
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
@@ -726,15 +737,29 @@ func effortLevels(groups []*leapmuxv1.AvailableOptionGroup) []string {
 func TestPersistSettingsRefresh_BroadcastsTheCatalogOfALiveModelSwitch(t *testing.T) {
 	t.Parallel()
 
-	svc, w, sink := liveSwitchFixture(t, fixtureModelA)
+	var process *heldCatalogAgent
+	svc, w, sink := liveSwitchFixture(t, fixtureModelA, func(underlying agent.Agent) agent.Agent {
+		process = &heldCatalogAgent{Agent: underlying}
+		return process
+	})
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{
+		ID: "agent-1", AgentSessionID: "unchanged-session",
+	}))
 	require.NotContains(t, effortLevels(parseOptionGroups(mustGetAgent(t, svc).OptionGroups)), "max",
 		"precondition: the stored catalog is the one of the previous model")
 	before := len(agentStatusChanges(t, w, "agent-1"))
+	samples := process.samples.Load()
 
 	sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
 
 	changes := agentStatusChanges(t, w, "agent-1")[before:]
 	require.Len(t, changes, 1, "the refresh broadcasts the new catalog once")
+	assert.Equal(t, int64(1), process.samples.Load()-samples, "one sample supplies the comparison and the published catalog")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED, changes[0].GetStatus(),
+		"a catalog confirmation changes no process status")
+	assert.Empty(t, changes[0].GetAgentSessionId(), "a catalog confirmation changes no session")
+	assert.Nil(t, changes[0].GetGitStatus(), "a catalog confirmation reads no git status")
+	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, changes[0].GetAgentProvider())
 	assert.Equal(t, fixtureModelB, optionids.CurrentValue(changes[0].GetOptionGroups(), agent.OptionIDModel))
 	assert.Equal(t, []string{"max", "high", "low"}, effortLevels(changes[0].GetOptionGroups()), "the broadcast carries the ladder of the new model")
 	assert.Equal(t, "low", optionids.CurrentValue(changes[0].GetOptionGroups(), agent.OptionIDEffort))
@@ -743,6 +768,186 @@ func TestPersistSettingsRefresh_BroadcastsTheCatalogOfALiveModelSwitch(t *testin
 	assert.Equal(t, []string{"max", "high", "low"}, effortLevels(parseOptionGroups(row.OptionGroups)), "the row keeps the broadcast catalog")
 	assert.Equal(t, OptionMap{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"}, parseOptions(row.Options),
 		"the refresh changes no option value")
+}
+
+// heldCatalogAgent lets a process exit during one catalog sample.
+type heldCatalogAgent struct {
+	agent.Agent
+	hold    atomic.Bool
+	samples atomic.Int64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (a *heldCatalogAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	a.samples.Add(1)
+	if a.hold.CompareAndSwap(true, false) {
+		close(a.entered)
+		<-a.release
+	}
+	return a.Agent.OptionGroups()
+}
+
+func TestPersistSettingsRefresh_RejectsACatalogSampleAfterTheProcessExits(t *testing.T) {
+	t.Parallel()
+
+	var process *heldCatalogAgent
+	svc, w, sink := liveSwitchFixture(t, fixtureModelA, func(underlying agent.Agent) agent.Agent {
+		process = &heldCatalogAgent{Agent: underlying, entered: make(chan struct{}), release: make(chan struct{})}
+		return process
+	})
+	stored := mustGetAgent(t, svc).OptionGroups
+	before := len(agentStatusChanges(t, w, "agent-1"))
+	var releaseOnce sync.Once
+	resume := func() { releaseOnce.Do(func() { close(process.release) }) }
+	defer resume()
+	process.hold.Store(true)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
+	}()
+	select {
+	case <-process.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("The refresh did not sample the live catalog.")
+	}
+	require.True(t, svc.Agents.StopAndWaitAgent("agent-1"))
+	require.False(t, svc.Agents.HasAgent("agent-1"), "the manager removed the process before the sample returns")
+	resume()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("The refresh did not finish after the sample resumed.")
+	}
+
+	assert.Len(t, agentStatusChanges(t, w, "agent-1"), before, "an ended process cannot publish a catalog confirmation")
+	assert.Equal(t, stored, mustGetAgent(t, svc).OptionGroups, "an offline projection cannot replace the last persisted live catalog")
+}
+
+func TestPersistSettingsRefresh_StaysQuietWithoutAManager(t *testing.T) {
+	t.Parallel()
+	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "high"})
+	f.svc.Output.agents = nil
+
+	assert.NotPanics(t, func() {
+		f.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: "opus", agent.OptionIDEffort: "high"})
+	})
+	assert.NotPanics(t, func() { requireRootOutputSink(t, f.svc.Output, "agent-1").broadcastChangedCatalog() })
+	assert.Zero(t, f.mock.streamCount.Load())
+}
+
+func TestPersistSettingsRefresh_RejectsARemovedSource(t *testing.T) {
+	t.Parallel()
+	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "low"})
+	stored := mustGetAgent(t, f.svc)
+	f.svc.Output.CleanupAgent("agent-1")
+	before := f.mock.streamCount.Load()
+
+	f.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDEffort: "high"})
+
+	assert.Equal(t, before, f.mock.streamCount.Load())
+	assert.Equal(t, stored.Options, mustGetAgent(t, f.svc).Options, "a removed source cannot write options without a replacement")
+}
+
+func replaceSettingsSource(t *testing.T, svc *Service) agent.ProviderServices {
+	t.Helper()
+	svc.Agents.StopAndWaitAgent("agent-1")
+	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	sink := svc.Output.NewSink("agent-1", provider)
+	options := map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"}
+	require.NoError(t, svc.Queries.SetAgentOptions(t.Context(), db.SetAgentOptionsParams{ID: "agent-1", Options: marshalOptions(options)}))
+	starter := &switchingStarter{models: fixtureModels()}
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
+		AgentID: "agent-1", AgentProvider: provider, WorkingDir: t.TempDir(), Options: options,
+	}, sink, starter.start)
+	require.NoError(t, err)
+	return sink
+}
+
+func TestPersistSettingsRefresh_RejectsAReplacedSource(t *testing.T) {
+	t.Parallel()
+	for _, effort := range []string{"low", "high"} {
+		t.Run(effort, func(t *testing.T) {
+			t.Parallel()
+			svc, w, old := liveSwitchFixture(t, fixtureModelA)
+			current := replaceSettingsSource(t, svc)
+			before := len(agentStatusChanges(t, w, "agent-1"))
+			stored := mustGetAgent(t, svc)
+
+			old.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: effort})
+
+			assert.Len(t, agentStatusChanges(t, w, "agent-1"), before, "an old source cannot publish a catalog or changed values")
+			assert.Equal(t, stored.Options, mustGetAgent(t, svc).Options, "an old source cannot change the replacement's options")
+			assert.Equal(t, stored.OptionGroups, mustGetAgent(t, svc).OptionGroups, "an old source cannot sample the replacement's catalog")
+			beforeCurrent := len(agentStatusChanges(t, w, "agent-1"))
+			current.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"})
+			assert.Len(t, agentStatusChanges(t, w, "agent-1"), beforeCurrent+1, "the current source still publishes its changed catalog")
+		})
+	}
+}
+
+func TestPersistSettingsRefresh_SettlesBeforeASourceReplacement(t *testing.T) {
+	t.Parallel()
+	svc, _, old := liveSwitchFixture(t, fixtureModelA)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	defer resume()
+	svc.Output.SetAgentStartingFunc(func(string) bool {
+		close(entered)
+		<-release
+		return false
+	})
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		old.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "high"})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("The old source did not reach settings settlement.")
+	}
+	replacementDone := make(chan struct{})
+	go func() {
+		defer close(replacementDone)
+		replaceSettingsSource(t, svc)
+	}()
+	require.Eventually(t, func() bool {
+		select {
+		case <-replacementDone:
+			return true
+		default:
+			return svc.Output.rootSinkMutations.Load() > 0
+		}
+	}, 30*time.Second, time.Millisecond, "the replacement must finish or reach registry admission before the old settlement resumes")
+	resume()
+	for _, signal := range []chan struct{}{refreshDone, replacementDone} {
+		select {
+		case <-signal:
+		case <-time.After(30 * time.Second):
+			t.Fatal("The controlled source replacement did not finish.")
+		}
+	}
+	assert.Equal(t, "low", parseOptions(mustGetAgent(t, svc).Options)[agent.OptionIDEffort],
+		"the old settlement cannot overwrite the replacement's options")
+}
+
+func TestPersistSettingsRefresh_AcceptsTheCurrentStartupSource(t *testing.T) {
+	t.Parallel()
+	svc, w, sink := liveSwitchFixture(t, fixtureModelA)
+	svc.Output.SetAgentStartingFunc(func(string) bool { return true })
+	stored := mustGetAgent(t, svc).Options
+	before := len(agentStatusChanges(t, w, "agent-1"))
+
+	sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "high"})
+
+	assert.Equal(t, stored, mustGetAgent(t, svc).Options, "startup preserves the requested options in the row")
+	changes := agentStatusChanges(t, w, "agent-1")[before:]
+	require.Len(t, changes, 1, "the current startup source still confirms its launch settings")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, changes[0].GetStatus())
+	assert.Equal(t, "high", optionids.CurrentValue(changes[0].GetOptionGroups(), agent.OptionIDEffort))
 }
 
 // A refresh that confirms both the stored values and the stored catalog must send no event to the browser.
