@@ -20,6 +20,11 @@ export interface KimiEnvironmentOptions {
   thinking: KimiModelAlias
   /** A second model, which does neither, so a switch also changes the effort axis. */
   plain: KimiModelAlias
+  /**
+   * A third model, which thinks and takes the effort ladder of the default model but starts at Medium, not High. A
+   * switch that keeps a level then differs from a switch that takes the default of the new model.
+   */
+  alternateThinking: KimiModelAlias
   mcpEchoServer: McpProbeServer
 }
 
@@ -81,5 +86,14 @@ model = "${options.plain.model}"
 display_name = "GLM-5.3"
 max_context_size = 128000
 capabilities = ["tool_use"]
+
+[models."${options.alternateThinking.alias}"]
+provider = "${provider}"
+model = "${options.alternateThinking.model}"
+display_name = "DeepSeek Flash"
+max_context_size = 128000
+capabilities = ["tool_use", "thinking"]
+support_efforts = ["low", "medium", "high"]
+default_effort = "medium"
 `
 }

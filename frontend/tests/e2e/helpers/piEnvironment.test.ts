@@ -11,7 +11,7 @@ let homeDir: string
 let shimsDirectory: string
 let previousPath: string | undefined
 const echoServer = mcpProbeServer('echo_probe', '/srv/echo.mjs')
-const options = (realHomeDir?: string) => ({ homeDir, shimsDirectory, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', flashModelID: 'unit-flash', mcpEchoServer: echoServer, realHomeDir })
+const options = (realHomeDir?: string) => ({ homeDir, shimsDirectory, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', flashModelID: 'unit-flash', plainModelID: 'unit-plain', mcpEchoServer: echoServer, realHomeDir })
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -51,14 +51,16 @@ function launch(args: string[], record: string): string[] {
 }
 
 describe('createPiEnvironment', () => {
-  it('writes a provider of the two models, the second of which takes an effort', () => {
+  it('writes a provider of the three models: two reason, and the second of those takes an effort', () => {
     const env = createPiEnvironment(options())
     expect(env.PI_CODING_AGENT_DIR).toBe(piAgentDirectory(homeDir))
     const models = JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR!, 'models.json'), 'utf8'))
     expect(models.providers.zai).toMatchObject({ baseUrl: 'http://127.0.0.1:4567/v1', api: 'openai-completions', apiKey: 'unit-key' })
-    expect(models.providers.zai.models.map((model: { id: string }) => model.id)).toEqual(['unit-model', 'unit-flash'])
+    expect(models.providers.zai.models.map((model: { id: string }) => model.id)).toEqual(['unit-model', 'unit-flash', 'unit-plain'])
+    expect(models.providers.zai.models.map((model: { reasoning: boolean }) => model.reasoning)).toEqual([true, true, false])
     expect(models.providers.zai.models[0].compat).toBeUndefined()
     expect(models.providers.zai.models[1].compat).toEqual({ supportsReasoningEffort: true })
+    expect(models.providers.zai.models[2].compat).toBeUndefined()
   })
 
   it('selects the default model and states no package without a real home', () => {

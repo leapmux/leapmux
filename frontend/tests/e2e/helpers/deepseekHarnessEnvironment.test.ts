@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { isObject } from '../../../src/lib/jsonPick'
-import { createDeepseekHarnessEnvironment, DEEPSEEK_HARNESS_MODEL_ID } from './deepseekHarnessEnvironment'
+import { createDeepseekHarnessEnvironment, DEEPSEEK_HARNESS_CONTEXT_WINDOW, DEEPSEEK_HARNESS_MODEL_ID, DEEPSEEK_HARNESS_PLAIN_MODEL_ID, DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID, DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID } from './deepseekHarnessEnvironment'
 
 const directories: string[] = []
 function directory(): string {
@@ -40,6 +40,23 @@ describe('createDeepseekHarnessEnvironment', () => {
     ]))
     expect(JSON.stringify(profile)).toContain('http://127.0.0.1:4567')
     expect(JSON.stringify(profile)).not.toContain('isolated-key')
+  })
+
+  // The DeepSeek provider gives each of its models one effort ladder, so the model without an effort needs a route of
+  // the pi-ai plugin that the web profile mounts under `llm-pi-ai`.
+  it('configures the mounted pi-ai plugin with a route whose model does not reason', () => {
+    const environment = createDeepseekHarnessEnvironment({ runDirectory: directory(), modelURL: 'http://127.0.0.1:4567', modelKey: 'isolated-key' })
+    const profile: unknown = JSON.parse(readFileSync(join(environment.DSH_HOME!, 'cordis.patch.yml'), 'utf8'))
+    expect(profile).toEqual(expect.arrayContaining([
+      { id: 'llm-pi-ai', config: { providers: { [DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID]: {
+        displayName: 'LeapMux E2E Plain',
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        api: 'openai-completions',
+        baseURL: 'http://127.0.0.1:4567/v1',
+        models: [{ id: DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID, name: 'Mock Plain', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, reasoningEfforts: false }],
+      } } } },
+    ]))
+    expect(DEEPSEEK_HARNESS_PLAIN_MODEL_ID).toBe(`${DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID}/${DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID}`)
   })
 
   it.each(['standard', 'ptc'] as const)('writes the selected native preset only in its private profile: %s', (agentPreset) => {

@@ -19,6 +19,8 @@ export interface PiEnvironmentOptions {
   modelID: string
   /** The second model, which takes a reasoning effort. */
   flashModelID: string
+  /** The third model, which does not reason, so Pi offers it no thinking level but Auto and Off. */
+  plainModelID: string
   mcpEchoServer: McpProbeServer
   /** The developer's own HOME, where the Pi packages that the specs load are installed. Absent, Pi loads none. */
   realHomeDir: string | undefined
@@ -111,7 +113,11 @@ function piModels(options: PiEnvironmentOptions): Record<string, unknown> {
         baseUrl: options.baseURL,
         api: 'openai-completions',
         apiKey: options.modelKey,
-        models: [model(options.modelID, 'GLM-5.3'), { ...model(options.flashModelID, 'GLM-5.3 Flash'), compat: { supportsReasoningEffort: true } }],
+        models: [
+          model(options.modelID, 'GLM-5.3'),
+          { ...model(options.flashModelID, 'GLM-5.3 Flash'), compat: { supportsReasoningEffort: true } },
+          { ...model(options.plainModelID, 'GLM-5.3 Plain'), reasoning: false },
+        ],
       },
     },
   }

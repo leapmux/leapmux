@@ -3,7 +3,7 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseModelSwitchKeepsOption, exerciseNativeOption, exerciseNativeOptionSequence, exerciseNativePlanWithEffort, expectSettingsOptionsOffered } from './nativeSettings'
+import { exerciseAutomaticEffort, exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption, exerciseNativeOption, exerciseNativeOptionSequence, exerciseNativePlanWithEffort, expectEffortHiddenForModel, expectSettingsOptionsOffered } from './nativeSettings'
 
 /**
  * The page, menu, and turn events of one scenario, in order, and the answers of its turns. `applied` holds the value
@@ -15,7 +15,15 @@ const browser = vi.hoisted(() => ({
   offered: [] as string[],
   applied: {} as Record<string, string>,
   mutable: true,
+  modelLevels: {} as Record<string, string[] | null>,
+  modelSettlements: {} as Record<string, string>,
+  autoLevel: undefined as string | undefined,
+  workerStates: [] as Record<string, string>[],
+  modelMenu: undefined as string[] | undefined,
+  chipCount: undefined as number | undefined,
 }))
+
+vi.mock('./retryUntilPass', () => ({ retryUntilPass: async (attempt: () => unknown) => attempt() }))
 
 vi.mock('./ui', () => ({
   waitForNativeSettingsHydrated: async () => {
@@ -25,7 +33,11 @@ vi.mock('./ui', () => ({
     browser.events.push(`choose ${testId}`)
     // A test ID is `<group>-<value>`, and a value can hold a hyphen.
     const separator = testId.indexOf('-')
-    browser.applied[testId.slice(0, separator)] = testId.slice(separator + 1)
+    const group = testId.slice(0, separator)
+    const value = testId.slice(separator + 1)
+    browser.applied[group] = group === 'effort' && value === 'auto' ? browser.autoLevel ?? value : value
+    if (group === 'model' && browser.modelSettlements[value] !== undefined)
+      browser.applied.effort = browser.modelSettlements[value]!
   },
   waitForSettingsIdle: async () => {
     browser.events.push('idle')
@@ -33,7 +45,10 @@ vi.mock('./ui', () => ({
   expectSettingsOptionChosen: async (_page: Page, testId: string) => {
     browser.events.push(`chosen ${testId}`)
   },
-  offeredSettingsOptions: async () => [...browser.offered],
+  offeredSettingsOptions: async () => [...browser.modelMenu ?? browser.modelLevels[browser.applied.model ?? ''] ?? browser.offered],
+  openPlusMenu: async () => { browser.events.push('plus') },
+  closeComposerMenus: async () => { browser.events.push('close') },
+  settingsGroupTrigger: () => ({ count: async () => browser.modelLevels[browser.applied.model ?? ''] === null ? 0 : 1 }),
 }))
 
 vi.mock('./nativeConversation', () => ({
@@ -51,8 +66,16 @@ vi.mock('./nativeScenario', async () => {
       browser.events.push(`worker ${groupId}=${value}`)
     },
     currentNativeAgent: async () => ({ id: 'agent' }),
-    nativeAgentById: async (_context: unknown, id: string) => ({ id, status: AgentStatus.ACTIVE, agentSessionId: 'session' }),
-    nativeOptionGroup: (_agent: unknown, groupId: string) => ({ id: groupId, mutable: browser.mutable, options: [{ id: 'low' }, { id: 'high' }] }),
+    nativeAgentById: async (_context: unknown, id: string) => {
+      browser.workerStates.push({ ...browser.applied })
+      return { id, status: AgentStatus.ACTIVE, agentSessionId: 'session' }
+    },
+    nativeOptionGroup: (_agent: unknown, groupId: string) => {
+      const levels = browser.modelLevels[browser.applied.model ?? '']
+      if (groupId === 'effort' && levels === null)
+        return undefined
+      return { id: groupId, mutable: browser.mutable, options: (levels ?? ['low', 'high']).map(id => ({ id })) }
+    },
     nativeOptionValue: (_agent: unknown, groupId: string) => browser.applied[groupId] ?? '',
   }
 })
@@ -67,7 +90,10 @@ const reload = vi.fn(async () => {
 })
 
 const context = {
-  page: { reload } as unknown as Page,
+  page: {
+    reload,
+    locator: () => ({ count: async () => browser.chipCount ?? (browser.modelLevels[browser.applied.model ?? ''] === null ? 0 : 1) }),
+  } as unknown as Page,
   modelScript: {} as never,
   provider: AgentProvider.CODEX,
   providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
@@ -81,6 +107,12 @@ beforeEach(() => {
   browser.offered = []
   browser.applied = {}
   browser.mutable = true
+  browser.modelLevels = {}
+  browser.modelSettlements = {}
+  browser.autoLevel = undefined
+  browser.workerStates = []
+  browser.modelMenu = undefined
+  browser.chipCount = undefined
   reload.mockClear()
 })
 
@@ -291,5 +323,103 @@ describe('exerciseNativePlanWithEffort', () => {
     expect(proofs).toEqual(['build', 'plan', 'plan'])
     expect(new Set(browser.answers).size).toBe(browser.answers.length)
     expect(browser.events).toContain('worker effort=low')
+  })
+})
+
+describe('expectEffortHiddenForModel', () => {
+  it('requires the Worker model and the absent effort group before the menu and chip checks', async () => {
+    browser.modelLevels.plain = null
+    await expectEffortHiddenForModel(context, { model: 'plain', effortGroupId: 'effort' })
+    expect(browser.workerStates).toEqual([{ model: 'plain' }])
+    expect(browser.events).toEqual(['choose model-plain', 'idle', 'chosen model-plain', 'plus', 'close'])
+  })
+
+  it('rejects a Worker catalog that still offers an effort', async () => {
+    browser.modelLevels.plain = ['off']
+    await expect(expectEffortHiddenForModel(context, { model: 'plain', effortGroupId: 'effort' })).rejects.toThrow('offers no effort level')
+    expect(browser.events).not.toContain('plus')
+  })
+
+  it('rejects a remaining effort chip even when the native group and submenu are absent', async () => {
+    browser.modelLevels.plain = null
+    browser.chipCount = 1
+    await expect(expectEffortHiddenForModel(context, { model: 'plain', effortGroupId: 'effort' })).rejects.toThrow('expected 1 to be +0')
+  })
+})
+
+describe('exerciseEffortModelRoundTrip', () => {
+  const options = {
+    effortGroupId: 'effort',
+    model: 'start',
+    chosen: 'high',
+    via: 'plain',
+    viaEfforts: 'hidden',
+    settled: 'off',
+    nativeProof: vi.fn(),
+  } as const
+
+  it('compares the restored menu and proves the settled level in the next native request', async () => {
+    browser.modelLevels = { start: ['high', 'low', 'off'], plain: null }
+    browser.modelSettlements.plain = 'off'
+    const proof = vi.fn()
+    await exerciseEffortModelRoundTrip(context, { ...options, nativeProof: proof })
+    expect(browser.workerStates).toContainEqual({ model: 'plain', effort: 'off' })
+    expect(browser.applied).toEqual({ model: 'start', effort: 'off' })
+    expect(browser.events).toContain('chosen effort-off')
+    expect(proof).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ stepIndex: 0 }))
+    expect(browser.answers).toHaveLength(1)
+  })
+
+  it('checks the exact ladder of an intermediate model whose effort control remains', async () => {
+    browser.modelLevels = { start: ['high', 'low', 'off'], plain: ['low', 'off'] }
+    browser.modelSettlements.plain = 'off'
+    await exerciseEffortModelRoundTrip(context, { ...options, viaEfforts: ['off', 'low'] })
+    expect(browser.events).not.toContain('plus')
+    expect(browser.applied.effort).toBe('off')
+  })
+
+  it('rejects a menu that disagrees with the Worker before it starts the trip', async () => {
+    browser.modelLevels.start = ['high', 'low']
+    browser.modelMenu = ['high']
+    await expect(exerciseEffortModelRoundTrip(context, options)).rejects.toThrow('effort menu of start')
+    expect(browser.events).not.toContain('choose model-plain')
+    expect(browser.answers).toEqual([])
+  })
+
+  it('rejects an intermediate ladder that differs from the required levels', async () => {
+    browser.modelLevels = { start: ['high', 'off'], plain: ['high', 'off'] }
+    await expect(exerciseEffortModelRoundTrip(context, { ...options, viaEfforts: ['off'] })).rejects.toThrow('levels of plain')
+    expect(browser.answers).toEqual([])
+  })
+
+  it('rejects a trip whose second model is the first model', async () => {
+    await expect(exerciseEffortModelRoundTrip(context, { ...options, via: 'start' })).rejects.toThrow('second model')
+    expect(browser.events).toEqual([])
+  })
+
+  it('rejects a second model that offers the chosen level', async () => {
+    await expect(exerciseEffortModelRoundTrip(context, { ...options, viaEfforts: ['high', 'off'] })).rejects.toThrow('lack the chosen level high')
+    expect(browser.events).toEqual([])
+  })
+})
+
+describe('exerciseAutomaticEffort', () => {
+  it('requires the runtime level and proves the next request', async () => {
+    browser.autoLevel = 'medium'
+    const proof = vi.fn()
+    await exerciseAutomaticEffort(context, { effortGroupId: 'effort', runs: 'medium', nativeProof: proof })
+    expect(browser.events).toContain('chosen effort-medium')
+    expect(browser.workerStates).toEqual([{ effort: 'medium' }])
+    expect(proof).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ stepIndex: 0 }))
+  })
+
+  it('rejects a runtime that keeps Auto instead of the required level', async () => {
+    await expect(exerciseAutomaticEffort(context, { effortGroupId: 'effort', runs: 'medium', nativeProof: () => {} })).rejects.toThrow('Worker applied effort=medium')
+    expect(browser.answers).toEqual([])
+  })
+
+  it('rejects Auto as the level of the runtime proof', async () => {
+    await expect(exerciseAutomaticEffort(context, { effortGroupId: 'effort', runs: 'auto', nativeProof: () => {} })).rejects.toThrow('level that the agent runs')
+    expect(browser.events).toEqual([])
   })
 })

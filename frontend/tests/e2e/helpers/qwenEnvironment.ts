@@ -33,6 +33,8 @@ export interface QwenEnvironmentOptions {
   modelID: string
   /** A second model, so a spec can switch models. */
   alternateModelID: string
+  /** A third model, which states no reasoning capability, so a spec can switch to a model without an effort. */
+  plainModelID: string
   mcpEchoServer: McpProbeServer
 }
 
@@ -70,7 +72,11 @@ function qwenSettings(options: QwenEnvironmentOptions): Record<string, unknown> 
     model: { name: options.modelID },
     mcpServers: { [options.mcpEchoServer.name]: { command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } },
     modelProviders: {
-      [QWEN_AUTH_TYPE]: [primary, { ...primary, id: options.alternateModelID, name: 'Qwen E2E Alternate' }],
+      [QWEN_AUTH_TYPE]: [
+        primary,
+        { ...primary, id: options.alternateModelID, name: 'Qwen E2E Alternate' },
+        { ...primary, id: options.plainModelID, name: 'Qwen E2E Plain', capabilities: { vision: true } },
+      ],
     },
     tools: { approvalMode: 'default', todoWrite: { enabled: true }, workflowsEnabled: true },
     memory: { enableManagedAutoMemory: false, enableManagedAutoDream: false },

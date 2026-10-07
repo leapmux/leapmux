@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createReasonixEnvironment } from './reasonixEnvironment'
 
 let homeDir: string
-const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', alternateProviderID: 'unit-alt', alternateModelID: 'unit-alt-model' })
+const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', alternateProviderID: 'unit-alt', alternateModelID: 'unit-alt-model', plainProviderID: 'unit-plain', plainModelID: 'unit-plain-model' })
+
+/** The `[[providers]]` table of `name` in the configuration, up to the next table or the end. */
+function providerTable(config: string, name: string): string {
+  const table = config.split('[[providers]]').find(section => section.includes(`name = "${name}"`))
+  if (table === undefined)
+    throw new Error(`The configuration has no provider ${name}.`)
+  return table
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -24,6 +32,18 @@ describe('createReasonixEnvironment', () => {
     expect(config).toContain('name = "deepseek"\nkind = "openai"\nbase_url = "http://127.0.0.1:4567/v1"\nmodel = "unit-model"')
     expect(config).toContain('vision_models = ["unit-model"]')
     expect(config).toContain('name = "unit-alt"\nkind = "openai"\nbase_url = "http://127.0.0.1:4567/v1"\nmodel = "unit-alt-model"')
+    expect(config).toContain('name = "unit-plain"\nkind = "openai"\nbase_url = "http://127.0.0.1:4567/v1"\nmodel = "unit-plain-model"')
+  })
+
+  // A spec switches to the plain provider to reach a model that offers no effort.
+  it('states an effort ladder for the default and the alternate provider, and none for the plain one', () => {
+    const config = readFileSync(join(createReasonixEnvironment(options()).REASONIX_HOME!, 'config.toml'), 'utf8')
+    for (const name of ['deepseek', 'unit-alt'])
+      expect(providerTable(config, name)).toContain('reasoning_protocol = "openai"\nsupported_efforts = ["low", "medium", "high"]\ndefault_effort = "high"')
+    const plain = providerTable(config, 'unit-plain')
+    expect(plain).not.toContain('reasoning_protocol')
+    expect(plain).not.toContain('supported_efforts')
+    expect(plain).not.toContain('default_effort')
   })
 
   // Reasonix reads the key variable from this file alone, never from the process environment.

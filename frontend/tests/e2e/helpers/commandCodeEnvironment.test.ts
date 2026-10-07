@@ -9,7 +9,7 @@ function options() {
   mkdirSync(root, { recursive: true })
   const runDirectory = mkdtempSync(join(root, 'environment-'))
   directories.push(runDirectory)
-  return { runDirectory, modelURL: 'http://127.0.0.1:4567', modelKey: 'private-model-key', modelID: 'leapmux-e2e/command-code-e2e', alternateModelID: 'leapmux-e2e/command-code-e2e-alt' }
+  return { runDirectory, modelURL: 'http://127.0.0.1:4567', modelKey: 'private-model-key', modelID: 'leapmux-e2e/command-code-e2e', alternateModelID: 'leapmux-e2e/command-code-e2e-alt', reasoningModelID: 'leapmux-e2e/command-code-e2e-reasoning' }
 }
 
 afterEach(() => {
@@ -30,6 +30,7 @@ describe('createCommandCodeEnvironment', () => {
       models: {
         'command-code-e2e': { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'high'] },
         'command-code-e2e-alt': { contextWindow: 131072 },
+        'command-code-e2e-reasoning': { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'medium', 'high'] },
       },
     } } })
     expect(readFileSync(join(config, 'providers.json'), 'utf8')).not.toContain(input.modelKey)
@@ -64,6 +65,10 @@ describe('createCommandCodeEnvironment', () => {
     [{ modelID: '../model' }, 'The Command Code mock model ID must contain a provider and a model.'],
     [{ alternateModelID: 'another-provider/model' }, 'The Command Code mock models must be distinct models of the same provider.'],
     [{ alternateModelID: 'leapmux-e2e/command-code-e2e' }, 'The Command Code mock models must be distinct models of the same provider.'],
+    [{ reasoningModelID: 'another-provider/model' }, 'The Command Code mock models must be distinct models of the same provider.'],
+    [{ reasoningModelID: 'leapmux-e2e/command-code-e2e' }, 'The Command Code mock models must be distinct models of the same provider.'],
+    [{ reasoningModelID: 'leapmux-e2e/command-code-e2e-alt' }, 'The Command Code mock models must be distinct models of the same provider.'],
+    [{ reasoningModelID: '' }, 'The Command Code mock model ID must contain a provider and a model.'],
     [{ mcpServers: [{ name: 'echo', command: '/node', args: [] }, { name: 'echo', command: '/node', args: [] }] }, 'The Command Code MCP server names must be valid and distinct.'],
     [{ mcpServers: [{ name: '../escape', command: '/node', args: [] }] }, 'The Command Code MCP server names must be valid and distinct.'],
     [{ mcpServers: [{ name: 'echo', command: 'relative-node', args: [] }] }, 'The Command Code MCP command must be absolute.'],

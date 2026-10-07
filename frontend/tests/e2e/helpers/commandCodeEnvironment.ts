@@ -7,8 +7,12 @@ export interface CommandCodeEnvironmentOptions {
   runDirectory: string
   modelURL: string
   modelKey: string
+  /** The default model, which offers the low and high efforts. */
   modelID: string
+  /** A model that declares no reasoning, so it offers no effort. */
   alternateModelID: string
+  /** A model that offers the low, medium, and high efforts, so a model switch can keep a level that both models offer. */
+  reasoningModelID: string
   mcpServers?: readonly McpServerLaunch[]
 }
 
@@ -21,7 +25,9 @@ export function createCommandCodeEnvironment(options: CommandCodeEnvironmentOpti
     throw new Error('The Command Code mock model key must be present.')
   const primary = parseModelID(options.modelID)
   const alternate = parseModelID(options.alternateModelID)
-  if (primary.provider !== alternate.provider || primary.model === alternate.model)
+  const reasoning = parseModelID(options.reasoningModelID)
+  const others = [alternate, reasoning]
+  if (others.some(other => other.provider !== primary.provider) || new Set([primary, ...others].map(model => model.model)).size !== 3)
     throw new Error('The Command Code mock models must be distinct models of the same provider.')
   const mcpServers = Object.fromEntries(validatedMcpServers(options.mcpServers, 'Command Code', 32)
     .map(server => [server.name, { command: server.command, args: server.args }]))
@@ -36,6 +42,7 @@ export function createCommandCodeEnvironment(options: CommandCodeEnvironmentOpti
       models: {
         [primary.model]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'high'] },
         [alternate.model]: { contextWindow: 131072 },
+        [reasoning.model]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'medium', 'high'] },
       },
     },
   } }, null, 2)}\n`, { mode: 0o600 })

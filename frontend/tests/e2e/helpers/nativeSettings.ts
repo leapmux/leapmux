@@ -8,7 +8,7 @@ import { sendNativeAnswer } from './nativeConversation'
 import { currentNativeAgent, expectNativeOptionValue, nativeAgentById, nativeOptionGroup, nativeOptionValue } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
-import { chooseSettingsOption, expectSettingsOptionChosen, offeredSettingsOptions, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
+import { chooseSettingsOption, closeComposerMenus, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, settingsGroupTrigger, waitForNativeSettingsHydrated, waitForSettingsIdle } from './ui'
 
 interface NativeOptionProof {
   groupId: string
@@ -17,12 +17,12 @@ interface NativeOptionProof {
 }
 
 /**
- * Wait until the owning Worker reports one applied option value on its active agent, then return that agent.
- * A provider can restart its native process to apply a setting. Before the first user message, that restart
- * opens a new native session, because an empty session has nothing to resume.
- * The settings chip changes before the Worker applies the value, so the chip does not prove the applied state.
+ * Wait for an active Worker agent that satisfies `check` and holds a native session.
+ * Return the agent that satisfies both conditions.
+ * A provider can restart its process to apply a setting.
+ * A restart before the first user message opens a new session, because an empty session has nothing to resume.
  */
-export async function waitForNativeOptionApplied(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, groupId: string, value: string): Promise<AgentInfo> {
+async function waitForNativeAgentState(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, check: (agent: AgentInfo) => void): Promise<AgentInfo> {
   const { id } = await currentNativeAgent(context)
   return retryUntilPass(async () => {
     const current = await nativeAgentById(context, id)
@@ -30,9 +30,146 @@ export async function waitForNativeOptionApplied(context: Pick<ManagedNativeScen
       throw new Error(`The Worker holds no native agent ${id}.`)
     expect(current.status, `the native agent ${id} is active`).toBe(AgentStatus.ACTIVE)
     expect(current.agentSessionId, `the native agent ${id} has a native session`).not.toBe('')
-    expect(nativeOptionValue(current, groupId), `the Worker applied ${groupId}=${value}`).toBe(value)
+    check(current)
     return current
   })
+}
+
+/**
+ * Wait for the Worker to confirm one option on its active agent, then return that agent.
+ * The settings chip changes before the Worker applies the value, so the chip cannot prove the applied state.
+ */
+export async function waitForNativeOptionApplied(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, groupId: string, value: string): Promise<AgentInfo> {
+  return waitForNativeAgentState(context, (agent) => {
+    expect(nativeOptionValue(agent, groupId), `the Worker applied ${groupId}=${value}`).toBe(value)
+  })
+}
+
+/** Choose `model` in the settings menu and wait until the Worker applies it. A model that the agent runs already stays. */
+async function chooseNativeModel(context: ManagedNativeScenarioContext, model: string): Promise<void> {
+  if (nativeOptionValue(await currentNativeAgent(context), 'model') === model)
+    return
+  const optionId = `model-${model}`
+  await chooseSettingsOption(context.page, optionId)
+  await waitForSettingsIdle(context.page)
+  await expectSettingsOptionChosen(context.page, optionId)
+  await waitForNativeOptionApplied(context, 'model', model)
+}
+
+/** The effort chip of the status bar. It carries one test ID whatever the effort group of the provider is. */
+const EFFORT_CHIP_SELECTOR = '[data-testid="composer-effort-trigger"]'
+
+/**
+ * Switch to a model with no effort levels, then require the absence of both effort controls.
+ * The Worker must run that model, and its live catalog must offer no level of `effortGroupId`.
+ * The plus menu must offer no submenu for that group.
+ * The status bar must show no effort chip.
+ * The browser derives effort groups from the selected model before the Worker answers.
+ * Thus the browser alone cannot prove the native model or its levels.
+ */
+export async function expectEffortHiddenForModel(
+  context: ManagedNativeScenarioContext,
+  options: {
+    /** The option value of the model without an effort level. */
+    model: string
+    /** The effort group of the provider, such as `effort` or `reasoning_effort`. */
+    effortGroupId: string
+  },
+): Promise<void> {
+  const { page } = context
+  const optionId = `model-${options.model}`
+  await chooseSettingsOption(page, optionId)
+  await waitForSettingsIdle(page)
+  await expectSettingsOptionChosen(page, optionId)
+  await waitForNativeAgentState(context, (agent) => {
+    expect(nativeOptionValue(agent, 'model'), `the Worker runs ${options.model}`).toBe(options.model)
+    const levels = nativeOptionGroup(agent, options.effortGroupId)?.options.map(option => option.id) ?? []
+    expect(levels, `the live catalog offers no ${options.effortGroupId} level for ${options.model}`).toEqual([])
+  })
+  await openPlusMenu(page)
+  await expect.poll(() => settingsGroupTrigger(page, options.effortGroupId).count(), `the plus menu offers no ${options.effortGroupId} submenu`).toBe(0)
+  await closeComposerMenus(page)
+  await expect.poll(() => page.locator(EFFORT_CHIP_SELECTOR).count(), 'the status bar shows no effort chip').toBe(0)
+}
+
+/**
+ * Prove the settled effort after a trip through a model that lacks the selected level.
+ * Choose `chosen` on `model`, switch to `via`, then return to `model`.
+ * Wait for the Worker after each step, and require these states:
+ * - On `via`, either both effort controls hide, or the menu offers exactly `viaEfforts`.
+ * - Back on `model`, both catalogs offer the same levels as before the trip.
+ *   A difference between the static fallback and the live catalog fails this check.
+ * - Back on `model`, the selection equals `settled`, which states the provider's outcome.
+ *   The next native request must use that level.
+ */
+export async function exerciseEffortModelRoundTrip(
+  context: ManagedNativeScenarioContext,
+  options: {
+    /** The effort group of the provider, such as `effort` or `reasoning_effort`. */
+    effortGroupId: string
+    /** The option value of the model that the trip starts and ends on. */
+    model: string
+    /** The level that the user chooses on `model` before the trip. */
+    chosen: string
+    /** The option value of the model of the trip, which must lack `chosen`. */
+    via: string
+    /** `hidden` for a model that offers no level, or the exact levels of the menu of `via`, in any order. */
+    viaEfforts: 'hidden' | readonly string[]
+    /** The level that `model` holds after the trip. */
+    settled: string
+    /** Check that the next native request runs on `model` at `settled`. */
+    nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
+    /** Runs on the live catalog, before the trip. See {@link prepareOnLiveCatalog}. */
+    prepare?: () => Promise<void>
+  },
+): Promise<void> {
+  const { page } = context
+  const group = options.effortGroupId
+  if (options.model === options.via)
+    throw new Error('An effort round trip needs a second model.')
+  if (options.viaEfforts !== 'hidden' && options.viaEfforts.includes(options.chosen))
+    throw new Error(`The model of an effort round trip must lack the chosen level ${options.chosen}.`)
+  const levelsOf = (agent: AgentInfo): string[] => nativeOptionGroup(agent, group)?.options.map(option => option.id) ?? []
+  const sorted = (levels: readonly string[]): string[] => [...levels].sort()
+  await prepareOnLiveCatalog(page, options.prepare)
+  await chooseNativeModel(context, options.model)
+  const chosenId = `${group}-${options.chosen}`
+  await chooseSettingsOption(page, chosenId)
+  await waitForSettingsIdle(page)
+  await expectSettingsOptionChosen(page, chosenId)
+  const before = levelsOf(await waitForNativeOptionApplied(context, group, options.chosen))
+  // The browser draws the catalog that the Worker sends, so its menu follows the Worker's levels.
+  const menu = await retryUntilPass(async () => {
+    const offered = await offeredSettingsOptions(page, group)
+    expect(sorted(offered), `the ${group} menu of ${options.model}`).toEqual(sorted(before))
+    return offered
+  })
+
+  if (options.viaEfforts === 'hidden') {
+    await expectEffortHiddenForModel(context, { model: options.via, effortGroupId: group })
+  }
+  else {
+    const viaEfforts = sorted(options.viaEfforts)
+    await chooseNativeModel(context, options.via)
+    await waitForNativeAgentState(context, (agent) => {
+      expect(sorted(levelsOf(agent)), `the live catalog offers the ${group} levels of ${options.via}`).toEqual(viaEfforts)
+    })
+    await retryUntilPass(async () => {
+      expect(sorted(await offeredSettingsOptions(page, group)), `the ${group} menu of ${options.via}`).toEqual(viaEfforts)
+    })
+  }
+
+  await chooseNativeModel(context, options.model)
+  const after = await waitForNativeAgentState(context, (agent) => {
+    expect(nativeOptionValue(agent, group), `the Worker settles ${group} on ${options.model} after the trip`).toBe(options.settled)
+  })
+  expect(levelsOf(after), `the live catalog offers the ${group} levels of ${options.model} again`).toEqual(before)
+  await retryUntilPass(async () => {
+    expect(await offeredSettingsOptions(page, group), `the ${group} menu of ${options.model} after the trip`).toEqual(menu)
+  })
+  await expectSettingsOptionChosen(page, `${group}-${options.settled}`)
+  const request = await sendNativeAnswer(context, 'Reply once after the model round trip.', `The settled effort reached the next turn: ${uniqueMarker('ROUNDTRIP')}.`)
+  await options.nativeProof(request)
 }
 
 /** Restore one selected setting and prove its next actual native request. */
@@ -46,13 +183,12 @@ export async function exerciseRestoredNativeOption(context: ManagedNativeScenari
 }
 
 /**
- * Run a prepare step of an option scenario on the live catalog of the active agent.
- *
- * The wait for the live catalog comes first. Before the agent runs, the Worker offers a read-only model group, so
- * `waitForSettingsHydrated` can end before the live catalog arrives. A prepare step that reads or changes a setting
- * before that arrival acts on the wrong options. A settings menu that it opens also keeps the list that it showed when
- * it opened, until it closes. The wait comes again after the prepare step, because a setting that the step changes can
- * restart the agent.
+ * Run an option scenario's prepare step after the active agent supplies its live catalog.
+ * Before startup ends, the Worker offers a read-only model group.
+ * `waitForSettingsHydrated` can return before the live catalog arrives.
+ * A prepare step that reads or changes a setting at that point uses the wrong options.
+ * A menu keeps the options that it shows until it closes.
+ * Wait again after the prepare step, because a setting that the step changes can restart the agent.
  */
 async function prepareOnLiveCatalog(page: Page, prepare: (() => Promise<void>) | undefined): Promise<void> {
   await waitForNativeSettingsHydrated(page)
@@ -86,11 +222,11 @@ export async function exerciseNativeOption(
 
 /**
  * Prove that a model switch keeps a setting that the new model offers.
- *
- * The user changes the model alone, so the browser sends the model and nothing else. The setting must still
- * hold on screen, in the Worker row, and in the next native request, and it must survive a reload. Pick a
- * `kept` value that differs from the value that the new model starts with: a native server that resets the
- * setting on a model change then fails this proof, and a value equal to that start value proves nothing.
+ * The browser sends only the model that the user changes.
+ * Require the selected setting on screen and in the Worker row.
+ * Prove the setting in the next native request, then repeat the proof after reload.
+ * Choose a `kept` value that differs from the new model's default.
+ * Otherwise a native reset to that default would pass the same checks.
  */
 export async function exerciseModelSwitchKeepsOption(
   context: ManagedNativeScenarioContext,
@@ -119,6 +255,36 @@ export async function exerciseModelSwitchKeepsOption(
   const first = await sendNativeAnswer(context, 'Reply once after the model switch.', `The kept setting reached the new model: ${uniqueMarker('KEPT')}.`)
   await options.nativeProof(first)
   await exerciseRestoredNativeOption(context, { groupId: options.kept.groupId, value: options.kept.value, nativeProof: options.nativeProof })
+}
+
+/**
+ * Choose Auto and require the level that the agent reports, on screen and in the next native request.
+ * Auto sends no level, so the agent chooses one.
+ * A provider that reports that level replaces Auto in the menu and stores the level in the Worker row.
+ * `runs` specifies that level, and the proof checks it in the next request.
+ */
+export async function exerciseAutomaticEffort(
+  context: ManagedNativeScenarioContext,
+  options: {
+    /** The effort group of the provider, such as `effort` or `reasoning_effort`. */
+    effortGroupId: string
+    /** The level that the agent chooses for the automatic effort. */
+    runs: string
+    /** Check that the next native request runs at `runs`. */
+    nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
+  },
+): Promise<void> {
+  if (options.runs === 'auto')
+    throw new Error('An automatic effort check needs the concrete level that the agent runs.')
+  const { page } = context
+  const group = options.effortGroupId
+  await waitForNativeSettingsHydrated(page)
+  await chooseSettingsOption(page, `${group}-auto`)
+  await waitForSettingsIdle(page)
+  await waitForNativeOptionApplied(context, group, options.runs)
+  await expectSettingsOptionChosen(page, `${group}-${options.runs}`)
+  const request = await sendNativeAnswer(context, 'Reply once at the automatic effort.', `The automatic effort reached the next turn: ${uniqueMarker('AUTOMATIC')}.`)
+  await options.nativeProof(request)
 }
 
 /**

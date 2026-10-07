@@ -4,6 +4,9 @@ import { CODEWHALE_VISION_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 
 codewhaleTest.describe('Codewhale settings', () => {
+  // The native catalog gives every tested route the same effort vocabulary.
+  // It ignores reasoning=false and reasoning_effort="unsupported" in the private cache.
+  // Thus this environment cannot offer a model that hides effort or lacks a selected level.
   // The runtime takes the effort per turn, so the model request is where the choice must arrive.
   codewhaleTest('sends the chosen effort with the next turn', async ({ native }) => {
     await exerciseNativeOption(native, {

@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { diracTest } from '../dirac-fixtures'
-import { exerciseNativeOption } from '../helpers/nativeSettings'
+import { DIRAC_ALT_MODEL_ID } from '../helpers/mockAgentEnvironment'
+import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 
 diracTest.describe('Dirac settings apply', () => {
@@ -36,5 +37,15 @@ diracTest.describe('Dirac settings apply', () => {
       nativeProof: request => expect(request.body).toMatchObject({ reasoning_effort: 'low' }),
     })
     await expectSettingsChip(page, 'Low')
+  })
+})
+
+// Dirac's effort does not depend on the model, and the ACP base writes the stored effort after the model
+// (`EffortConfigID`, `dirac/start.go`). Dirac starts at Medium, so Low differs from a reset.
+diracTest('keeps the chosen effort after a model switch and a reload', async ({ native }) => {
+  await exerciseModelSwitchKeepsOption(native, {
+    kept: { groupId: 'reasoning_effort', value: 'low' },
+    model: DIRAC_ALT_MODEL_ID,
+    nativeProof: request => expect(request.body).toMatchObject({ model: DIRAC_ALT_MODEL_ID, reasoning_effort: 'low' }),
   })
 })

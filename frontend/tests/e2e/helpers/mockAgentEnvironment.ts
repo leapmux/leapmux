@@ -41,8 +41,12 @@ import { createZcodeEnvironment } from './zcodeEnvironment'
  * process environment of every agent.
  */
 
+/** The default Command Code model, which offers the low and high efforts. */
 export const COMMAND_CODE_MODEL_ID = 'leapmux-e2e/command-code-e2e'
+/** The second Command Code model, which declares no reasoning and so offers no effort. */
 export const COMMAND_CODE_ALT_MODEL_ID = 'leapmux-e2e/command-code-e2e-alt'
+/** The third Command Code model, which offers the low, medium, and high efforts. */
+export const COMMAND_CODE_REASONING_MODEL_ID = 'leapmux-e2e/command-code-e2e-reasoning'
 export const GEMINI_MODEL_ID = 'gemini-2.5-pro'
 
 export const MODEL_KEY = 'leapmux-e2e-model-key'
@@ -134,12 +138,17 @@ export const MOCK_PROVIDER_IDS = {
  * that `MOCK_MODELS` already holds. A new identifier would enter the catalog
  * route that the mock serves to every provider, and Copilot reads that route.
  *
- * Two aliases, so a test can switch the model. The first thinks and takes an
- * effort; the second does neither, so a switch also changes the effort axis.
+ * Three aliases, so a test can switch the model:
+ * - `thinking` thinks and takes an effort. It is the default model.
+ * - `plain` does neither, so a switch to it also changes the effort axis.
+ * - `alternateThinking` thinks and takes the same effort ladder as `thinking`, but starts at
+ *   another default level, so a switch that keeps a level differs from a switch
+ *   that takes the default.
  */
 export const KIMI_MOCK_MODELS = {
   thinking: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.zai}`,
   plain: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.pi}`,
+  alternateThinking: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.deepseek}`,
 } as const
 
 /** The private omp profile. See `ohMyPiAgentDirectory` for why omp needs one. */
@@ -151,18 +160,54 @@ export const OH_MY_PI_PROFILE = 'leapmux-e2e'
  */
 const LOOPBACK_NO_PROXY = '127.0.0.1,localhost,::1'
 
+/**
+ * The model of the OpenCode family that does not reason, so it declares no reasoning variant and offers no effort.
+ * OpenCode, Kilo, and MiMo Code each list it beside the two reasoning models.
+ */
+export const OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID = 'glm-5.3-plain'
+export const OPENCODE_FAMILY_PLAIN_MODEL_ID = `${MOCK_PROVIDER_IDS.openCode}/${OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID}`
+
 /** The second Reasonix provider, which a spec switches to. */
 export const REASONIX_ALT_PROVIDER_ID = 'leapmux-e2e-alt'
 export const REASONIX_ALT_MODEL_ID = `${REASONIX_ALT_PROVIDER_ID}/${MOCK_MODELS.pi}`
+/** The third Reasonix provider, which states no reasoning protocol and no effort. */
+export const REASONIX_PLAIN_PROVIDER_ID = 'leapmux-e2e-plain'
+export const REASONIX_PLAIN_MODEL_ID = `${REASONIX_PLAIN_PROVIDER_ID}/${MOCK_MODELS.zai}`
+
+/**
+ * A second model of Dirac's OpenAI provider, so a spec can switch models. Dirac 0.5.17 lists it beside the configured
+ * model; the mock environment configures no such model.
+ */
+export const DIRAC_ALT_MODEL_ID = 'gpt-6-astra'
+
+/**
+ * The model that Codex runs for a thread that states no model, which is what the Default model entry resolves to. It
+ * differs from the pinned model of the Codex fixture (`MOCK_MODELS.openai`), so a resolution to it cannot pass for a
+ * kept model.
+ */
+export const CODEX_NATIVE_DEFAULT_MODEL = 'gpt-5.6-terra'
 
 /** The built-in Codewhale model whose route accepts image input. */
 export const CODEWHALE_VISION_MODEL_ID = 'deepseek-v4-flash-vision-exp'
-
 /** The model id Qwen reports for the model its configuration pins. */
 export const QWEN_MODEL_ID = `${MOCK_MODELS.qwen}(${QWEN_AUTH_TYPE})`
 export const QWEN_ALT_MODEL_WIRE_ID = 'qwen-e2e-alt'
 export const QWEN_ALT_MODEL_ID = `${QWEN_ALT_MODEL_WIRE_ID}(${QWEN_AUTH_TYPE})`
+/** The Qwen model that states no reasoning capability, so it offers no effort. */
+export const QWEN_PLAIN_MODEL_WIRE_ID = 'qwen-e2e-plain'
+export const QWEN_PLAIN_MODEL_ID = `${QWEN_PLAIN_MODEL_WIRE_ID}(${QWEN_AUTH_TYPE})`
+/** The second Grok model, which offers no reasoning effort. */
 export const GROK_ALT_MODEL_ID = 'grok-e2e-alt'
+/** The third Grok model, which offers the effort ladder of the default model and starts at another level. */
+export const GROK_REASONING_MODEL_ID = 'grok-e2e-reasoning'
+/** The Pi model that does not reason, so Pi offers it only Auto and Off. */
+export const PI_PLAIN_MODEL_ID = 'glm-5.3-plain'
+/**
+ * The ZCode model whose reasoning is off. ZCode then offers it only the thought levels Enabled and Disabled, so it lacks
+ * every level of the two GLM models.
+ */
+export const ZCODE_PLAIN_MODEL_WIRE_ID = 'zcode-e2e-plain'
+export const ZCODE_PLAIN_MODEL_ID = `${MOCK_PROVIDER_IDS.zcode}/${ZCODE_PLAIN_MODEL_WIRE_ID}`
 export const OH_MY_PI_ALT_MODEL_WIRE_ID = 'glm-5.3-alt'
 export const OH_MY_PI_ALT_MODEL_ID = `${MOCK_PROVIDER_IDS.ohMyPi}/${OH_MY_PI_ALT_MODEL_WIRE_ID}`
 export const JUNIE_MOCK_MODEL = 'custom:mock-model'
@@ -257,7 +302,11 @@ export async function createMockAgentEnvironment(
     baseURL: openAIBaseURL,
     modelKey: MODEL_KEY,
     providerID: MOCK_PROVIDER_IDS.openCode,
-    models: [{ id: MOCK_MODELS.zai, name: 'GLM-5.3 Flash' }, { id: MOCK_MODELS.pi, name: 'GLM-5.3' }],
+    models: [
+      { id: MOCK_MODELS.zai, name: 'GLM-5.3 Flash' },
+      { id: MOCK_MODELS.pi, name: 'GLM-5.3' },
+      { id: OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, name: 'GLM-5.3 Plain', reasoning: false },
+    ],
     mcpEchoServer,
   }
   const searchPathEnv = agentSearchPathEnv()
@@ -302,20 +351,20 @@ export async function createMockAgentEnvironment(
       OPENAI_BASE_URL: openAIBaseURL,
 
       ...createClaudeEnvironment({ homeDir, modelURL: origin, modelKey: MODEL_KEY }),
-      ...createCodexEnvironment({ homeDir, baseURL: openAIBaseURL }),
+      ...createCodexEnvironment({ homeDir, baseURL: openAIBaseURL, defaultModelID: CODEX_NATIVE_DEFAULT_MODEL }),
       ...createOpenCodeEnvironment(openCodeFamily),
       ...createGooseEnvironment({ homeDir, modelID: MOCK_MODELS.goose }),
-      ...createReasonixEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateProviderID: REASONIX_ALT_PROVIDER_ID, alternateModelID: MOCK_MODELS.pi }),
-      ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, mcpEchoServer, realHomeDir: options.realHomeDir, shimsDirectory: cliShimsDir }),
+      ...createReasonixEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateProviderID: REASONIX_ALT_PROVIDER_ID, alternateModelID: MOCK_MODELS.pi, plainProviderID: REASONIX_PLAIN_PROVIDER_ID, plainModelID: MOCK_MODELS.zai }),
+      ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, plainModelID: PI_PLAIN_MODEL_ID, mcpEchoServer, realHomeDir: options.realHomeDir, shimsDirectory: cliShimsDir }),
       ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
-      ...createGrokEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.grok, alternateModelID: GROK_ALT_MODEL_ID }),
-      ...createQwenEnvironment({ homeDir, baseURL: openAIBaseURL, modelID: MOCK_MODELS.qwen, alternateModelID: QWEN_ALT_MODEL_WIRE_ID, mcpEchoServer }),
+      ...createGrokEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.grok, alternateModelID: GROK_ALT_MODEL_ID, reasoningModelID: GROK_REASONING_MODEL_ID }),
+      ...createQwenEnvironment({ homeDir, baseURL: openAIBaseURL, modelID: MOCK_MODELS.qwen, alternateModelID: QWEN_ALT_MODEL_WIRE_ID, plainModelID: QWEN_PLAIN_MODEL_WIRE_ID, mcpEchoServer }),
       ...createKiroEnvironment({ runDirectory: runDir, homeDir, origin, apiKey: KIRO_E2E_API_KEY }),
-      ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi }),
+      ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
       ...createCodewhaleEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, visionModelID: CODEWHALE_VISION_MODEL_ID, mcpEchoServer }),
-      ...createKimiEnvironment({ homeDir, baseURL: openAIBaseURL, providerID: MOCK_PROVIDER_IDS.kimi, thinking: { alias: KIMI_MOCK_MODELS.thinking, model: MOCK_MODELS.zai }, plain: { alias: KIMI_MOCK_MODELS.plain, model: MOCK_MODELS.pi }, mcpEchoServer }),
+      ...createKimiEnvironment({ homeDir, baseURL: openAIBaseURL, providerID: MOCK_PROVIDER_IDS.kimi, thinking: { alias: KIMI_MOCK_MODELS.thinking, model: MOCK_MODELS.zai }, plain: { alias: KIMI_MOCK_MODELS.plain, model: MOCK_MODELS.pi }, alternateThinking: { alias: KIMI_MOCK_MODELS.alternateThinking, model: MOCK_MODELS.deepseek }, mcpEchoServer }),
       ...createMimoEnvironment({ ...openCodeFamily, runDirectory: runDir }),
       ...createAmpEnvironment({ origin, modelKey: MODEL_KEY }),
       ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),
@@ -326,7 +375,7 @@ export async function createMockAgentEnvironment(
       ...createJunieEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, origin, modelKey: MODEL_KEY, modelID: MOCK_MODELS.junie, childModel: JUNIE_MOCK_MODEL, proxyProvider: JUNIE_PROXY_PROVIDER, realHomeDir: options.realHomeDir }),
       ...createDiracEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek }),
       ...createFastAgentEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: FAST_AGENT_MOCK_MODEL, zaiModelID: MOCK_MODELS.zai }),
-      ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, mcpServers }),
+      ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),
       ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
       ...createGeminiEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: GEMINI_MODEL_ID, mcpServers }),
       ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),

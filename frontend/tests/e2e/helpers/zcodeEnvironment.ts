@@ -16,6 +16,8 @@ export interface ZcodeEnvironmentOptions {
   modelID: string
   /** A second model, so a spec can switch models. */
   alternateModelID: string
+  /** A third model, whose reasoning is off, so a spec can switch to a model that lacks the thought levels of the others. */
+  plainModelID: string
 }
 
 /** Point ZCode at the mock through a personal provider, in both of its configuration files, with telemetry off. */
@@ -34,10 +36,15 @@ export function createZcodeEnvironment(options: ZcodeEnvironmentOptions): Record
   }
 }
 
+/** The models of the personal provider, in priority order. */
+function zcodeModels(options: ZcodeEnvironmentOptions): string[] {
+  return [options.modelID, options.alternateModelID, options.plainModelID]
+}
+
 function zcodeLegacyConfig(options: ZcodeEnvironmentOptions): Record<string, unknown> {
   const model = (id: string, priority: number) => ({
     name: id,
-    reasoning: { enabled: true, variants: ['low', 'medium', 'high'], defaultVariant: 'high' },
+    reasoning: id === options.plainModelID ? { enabled: false } : { enabled: true, variants: ['low', 'medium', 'high'], defaultVariant: 'high' },
     limit: { context: 128_000, output: 16_000 },
     modalities: { input: ['text'], output: ['text'] },
     zcode: { priority },
@@ -50,10 +57,7 @@ function zcodeLegacyConfig(options: ZcodeEnvironmentOptions): Record<string, unk
         source: 'custom',
         enabled: true,
         options: { apiKey: options.modelKey, baseURL: options.baseURL },
-        models: {
-          [options.modelID]: model(options.modelID, 0),
-          [options.alternateModelID]: model(options.alternateModelID, 1),
-        },
+        models: Object.fromEntries(zcodeModels(options).map((id, priority) => [id, model(id, priority)])),
       },
     },
   }
@@ -61,7 +65,7 @@ function zcodeLegacyConfig(options: ZcodeEnvironmentOptions): Record<string, unk
 
 function zcodePersonalConfig(options: ZcodeEnvironmentOptions): Record<string, unknown> {
   const providerID = options.providerID
-  const models = [options.modelID, options.alternateModelID]
+  const models = zcodeModels(options)
   return {
     schemaVersion: 1,
     config: {

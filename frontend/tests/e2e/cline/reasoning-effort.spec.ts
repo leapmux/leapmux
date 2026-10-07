@@ -1,7 +1,8 @@
 import { expect } from '@playwright/test'
 import { clineTest } from '../cline-fixtures'
+import { MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsChip, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
@@ -45,6 +46,25 @@ clineTest.describe('Cline model switch', () => {
       model: 'deepseek-flash',
       nativeProof: (request) => {
         expect(request.body).toMatchObject({ model: 'deepseek-flash', reasoning_effort: 'high' })
+      },
+    })
+  })
+
+  // The configured custom model has no effort ladder (`cline/catalog.go`), so it offers no effort. The Worker sends
+  // Auto with the switch to it and with the switch back (`resetEffortToAutoIfUnsupported`, Cline manages its effort).
+  // Auto sends no reasoning setting (`clineAutoEffort`), so the next request states no effort.
+  clineTest('hides the effort for a model without levels and settles Auto after the round trip', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    await exerciseEffortModelRoundTrip(context, {
+      effortGroupId: 'effort',
+      model: 'deepseek-v4-pro',
+      chosen: 'high',
+      via: MOCK_MODELS.cline,
+      viaEfforts: 'hidden',
+      settled: 'auto',
+      nativeProof: (request) => {
+        expect(request.body).toMatchObject({ model: 'deepseek-v4-pro' })
+        expect(request.body).not.toHaveProperty('reasoning_effort')
       },
     })
   })

@@ -15,9 +15,12 @@ export interface ReasonixEnvironmentOptions {
   /** The second provider, so a spec can switch to a model of another provider. */
   alternateProviderID: string
   alternateModelID: string
+  /** The third provider, which states no reasoning protocol and no effort, so a spec can switch to a model without one. */
+  plainProviderID: string
+  plainModelID: string
 }
 
-/** Point Reasonix at the mock through two providers of its own `config.toml`, and bind its key variable. */
+/** Point Reasonix at the mock through three providers of its own `config.toml`, and bind its key variable. */
 export function createReasonixEnvironment(options: ReasonixEnvironmentOptions): Record<string, string> {
   const reasonixHome = join(options.homeDir, '.reasonix')
   mkdirSync(reasonixHome, { recursive: true })
@@ -65,5 +68,14 @@ max_output_tokens = 16000
 reasoning_protocol = "openai"
 supported_efforts = ["low", "medium", "high"]
 default_effort = "high"
+
+[[providers]]
+name = "${options.plainProviderID}"
+kind = "openai"
+base_url = "${options.baseURL}"
+model = "${options.plainModelID}"
+api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"
+context_window = 128000
+max_output_tokens = 16000
 `
 }

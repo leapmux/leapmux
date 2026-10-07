@@ -1,12 +1,7 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
-import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
-import { runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { nativeToolResult } from '../helpers/nativeToolResult'
-import { bashToolCall } from '../helpers/providerToolCalls'
-import { applyPermissionPreset, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectPermissionShortcuts, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID } from '../helpers/mockAgentEnvironment'
+import { exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -15,6 +10,8 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  * The Worker drives `omp --mode rpc-ui` through its JSON Lines protocol.
  *
  * `set_thinking_level` changes native effort live. The approval mode changes at launch, so its change restarts the agent.
+ * `oh-my-pi/mode.spec.ts` proves the approval mode itself, and `oh-my-pi/bypass-permissions-shortcut.spec.ts` proves
+ * Bypass. This test proves that the thinking level survives the restart of a mode change.
  */
 ohMyPiTest('applies Oh My Pi settings, keeps them over a restart and a reload, and sends the thinking level', async ({ native }) => {
   const { page, modelScript } = native
@@ -44,28 +41,6 @@ ohMyPiTest('applies Oh My Pi settings, keeps them over a restart and a reload, a
   await waitForAgentIdle(page)
   await expectAssistantAnswer(page)
   expect((await modelScript.requestAt(lowStep)).body).toHaveProperty('reasoning_effort', 'low')
-
-  await exerciseNativePermissionDecision(native, {
-    toolCall: bashToolCall(AgentProvider.OH_MY_PI, 'ask-mode-call', 'echo "omp-mode-$((40 + 2))"'),
-    decision: 'allow',
-    beforeDecision: banner => expect(banner).toContainText('omp-mode-'),
-    nativeProof: asked => expect(nativeToolResult(asked, 'ask-mode-call')).toContain('omp-mode-42'),
-  })
-
-  // omp has no smart mode. Bypass selects Yolo.
-  await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
-  await applyPermissionPreset(page, 'bypass')
-  await expectSettingsChip(page, 'Yolo')
-  await expectSettingsChip(page, 'Low')
-
-  // Yolo runs the command with no permission request, so the turn clicks nothing.
-  const { resultRequest } = await runNativeToolTurn(native, {
-    toolCalls: [bashToolCall(AgentProvider.OH_MY_PI, 'bypass-mode-call', 'echo "omp-bypass-$((50 + 5))"')],
-    prompt: 'Run the scripted command after Bypass.',
-    answer: 'The Yolo turn ended.',
-    permissions: 'none',
-  })
-  expect(nativeToolResult(resultRequest, 'bypass-mode-call')).toContain('omp-bypass-55')
 })
 
 ohMyPiTest('sends low native effort before and after reload', async ({ native }) => {
@@ -83,5 +58,20 @@ ohMyPiTest('keeps the chosen effort after a model switch and a reload', async ({
       expect(JSON.stringify(request.body)).toContain(`"model":"${OH_MY_PI_ALT_MODEL_WIRE_ID}"`)
       expect(request.body).toMatchObject({ reasoning_effort: 'low' })
     },
+  })
+})
+
+// The alternate model lacks Max. omp keeps Max as its configured level: it runs the alternate model at Xhigh, the
+// highest level that model offers, and it runs the default model at Max again when the model returns. LeapMux shows
+// the level that omp reports (`ohmypi/settings.go`, `handleThinkingLevelChanged`), and the next request carries Max.
+ohMyPiTest('keeps the configured level over a round trip through a model without it', async ({ native }) => {
+  await exerciseEffortModelRoundTrip(native, {
+    effortGroupId: 'effort',
+    model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`,
+    chosen: 'max',
+    via: OH_MY_PI_ALT_MODEL_ID,
+    viaEfforts: ['auto', 'xhigh', 'high', 'medium', 'low', 'minimal', 'off'],
+    settled: 'max',
+    nativeProof: request => expect(request.body).toMatchObject({ model: MOCK_MODELS.ohMyPi, reasoning_effort: 'max' }),
   })
 })

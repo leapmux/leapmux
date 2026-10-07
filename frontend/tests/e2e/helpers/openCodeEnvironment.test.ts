@@ -25,6 +25,23 @@ describe('openCodeFamilyConfig', () => {
     expect(config.mcp).toEqual({ echo_probe: { type: 'local', command: [echoServer.command, '/srv/echo.mjs'] } })
   })
 
+  // A spec switches to a model that does not reason to reach a model that offers no effort.
+  it('gives a model that does not reason no variant, and a model that states no reasoning each variant', () => {
+    const config = openCodeFamilyConfig({ ...provider, models: [...provider.models, { id: 'plain-model', name: 'Plain', reasoning: false }] }, echoServer) as {
+      provider: Record<string, { models: Record<string, { reasoning: boolean, variants: Record<string, unknown> }> }>
+    }
+    const models = config.provider['unit-provider']!.models
+    expect(models['plain-model']).toMatchObject({ reasoning: false, variants: {} })
+    expect(models['first-model']!.reasoning).toBe(true)
+    expect(models['first-model']!.variants).toEqual({
+      low: { reasoningEffort: 'low' },
+      medium: { reasoningEffort: 'medium' },
+      high: { reasoningEffort: 'high' },
+      xhigh: { reasoningEffort: 'xhigh' },
+      max: { reasoningEffort: 'max' },
+    })
+  })
+
   it('enables the mock provider alone, which hides every built-in provider', () => {
     expect(openCodeFamilyConfig(provider, echoServer).enabled_providers).toEqual(['unit-provider'])
   })
@@ -48,6 +65,14 @@ describe('createOpenCodeEnvironment', () => {
       KILO_TELEMETRY_LEVEL: 'off',
       OPENCODE_DISABLE_AUTOUPDATE: 'true',
       KILO_DISABLE_AUTOUPDATE: 'true',
+    })
+  })
+
+  // Each scan otherwise walks from the working directory up to the root of the file system, and so reaches the run root.
+  it('turns off the external skill scan of each', () => {
+    expect(createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer })).toMatchObject({
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true',
+      KILO_DISABLE_EXTERNAL_SKILLS: 'true',
     })
   })
 })

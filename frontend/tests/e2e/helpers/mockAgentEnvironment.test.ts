@@ -7,7 +7,7 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'no
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { agentSearchPathEnv, findBinary } from './binaryOnPath'
-import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID } from './mockAgentEnvironment'
+import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, COMMAND_CODE_ALT_MODEL_ID, COMMAND_CODE_MODEL_ID, COMMAND_CODE_REASONING_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, GROK_REASONING_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, OPENCODE_FAMILY_PLAIN_MODEL_ID, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, PI_PLAIN_MODEL_ID, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, QWEN_PLAIN_MODEL_ID, QWEN_PLAIN_MODEL_WIRE_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID, REASONIX_PLAIN_MODEL_ID, REASONIX_PLAIN_PROVIDER_ID, ZCODE_PLAIN_MODEL_WIRE_ID } from './mockAgentEnvironment'
 import { qoderEndpointCacheRecords } from './qoderSurface'
 
 const setupBoundary = vi.hoisted(() => {
@@ -374,6 +374,7 @@ describe('createMockAgentEnvironment', () => {
     expect(pi.providers.zai.models[0].input).toEqual(['text', 'image'])
     expect(pi.providers.zai.models[1].id).toBe(MOCK_MODELS.zai)
     expect(pi.providers.zai.models[1].compat.supportsReasoningEffort).toBe(true)
+    expect(pi.providers.zai.models[2]).toMatchObject({ id: PI_PLAIN_MODEL_ID, reasoning: false })
     expect(JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR!, 'settings.json'), 'utf8')).packages).toContain(
       join(realHomeDir, '.pi', 'agent', 'npm', 'node_modules', 'pi-goal-x'),
     )
@@ -388,6 +389,8 @@ describe('createMockAgentEnvironment', () => {
     expect(reasonix).toContain(`default_model = "deepseek/${MOCK_MODELS.deepseek}"`)
     expect(reasonix).toContain(`name = "${REASONIX_ALT_PROVIDER_ID}"\nkind = "openai"\nbase_url = "http://127.0.0.1:43210/v1"\nmodel = "${MOCK_MODELS.pi}"`)
     expect(REASONIX_ALT_MODEL_ID).toBe(`${REASONIX_ALT_PROVIDER_ID}/${MOCK_MODELS.pi}`)
+    expect(reasonix).toContain(`name = "${REASONIX_PLAIN_PROVIDER_ID}"\nkind = "openai"\nbase_url = "http://127.0.0.1:43210/v1"\nmodel = "${MOCK_MODELS.zai}"`)
+    expect(REASONIX_PLAIN_MODEL_ID).toBe(`${REASONIX_PLAIN_PROVIDER_ID}/${MOCK_MODELS.zai}`)
 
     const zcodePath = join(homeDir, '.zcode', 'v2', 'config.json')
     const zcodePersonalPath = join(homeDir, '.zcode', 'v2', 'provider_config.json')
@@ -397,7 +400,7 @@ describe('createMockAgentEnvironment', () => {
       apiKey: 'leapmux-e2e-model-key',
       baseURL: 'http://127.0.0.1:43210/v1',
     })
-    expect(Object.keys(zcode.provider[MOCK_PROVIDER_IDS.zcode].models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
+    expect(Object.keys(zcode.provider[MOCK_PROVIDER_IDS.zcode].models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, ZCODE_PLAIN_MODEL_WIRE_ID])
     const zcodePersonal = JSON.parse(readFileSync(zcodePersonalPath, 'utf8'))
     expect(zcodePersonal).toMatchObject({
       schemaVersion: 1,
@@ -406,9 +409,9 @@ describe('createMockAgentEnvironment', () => {
       },
     })
     const personalProvider = zcodePersonal.config.providerConfigRules.providerRules[0]
-    expect(personalProvider.config.personalModelIds).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
-    expect(personalProvider.config.modelOrder).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
-    expect(zcodePersonal.config.modelConfigRules.providerModelRules.map((rule: { modelId: string }) => rule.modelId)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
+    expect(personalProvider.config.personalModelIds).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, ZCODE_PLAIN_MODEL_WIRE_ID])
+    expect(personalProvider.config.modelOrder).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, ZCODE_PLAIN_MODEL_WIRE_ID])
+    expect(zcodePersonal.config.modelConfigRules.providerModelRules.map((rule: { modelId: string }) => rule.modelId)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, ZCODE_PLAIN_MODEL_WIRE_ID])
   })
 
   it('writes a Codewhale configuration that reaches the mock and nothing else', async () => {
@@ -486,6 +489,7 @@ describe('createMockAgentEnvironment', () => {
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.thinking}"]`)
     expect(kimi).toContain('support_efforts = ["low", "medium", "high"]')
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.plain}"]`)
+    expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.alternateThinking}"]\nprovider = "${MOCK_PROVIDER_IDS.kimi}"\nmodel = "${MOCK_MODELS.deepseek}"`)
     expect(JSON.parse(readFileSync(join(env.KIMI_CODE_HOME!, 'mcp.json'), 'utf8'))).toEqual({
       mcpServers: { echo_probe: { command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } },
     })
@@ -579,12 +583,16 @@ describe('createMockAgentEnvironment', () => {
     const openCode = JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider[MOCK_PROVIDER_IDS.openCode]
     const provider = mimo.provider[MOCK_PROVIDER_IDS.openCode]
     expect(provider.options).toEqual(openCode.options)
-    // Both configurations send the selected effort to the mock model.
-    expect(Object.keys(provider.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
-    expect(Object.keys(openCode.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi])
+    // Both configurations send the selected effort to the mock model. The third model does not reason, so it offers no
+    // effort in either.
+    expect(Object.keys(provider.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID])
+    expect(Object.keys(openCode.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID])
     expect(provider.models[MOCK_MODELS.pi].variants.low).toEqual({ reasoningEffort: 'low' })
     expect(openCode.models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
     expect(Object.keys(provider.models[MOCK_MODELS.zai].variants)).toEqual(Object.keys(openCode.models[MOCK_MODELS.zai].variants))
+    for (const plain of [provider.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID], openCode.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID]])
+      expect(plain).toMatchObject({ reasoning: false, variants: {} })
+    expect(OPENCODE_FAMILY_PLAIN_MODEL_ID).toBe(`${MOCK_PROVIDER_IDS.openCode}/${OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID}`)
     expect(mimo.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
     expect(mimo.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
     const confirmationServer = join(env.MIMOCODE_HOME!, 'mcp-confirmation.mjs')
@@ -643,6 +651,7 @@ describe('createMockAgentEnvironment', () => {
     expect(grok).toContain('api_backend = "chat_completions"')
     expect(grok).toContain('[model."grok-4.6"]\nhidden = true')
     expect(grok).toContain(`[model."${GROK_ALT_MODEL_ID}"]\nmodel = "${GROK_ALT_MODEL_ID}"`)
+    expect(grok).toContain(`[model."${GROK_REASONING_MODEL_ID}"]\nmodel = "${GROK_REASONING_MODEL_ID}"`)
     expect(env).toMatchObject({
       GROK_DISABLE_AUTOUPDATER: '1',
       GROK_TELEMETRY_ENABLED: 'false',
@@ -654,6 +663,18 @@ describe('createMockAgentEnvironment', () => {
       GROK_LOGIN_ENV: '0',
     })
     expect(env.GROK_FILE_LOCK_SLOT_DIR!.startsWith(directory)).toBe(true)
+  })
+
+  // The effort specs switch among the three models: one without an effort, and two whose ladders share a level.
+  it('lists the three Command Code models of the effort specs in its private catalog', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const providers = JSON.parse(readFileSync(join(env.HOME!, '.commandcode', 'providers.json'), 'utf8'))
+    const modelName = (id: string) => id.split('/')[1]!
+    expect(providers.provider['leapmux-e2e'].models).toEqual({
+      [modelName(COMMAND_CODE_MODEL_ID)]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'high'] },
+      [modelName(COMMAND_CODE_ALT_MODEL_ID)]: { contextWindow: 131072 },
+      [modelName(COMMAND_CODE_REASONING_MODEL_ID)]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'medium', 'high'] },
+    })
   })
 
   // The mock's own origin is plain HTTP. Cursor's HTTP/2 pool reads HTTP_PROXY for an
@@ -1071,6 +1092,9 @@ describe('createMockAgentEnvironment', () => {
     })
     expect(qwen.modelProviders.openai[1]).toMatchObject({ id: QWEN_ALT_MODEL_WIRE_ID, generationConfig: { modalities: { image: true, pdf: true } } })
     expect(QWEN_ALT_MODEL_ID).toBe(`${QWEN_ALT_MODEL_WIRE_ID}(openai)`)
+    expect(qwen.modelProviders.openai[2]).toMatchObject({ id: QWEN_PLAIN_MODEL_WIRE_ID, capabilities: { vision: true } })
+    expect(qwen.modelProviders.openai[2].capabilities.reasoning).toBeUndefined()
+    expect(QWEN_PLAIN_MODEL_ID).toBe(`${QWEN_PLAIN_MODEL_WIRE_ID}(openai)`)
     expect(qwen.model.name).toBe(MOCK_MODELS.qwen)
     expect(qwen.mcpServers.echo_probe).toEqual({ command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] })
     expect(qwen.tools.approvalMode).toBe('default')

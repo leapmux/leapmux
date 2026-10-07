@@ -6,6 +6,14 @@ import { requireLoopbackHttpURL, validatedMcpServers } from './agentEnvironmentI
 export const DEEPSEEK_HARNESS_PROVIDER_ID = 'deepseek-official'
 export const DEEPSEEK_HARNESS_MODEL_ID = `${DEEPSEEK_HARNESS_PROVIDER_ID}/deepseek-flash`
 export const DEEPSEEK_HARNESS_ALT_MODEL_ID = `${DEEPSEEK_HARNESS_PROVIDER_ID}/deepseek-v4-pro`
+/**
+ * The route of the model without reasoning. The DeepSeek provider gives each of its models the effort ladder of the
+ * connection, so a model without an effort needs a route of its own: a gateway of the `dsh-llm-pi-ai` plugin, where
+ * `reasoningEfforts: false` declares a model that does not reason.
+ */
+export const DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID = 'leapmux-e2e-plain'
+export const DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID = 'deepseek-plain'
+export const DEEPSEEK_HARNESS_PLAIN_MODEL_ID = `${DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID}/${DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID}`
 /** The context window that the private profile states for each of its models, in tokens. */
 export const DEEPSEEK_HARNESS_CONTEXT_WINDOW = 1_000_000
 
@@ -43,6 +51,17 @@ export function createDeepseekHarnessEnvironment(options: DeepseekHarnessEnviron
       ],
     } },
     { id: 'agent-default-model', config: { provider: DEEPSEEK_HARNESS_PROVIDER_ID, model: 'deepseek-flash', reasoningEffort: 'high' } },
+    // The `web` profile mounts the pi-ai plugin under this ID with no route. A second mount of the plugin does not
+    // compose, so the row configures the mount that the profile holds.
+    { id: 'llm-pi-ai', config: { providers: {
+      [DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID]: {
+        displayName: 'LeapMux E2E Plain',
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        api: 'openai-completions',
+        baseURL: `${endpoint.href.replace(/\/$/, '')}/v1`,
+        models: [{ id: DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID, name: 'Mock Plain', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, reasoningEfforts: false }],
+      },
+    } } },
   ]
   // The native registry reads its default preset from this row. An absent selection keeps the shipped default.
   if (options.agentPreset !== undefined)

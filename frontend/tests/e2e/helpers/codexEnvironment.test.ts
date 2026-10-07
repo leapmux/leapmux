@@ -14,9 +14,11 @@ beforeEach(() => {
 
 afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
+const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', defaultModelID: 'unit-default' })
+
 describe('createCodexEnvironment', () => {
   it('writes a provider for the given base URL and the form server that the configuration starts', () => {
-    const env = createCodexEnvironment({ homeDir, baseURL: 'http://127.0.0.1:4567/v1' })
+    const env = createCodexEnvironment(options())
     expect(env).toEqual({ CODEX_HOME: join(homeDir, '.codex') })
     const config = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(config).toContain('[model_providers.leapmux-e2e]\nname = "LeapMux E2E"\nbase_url = "http://127.0.0.1:4567/v1"')
@@ -27,9 +29,15 @@ describe('createCodexEnvironment', () => {
   })
 
   it('turns off the background memory turn and the update notice', () => {
-    const env = createCodexEnvironment({ homeDir, baseURL: 'http://127.0.0.1:4567/v1' })
+    const env = createCodexEnvironment(options())
     const config = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(config).toContain('[memories]\ngenerate_memories = false\nuse_memories = false')
     expect(config).toMatch(/^check_for_update_on_startup = false$/m)
+  })
+
+  // The Default model entry omits the model from the thread, so Codex runs the model of its configuration.
+  it('pins the model of a thread that states none at the top level of the configuration', () => {
+    const config = readFileSync(join(createCodexEnvironment(options()).CODEX_HOME!, 'config.toml'), 'utf8')
+    expect(config).toMatch(/^model_provider = "leapmux-e2e"\nmodel = "unit-default"$/m)
   })
 })

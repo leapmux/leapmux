@@ -1,9 +1,14 @@
 import type { McpProbeServer } from './mcpProbeServer'
 
 /** One model of the mock provider block: its identifier and the name that a model menu shows. */
-export interface OpenCodeFamilyModelName {
+export interface OpenCodeFamilyModel {
   id: string
   name: string
+  /**
+   * Whether the model reasons, and so takes each reasoning variant. Absent means true. A model that does not reason
+   * declares no variant, so a spec can switch to a model that offers no effort.
+   */
+  reasoning?: boolean
 }
 
 /** The mock provider that the OpenCode family reads: OpenCode, Kilo, and MiMo Code. */
@@ -14,7 +19,7 @@ export interface OpenCodeFamilyProviderOptions {
   /** The provider identifier, which no public catalog may hold. */
   providerID: string
   /** The models of the provider. The first one is the default model. */
-  models: readonly OpenCodeFamilyModelName[]
+  models: readonly OpenCodeFamilyModel[]
 }
 
 export interface OpenCodeEnvironmentOptions extends OpenCodeFamilyProviderOptions {
@@ -48,6 +53,12 @@ export function createOpenCodeEnvironment(options: OpenCodeEnvironmentOptions): 
     // reads `true` and `1`.
     OPENCODE_DISABLE_AUTOUPDATE: 'true',
     KILO_DISABLE_AUTOUPDATE: 'true',
+    // OpenCode 1.18.34 and Kilo 7.8.3 otherwise scan `.claude/skills` and `.agents/skills` in the isolated HOME, and in
+    // each directory from the working directory up to the git worktree. Without a repository, the walk reaches the
+    // root of the file system, including directories above the run root. No spec relies on an external skill.
+    // Each reads `true` and `1`. MiMo Code reads its own switch (./mimoEnvironment).
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true',
+    KILO_DISABLE_EXTERNAL_SKILLS: 'true',
   }
 }
 
@@ -81,7 +92,7 @@ function openCodeFamilyProvider(provider: OpenCodeFamilyProviderOptions): Record
     id: provider.providerID,
     env: [],
     npm: '@ai-sdk/openai-compatible',
-    models: Object.fromEntries(provider.models.map(model => [model.id, openCodeFamilyModel(model.id, model.name)])),
+    models: Object.fromEntries(provider.models.map(model => [model.id, openCodeFamilyModel(model)])),
     options: { apiKey: provider.modelKey, baseURL: provider.baseURL },
   }
 }
@@ -90,17 +101,18 @@ function openCodeFamilyProvider(provider: OpenCodeFamilyProviderOptions): Record
 const REASONING_VARIANTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * One model of the mock provider block, with each reasoning variant.
+ * One model of the mock provider block, with each reasoning variant when the model reasons.
  *
  * Each variant sends its effort to the mock model. The installed OpenCode family
  * merges a configured variant over its built-in one.
  */
-function openCodeFamilyModel(id: string, name: string): Record<string, unknown> {
+function openCodeFamilyModel(model: OpenCodeFamilyModel): Record<string, unknown> {
+  const reasoning = model.reasoning ?? true
   return {
-    id,
-    name,
+    id: model.id,
+    name: model.name,
     attachment: false,
-    reasoning: true,
+    reasoning,
     temperature: false,
     tool_call: true,
     // MiMo's read tool returns an image or a PDF only when the model declares
@@ -111,6 +123,6 @@ function openCodeFamilyModel(id: string, name: string): Record<string, unknown> 
     limit: { context: 128_000, output: 16_000 },
     cost: { input: 0, output: 0 },
     options: {},
-    variants: Object.fromEntries(REASONING_VARIANTS.map(variant => [variant, { reasoningEffort: variant }])),
+    variants: reasoning ? Object.fromEntries(REASONING_VARIANTS.map(variant => [variant, { reasoningEffort: variant }])) : {},
   }
 }
