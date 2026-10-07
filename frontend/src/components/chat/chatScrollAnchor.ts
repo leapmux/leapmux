@@ -47,23 +47,12 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   if (n === 0)
     return null
   let idx = geo.indexAtOffset(scrollTop)
-  // Prefer the FIRST row of any run that shares this cumulative offset. Rows whose reserved
-  // height + gap is 0 collapse onto a single offset, and indexAtOffset returns the LAST of
-  // them (the first row with real height below). Anchoring to that lower row would let the
-  // zero-height rows ABOVE it, once they grow, push it down and drag the viewport with it.
-  // Walking back to the topmost row sharing this offset pins that one instead, so the growth
-  // lands BELOW the anchor and the viewport stays put. This is a defensive invariant of the
-  // pure anchor math: the live virtualizer now reserves a strictly-positive estimate for
-  // every unmeasured row (no zero-height runs reach here), so in production the loop finds
-  // distinct offsets and never steps -- but it keeps the tie-break correct for any caller
-  // (and the unit tests' synthetic geometry) that can produce a shared-offset run.
+  // At a shared offset, prefer the first row. Zero-height rows can share
+  // an offset with the next row. Anchoring to the first row keeps later growth
+  // below the anchor, so that growth does not move the viewport.
   //
-  // Only when scrollTop sits AT the shared offset, though: with the viewport top strictly
-  // INSIDE the terminal row's body (scrollTop > the run's offset), walking back to a
-  // zero-height run-top would clamp `within` against that row's 0 basisHeight and DISCARD
-  // the within-row offset -- the anchor would resolve to the run's offset, yanking the
-  // capture->resolve round trip up by the discarded pixels with no geometry change at all.
-  // At the exact offset `within` is 0 either way, so the tie-break costs nothing there.
+  // Keep the selected row when scrollTop sits inside its body. A zero-height
+  // row above it would lose that within-row offset during the round trip.
   const anchorOffset = geo.offsetOfIndex(idx)
   if (scrollTop <= anchorOffset) {
     while (idx > 0 && geo.offsetOfIndex(idx - 1) === anchorOffset)
@@ -75,7 +64,7 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   // re-pin above the top.
   const within = Math.max(0, scrollTop - geo.offsetOfIndex(idx))
   // Clamp `within` to the row's height (measured or estimated) and record that
-  // height as the basis. Clamping bounds the stored fraction (within / basisHeight)
+  // height as the basis. Clamping restricts the stored fraction (within / basisHeight)
   // to [0, 1], so scrollTopForAnchor's proportional resolve can never overshoot the
   // row body.
   const basisHeight = geo.heightOfIndex(idx)
@@ -103,7 +92,7 @@ export function resolveAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: Scroll
   const idx = geo.indexOfId(anchor.id)
   if (idx < 0)
     return null
-  // The fraction is bounded to [0, 1] by anchorAt's clamp, so the scaled offset stays
+  // The fraction stays in [0, 1] by anchorAt's clamp, so the scaled offset stays
   // inside the row. An anchor from old persistence carries no basisHeight; fall back to
   // absolute clamping against the current height.
   const rowHeight = geo.heightOfIndex(idx)
@@ -128,13 +117,13 @@ export function resolveAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: Scroll
  * scan shared by the trim-restore recovery ({@link resolveNearestAnchorScrollTop}) and the
  * scroll rail's out-of-window seek landing (useChatScroll.landOnSeq), so the two can't
  * drift on the skip rule or the tie-break (strict `<` keeps the first/oldest on a tie).
- * Linear over a bounded list; callers run it only on a rare restore/seek.
+ * Linear over a list with a size limit; callers run it only on a rare restore/seek.
  */
 export function nearestServerRowIndexBySeq(rows: readonly { seq?: bigint }[], target: bigint): number {
   let bestIdx = -1
   let bestDelta = 0n
   for (let i = 0; i < rows.length; i++) {
-    // The bound keeps `i` in range; `?.` is the type-level guard alone (and `s == null` skips it either way).
+    // The loop limit keeps `i` in range; `?.` is the type-level guard alone (and `s == null` skips it either way).
     const s = rows[i]?.seq
     if (s == null)
       continue

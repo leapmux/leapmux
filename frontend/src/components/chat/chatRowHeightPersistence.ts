@@ -46,7 +46,7 @@ type StoredRow = [id: string, digest: string, height: number]
  * 2: assistant messages and thoughts became full-bleed bands (row borders and
  *    band padding replaced the bubble's border, padding and 85% width cap).
  * 3: the height key became the one exact row revision key (chatRevisionKey.ts),
- *    so every stored digest names a key format no code builds any more. The old
+ *    so every stored digest identifies a key format no code builds any more. The old
  *    payload is discarded on load, never retained as a pending digest a new key
  *    cannot match.
  */
@@ -101,7 +101,7 @@ function parseStoredRows(raw: unknown): Map<string, { digest: string, height: nu
     const [id, digest, height] = row as unknown[]
     if (typeof id !== 'string' || id.length === 0 || typeof digest !== 'string')
       continue
-    if (typeof height !== 'number' || !(height > 0) || !Number.isFinite(height))
+    if (typeof height !== 'number' || height < 0 || !Number.isFinite(height))
       continue
     pending.set(id, { digest, height })
   }
@@ -215,7 +215,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     // Pending entries were inserted first, so the shared insertion-order cap
     // (mapLru.capMapInsertionOrder) sheds them before it sheds freshly measured
     // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
-    // measurements -- and the eviction bound can't drift from the render/token caches'.
+    // measurements -- and the eviction limit matches the render and token caches.
     capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
     localStorageStore(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
   }

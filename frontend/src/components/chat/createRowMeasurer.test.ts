@@ -2,9 +2,18 @@ import type { ResizeObserverLike } from './createRowMeasurer'
 import { describe, expect, it, vi } from 'vitest'
 import { createRowMeasurer } from './createRowMeasurer'
 
+function fakeRowEvents() {
+  const target = new EventTarget()
+  return {
+    addEventListener: target.addEventListener.bind(target),
+    removeEventListener: target.removeEventListener.bind(target),
+  }
+}
+
 /** A fake row whose measured height and connectedness the test controls. */
 function fakeEl(height: number, connected = true) {
   return {
+    ...fakeRowEvents(),
     isConnected: connected,
     getBoundingClientRect: () => ({ height }),
   } as unknown as HTMLElement & { isConnected: boolean }
@@ -46,6 +55,256 @@ function manualScheduler() {
 }
 
 describe('createRowMeasurer', () => {
+  it.each(['load', 'error'])('retries an empty row on image %s without a resize event', (eventName) => {
+    const element = document.createElement('div')
+    const image = document.createElement('img')
+    let complete = false
+    Object.defineProperty(image, 'complete', { get: () => complete })
+    element.append(image)
+    element.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
+    document.body.append(element)
+    const measure = vi.fn(() => true)
+    const scheduler = manualScheduler()
+    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    try {
+      measurer.attachRow('empty', element)
+      expect(measure).not.toHaveBeenCalled()
+      complete = true
+      image.dispatchEvent(new Event(eventName))
+      scheduler.run()
+      expect(measure).toHaveBeenCalledWith('empty', 0)
+    }
+    finally {
+      measurer.dispose()
+      element.remove()
+    }
+  })
+
+  it('waits for the last image and ignores a non-image load event', () => {
+    const element = document.createElement('div')
+    const images = [document.createElement('img'), document.createElement('img')]
+    const complete = [false, false]
+    images.forEach((image, index) => {
+      Object.defineProperty(image, 'complete', { get: () => complete[index] })
+      element.append(image)
+    })
+    element.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
+    document.body.append(element)
+    const measure = vi.fn(() => true)
+    const scheduler = manualScheduler()
+    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    try {
+      measurer.attachRow('row', element)
+      element.dispatchEvent(new Event('load'))
+      expect(scheduler.calls).toBe(0)
+      complete[0] = true
+      images[0]!.dispatchEvent(new Event('load'))
+      scheduler.run()
+      expect(measure).not.toHaveBeenCalled()
+      complete[1] = true
+      images[1]!.dispatchEvent(new Event('error'))
+      scheduler.run()
+      expect(measure).toHaveBeenCalledExactlyOnceWith('row', 0)
+    }
+    finally {
+      measurer.dispose()
+      element.remove()
+    }
+  })
+
+  it('observes an image that mounts after attach and drops its queued retry on detach', () => {
+    const element = document.createElement('div')
+    let height = 20
+    element.getBoundingClientRect = () => new DOMRect(0, 0, 400, height)
+    document.body.append(element)
+    const measure = vi.fn(() => true)
+    const scheduler = manualScheduler()
+    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    try {
+      measurer.attachRow('row', element)
+      const image = document.createElement('img')
+      element.append(image)
+      height = 0
+      image.dispatchEvent(new Event('error'))
+      expect(scheduler.calls).toBe(1)
+      measurer.detachRow(element)
+      measure.mockClear()
+      scheduler.run()
+      expect(measure).not.toHaveBeenCalled()
+    }
+    finally {
+      measurer.dispose()
+      element.remove()
+    }
+  })
+
+  it('remeasures the same element on attach even when its previous height was unchanged', () => {
+    const measure = vi.fn(() => true)
+    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), createObserver: () => undefined })
+    const element = fakeEl(40)
+    try {
+      measurer.attachRow('row', element)
+      measurer.detachRow(element)
+      measure.mockClear()
+      measurer.attachRow('row', element)
+      expect(measure).toHaveBeenCalledWith('row', 40)
+    }
+    finally {
+      measurer.dispose()
+    }
+  })
+
+  it.each(['detach', 'remount', 'dispose'])('removes image retries after %s and keeps a replacement row independent', (operation) => {
+    const element = document.createElement('div')
+    const image = document.createElement('img')
+    let complete = false
+    let height = 0
+    Object.defineProperty(image, 'complete', { get: () => complete })
+    element.append(image)
+    element.getBoundingClientRect = () => new DOMRect(0, 0, 400, height)
+    document.body.append(element)
+    const replacement = document.createElement('div')
+    const replacementImage = document.createElement('img')
+    replacement.append(replacementImage)
+    replacement.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
+    document.body.append(replacement)
+    const removeListener = vi.spyOn(element, 'removeEventListener')
+    const measure = vi.fn(() => true)
+    const scheduler = manualScheduler()
+    const mountedIds = new Set<string>()
+    const measurer = createRowMeasurer({ measure, mountedIds, scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    try {
+      measurer.attachRow('row', element)
+      complete = true
+      image.dispatchEvent(new Event('load'))
+      scheduler.run()
+      expect(measure).toHaveBeenCalledWith('row', 0)
+      if (operation === 'dispose') {
+        measurer.dispose()
+      }
+      else {
+        if (operation === 'remount')
+          measurer.attachRow('row', replacement)
+        measurer.detachRow(element)
+      }
+      measure.mockClear()
+      height = 20
+      image.dispatchEvent(new Event('error'))
+      scheduler.run()
+      expect(measure).not.toHaveBeenCalled()
+      expect(removeListener).toHaveBeenCalledWith('load', expect.any(Function), true)
+      expect(removeListener).toHaveBeenCalledWith('error', expect.any(Function), true)
+      if (operation === 'remount') {
+        expect(mountedIds.has('row')).toBe(true)
+        replacement.getBoundingClientRect = () => new DOMRect(0, 0, 400, 20)
+        replacementImage.dispatchEvent(new Event('load'))
+        scheduler.run()
+        expect(measure).toHaveBeenCalledWith('row', 20)
+      }
+    }
+    finally {
+      measurer.dispose()
+      element.remove()
+      replacement.remove()
+    }
+  })
+
+  it('forwards zero on attach and preserves growth smaller than the jitter threshold', () => {
+    const measure = vi.fn(() => true)
+    const obs = fakeObserver()
+    const scheduler = manualScheduler()
+    let height = 0
+    const element = {
+      ...fakeRowEvents(),
+      isConnected: true,
+      getBoundingClientRect: () => new DOMRect(0, 0, 400, height),
+      querySelectorAll: () => [],
+    } as unknown as HTMLElement
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: obs.createObserver,
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+    })
+    measurer.attachRow('empty', element)
+    expect(measure).toHaveBeenLastCalledWith('empty', 0)
+    measure.mockClear()
+    obs.fire([element])
+    scheduler.run()
+    expect(measure).not.toHaveBeenCalled()
+    height = 0.2
+    obs.fire([element])
+    scheduler.run()
+    expect(measure).toHaveBeenLastCalledWith('empty', 0.2)
+    height = 0
+    obs.fire([element])
+    scheduler.run()
+    expect(measure).toHaveBeenLastCalledWith('empty', 0)
+    measurer.dispose()
+  })
+
+  it('keeps an unready zero out of the cache and retries after layout appears', () => {
+    const measure = vi.fn(() => true)
+    const obs = fakeObserver()
+    const scheduler = manualScheduler()
+    let width = 0
+    const element = {
+      ...fakeRowEvents(),
+      isConnected: true,
+      getBoundingClientRect: () => new DOMRect(0, 0, width, 0),
+      querySelectorAll: () => [],
+    } as unknown as HTMLElement
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: obs.createObserver,
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+    })
+    measurer.attachRow('empty', element)
+    expect(measure).not.toHaveBeenCalled()
+    expect(obs.observed.has(element)).toBe(true)
+    width = 400
+    obs.fire([element])
+    scheduler.run()
+    expect(measure).toHaveBeenCalledWith('empty', 0)
+    measurer.dispose()
+  })
+
+  it('does not measure a detached row on attach', () => {
+    const measure = vi.fn(() => true)
+    const obs = fakeObserver()
+    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), createObserver: obs.createObserver })
+    const element = fakeEl(40, false)
+    measurer.attachRow('detached', element)
+    expect(measure).not.toHaveBeenCalled()
+    expect(obs.observed.has(element)).toBe(true)
+    measurer.dispose()
+  })
+
+  it('commits the latest zero after visible measurement deferral ends', () => {
+    let deferred = true
+    let height = 40
+    const measure = vi.fn(() => true)
+    const element = {
+      ...fakeRowEvents(),
+      isConnected: true,
+      getBoundingClientRect: () => new DOMRect(0, 0, 400, height),
+      querySelectorAll: () => [],
+    } as unknown as HTMLElement
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      shouldDeferMeasurement: () => deferred,
+      createObserver: () => undefined,
+    })
+    measurer.attachRow('empty', element)
+    height = 0
+    deferred = false
+    expect(measurer.flushDeferredMeasurements()).toBe(true)
+    expect(measure).toHaveBeenCalledWith('empty', 0)
+    measurer.dispose()
+  })
+
   it('measures and observes a freshly-mounted row, marking it mounted', () => {
     const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()
@@ -65,6 +324,7 @@ describe('createRowMeasurer', () => {
     const obs = fakeObserver()
     const sched = manualScheduler()
     const el = {
+      ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => ({ height }),
     } as unknown as HTMLElement
@@ -103,10 +363,12 @@ describe('createRowMeasurer', () => {
     let aHeight = 100
     let bHeight = 200
     const a = {
+      ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => ({ height: aHeight }),
     } as unknown as HTMLElement
     const b = {
+      ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => ({ height: bHeight }),
     } as unknown as HTMLElement
@@ -215,6 +477,7 @@ describe('createRowMeasurer', () => {
       scheduleMicrotask: sched.scheduleMicrotask,
     })
     const a = {
+      ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => ({ height }),
     } as unknown as HTMLElement
@@ -240,6 +503,7 @@ describe('createRowMeasurer', () => {
     })
     let aHeight = 100
     const a = {
+      ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => ({ height: aHeight }),
     } as unknown as HTMLElement
@@ -333,6 +597,7 @@ describe('createRowMeasurer', () => {
     })
     let oldHeight = 100
     const oldEl = {
+      ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => ({ height: oldHeight }),
     } as unknown as HTMLElement

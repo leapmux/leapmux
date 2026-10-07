@@ -1,6 +1,7 @@
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createOrderedTailReveal } from './chatOrderedReveal'
+import { setup } from './useChatVirtualizer.testkit'
 
 describe('chatOrderedReveal', () => {
   /**
@@ -20,6 +21,25 @@ describe('chatOrderedReveal', () => {
     const setLoadingIds = (values: string[]) => setLoading(new Set(values))
     return { held: () => [...held()].sort(), setIds, setLoadingIds, dispose }
   }
+
+  it('releases the measured tail only after an empty earlier row receives a valid measurement', () => {
+    createRoot((dispose) => {
+      try {
+        const items = ['empty', 'answer'].map(id => ({ id, hasSpanLines: false, heightKey: 'live' }))
+        const { virt } = setup(items)
+        const held = createOrderedTailReveal(() => items.map(item => item.id), id => !virt.hasMeasuredHeight(id))
+        virt.measure('answer', 40)
+        expect([...held()]).toEqual(['answer'])
+        expect(virt.primeHeight('empty', 0, 'stale')).toBe(false)
+        expect([...held()]).toEqual(['answer'])
+        expect(virt.primeHeight('empty', 0, 'live')).toBe(true)
+        expect([...held()]).toEqual([])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
 
   it('holds nothing when every row is measured', () => {
     const h = harness(['a', 'b', 'c'], [])

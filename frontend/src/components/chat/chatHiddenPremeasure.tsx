@@ -6,6 +6,7 @@ import { emitDevEvent } from '~/lib/devInstrument'
 import { monotonicNow } from '~/lib/monotonicNow'
 import * as styles from './ChatView.css'
 import { messageRowChrome } from './messageRowLayout'
+import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 import { reservedRowContentColumnStyle } from './widgets/SpanLines.geometry'
 
 export interface ChatDomPremeasureCandidate {
@@ -43,7 +44,7 @@ interface PremeasureReadResult {
 
 interface PremeasureTask {
   /** Layout reads only (getBoundingClientRect + the pending-image query) -- no commits. */
-  read: () => PremeasureReadResult
+  read: () => PremeasureReadResult | undefined
   /** Commit the read result (the host's onMeasure); runs inside the shared batch(). */
   apply: (result: PremeasureReadResult) => void
 }
@@ -70,8 +71,9 @@ function createSharedPremeasureFrame() {
     // Phase 2: every commit in one reactive batch.
     batch(() => {
       tasks.forEach((task, i) => {
-        // `results` is this array's own map output, so `i` is in range; `?? ` below is the type-level guard alone.
-        task.apply(results[i] ?? { height: 0, settled: true, measureDurationMs: 0 })
+        const result = results[i]
+        if (result)
+          task.apply(result)
       })
     })
   }
@@ -131,17 +133,19 @@ function PremeasureRow(props: {
     props.frame.schedule(key, {
       read: () => {
         const started = monotonicNow()
-        const height = rowEl?.getBoundingClientRect().height ?? 0
+        const height = rowLayoutMeasurement(rowEl)
         const settled = !hasPendingImages()
         emitDevEvent('leapmux:chat-premeasure', () => ({
           phase: 'read',
           id,
           seq,
-          height: Number.isFinite(height) ? height : String(height),
+          height: height ?? null,
           heightKey: heightKey ?? null,
           connected: rowEl?.isConnected ?? false,
           settled,
         }))
+        if (height === undefined)
+          return undefined
         return { height, settled, measureDurationMs: monotonicNow() - started }
       },
       apply: ({ height, settled, measureDurationMs }) => {

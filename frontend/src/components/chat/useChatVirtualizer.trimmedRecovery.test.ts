@@ -174,43 +174,76 @@ describe('useChatVirtualizer geometry', () => {
 
   it('never evicts a MOUNTED row, even when it is the oldest measured', () => {
     createRoot((dispose) => {
-      const { virt } = setup(plainItems(1)) // item m1 at index 0
-      // Mounting a keyed row attaches its element, joining the protected set and
-      // measuring it (333). Attached FIRST, so m1 is the oldest insertion ->
-      // normally the first eviction target once the cache crosses its cap.
-      virt.attachRow('m1', fakeRow(333))
-      // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with other, UNMOUNTED
-      // rows. Without the mounted-row protection m1 (oldest) would be evicted and
-      // fall back to the median estimate; mounted, it keeps its 333px.
-      for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
-        virt.measure(`x${i}`, 100)
-      expect(virt.heightOfIndex(0)).toBe(333)
-      // Unmount m1 -> it leaves the protected set but keeps its cached height
-      // (flash-free re-entry); a further over-cap flood may now evict it.
-      dispose()
+      try {
+        const { virt } = setup(plainItems(1)) // item m1 at index 0
+        // Mounting a keyed row attaches its element, joining the protected set and
+        // measuring it (333). Attached FIRST, so m1 is the oldest insertion ->
+        // normally the first eviction target once the cache crosses its cap.
+        virt.attachRow('m1', fakeRow(333))
+        // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with other, UNMOUNTED
+        // rows. Without the mounted-row protection m1 (oldest) would be evicted and
+        // fall back to the median estimate; mounted, it keeps its 333px.
+        for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
+          virt.measure(`x${i}`, 100)
+        expect(virt.heightOfIndex(0)).toBe(333)
+        // Unmount m1 -> it leaves the protected set but keeps its cached height
+        // (flash-free re-entry); a further over-cap flood may now evict it.
+      }
+      finally {
+        dispose()
+      }
     })
   })
 
   it('defers visible-row attach measurements until the deferral is released', () => {
     createRoot((dispose) => {
-      const { virt } = setup(plainItems(1))
-      const row = fakeRow(333)
-      document.body.append(row)
+      try {
+        const { virt } = setup(plainItems(1))
+        const row = fakeRow(333)
+        document.body.append(row)
 
-      virt.setVisibleMeasurementDeferral(true)
-      virt.attachRow('m1', row)
+        virt.setVisibleMeasurementDeferral(true)
+        virt.attachRow('m1', row)
 
-      expect(virt.hasDeferredMeasurements()).toBe(true)
-      expect(virt.heightOfIndex(0)).toBe(100)
-      expect(virt.totalHeight()).toBe(100)
+        expect(virt.hasDeferredMeasurements()).toBe(true)
+        expect(virt.heightOfIndex(0)).toBe(100)
+        expect(virt.totalHeight()).toBe(100)
 
-      virt.setVisibleMeasurementDeferral(false)
-      expect(virt.flushDeferredMeasurements()).toBe(true)
-      expect(virt.hasDeferredMeasurements()).toBe(false)
-      expect(virt.heightOfIndex(0)).toBe(333)
-      expect(virt.totalHeight()).toBe(333)
-      row.remove()
-      dispose()
+        virt.setVisibleMeasurementDeferral(false)
+        expect(virt.flushDeferredMeasurements()).toBe(true)
+        expect(virt.hasDeferredMeasurements()).toBe(false)
+        expect(virt.heightOfIndex(0)).toBe(333)
+        expect(virt.totalHeight()).toBe(333)
+        row.remove()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('retains a deferred zero and keeps the positive estimate after its commit', () => {
+    createRoot((dispose) => {
+      try {
+        const { virt } = setup(plainItems(2))
+        virt.measure('m2', 100)
+        virt.setVisibleMeasurementDeferral(true)
+        expect(virt.primeHeight('m1', 0)).toBe(false)
+        expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
+        expect(virt.hasMeasuredHeight('m1')).toBe(false)
+        expect(virt.heightOfIndex(0)).toBe(100)
+        virt.setVisibleMeasurementDeferral(false)
+        expect(virt.flushDeferredMeasurements()).toBe(true)
+        expect(virt.hasPendingPremeasuredHeight('m1')).toBe(false)
+        expect(virt.hasMeasuredHeight('m1')).toBe(true)
+        expect(virt.heightOfIndex(0)).toBe(0)
+        expect(virt.offsetOfIndex(1)).toBe(20)
+        expect(virt.totalHeight()).toBe(120)
+        expect(virt.estimateHeight()).toBe(100)
+      }
+      finally {
+        dispose()
+      }
     })
   })
 
@@ -221,7 +254,7 @@ describe('useChatVirtualizer geometry', () => {
       virt.setVisibleMeasurementDeferral(true)
       expect(virt.primeHeight('m1', 700)).toBe(false)
       expect(virt.primeHeight('m1', 852)).toBe(false)
-      expect(virt.primeHeight('m1', 0)).toBe(false)
+      expect(virt.primeHeight('m1', -1)).toBe(false)
 
       expect(virt.hasDeferredMeasurements()).toBe(true)
       expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
@@ -265,24 +298,28 @@ describe('useChatVirtualizer geometry', () => {
 
   it('reflects mounted rows in mountedIds: attachRow adds an id, detachRow removes it', () => {
     createRoot((dispose) => {
-      const { virt } = setup(plainItems(3)) // m1, m2, m3
-      expect(virt.mountedIds.size).toBe(0)
-      // attachRow joins the protected set, keyed by the SAME element instance that
-      // detachRow later resolves back to an id through the reverse elToId map.
-      const r1 = fakeRow(100)
-      const r2 = fakeRow(120)
-      virt.attachRow('m1', r1)
-      virt.attachRow('m2', r2)
-      expect(virt.mountedIds.has('m1')).toBe(true)
-      expect(virt.mountedIds.has('m2')).toBe(true)
-      expect(virt.mountedIds.size).toBe(2)
-      // Detaching one element drops only its id; the other stays mounted (and
-      // protected). mountedIds is the live set, so the getter reflects the change.
-      virt.detachRow(r1)
-      expect(virt.mountedIds.has('m1')).toBe(false)
-      expect(virt.mountedIds.has('m2')).toBe(true)
-      expect(virt.mountedIds.size).toBe(1)
-      dispose()
+      try {
+        const { virt } = setup(plainItems(3)) // m1, m2, m3
+        expect(virt.mountedIds.size).toBe(0)
+        // attachRow joins the protected set, keyed by the SAME element instance that
+        // detachRow later resolves back to an id through the reverse elToId map.
+        const r1 = fakeRow(100)
+        const r2 = fakeRow(120)
+        virt.attachRow('m1', r1)
+        virt.attachRow('m2', r2)
+        expect(virt.mountedIds.has('m1')).toBe(true)
+        expect(virt.mountedIds.has('m2')).toBe(true)
+        expect(virt.mountedIds.size).toBe(2)
+        // Detaching one element drops only its id; the other stays mounted (and
+        // protected). mountedIds is the live set, so the getter reflects the change.
+        virt.detachRow(r1)
+        expect(virt.mountedIds.has('m1')).toBe(false)
+        expect(virt.mountedIds.has('m2')).toBe(true)
+        expect(virt.mountedIds.size).toBe(1)
+      }
+      finally {
+        dispose()
+      }
     })
   })
 

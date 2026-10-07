@@ -74,6 +74,107 @@ describe('chat hidden premeasure rendering', () => {
   // needs to tell a hidden COPY of a row from the row itself. Both markers are
   // load-bearing and neither is visible from inside a row, so nothing else fails
   // if one is dropped: the copy simply starts passing for the real thing.
+  it.each(['load', 'error'])('keeps an empty image row unready until its %s event', (eventName) => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    installControllableResizeObserver()
+    let unmount: (() => void) | undefined
+    try {
+      let complete = false
+      const onMeasure = vi.fn(() => true)
+      const rendered = render(() => (
+        <ChatHiddenPremeasure
+          candidates={[{ entry: entryWithSpanLines(0, 'tool_result'), item: { id: 'empty', hasSpanLines: false } }]}
+          contentWidthPx={400}
+          renderBubble={() => <img alt="pending" />}
+          onMeasure={onMeasure}
+        />
+      ))
+      unmount = rendered.unmount
+      const row = rendered.container.firstElementChild!.firstElementChild as HTMLElement
+      const image = row.querySelector('img')!
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 0))
+      Object.defineProperty(image, 'complete', { get: () => complete })
+      frames.shift()?.(0)
+      expect(onMeasure).not.toHaveBeenCalled()
+      complete = true
+      image.dispatchEvent(new Event(eventName))
+      frames.shift()?.(16)
+      expect(onMeasure).toHaveBeenCalledWith('empty', 0, undefined, expect.any(Number), true)
+    }
+    finally {
+      unmount?.()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('skips a hidden view and measures its empty row after layout returns', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    installControllableResizeObserver()
+    let unmount: (() => void) | undefined
+    try {
+      const onMeasure = vi.fn(() => true)
+      const rendered = render(() => (
+        <ChatHiddenPremeasure
+          candidates={[{ entry: entryWithSpanLines(0, 'tool_result'), item: { id: 'empty', hasSpanLines: false } }]}
+          contentWidthPx={400}
+          renderBubble={() => null}
+          onMeasure={onMeasure}
+        />
+      ))
+      unmount = rendered.unmount
+      const root = rendered.container.firstElementChild as HTMLElement
+      const row = root.firstElementChild as HTMLElement
+      root.style.display = 'none'
+      const rectangle = vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 0, 0))
+      frames.shift()?.(0)
+      expect(onMeasure).not.toHaveBeenCalled()
+      root.style.display = ''
+      root.style.visibility = 'hidden'
+      rectangle.mockReturnValue(new DOMRect(0, 0, 400, 0))
+      triggerResizeObserverForSync(row)
+      frames.shift()?.(16)
+      expect(onMeasure).toHaveBeenCalledWith('empty', 0, undefined, expect.any(Number), true)
+    }
+    finally {
+      unmount?.()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('measures only the current empty candidate after replacement before the frame', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    let unmount: (() => void) | undefined
+    try {
+      const entry = entryWithSpanLines(0, 'tool_result')
+      const item = { id: 'empty', heightKey: 'live', hasSpanLines: false }
+      const [candidates, setCandidates] = createSignal([{ entry, item }])
+      const onMeasure = vi.fn(() => true)
+      const rendered = render(() => (
+        <ChatHiddenPremeasure candidates={candidates()} contentWidthPx={400} renderBubble={() => null} onMeasure={onMeasure} />
+      ))
+      unmount = rendered.unmount
+      const oldRow = rendered.container.firstElementChild!.firstElementChild as HTMLElement
+      vi.spyOn(oldRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 100))
+      setCandidates([{ entry, item: { ...item } }])
+      const currentRow = rendered.container.firstElementChild!.firstElementChild as HTMLElement
+      expect(oldRow.isConnected).toBe(false)
+      vi.spyOn(currentRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 0))
+      frames.shift()?.(0)
+      expect(onMeasure).toHaveBeenCalledTimes(1)
+      expect(onMeasure).toHaveBeenCalledWith('empty', 0, 'live', expect.any(Number), true)
+    }
+    finally {
+      unmount?.()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('marks its root as a hidden copy, reachable from any bubble inside it', () => {
     const { row } = renderPremeasureRow('user_text', MessageSource.USER)
     const root = row.parentElement!

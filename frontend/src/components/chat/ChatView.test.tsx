@@ -1,12 +1,14 @@
-import type { ChatVirtualizerRange, VirtualItem } from './useChatVirtualizer'
+import type { ChatVirtualizerRange, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createEffect, createSignal, For } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
+import { copilotFrame, copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { testMessageContext } from '~/test-support/messageContext'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
 import { railIdle } from './ChatScrollRail.css'
@@ -48,6 +50,7 @@ const mockState = vi.hoisted(() => ({
 
 const virtualizerState = vi.hoisted(() => ({
   range: { start: 0, end: 1 } as ChatVirtualizerRange,
+  realInstances: [] as UseChatVirtualizerResult[],
   setRange: undefined as undefined | ((range: ChatVirtualizerRange) => void),
   attachedIds: [] as string[],
   measuredIds: new Set<string>(),
@@ -216,8 +219,11 @@ vi.mock('./useChatVirtualizer', async () => {
   return {
     ...actual,
     useChatVirtualizer: (...args: Parameters<typeof actual.useChatVirtualizer>) => {
-      if (!mockState.mockDeps)
-        return actual.useChatVirtualizer(...args)
+      if (!mockState.mockDeps) {
+        const virt = actual.useChatVirtualizer(...args)
+        virtualizerState.realInstances.push(virt)
+        return virt
+      }
       return {
         mountedIds: new Set<string>(),
         fastScrollActive: deferred,
@@ -597,6 +603,72 @@ describe('sameVirtualItems', () => {
 })
 
 describe('ChatView', () => {
+  it('reveals later rows after a paired path-only Move result completes at zero height', async () => {
+    const spanId = 'empty-native-move'
+    const nativeMessage = (id: string, seq: bigint, payload: Record<string, unknown>, inSpan = false) => create(AgentChatMessageSchema, {
+      id,
+      seq,
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.GITHUB_COPILOT,
+      contentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify(payload)),
+      ...(inSpan ? { spanId, spanType: COPILOT_TOOL.Move } : {}),
+    })
+    const messages = [
+      nativeMessage('move-request', 1n, copilotToolStart(spanId, COPILOT_TOOL.Move, { source: '/p/old.ts', path: '/p/new.ts' }), true),
+      nativeMessage('move-result', 2n, copilotToolComplete(spanId, { result: { content: '' } }), true),
+      nativeMessage('later-answer', 3n, copilotFrame(COPILOT_EVENT.AssistantMessage, { content: 'The actual later answer.' })),
+      nativeMessage('later-divider', 4n, copilotFrame(COPILOT_EVENT.SessionIdle, {})),
+    ]
+    const messageContext = testMessageContext({ messages: () => messages })
+    const view = render(() => <PreferencesProvider><ChatView messages={messages} messageContext={messageContext} /></PreferencesProvider>)
+    await reportChatViewportSize(view)
+    const row = (seq: number) => {
+      const element = view.container.querySelector(`[data-seq="${seq}"]`)
+      if (!(element instanceof HTMLElement))
+        throw new Error('The actual chat row did not mount.')
+      return element
+    }
+    const result = row(2)
+    expect(result.querySelector('[data-testid="message-content"]')?.textContent).toBe('')
+    expect(result.querySelector('[data-tool-status="completed"]')).not.toBeNull()
+    for (const seq of [1, 3, 4]) {
+      vi.spyOn(row(seq), 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 40))
+      await triggerResizeObserverFor(row(seq))
+    }
+    expect(row(3).style.visibility).toBe('hidden')
+    const rectangle = vi.spyOn(result, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 0, 0))
+    await triggerResizeObserverFor(result)
+    expect(row(3).style.visibility).toBe('hidden')
+    rectangle.mockReturnValue(new DOMRect(0, 0, 800, 0))
+    await triggerResizeObserverFor(result)
+
+    expect(row(3).style.visibility).toBe('')
+    expect(row(4).style.visibility).toBe('')
+    expect(row(3)).toHaveTextContent('The actual later answer.')
+    expect(row(4).querySelector('[data-testid="result-divider"]')).not.toBeNull()
+    const heights = virtualizerState.realInstances.at(-1)!.snapshotHeights()
+    expect(heights.find(height => height.id === 'move-result')?.height).toBe(0)
+    view.unmount()
+
+    const restored = render(() => <PreferencesProvider><ChatView messages={messages} messageContext={messageContext} /></PreferencesProvider>)
+    try {
+      await reportChatViewportSize(restored)
+      const virt = virtualizerState.realInstances.at(-1)!
+      expect(virt.primeHeights(heights)).toBe(4)
+      expect(virt.hasMeasuredHeight('move-result')).toBe(true)
+      expect(virt.heightDebugOfId('move-result')).toEqual({ measured: 0 })
+      const answer = restored.container.querySelector('[data-seq="3"]') as HTMLElement
+      const divider = restored.container.querySelector('[data-seq="4"]') as HTMLElement
+      expect(answer.style.visibility).toBe('')
+      expect(divider.style.visibility).toBe('')
+      expect(answer).toHaveTextContent('The actual later answer.')
+    }
+    finally {
+      restored.unmount()
+    }
+  })
+
   it('keeps each chat instance ID stable and distinct', () => {
     const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
     const view = render(() => (

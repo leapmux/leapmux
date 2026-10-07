@@ -111,6 +111,47 @@ describe('chatRowHeightPersistence', () => {
     return { setItems, setGeomVersion, setStorageId, primed, snapshot, measured, pending, dispose }
   }
 
+  it('restores a saved zero and excludes a stale zero digest', async () => {
+    const first = makeHarness({ storageId: 'agent-1' })
+    try {
+      await settle()
+      first.snapshot.push({ id: 'empty', heightKey: 'k-empty', height: 0 })
+      first.snapshot.push({ id: 'positive', heightKey: 'k-positive', height: 120 })
+      first.setGeomVersion(1)
+      vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+      await settle()
+      expect((await readStored())?.rows).toEqual([
+        storedRow('empty', 'k-empty', 0),
+        storedRow('positive', 'k-positive', 120),
+      ])
+    }
+    finally {
+      first.dispose()
+    }
+    const restored = makeHarness({
+      storageId: 'agent-1',
+      items: [item('empty', 'k-empty'), item('positive', 'k-positive')],
+    })
+    try {
+      await settle()
+      expect(restored.primed).toEqual([[
+        { id: 'empty', heightKey: 'k-empty', height: 0 },
+        { id: 'positive', heightKey: 'k-positive', height: 120 },
+      ]])
+    }
+    finally {
+      restored.dispose()
+    }
+    const stale = makeHarness({ storageId: 'agent-1', items: [item('empty', 'new-key')] })
+    try {
+      await settle()
+      expect(stale.primed).toEqual([])
+    }
+    finally {
+      stale.dispose()
+    }
+  })
+
   it('hydrates stored rows whose key digest matches the live heightKey', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,

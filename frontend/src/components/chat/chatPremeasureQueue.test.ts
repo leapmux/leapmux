@@ -3,10 +3,41 @@ import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
 import type { VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createPremeasureQueue } from './chatPremeasureQueue'
 import { setup } from './useChatVirtualizer.testkit'
 
 describe('chatPremeasureQueue', () => {
+  it('settles an empty measured row and releases the later appended row', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [
+        { id: 'empty', hasSpanLines: false, heightKey: 'empty-key' },
+        { id: 'answer', hasSpanLines: false, heightKey: 'answer-key' },
+      ]
+      const entries = new Map(items.map(item => [item.id, { message: { id: item.id } } as ClassifiedEntry]))
+      const { virt } = setup(items)
+      const candidates = () => items.filter(item => !virt.hasMeasuredHeight(item.id)).map(item => ({ entry: entries.get(item.id)!, item }))
+      const queue = createPremeasureQueue({
+        virt,
+        visibleEntryById: () => entries,
+        virtualItemById: () => new Map(items.map(item => [item.id, item])),
+        virtualItems: () => items,
+        rangedCandidates: candidates,
+        lookAheadCandidates: () => [],
+      })
+      const held = createOrderedTailReveal(() => items.map(item => item.id), id => !virt.hasMeasuredHeight(id) && queue.collapsedPremeasureIds().has(id))
+      queue.onMeasure('answer', 40, 'answer-key', 0, true)
+      expect(held().has('answer')).toBe(true)
+
+      expect(queue.onMeasure('empty', 0, 'empty-key', 0, true)).toBe(true)
+
+      expect(virt.hasMeasuredHeight('empty')).toBe(true)
+      expect(queue.collapsedPremeasureIds().has('empty')).toBe(false)
+      expect(queue.premeasureCandidates()).toEqual([])
+      expect(held().has('answer')).toBe(false)
+      dispose()
+    })
+  })
   function makeHarness(ids: string[]) {
     const measured = new Set<string>()
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))

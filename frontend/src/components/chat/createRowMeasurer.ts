@@ -1,17 +1,17 @@
 import { batch } from 'solid-js'
+import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 
-// ---------------------------------------------------------------------------
-// Row measurer: the ResizeObserver / flush DOM glue for the virtualizer
+// Row measurement for the virtualizer.
 //
-// Owns a single ResizeObserver over all mounted rows, the pending-measure set, and
-// the batched microtask flush. Extracted from useChatVirtualizer so the offset
-// engine isn't interleaved with DOM/microtask machinery, and so the flush TIMING --
-// the load-bearing "microtask, not rAF, so a row that grows post-mount re-pins in
-// the SAME frame" invariant -- is unit-testable: the scheduler and the observer are
-// injectable, so a test drives resize callbacks deterministically with fakes (jsdom
-// ships no ResizeObserver). Its only coupling to the rest of the virtualizer is the
-// injected `measure` commit and the shared `mountedIds` set.
-// ---------------------------------------------------------------------------
+// This module owns the ResizeObserver, image event handlers, and measurement queue.
+// It keeps DOM reads and scheduling separate from the offset engine.
+// The virtualizer owns the height cache and the shared mountedIds set.
+//
+// A microtask runs after a resize handler and before paint. A row that grows
+// therefore updates its offsets and scroll anchor in the same frame.
+// A requestAnimationFrame handler would paint stale sibling offsets first.
+// Native momentum defers only the commits while the browser owns scrollTop.
+// Tests inject the observer and scheduler to control these transitions.
 
 /** The subset of ResizeObserver the measurer uses (so a test can inject a fake). */
 export interface ResizeObserverLike {
@@ -36,7 +36,7 @@ export interface RowMeasurer {
 }
 
 export interface RowMeasurerDeps {
-  /** Commit a single row's measured height (the virtualizer's cache/mean update). */
+  /** Commit one row height to the virtualizer's cache and estimate. */
   measure: (id: string, height: number) => boolean
   /**
    * Current measurement key for a mounted row. Used only for the DOM-read de-dupe:
@@ -119,6 +119,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   const idToEl = new Map<string, Element>()
   const pending = new Set<Element>()
   const deferred = new Set<Element>()
+  const imageListeners = new Map<HTMLElement, EventListener>()
   let flushScheduled = false
   let ro: ResizeObserverLike | undefined
   const schedule = deps.scheduleMicrotask ?? queueMicrotask
@@ -136,12 +137,14 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
         stats.skippedDetached++
       return undefined
     }
-    const height = (el as HTMLElement).getBoundingClientRect().height
+    const height = rowLayoutMeasurement(el)
     if (stats)
       stats.reads++
+    if (height === undefined)
+      return undefined
     const key = deps.currentMeasurementKey?.(id)
     const last = lastMeasurementByEl.get(el)
-    if (last !== undefined && last.id === id && last.key === key && Math.abs(height - last.height) < measureEpsilonPx) {
+    if (last !== undefined && last.id === id && last.key === key && (height === 0) === (last.height === 0) && Math.abs(height - last.height) < measureEpsilonPx) {
       if (stats)
         stats.skippedUnchanged++
       return undefined
@@ -157,8 +160,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
           continue
         if (deps.measure(id, height))
           committed++
-        if (Number.isFinite(height) && height > 0)
-          lastMeasurementByEl.set(el, { id, height, key })
+        lastMeasurementByEl.set(el, { id, height, key })
       }
     })
     return committed
@@ -189,8 +191,8 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       return
     }
     // Commit all measurements in one reactive batch so the offset map, the row
-    // transforms, and the scroll re-pin recompute once. `measure` ignores zero/noise
-    // reads and bumps the reactive geomVersion, which drives the consumer's re-pin.
+    // transforms, and the scroll position update once. The layout check rejects
+    // unready reads before they reach the height cache.
     stats.committed = commitReads(reads)
     deps.onFlush?.(stats)
   }
@@ -221,22 +223,52 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     scheduleFlush()
   })
 
+  const observeImages = (el: HTMLElement) => {
+    if (imageListeners.has(el))
+      return
+    const onImageSettled: EventListener = (event) => {
+      if (!(event.target instanceof Element) || event.target.localName !== 'img')
+        return
+      const id = elToId.get(el)
+      if (!el.isConnected || id === undefined || idToEl.get(id) !== el)
+        return
+      pending.add(el)
+      scheduleFlush()
+    }
+    imageListeners.set(el, onImageSettled)
+    // Capture load and error because image events do not bubble.
+    // The row listener also covers images that mount after attachRow.
+    el.addEventListener('load', onImageSettled, true)
+    el.addEventListener('error', onImageSettled, true)
+  }
+
+  const unobserveImages = (el: HTMLElement) => {
+    const handler = imageListeners.get(el)
+    if (handler === undefined)
+      return
+    el.removeEventListener('load', handler, true)
+    el.removeEventListener('error', handler, true)
+    imageListeners.delete(el)
+  }
+
   const attachRow = (id: string, el: HTMLElement) => {
     elToId.set(el, id)
     idToEl.set(id, el)
     deps.mountedIds.add(id)
-    // Measure immediately so a freshly-mounted row contributes its real height without
-    // waiting for the first ResizeObserver tick. `measure` ignores a zero read and
-    // bumps the reactive geomVersion, which drives the re-pin.
-    const height = el.getBoundingClientRect().height
+    // Each attach takes a fresh read even when the previous element was the same.
+    lastMeasurementByEl.delete(el)
+    observeImages(el)
+    // Measure a mounted row immediately. The observer retries an unready read.
+    const read = readMeasurement(el)
     if (shouldDeferMeasurement())
       deferred.add(el)
-    else
-      commitReads([{ id, el, height, key: deps.currentMeasurementKey?.(id) }])
+    else if (read)
+      commitReads([read])
     ro?.observe(el)
   }
 
   const detachRow = (el: HTMLElement) => {
+    unobserveImages(el)
     ro?.unobserve(el)
     pending.delete(el)
     deferred.delete(el)
@@ -258,13 +290,15 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   }
 
   const dispose = () => {
+    for (const el of imageListeners.keys())
+      unobserveImages(el)
     ro?.disconnect()
     ro = undefined
     idToEl.clear()
     pending.clear()
     deferred.clear()
-    // Reset the scheduled flag so the unit is cleanly re-armable rather than wedged
-    // (a flush scheduled before dispose can never re-arm scheduleFlush otherwise).
+    // Clear the scheduled flag so a later attach can schedule another flush.
+    // Disposal clears the pending reads before the queued flush runs.
     flushScheduled = false
   }
 
