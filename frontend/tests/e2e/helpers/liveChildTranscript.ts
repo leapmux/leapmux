@@ -13,6 +13,7 @@ import { readAllAgentMessages } from './nativeMessages'
 import { expandNativeResultView } from './nativeResultView'
 import { selectedAgentTabId } from './nativeScenario'
 import { nativeToolResult } from './nativeToolResult'
+import { nativeToolRowId } from './nativeToolRowId'
 import { bashToolCall, readToolCall, spawnSubagentToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
 import { expectNoRegistryRows, openChildTabFromRow, requireRegistryRow } from './subagentRegistry'
@@ -21,7 +22,7 @@ import { assistantBubbles, messageContents, sendMessage, tabById, toolCallRow, t
 /** The final child answer when the spec supplies no native final response. */
 const DEFAULT_CHILD_ANSWER = 'CHILD_LIVE_DONE'
 
-/** The call ID of the spawn call of the parent. A provider rule that answers for the spawn, such as a permission judge, names it. */
+/** The parent's spawn call ID. A provider rule that answers for the spawn, such as a permission judge, uses this ID. */
 export const LIVE_CHILD_SPAWN_CALL_ID = 'spawn-live-child'
 
 /** The call ID of the native Read that the helper scripts for the child. */
@@ -31,16 +32,15 @@ export const LIVE_CHILD_READ_CALL_ID = 'live-child-read'
 export const LIVE_CHILD_SHELL_CALL_ID = 'live-child-shell'
 
 /** The fixtures that a live child needs. The provider decides the spawn call and the child tool calls. */
-export type LiveChildContext = Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'leapmuxServer' | 'provider'>
+export type LiveChildContext = Pick<ManagedNativeScenarioContext, 'page' | 'modelScript' | 'leapmuxServer' | 'provider' | 'resolveToolRowId'>
 
 /**
  * The tool that the child runs before its held final response.
  *
- * - `read`: the child reads a file with a computed marker. The marker must show in the child tab and never in the
- *   parent tab. `expandResult` expands the result view of that Read before the helper looks for the marker. A result
- *   view shows only its first `COLLAPSED_RESULT_ROWS` rows (`~/components/chat/results/collapse`) until the reader
- *   expands it. Set `expandResult` when the native Read result puts header rows before the file text, so the marker
- *   row is not in the page while the view is collapsed.
+ * - `read`: the child reads a file with a computed marker. The marker must show in the child tab and never in the parent tab.
+ *   `expandResult` expands the Read result before the helper looks for the marker.
+ *   A collapsed result view shows only its first `COLLAPSED_RESULT_ROWS` rows (`~/components/chat/results/collapse`).
+ *   Set `expandResult` when native header rows put the marker outside that collapsed view.
  * - `shell`: the child runs `command`. Its tool row must show in the child tab.
  */
 export type LiveChildToolProof
@@ -50,9 +50,9 @@ export type LiveChildToolProof
 export interface LiveChildSpec {
   childWhen: MockModelMatcher
   /**
-   * The task that the spawn call gives the child. The child tab shows it in a user bubble, which renders it as
-   * Markdown, so the helper looks for its words without the Markdown syntax: the bubble of `` Run `echo x` `` shows
-   * "Run echo x". The task must show one or more words.
+   * The task that the spawn call gives the child. The child tab renders the task as Markdown in a user bubble.
+   * The helper looks for the words without Markdown syntax. For example, `` Run `echo x` `` shows "Run echo x".
+   * The task must show one or more words.
    */
   childTask: string
   parentTask: string
@@ -118,8 +118,7 @@ function liveChildRules(context: LiveChildContext, spec: LiveChildSpec, finalRes
         respond: { toolCalls: [bashToolCall(context.provider, LIVE_CHILD_SHELL_CALL_ID, spec.toolProof.shell.command)] },
         once: true,
       },
-      // The same matcher as the rule above, which `once` has spent. This rule is not `once`, so a repeated child
-      // request gets the held answer too.
+      // The rule above consumes this matcher once. This rule remains available, so repeated child requests get the held answer too.
       { name: 'the held child answer after the shell command', when: spec.childWhen, respond: finalResponse },
     ]
   }
@@ -170,8 +169,10 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
       await expect(assistantBubbles(page).filter({ hasText: heldWords })).toHaveCount(0)
     if (read) {
       await expect(toolRows(page).filter({ hasText: basename(read.filePath) }).first()).toBeVisible()
-      if (spec.toolProof && 'read' in spec.toolProof && spec.toolProof.read.expandResult)
-        await expandNativeResultView(toolCallRow(page, LIVE_CHILD_READ_CALL_ID))
+      if (spec.toolProof && 'read' in spec.toolProof && spec.toolProof.read.expandResult) {
+        const rowId = await nativeToolRowId(context, LIVE_CHILD_READ_CALL_ID)
+        await expandNativeResultView(toolCallRow(page, rowId))
+      }
       await expect(messageContents(page).filter({ hasText: read.marker }).first()).toBeVisible()
       await tabById(page, parentId).click()
       await expect(messageContents(page).filter({ hasText: read.marker })).toHaveCount(0)
@@ -231,16 +232,16 @@ export async function expectStoredMessagesLack(context: Pick<ManagedNativeScenar
 }
 
 /**
- * Prove that the result of a native Read of a held child stays out of its tab and out of the Worker store while the
- * child runs. Some providers deliver only the prompt and the report of a child, so its tool output never shows live:
+ * Prove that a held child's native Read result stays out of its tab and the Worker store while the child runs.
+ * Some providers deliver only a child's prompt and report. Their tool output never shows live:
  *
  * - The Read ran natively, and its result reached the model of the child.
  * - The child tab shows neither the marker nor a tool row of the file.
  * - No stored Worker message of the child holds the marker.
  * - The row of the child stays running.
  *
- * The helper then finishes the child. `restoredAfterCompletion` requires the marker in the child tab after the
- * completion and after a reload, for a provider that restores the transcript of a completed child.
+ * The helper then finishes the child.
+ * `restoredAfterCompletion` requires the marker after completion and reload when the provider restores a completed child's transcript.
  */
 export async function expectChildToolOutputDeferred(
   context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>,

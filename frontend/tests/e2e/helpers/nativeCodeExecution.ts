@@ -8,14 +8,15 @@ import { openNativeAgent } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
 import { nativeModelToolDescriptors, nativeModelToolNames, nativeToolOutcome } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
+import { nativeToolRowId } from './nativeToolRowId'
 import { codeExecutionToolCall } from './providerToolCalls'
 import { uniqueMarker } from './shellArguments'
 import { assistantBubbles, toolCallRow } from './ui'
 
 /**
- * Open a new agent of `context.provider` through {@link openNativeAgent}, by the rule of the provider of the context,
- * and run one native turn while the tool catalog of the agent is available. Return the model request of that turn: it
- * holds the catalog that the native client offered.
+ * Open a new agent of `context.provider` through {@link openNativeAgent}. Apply the provider's working directory rule.
+ * Run one native turn while the agent's tool catalog is available.
+ * Return that turn's model request, which holds the catalog that the native client offered.
  */
 export async function openNativeCatalogTurn(
   context: ManagedNativeScenarioContext,
@@ -57,8 +58,9 @@ export async function exerciseNativeCodeExecution(
     prepare?: () => Promise<void>
     catalogProof?: (request: MockModelRequestRecord) => void | Promise<void>
     nativeProof?: (request: MockModelRequestRecord, callId: string, expected: string, failed: boolean) => Promise<void>
-    prepareResultView?: (callId: string, reloaded: boolean) => Promise<void>
-    browserProof?: (callId: string, expected: string, failed: boolean) => Promise<void>
+    /** Browser callbacks receive the resolved row ID. Native callbacks retain the model call ID. */
+    prepareResultView?: (rowId: string, reloaded: boolean) => Promise<void>
+    browserProof?: (rowId: string, expected: string, failed: boolean) => Promise<void>
   },
 ): Promise<void> {
   await options.prepare?.()
@@ -80,19 +82,20 @@ export async function exerciseNativeCodeExecution(
     if (result.failed !== undefined)
       expect(result.failed).toBe(script.failed)
     await options.nativeProof?.(request, callId, script.expected, script.failed)
-    const bubble = toolCallRow(context.page, callId)
+    const rowId = await nativeToolRowId(context, callId)
+    const bubble = toolCallRow(context.page, rowId)
     await expect(bubble).toHaveCount(1)
     await expect(bubble).toHaveAttribute('data-tool-status', script.failed ? 'failed' : 'completed')
-    await options.prepareResultView?.(callId, false)
+    await options.prepareResultView?.(rowId, false)
     await expect(bubble).toContainText(script.expected)
-    await options.browserProof?.(callId, script.expected, script.failed)
+    await options.browserProof?.(rowId, script.expected, script.failed)
     await expect(assistantBubbles(context.page).filter({ hasText: `The native ${script.label} script ended.` }).first()).toBeVisible()
     await context.page.reload()
     await expect(bubble).toHaveCount(1)
     await expect(bubble).toHaveAttribute('data-tool-status', script.failed ? 'failed' : 'completed')
-    await options.prepareResultView?.(callId, true)
+    await options.prepareResultView?.(rowId, true)
     await expect(bubble).toContainText(script.expected)
-    await options.browserProof?.(callId, script.expected, script.failed)
+    await options.browserProof?.(rowId, script.expected, script.failed)
   }
 }
 

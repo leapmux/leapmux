@@ -258,6 +258,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/mockModelServer.test.ts',
   'tests/e2e/helpers/modelScriptFixture.test.ts',
   'tests/e2e/helpers/multiWorker.test.ts',
+  'tests/e2e/helpers/nativeCodeExecution.test.ts',
   'tests/e2e/helpers/process.test.ts',
   'tests/e2e/helpers/processRegistry.test.ts',
   'tests/e2e/helpers/processTree.test.ts',

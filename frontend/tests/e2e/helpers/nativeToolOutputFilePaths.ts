@@ -10,11 +10,12 @@ import { readNativeMessageSnapshot } from './nativeMessages'
 import { expandNativeResultView } from './nativeResultView'
 import { currentNativeAgent } from './nativeScenario'
 import { copyNativeToolOutputPreview } from './nativeToolOutput'
+import { nativeToolRowId } from './nativeToolRowId'
 import { getGlobalState } from './server'
 import { openWorkspace, readAttachedWithArgument, toolCallRow } from './ui'
 
 export interface NativeToolOutputFilePathsOptions {
-  context: Pick<ManagedNativeScenarioContext, 'page' | 'workspaceId'>
+  context: Pick<ManagedNativeScenarioContext, 'page' | 'workspaceId' | 'resolveToolRowId'>
   callId: string
   previewText: string
   previewMarkers: readonly string[]
@@ -26,8 +27,8 @@ export interface NativeToolOutputFilePathsOptions {
   paths: readonly string[]
   status: string
   /**
-   * Bring the result row into the rendered rows of the chat before the view proof counts it. The chat renders only
-   * the rows near its scroll position, so a row far above the end has no element until the chat scrolls to it.
+   * Bring the result row into the rendered chat before the view proof counts it.
+   * The chat renders only rows near its scroll position. A row far above the end has no element until the chat scrolls to it.
    */
   revealView?: () => Promise<void>
   /** Prepare the counted result row for the marker checks, for example expand it. */
@@ -61,8 +62,8 @@ export async function runNativeToolOutputFilePathsProof(
     || options.previewMarkers.some(marker => !marker.trim() || !options.previewText.includes(marker))) {
     throw new Error('The native output path proof requires distinct markers from the original preview.')
   }
-  // A preview marker is part of the preview, so an absent marker that the preview holds also contradicts a preview
-  // marker that holds it. One check refuses both.
+  // Each preview marker comes from the preview. A marker that the preview holds cannot be absent.
+  // This check also rejects an absent marker inside a preview marker.
   const absentMarkers = options.absentMarkers ?? []
   if (new Set(absentMarkers).size !== absentMarkers.length
     || absentMarkers.some(marker => !marker.trim() || options.previewText.includes(marker))) {
@@ -82,7 +83,7 @@ export async function runNativeToolOutputFilePathsProof(
 /**
  * Require one path block before every nonempty marked output block. Read markers only from marked output blocks.
  * Return null when no match is attached, so that the caller reads again.
- * A marked element that wraps the path block or sits inside it fails the proof, because it can hide output before the paths.
+ * Reject a marked element that wraps the path block or sits inside it. That element can hide output before the paths.
  */
 export function nativeOutputPathsPrecedePreview(matches: (SVGElement | HTMLElement)[], markers: readonly string[]): boolean | null {
   const result = matches.find(element => element.isConnected)
@@ -103,7 +104,7 @@ export function nativeOutputPathsPrecedePreview(matches: (SVGElement | HTMLEleme
 
 /** Require the exact native result row. The added path text opens no file. */
 export async function proveNativeToolOutputFilePaths(options: NativeToolOutputFilePathsOptions): Promise<void> {
-  const result = toolCallRow(options.context.page, options.callId)
+  const result = toolCallRow(options.context.page, await nativeToolRowId(options.context, options.callId))
   await runNativeToolOutputFilePathsProof(options, {
     workerProof: options.workerProof,
     viewProof: async () => {
@@ -188,12 +189,15 @@ export interface CheckedNativeOutputReceipt {
 }
 
 /**
- * Check one receipt against the computed output. Return its one declared path, the markers of its preview, the line
- * that its preview must not hold, and the lines that its result row must not show.
+ * Check one receipt against the computed output. Return these fields:
  *
- * The receipt must declare exactly one path, and its preview must not hold the absent line: the omitted middle line
- * by default. Without `previewMarkers`, the markers are the first line and the last line of the output that the
- * preview holds, and the preview must hold at least one of them.
+ * - Its one declared path.
+ * - The markers of its preview.
+ * - The line that its preview must not hold.
+ * - The lines that its result row must not show.
+ *
+ * The receipt must declare exactly one path. Its preview must not hold the absent line, which is the omitted middle line by default.
+ * Without `previewMarkers`, use the first and last output lines that the preview holds. The preview must hold at least one of them.
  */
 export function checkNativeOutputReceipt<R extends Pick<NativeOutputReceipt, 'paths' | 'previewText'>>(
   receipt: R,
@@ -222,7 +226,7 @@ export function checkNativeOutputReceipt<R extends Pick<NativeOutputReceipt, 'pa
 }
 
 /**
- * Require the selected agent, its native session, and the Worker record that `read` selects, all unchanged.
+ * Require that the selected agent and its native session remain unchanged. Require that `read` returns the same Worker record.
  * `read` reads a fresh Worker snapshot on each call, so a record that changed after `expected` fails the check.
  */
 export async function expectUnchangedNativeRecord<T>(
@@ -236,15 +240,15 @@ export async function expectUnchangedNativeRecord<T>(
   expect(current.agentSessionId, 'the agent keeps its native session').toBe(agent.agentSessionId)
   const snapshot = await readNativeMessageSnapshot(context, agent.id)
   expect(snapshot.agentSessionId, 'the Worker snapshot belongs to the native session').toBe(agent.agentSessionId)
-  // Playwright selects its matchers from the type of the value. A type parameter leaves that choice open, so the
-  // value goes through `unknown`, which takes the generic matchers.
+  // Playwright selects its matchers from the value's type. A type parameter leaves that choice open.
+  // Convert the value to `unknown` to select the generic matchers.
   const record: unknown = await read(snapshot)
   expect(record, 'the Worker record of the native result stays the same').toEqual(expected)
 }
 
 /** Optional facts of one receipt proof. */
 export interface NativeOutputReceiptOptions<R extends NativeOutputReceipt> extends NativeOutputReceiptMarkers<R> {
-  /** The directory that must hold the declared path. The E2E run directory by default. */
+  /** The directory that must hold the declared path. The end-to-end (E2E) run directory by default. */
   privateRoot?: string
   /** Prepare the result row for the view proof. `expandNativeResultView` by default. */
   prepareView?: (result: Locator) => Promise<void>
@@ -253,14 +257,13 @@ export interface NativeOutputReceiptOptions<R extends NativeOutputReceipt> exten
 }
 
 /**
- * Prove one declared private output path, its native preview, and the unchanged Worker record, before and after a
- * reload.
+ * Prove one declared private output path and its native preview before and after reload.
+ * Require that the Worker record remains unchanged.
  *
- * `read` is the provider's output path reader. The proof reads the receipt from the captured snapshot, attaches
- * it, and requires one private path and a preview without the absent line: the omitted middle line by default.
- * The result row must hold the preview markers and must not show the absent line, unless the arguments of the call
- * hold the output (`argumentsHoldOutput`). On each pass, the Worker proof reads the receipt again through `read` and
- * requires it unchanged as a whole.
+ * `read` is the provider's output path reader. Read the receipt from the captured snapshot and attach it.
+ * Require one private path and a preview without the absent line, which is the omitted middle line by default.
+ * The result row must hold the preview markers. It must omit the absent line unless the call's arguments hold the output (`argumentsHoldOutput`).
+ * On each pass, read the receipt again through `read`. Require that the complete receipt remains unchanged.
  */
 export async function proveNativeOutputReceipt<R extends NativeOutputReceipt>(
   capture: Pick<NativeToolOutputCapture, 'context' | 'agent' | 'snapshot' | 'nativeCallId' | 'output'>,

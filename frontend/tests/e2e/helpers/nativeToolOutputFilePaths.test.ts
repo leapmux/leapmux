@@ -1,3 +1,4 @@
+import type { TestInfo } from '@playwright/test'
 import type { NativeMessageSnapshot } from './nativeMessages'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeToolOutputFilePathsOperations } from './nativeToolOutputFilePaths'
@@ -13,12 +14,13 @@ const worker = vi.hoisted(() => ({
 }))
 
 /**
- * The result row of the receipt proof. Each locator states its selector chain, and the mocked `expect` records each
- * check of a fake locator as one event.
+ * The result row of the receipt proof. Each locator states its selector chain.
+ * The mocked `expect` records each fake locator check as one event.
  */
 const resultRow = vi.hoisted(() => {
   interface FakeLocator {
     fake: string
+    callId?: string
     locator: (selector: string) => FakeLocator
     filter: (options: { hasText: string }) => FakeLocator
     getByTestId: (testId: string) => FakeLocator
@@ -28,6 +30,7 @@ const resultRow = vi.hoisted(() => {
     events: [] as string[],
     /** The text of the path block of the row. */
     pathText: '',
+    availableCallIds: undefined as readonly string[] | undefined,
   }
   function fake(name: string): FakeLocator {
     return {
@@ -49,6 +52,8 @@ vi.mock('@playwright/test', async (importOriginal) => {
       return {
         toHaveCount: async (count: number) => {
           resultRow.events.push(`${name} count:${count}`)
+          if (name === 'row' && resultRow.availableCallIds !== undefined)
+            actual.expect('callId' in value && resultRow.availableCallIds.includes(String(value.callId)) ? 1 : 0, 'the selected native result row exists').toBe(count)
         },
         toHaveAttribute: async (attribute: string, expected: string) => {
           resultRow.events.push(`${name} ${attribute}:${expected}`)
@@ -69,7 +74,7 @@ vi.mock('@playwright/test', async (importOriginal) => {
 })
 
 vi.mock('./ui', () => ({
-  toolCallRow: () => resultRow.fake('row'),
+  toolCallRow: (_page: unknown, callId: string) => ({ ...resultRow.fake('row'), callId }),
   openWorkspace: vi.fn(async () => {}),
   readAttachedWithArgument: vi.fn(async () => true),
 }))
@@ -85,6 +90,7 @@ vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: '/run' }) }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
   currentNativeAgent: vi.fn(async () => ({ ...worker.agent })),
+  selectedAgentTabId: vi.fn(async () => worker.agent.id),
 }))
 
 vi.mock('./nativeMessages', async importOriginal => ({
@@ -463,6 +469,21 @@ describe('proveNativeToolOutputFilePaths', () => {
 
   beforeEach(() => {
     resultRow.events.length = 0
+    resultRow.availableCallIds = undefined
+  })
+
+  it('selects the native result ID on both browser passes', async () => {
+    resultRow.availableCallIds = ['native-part-row']
+    const resolveToolRowId = vi.fn(async (query: { callId: string, agentId: string }) => {
+      expect(query).toEqual({ callId: 'native-call', agentId: 'native-agent' })
+      return 'native-part-row'
+    })
+    const context = { ...base.context, resolveToolRowId }
+    const workerProof = vi.fn(async () => {})
+    await proveNativeToolOutputFilePaths({ ...base, context, workerProof })
+    expect(resolveToolRowId).toHaveBeenCalled()
+    expect(workerProof).toHaveBeenCalledTimes(2)
+    expect(resultRow.events.filter(event => event === 'row count:1')).toHaveLength(2)
   })
 
   it('reveals the result row before it counts the row, on each pass', async () => {
@@ -513,7 +534,7 @@ describe('proveNativeOutputReceipt', () => {
     nativeCallId: 'native-call',
     output: computed,
   } as unknown as Parameters<typeof proveNativeOutputReceipt>[0]
-  const testInfo = { attach: vi.fn(async () => {}) }
+  const testInfo = { attach: vi.fn<TestInfo['attach']>(async () => {}) }
   /** A reader that returns a fresh copy of the receipt for each snapshot, as a provider reader does. */
   const read = vi.fn(() => ({ ...receipt, paths: [...receipt.paths], content: receipt.content.slice() }))
 
@@ -524,10 +545,27 @@ describe('proveNativeOutputReceipt', () => {
     worker.agent = { id: 'native-agent', agentSessionId: 'native-session' }
     worker.snapshot = { agentId: 'native-agent', agentSessionId: 'native-session', messages: [] }
     resultRow.events.length = 0
+    resultRow.availableCallIds = undefined
     resultRow.pathText = 'Output file:/run/native/output.txt'
     testInfo.attach.mockClear()
     read.mockClear()
     vi.mocked(assertPrivateNativePath).mockClear()
+  })
+
+  it('keeps the model call ID in every receipt read and resolves only browser identity', async () => {
+    resultRow.availableCallIds = ['native-part-row']
+    const resolveToolRowId = vi.fn(async () => 'native-part-row')
+    const readReceipt = vi.fn((_snapshot: NativeMessageSnapshot, callId: string) => {
+      if (callId !== 'native-call')
+        throw new Error('The receipt query changed the original model call ID.')
+      return { ...receipt, paths: [...receipt.paths], content: receipt.content.slice() }
+    })
+    await proveNativeOutputReceipt({ ...capture, context: { ...capture.context, resolveToolRowId } }, testInfo, readReceipt)
+    expect(readReceipt.mock.calls.map(call => call[1])).toEqual(['native-call', 'native-call', 'native-call'])
+    expect(resolveToolRowId).toHaveBeenCalledExactlyOnceWith({ callId: 'native-call', agentId: 'native-agent' })
+    const attachment = JSON.parse(String(testInfo.attach.mock.calls[0]?.[1]?.body))
+    expect(attachment.callId).toBe('native-call')
+    expect(resultRow.events.filter(event => event === 'row count:1')).toHaveLength(2)
   })
 
   it('requires the omitted line out of the result row on both passes, and the path in the run directory', async () => {

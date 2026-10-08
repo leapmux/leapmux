@@ -1,13 +1,52 @@
 import type { Page } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProviderAgent } from './workspace'
+import { runInNewContext } from 'node:vm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
+import { exerciseNativeCodeExecution, expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
 
 const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn() }))
+const execution = vi.hoisted(() => ({
+  rows: new Map<string, { text: string, status: string }>(),
+  answers: [] as string[],
+  rawCalls: [] as string[],
+  reloads: 0,
+}))
+
+interface CodeRowProbe { codeRowProbe: true, callId: string }
+interface CodeAnswerProbe { codeAnswerProbe: true, text: string }
+
+function codeRow(value: unknown): value is CodeRowProbe {
+  return typeof value === 'object' && value !== null && 'codeRowProbe' in value
+}
+
+function codeAnswer(value: unknown): value is CodeAnswerProbe {
+  return typeof value === 'object' && value !== null && 'codeAnswerProbe' in value
+}
+
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  const check = (value: unknown, message?: string) => {
+    if (codeRow(value)) {
+      return {
+        toHaveCount: async (count: number) => actual.expect(execution.rows.has(value.callId) ? 1 : 0, 'the computed native result row exists').toBe(count),
+        toHaveAttribute: async (attribute: string, expected: string) => {
+          actual.expect(attribute).toBe('data-tool-status')
+          actual.expect(execution.rows.get(value.callId)?.status).toBe(expected)
+        },
+        toContainText: async (expected: string) => actual.expect(execution.rows.get(value.callId)?.text).toContain(expected),
+      }
+    }
+    if (codeAnswer(value))
+      return { toBeVisible: async () => actual.expect(execution.answers).toContain(value.text) }
+    return actual.expect(value, message)
+  }
+  return { ...actual, expect: Object.assign(check, actual.expect) }
+})
+
 vi.mock('./api', () => ({ openAgentViaAPI: opened.open }))
 vi.mock('./runDirectory', async importOriginal => ({
   ...await importOriginal<typeof import('./runDirectory')>(),
@@ -19,6 +58,8 @@ vi.mock('./runDirectory', async importOriginal => ({
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   openWorkspace: async (_page: unknown, workspaceId: string) => { opened.events.push(`workspace ${workspaceId}`) },
+  toolCallRow: (_page: unknown, callId: string): CodeRowProbe => ({ codeRowProbe: true, callId }),
+  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: (): CodeAnswerProbe => ({ codeAnswerProbe: true, text: hasText }) }) }),
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
@@ -31,8 +72,39 @@ vi.mock('./nativeConversation', () => ({
   },
 }))
 
+vi.mock('./nativeToolExecution', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeToolExecution')>(),
+  runNativeToolTurn: async (_context: unknown, turn: { toolCalls: Array<{ id: string, arguments?: Record<string, unknown> }>, answer: string }) => {
+    const call = turn.toolCalls[0]
+    const source = call?.arguments?.code
+    if (!call || typeof source !== 'string')
+      throw new Error('The native code fixture requires its actual script source.')
+    let text: string
+    let status: string
+    try {
+      text = String(runInNewContext(`(function () { ${source} })()`, { Error, String }))
+      status = 'completed'
+    }
+    catch (error) {
+      if (!(error instanceof Error))
+        throw error
+      text = error.message
+      status = 'failed'
+    }
+    execution.rawCalls.push(call.id)
+    execution.rows.set(`part-${call.id}`, { text, status })
+    execution.answers.push(turn.answer)
+    const resultRequest = { protocol: 'openai-chat-completions', path: '/model', body: { messages: [{ role: 'tool', tool_call_id: call.id, content: text }] } }
+    return { start: 0, toolRequest: { protocol: 'openai-chat-completions', path: '/model', body: { tools: [{ function: { name: 'exec' } }] } }, resultRequest }
+  },
+}))
+
 beforeEach(() => {
   opened.events = []
+  execution.rows.clear()
+  execution.answers = []
+  execution.rawCalls = []
+  execution.reloads = 0
   opened.open.mockReset()
   opened.open.mockImplementation(async (_server: unknown, _workspace: string, directory: string) => {
     opened.events.push(`open ${directory}`)
@@ -125,11 +197,11 @@ describe('expectNativeCodeExecutionAbsent', () => {
 
 const cursor: ProviderAgent = { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e' }
 
-/** The scenario context of a Cursor agent that opens by the rule of `providerAgent`. */
+/** The scenario context of an agent that opens by the rule of `providerAgent`. */
 function contextOf(providerAgent: ProviderAgent = cursor): ManagedNativeScenarioContext {
   return {
     page: {} as Page,
-    provider: AgentProvider.CURSOR,
+    provider: providerAgent.provider,
     providerAgent,
     workspaceId: 'workspace-1',
     leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' },
@@ -137,6 +209,61 @@ function contextOf(providerAgent: ProviderAgent = cursor): ManagedNativeScenario
 }
 
 const context = contextOf()
+
+describe('exerciseNativeCodeExecution', () => {
+  it('keeps model call IDs in computed receipts and selects native result IDs on both browser passes', async () => {
+    const resolveToolRowId = vi.fn(async (query: { callId: string, agentId: string }) => {
+      expect(query.agentId).toBe('agent-1')
+      return `part-${query.callId}`
+    })
+    const nativeProof = vi.fn(async (_request: unknown, callId: string, expected: string) => {
+      expect(execution.rawCalls).toContain(callId)
+      expect(execution.rows.get(`part-${callId}`)?.text).toBe(expected)
+    })
+    const prepareResultView = vi.fn(async (rowId: string) => {
+      expect(execution.rows.has(rowId)).toBe(true)
+    })
+    const browserProof = vi.fn(async (rowId: string, expected: string, failed: boolean) => {
+      expect(execution.rows.get(rowId)).toEqual({ text: expected, status: failed ? 'failed' : 'completed' })
+    })
+    const scenario = {
+      ...contextOf({ provider: AgentProvider.MIMO_CODE, prefix: 'mimo-e2e' }),
+      page: { reload: async () => { execution.reloads++ } } as unknown as Page,
+      resolveToolRowId,
+    }
+    await exerciseNativeCodeExecution(scenario, {
+      scripts: () => [
+        { label: 'output', source: 'return String(40 + 2)', expected: '42', failed: false },
+        { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true },
+      ],
+      nativeProof,
+      prepareResultView,
+      browserProof,
+    })
+    expect(execution.rawCalls).toEqual(['native-code-0', 'native-code-1'])
+    expect(nativeProof.mock.calls.map(call => call[1])).toEqual(['native-code-0', 'native-code-1'])
+    expect(prepareResultView.mock.calls.map(call => call[0])).toEqual(['part-native-code-0', 'part-native-code-0', 'part-native-code-1', 'part-native-code-1'])
+    expect(browserProof.mock.calls.map(call => call[0])).toEqual(['part-native-code-0', 'part-native-code-0', 'part-native-code-1', 'part-native-code-1'])
+    expect(execution.reloads).toBe(2)
+  })
+
+  it('preserves a failed browser proof and runs no later script', async () => {
+    const failure = new Error('The browser result does not match its native output.')
+    const scenario = {
+      ...contextOf({ provider: AgentProvider.MIMO_CODE, prefix: 'mimo-e2e' }),
+      resolveToolRowId: async ({ callId }: { callId: string }) => `part-${callId}`,
+    }
+    await expect(exerciseNativeCodeExecution(scenario, {
+      scripts: () => [
+        { label: 'output', source: 'return String(40 + 2)', expected: '42', failed: false },
+        { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true },
+      ],
+      browserProof: async () => { throw failure },
+    })).rejects.toBe(failure)
+    expect(execution.rawCalls).toEqual(['native-code-0'])
+    expect(execution.reloads).toBe(0)
+  })
+})
 
 describe('openNativeCatalogTurn', () => {
   it('opens the agent with the pinned settings in a fresh directory, shows the workspace, and returns the catalog turn', async () => {

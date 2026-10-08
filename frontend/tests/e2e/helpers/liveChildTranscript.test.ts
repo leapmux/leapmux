@@ -46,6 +46,7 @@ const browser = vi.hoisted(() => ({
   childStatus: '',
   /** The selector of each result view that the helper expanded, in order. */
   expansions: [] as string[],
+  expectedResultCallId: undefined as string | undefined,
   onExpand: undefined as (() => void) | undefined,
   send: vi.fn<(prompt: string) => Promise<void>>(),
   /** The registry guard and the prompt send, in the order in which the helper made them. */
@@ -146,6 +147,8 @@ vi.mock('./nativeResultView', async importOriginal => ({
   expandNativeResultView: async (result: unknown) => {
     if (!isResultBubbleProbe(result))
       throw new Error('The fake expands only the result bubble of a native tool call.')
+    if (browser.expectedResultCallId !== undefined)
+      expect(result.selector, 'the exact selected child native result row').toBe(resultBubbleSelector(browser.expectedResultCallId))
     browser.expansions.push(result.selector)
     for (const row of browser.tabs.get(browser.selected) ?? [])
       row.expanded = true
@@ -274,7 +277,7 @@ interface ReceivedStep {
 interface NativeAgentReceipt {
   /** Each answer of the child, in request order. */
   childResponses: ReceivedStep[]
-  /** The file that the child read, with its exact bytes, and the ID of the Read call. */
+  /** The file that the child read, with its exact bytes and the Read call ID. */
   read?: { path: string, content: string, callId: string }
 }
 
@@ -347,8 +350,8 @@ function findString(value: unknown, accept: (text: string) => boolean): string |
 
 /**
  * Add one visible row to a tab.
- * The chat renders the text of a user or assistant row as Markdown, so such a row shows the words of its text without
- * the Markdown syntax, such as the backticks of inline code. The fake draws those rows the same way.
+ * The chat renders user and assistant rows as Markdown. Each row shows the words without Markdown syntax, such as inline code backticks.
+ * The fake draws those rows the same way.
  */
 function appendRow(tab: string, kind: RowKind, text: string, hiddenUntilExpanded?: string): void {
   const transcript = browser.tabs.get(tab)
@@ -473,6 +476,7 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
   hideFinal?: boolean
   hideShellRow?: boolean
   finalAnswerInChildTab?: boolean
+  resolveToolRowId?: (query: { callId: string, agentId: string }) => Promise<string>
 }): LiveChildRun {
   const log: string[] = []
   browser.onExpand = () => log.push('result-expanded')
@@ -510,7 +514,7 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
     ...(options.tool === 'shell' ? { toolProof: { shell: { command: SHELL_COMMAND } } } : {}),
     ...(options.finalAnswerInChildTab === undefined ? {} : { finalAnswerInChildTab: options.finalAnswerInChildTab }),
   }
-  const context = { page: fakePage(), modelScript: observed, provider: PROVIDER, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  const context = { page: fakePage(), modelScript: observed, provider: PROVIDER, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' }, ...(options.resolveToolRowId ? { resolveToolRowId: options.resolveToolRowId } : {}) }
   return { helper: exerciseLiveChildTranscript(context, spec), agent: agent.promise, log }
 }
 
@@ -635,6 +639,30 @@ describe('exerciseLiveChildTranscript', () => {
       expect(browser.expansions).toEqual([resultBubbleSelector(receipt.read?.callId ?? '')])
       expectOrder(run.log, ['read-delivered', 'result-expanded', 'gate-released', 'final-delivered'])
       expect((await script.status()).pendingGates).toEqual([])
+    })
+  })
+
+  it('resolves the held child result in the child tab and keeps the raw model read ID', async () => {
+    await withLiveChildScenario(async (serverURL, script) => {
+      browser.expectedResultCallId = 'native-child-read-part'
+      try {
+        const resolveToolRowId = vi.fn(async (query: { callId: string, agentId: string }) => {
+          expect(query).toEqual({ callId: 'live-child-read', agentId: CHILD_AGENT })
+          return 'native-child-read-part'
+        })
+        const run = startLiveChild(serverURL, script, { tool: 'read', collapseRead: true, expandResult: true, resolveToolRowId })
+        await run.helper
+        const receipt = await run.agent
+        expectMarkerRead(receipt)
+        expect(receipt.read?.callId).toBe('live-child-read')
+        expect(resolveToolRowId).toHaveBeenCalledExactlyOnceWith({ callId: 'live-child-read', agentId: CHILD_AGENT })
+        expect(browser.expansions).toEqual([resultBubbleSelector('native-child-read-part')])
+        expectOrder(run.log, ['read-delivered', 'result-expanded', 'gate-released', 'final-delivered'])
+        expect((await script.status()).pendingGates).toEqual([])
+      }
+      finally {
+        browser.expectedResultCallId = undefined
+      }
     })
   })
 
