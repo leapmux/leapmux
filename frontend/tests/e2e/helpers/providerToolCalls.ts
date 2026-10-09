@@ -1898,7 +1898,9 @@ const TOOL_VOCABULARY = {
         },
       }
     }, true),
-    spawnSubagent: (id, { description, prompt, agentType }) => ({ id, name: MUSE_TOOL.SubagentSpawn, namespace: MUSE_TOOL_NAMESPACE, arguments: { command_id: id, role: 'general-purpose', task_name: description, objective: prompt, ...(agentType ? { subagent_type: agentType } : {}) } }),
+    // Muse 1.4.4 offers no model tool that spawns an addressable child session: children run
+    // only inside `workflow` scripts through host.agent(), whose fold carries no child session.
+    spawnSubagent: null,
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted background command.', yield_time_ms: 0 } }),
     updateTodos: (id, steps) => ({ id, name: MUSE_TOOL.WriteTodos, namespace: MUSE_TOOL_NAMESPACE, arguments: { todos: steps.map(step => ({ text: step.step, status: acceptedTodoStatus('Muse Code write_todos', MUSE_TODO_STATUSES, step.status) })) } }),

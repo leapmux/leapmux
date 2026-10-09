@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -105,6 +106,19 @@ func (h *OutputHandler) writeNotification(agentID string, provider leapmuxv1.Age
 		mutation.RUnlock()
 		if errors.Is(err, errNotificationPreparationChanged) {
 			continue
+		}
+		// A provider that states its list through a notification (Muse's
+		// todoListChanged) carries its to-do event here: the message paths extract
+		// their own, and this one owes the same reading to the sidebar.
+		if err == nil {
+			resolved := agent.ResolveMessageContent(plugin, content.Clone())
+			if event, present := plugin.ExtractTodoEvent("", resolved, nil); present {
+				if items, changed, applyErr := h.applyTodoEvent(agentID, cloneTodoEvent(event)); applyErr != nil {
+					slog.Warn("apply a notification todo event", "agent_id", agentID, "error", applyErr)
+				} else if changed {
+					h.enqueueTodoChange(agentID, items)
+				}
+			}
 		}
 		h.watcher.DrainAgentEvents(agentID)
 		return write.message != nil && err == nil, err

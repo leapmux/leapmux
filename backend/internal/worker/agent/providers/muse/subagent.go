@@ -31,6 +31,80 @@ func childStatus(status string) bgtask.Status {
 
 // The generic native status determines finality independently of child control state.
 func resolvedChildStatus(item nativeItem) bgtask.Status { return childStatus(item.Status) }
+
+// One entry of a workflow item's children fold: the durable child of the run,
+// identified by its childId alone. The fold carries no child session, so no
+// transcript of the child's own exists to subscribe to.
+type nativeWorkflowChild struct {
+	ChildID  string `json:"childId"`
+	Attempt  int64  `json:"attempt"`
+	Status   string `json:"status"`
+	Terminal string `json:"terminal"`
+	Label    string `json:"label"`
+}
+
+// The lifecycle words a workflow child's fold states, from the workflow item
+// fold of the installed host. The words are the host's own vocabulary.
+const (
+	workflowChildScheduled = "scheduled"
+	workflowChildStarted   = "started"
+	workflowChildUsage     = "usage"
+	workflowChildTerminal  = "terminal"
+)
+
+func workflowChildStatus(child nativeWorkflowChild) bgtask.Status {
+	switch child.Status {
+	case workflowChildScheduled:
+		return bgtask.StatusPending
+	case workflowChildStarted, workflowChildUsage:
+		return bgtask.StatusRunning
+	case workflowChildTerminal:
+		if child.Terminal == contracts.MuseItemStatusCompleted {
+			return bgtask.StatusSucceeded
+		}
+		if child.Terminal == contracts.MuseItemStatusCancelled {
+			return bgtask.StatusStopped
+		}
+		return bgtask.StatusFailed
+	default:
+		return bgtask.StatusEndedWithUnknownOutcome
+	}
+}
+
+// A workflow runs inside its own item: one registry row for the run, one for
+// each fold child, grouped under the run's entry name. The fold's children
+// own no session, so their rows open no transcript.
+func (a *Agent) observeWorkflow(params itemParams, item nativeItem) {
+	if item.WorkflowRunID == "" {
+		return
+	}
+	group := bgtask.NormalizeRowKey(params.SessionID + ":workflow:" + item.WorkflowRunID)
+	name := item.EntryID
+	if name == "" {
+		name = item.WorkflowRunID
+	}
+	if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: group, Kind: bgtask.KindWorkflow, GroupKey: group, GroupLabel: name, Title: name, Status: childStatus(item.Status)}); err != nil {
+		slog.Warn("publish a Muse workflow row", "error", err)
+	}
+	var children []nativeWorkflowChild
+	if json.Unmarshal(item.Children, &children) != nil {
+		return
+	}
+	for _, child := range children {
+		if child.ChildID == "" {
+			continue
+		}
+		title := child.Label
+		if title == "" {
+			title = "Child " + child.ChildID
+		}
+		key := bgtask.NormalizeRowKey(params.SessionID + ":wchild:" + child.ChildID)
+		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: key, Kind: bgtask.KindWorkflow, GroupKey: group, GroupLabel: name, Title: title, Status: workflowChildStatus(child)}); err != nil {
+			slog.Warn("publish a Muse workflow child row", "error", err)
+		}
+	}
+}
+
 func (a *Agent) observeChildOrTask(params itemParams, parent *sessionState) {
 	item := params.Item
 	if item.Kind == contracts.MuseItemKindToolCall && item.Background {
@@ -41,15 +115,7 @@ func (a *Agent) observeChildOrTask(params itemParams, parent *sessionState) {
 		return
 	}
 	if item.Kind == contracts.MuseItemKindWorkflow {
-		var children []nativeItem
-		if json.Unmarshal(item.Children, &children) == nil {
-			for _, child := range children {
-				if child.ChildSessionID != "" {
-					child.WorkflowRunID = item.WorkflowRunID
-					a.observeChildOrTask(itemParams{SessionID: params.SessionID, Item: child}, parent)
-				}
-			}
-		}
+		a.observeWorkflow(params, item)
 		return
 	}
 	if item.ChildSessionID == "" || item.SubagentID == "" {

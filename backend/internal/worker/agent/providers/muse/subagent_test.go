@@ -79,3 +79,47 @@ func TestUnknownFinalBackgroundShellStatusEndsWithoutAnOutcome(t *testing.T) {
 	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, rows[0].Status)
 	assert.False(t, rows[0].Status.IsWorking())
 }
+
+func TestWorkflowFoldProjectsItsRunAndChildrenWithoutASession(t *testing.T) {
+	a, sink := testAgent(t)
+	parent := &sessionState{sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("parent")}
+	a.sessions["parent"] = parent
+	feedItem := func(status string, children string) {
+		a.observeChildOrTask(itemParams{SessionID: "parent", Item: nativeItem{
+			ID: "workflow-item", Kind: contracts.MuseItemKindWorkflow, Status: status,
+			WorkflowRunID: "workflow-run-1", EntryID: "Probe run", Children: json.RawMessage(children),
+		}}, parent)
+	}
+	feedItem(contracts.MuseItemStatusInProgress, `[{"childId":"child-a","attempt":1,"status":"started"},{"childId":"child-b","attempt":1,"status":"scheduled"}]`)
+	feedItem(contracts.MuseItemStatusCompleted, `[{"childId":"child-a","attempt":1,"status":"terminal","terminal":"completed"},{"childId":"child-b","attempt":1,"status":"terminal","terminal":"failed","failureReason":"native"}]`)
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 3)
+	byKey := make(map[string]bgtask.Item, len(tasks))
+	for _, task := range tasks {
+		byKey[task.RowKey] = task
+	}
+	run := bgtask.NormalizeRowKey("parent:workflow:workflow-run-1")
+	childA := bgtask.NormalizeRowKey("parent:wchild:child-a")
+	childB := bgtask.NormalizeRowKey("parent:wchild:child-b")
+	runRow, ok := byKey[run]
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindWorkflow, runRow.Kind)
+	assert.Equal(t, "Probe run", runRow.Title)
+	assert.Equal(t, bgtask.StatusSucceeded, runRow.Status)
+	assert.Equal(t, run, runRow.GroupKey)
+	for key, expected := range map[string]struct {
+		status bgtask.Status
+		title  string
+	}{
+		childA: {status: bgtask.StatusSucceeded, title: "Child child-a"},
+		childB: {status: bgtask.StatusFailed, title: "Child child-b"},
+	} {
+		row, ok := byKey[key]
+		require.True(t, ok, key)
+		assert.Equal(t, expected.status, row.Status, key)
+		assert.Equal(t, expected.title, row.Title, key)
+		assert.Equal(t, run, row.GroupKey, key)
+		assert.Equal(t, "Probe run", row.GroupLabel, key)
+		assert.Empty(t, row.ChildAgentID, "a fold child owns no transcript", key)
+	}
+}

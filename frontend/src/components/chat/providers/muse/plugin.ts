@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyMuseMessage, museSpanRole } from './classification'
 import { museControl } from './control'
+import { museControlResponseSummary } from './controlResponse'
 import { museCompactionBoundary, museNotificationEntry } from './extractors/notification'
 import { museOutputFilePaths } from './extractors/outputFilePaths'
 import { museResultDivider } from './extractors/resultDivider'
@@ -19,7 +20,7 @@ const musePlugin: ProviderPlugin = {
     outputFilePaths: museOutputFilePaths,
     notificationEntry: museNotificationEntry,
   },
-  controls: { ...museControl, permissionPresets: musePermissionPresets },
+  controls: { ...museControl, permissionPresets: musePermissionPresets, controlResponseDisplay: museControlResponseSummary },
   session: { compactionBoundaryFromMessage: museCompactionBoundary },
   configuration: museConfiguration,
 }

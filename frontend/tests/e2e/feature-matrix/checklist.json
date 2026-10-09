@@ -254,6 +254,14 @@
         "icon": "/icons/agents/gemini-cli.svg",
         "userNote": "LeapMux tested Gemini CLI 0.62.0 over ACP. Gemini CLI links a subagent to its root session only, not to its direct parent. It offers no way to send input to a subagent or to cancel one.",
         "detailNote": "LeapMux uses installed Gemini CLI 0.62.0 ACP with exact native JSONL recovery. Native child UUIDs belong to the proven root session. Gemini supplies no direct nesting link or child input/cancel route."
+      },
+      {
+        "userNote": "LeapMux drives Muse Code 1.4.4 over its Muse Session Protocol (MSP). Children run inside workflow scripts (host.agent with submit_result) and carry no session of their own; the four approval modes include the bypass preset (allowAll) and no assisted preset.",
+        "detailNote": "LeapMux uses the native MSP stdio host (muse serve). The installed 1.4.4 binary answers session/compact with compaction_unavailable, and its model/list serves the pinned settings model alone under a local endpoint.",
+        "url": "https://muse.meta.ai/",
+        "label": "Muse Code",
+        "icon": "/icons/agents/muse-code.svg",
+        "id": "muse-code"
       }
     ]
   ],
@@ -516,6 +524,15 @@
         "userNote": "LeapMux sends an attached text file to Command Code as a text block, and the agent reads its contents.",
         "detailNote": "Native turn/start accepts text blocks. The installed RPC probe sends a text block and records it in the model request. LeapMux adds text attachments as native text blocks.",
         "spec": "frontend/tests/e2e/command-code/text-attachments.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/text-attachments.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -782,6 +799,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/image-attachments.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "pdf-attachments": {
@@ -1043,6 +1069,15 @@
         "detailNote": "The native RPC parseBlock accepts text and base64 images only. It rejects document blocks. Native file conversion is separate from direct attachments.\n\nClassified as an agent limit: parseBlock in Command Code 1.74.1 (dist/cli.mjs, checked 2026-10-05) throws invalid params for any block that is not a text block or a base64 image block. LeapMux rejects the attachment before it sends the turn.",
         "spec": "frontend/tests/e2e/command-code/pdf-attachments.spec.ts",
         "audit": "unsupported",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Muse MSP input accepts text and images only; its media/upload route carries video alone. LeapMux refuses PDF attachments.",
+        "detailNote": "Muse MSP input accepts text and images only; its media/upload route carries video alone. LeapMux refuses PDF attachments. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/pdf-attachments.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -1308,6 +1343,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Muse MSP input accepts text and images only; its media/upload route carries video alone. LeapMux refuses binary attachments.",
+        "detailNote": "Muse MSP input accepts text and images only; its media/upload route carries video alone. LeapMux refuses binary attachments. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/other-binary-attachments.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "images-in-tool-results": {
@@ -1571,6 +1615,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Muse's read of an image hands its bytes to the next model request as an image part; the tool result states the file and media type as text alone, so the row draws no picture.",
+        "detailNote": "Muse's read of an image hands its bytes to the next model request as an image part; the tool result states the file and media type as text alone, so the row draws no picture. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/images-in-tool-results.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "thinking-in-the-transcript": {
@@ -1831,6 +1884,15 @@
         "userNote": "LeapMux shows the thinking text that Command Code reports for a turn.",
         "detailNote": "The installed basic probe emits thinking_start, thinking_delta and thinking_end. LeapMux stores the native thinking rows and does not duplicate message_update snapshots.",
         "spec": "frontend/tests/e2e/command-code/thinking-in-the-transcript.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/thinking-in-the-transcript.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -2097,6 +2159,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "Muse counts its own occupancy from the provider-reported facts: a model reply that states zero usage still leaves the host accounting above zero, so no zero reading exists to preserve.",
+        "detailNote": "Muse counts its own occupancy from the provider-reported facts: a model reply that states zero usage still leaves the host accounting above zero, so no zero reading exists to preserve.",
+        "spec": "frontend/tests/e2e/muse-code/context-usage.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "compaction-notice": {
@@ -2358,6 +2429,15 @@
         "detailNote": "The native manual summarized outcome supplies the completed notice. Native compaction_done also runs after failure, so the reader does not treat a manual finish event as success. Positive automatic trim savings remain a completed boundary.",
         "spec": "frontend/tests/e2e/command-code/compaction-notice.spec.ts",
         "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context, so no completed compaction boundary reaches the transcript.",
+        "detailNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context, so no completed compaction boundary reaches the transcript. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/compaction-notice.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -2623,6 +2703,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context; LeapMux sends /compact to the model as an ordinary message instead.",
+        "detailNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context; LeapMux sends /compact to the model as an ordinary message instead. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/manual-compaction.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "rate-limit-state": {
@@ -2886,6 +2975,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Muse reports subscription quota through usage/read and usage/changed; under the local mock the host truthfully reports no observation ({}), so the quota UI stays absent and the mock cannot drive a window.",
+        "detailNote": "Muse reports subscription quota through usage/read and usage/changed; under the local mock the host truthfully reports no observation ({}), so the quota UI stays absent and the mock cannot drive a window. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/rate-limit-state.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "model-context-on-resume": {
@@ -3146,6 +3244,15 @@
         "userNote": "After LeapMux reopens a session, Command Code uses the earlier conversation in its next model request.",
         "detailNote": "The installed resume probe reopens the earlier native session ID. Its model request contains the prior user prompt and assistant answer. Native resume success does not require old external messages in LeapMux.",
         "spec": "frontend/tests/e2e/command-code/model-context-on-resume.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/model-context-on-resume.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -3412,6 +3519,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/permission-prompts.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "plan-mode": {
@@ -3673,6 +3789,15 @@
         "detailNote": "The native CLI accepts permission-mode=plan. LeapMux changes this launch setting by reopening the same native session and reads the confirmed native mode.",
         "spec": "frontend/tests/e2e/command-code/plan-mode.spec.ts",
         "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "The MSP schema holds no plan method, item, or model tool, and the binary offers no plan entry tool.",
+        "detailNote": "The MSP schema holds no plan method, item, or model tool, and the binary offers no plan entry tool. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/plan-mode.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -3938,6 +4063,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "The MSP schema holds no plan method, item, or model tool, so no plan review can arrive.",
+        "detailNote": "The MSP schema holds no plan method, item, or model tool, so no plan review can arrive. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/plan-approval-banner.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "agent-questions": {
@@ -4201,6 +4335,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/agent-questions.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "mcp-tool-execution": {
@@ -4461,6 +4604,15 @@
         "userNote": "Command Code runs MCP tools, and their results reach the next model request.",
         "detailNote": "The real native MCP echo call completes and appears in the next model request. The existing shared echo server records actual native initialization and tool results.",
         "spec": "frontend/tests/e2e/command-code/mcp-tool-execution.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/mcp-tool-execution.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -4727,6 +4879,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "The binary contains no elicitation support: its MCP handshake requests no elicitation capability and a server elicitation/create waits unanswered until the turn is interrupted.",
+        "detailNote": "The binary contains no elicitation support: its MCP handshake requests no elicitation capability and a server elicitation/create waits unanswered until the turn is interrupted. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/mcp-input-request.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "smart-permissions-shortcut": {
@@ -4990,6 +5151,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Muse approval modes are a closed set of four (allowAll, promptUnmatched, onRequest, denyUnmatched); the bypass preset maps to allowAll and no safety-assisted preset exists.",
+        "detailNote": "Muse approval modes are a closed set of four (allowAll, promptUnmatched, onRequest, denyUnmatched); the bypass preset maps to allowAll and no safety-assisted preset exists. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/smart-permissions-shortcut.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "bypass-permissions-shortcut": {
@@ -5250,6 +5420,15 @@
         "userNote": "The Bypass shortcut starts Command Code in its bypass mode, which runs tools without prompts. In Default mode the agent blocks file changes.",
         "detailNote": "The native CLI accepts permission-mode=bypass. The installed native write probe creates the requested file in bypass. Default instead returns tool_hook_blocked.",
         "spec": "frontend/tests/e2e/command-code/bypass-permissions-shortcut.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/bypass-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -5516,6 +5695,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "Muse serves the model its settings pin: model/list holds that row alone under the local mock, so the provable selection is the pinned route itself.",
+        "detailNote": "Muse serves the model its settings pin: model/list holds that row alone under the local mock, so the provable selection is the pinned route itself.",
+        "spec": "frontend/tests/e2e/muse-code/model.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "reasoning-effort": {
@@ -5776,6 +5964,15 @@
         "userNote": "Command Code offers the effort levels that the selected model supports, from low to max.",
         "detailNote": "Native session/set_effort applies low/medium/high/xhigh/max when the selected model supplies those levels. The actual BYOK request probe contains reasoning_effort=high. The native gateway catalog supplies each model's exact levels.",
         "spec": "frontend/tests/e2e/command-code/reasoning-effort.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/reasoning-effort.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -6042,6 +6239,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/mode.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "session-goal-set-and-clear": {
@@ -6303,6 +6509,15 @@
         "detailNote": "The CLI TUI owns /goal and its supervisor. Native RPC has no goal setter and the mod API exposes no goal methods.\n\nClassified as an agent limit: runRpcMode of Command Code 1.74.1 passes no goal text to the session, and the RPC method table has no goal method. The official mod API exposes no goal methods (checked 2026-10-05).",
         "spec": "frontend/tests/e2e/command-code/session-goal-set-and-clear.spec.ts",
         "audit": "unsupported",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "Muse works a goal in its own goal turns and parks it between them, so a settled session reads its goal as paused while the objective stays.",
+        "detailNote": "Muse works a goal in its own goal turns and parks it between them, so a settled session reads its goal as paused while the objective stays.",
+        "spec": "frontend/tests/e2e/muse-code/session-goal-set-and-clear.spec.ts",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -6568,6 +6783,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "A parked goal offers no pause (it is already paused); its resume runs a fresh native goal turn and parks again once it settles.",
+        "detailNote": "A parked goal offers no pause (it is already paused); its resume runs a fresh native goal turn and parks again once it settles.",
+        "spec": "frontend/tests/e2e/muse-code/session-goal-pause-and-resume.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "to-do-sidebar": {
@@ -6828,6 +7052,15 @@
         "userNote": "LeapMux shows the tasks that Command Code creates and updates in the to-do sidebar.",
         "detailNote": "The installed task probe runs native task_create and task_update. Native tool results contain the task ID and status. LeapMux publishes these actual task records in the to-do sidebar.",
         "spec": "frontend/tests/e2e/command-code/to-do-sidebar.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/to-do-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -7094,6 +7327,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "A yielded bash command reports background_running through its result with no registry item; the workflow row is the background process the sidebar draws.",
+        "detailNote": "A yielded bash command reports background_running through its result with no registry item; the workflow row is the background process the sidebar draws.",
+        "spec": "frontend/tests/e2e/muse-code/background-tasks-sidebar.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "subagent-transcript-tab": {
@@ -7355,6 +7597,15 @@
         "detailNote": "The native agent opener supplies the exact child prompt. The native tool result supplies the final report. LeapMux stores these in the child tab. The supported native API supplies no complete child text or tool-result transcript.",
         "spec": "frontend/tests/e2e/command-code/subagent-transcript-tab.spec.ts",
         "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "Children run only inside workflow scripts; the fold carries a durable childId and lifecycle with no child session, so no transcript tab can exist.",
+        "detailNote": "Children run only inside workflow scripts; the fold carries a durable childId and lifecycle with no child session, so no transcript tab can exist. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/subagent-transcript-tab.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -7620,6 +7871,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "A workflow fold child owns no session, so no separate transcript receives its rows.",
+        "detailNote": "A workflow fold child owns no session, so no separate transcript receives its rows. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/subagent-live-transcript.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "send-to-a-subagent": {
@@ -7881,6 +8141,15 @@
         "detailNote": "Native RPC turn/steer addresses the parent turn. No RPC route accepts a child ID or child input.\n\nClassified as an agent limit: the RPC method table of Command Code 1.74.1 has no child input method, and turn/steer takes no child ID (dist/cli.mjs, checked 2026-10-05).",
         "spec": "frontend/tests/e2e/command-code/send-to-a-subagent.spec.ts",
         "audit": "unsupported",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "No model tool addresses a child session, and the fold child links no child agent, so no composer can reach a child.",
+        "detailNote": "No model tool addresses a child session, and the fold child links no child agent, so no composer can reach a child. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -8146,6 +8415,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "No model tool cancels one child, and the fold child links no child agent, so no per-child Interrupt control exists.",
+        "detailNote": "No model tool cancels one child, and the fold child links no child agent, so no per-child Interrupt control exists. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "spec": "frontend/tests/e2e/muse-code/interrupt-a-subagent.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "steer-mid-turn": {
@@ -8406,6 +8684,15 @@
         "userNote": "Command Code takes new text for a running turn. If the message attaches an image, LeapMux sends the whole message as the next turn.",
         "detailNote": "The native RPC dispatcher accepts turn/steer for an active turn and emits steers_delivered. LeapMux keeps the active turn and classifies a stopped turn separately from delivery failure.\n\nSteerInput of LeapMux returns ErrSteeringUnsupported for a non-text attachment, so the worker queues the message as the next turn.",
         "spec": "frontend/tests/e2e/command-code/steer-mid-turn.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/steer-mid-turn.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -8672,6 +8959,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "Children run inside the workflow item fold, keyed by childId with no session of their own; the Worker draws one grouped row per fold child.",
+        "detailNote": "Children run inside the workflow item fold, keyed by childId with no session of their own; the Worker draws one grouped row per fold child.",
+        "spec": "frontend/tests/e2e/muse-code/workflow-grouping.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "basic-chat": {
@@ -8932,6 +9228,15 @@
         "userNote": "",
         "detailNote": "The installed basic probe emits text_delta and message_end. The native turn/completed notification confirms the finished turn. LeapMux retains that answer once.",
         "spec": "frontend/tests/e2e/command-code/basic-chat.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/basic-chat.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -9198,6 +9503,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/conversation-context.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "shell-tool-execution": {
@@ -9458,6 +9772,15 @@
         "userNote": "",
         "detailNote": "The installed shell probe runs native execute_bash. Its tool_completed result contains the actual stdout and native exit status.",
         "spec": "frontend/tests/e2e/command-code/shell-tool-execution.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/shell-tool-execution.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -9724,6 +10047,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/file-tool-execution.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "interrupt-a-turn": {
@@ -9984,6 +10316,15 @@
         "userNote": "",
         "detailNote": "The native RPC dispatcher accepts turn/interrupt. LeapMux sends that request for the active native turn and preserves the native completion outcome.",
         "spec": "frontend/tests/e2e/command-code/interrupt-a-turn.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/interrupt-a-turn.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -10250,6 +10591,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/close-an-agent.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "session-reset": {
@@ -10510,6 +10860,15 @@
         "userNote": "",
         "detailNote": "LeapMux starts a new native session when reset clears the resume ID. Native initialize supplies a new session ID and the next model request starts with the new prompt.",
         "spec": "frontend/tests/e2e/command-code/session-reset.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/session-reset.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -10776,6 +11135,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/session-resume.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "agent-startup": {
@@ -11036,6 +11404,15 @@
         "userNote": "",
         "detailNote": "The installed native RPC probe completes hello and initialize before turn/start. LeapMux requires the initialized native session before it reports the agent ready.",
         "spec": "frontend/tests/e2e/command-code/agent-startup.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/agent-startup.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -11302,6 +11679,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/turn-end-sound.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "generation-progress": {
@@ -11562,6 +11948,15 @@
         "userNote": "",
         "detailNote": "Native text_delta and thinking_delta carry streamed progress. Native turn/completed clears the turn. LeapMux publishes progress before that completion boundary.",
         "spec": "frontend/tests/e2e/command-code/generation-progress.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/generation-progress.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -11828,6 +12223,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "Every MSP user input question requires options and a selection mode; no text-only multiline form exists.",
+        "spec": "frontend/tests/e2e/muse-code/editor-requests.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "workspace-trust": {
@@ -12089,6 +12493,15 @@
         "detailNote": "Default leaves project mods unloaded and sends no trust dialog. Bypass loads project mods without a trust dialog. Native Git-project probes verify both cases. A native interactive trust barrier is not available through RPC.\n\nClassified as an agent limit: the interactive startup of Command Code 1.74.1 asks for folder trust (resolveStartupTrust can return prompt-trust), and project mods and hooks need that trust. Native Git-project probes show that the RPC mode loads no project mods in Default mode and loads them in Bypass mode, with no dialog in both cases. The RPC method table has no trust route.",
         "spec": "frontend/tests/e2e/command-code/workspace-trust.spec.ts",
         "audit": "unsupported",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "The startup choice selects the native trust posture: 'agent' launches the host with --trust-workspace and the workspace's project instructions load; 'native' defers to the trust Muse stores, and a fresh home holds none.",
+        "spec": "frontend/tests/e2e/muse-code/workspace-trust.spec.ts",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -12354,6 +12767,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The MSP surface exposes setModel, setReasoningEffort, and setApprovalMode alone; no swarm setting exists.",
+        "spec": "frontend/tests/e2e/muse-code/swarm-mode.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "model-error": {
@@ -12614,6 +13036,15 @@
         "userNote": "",
         "detailNote": "The native protocol carries run_error and turn/completed outcomes. LeapMux retains the actual native error and closes the turn without a successful completion claim.",
         "spec": "frontend/tests/e2e/command-code/model-error.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/model-error.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
@@ -12880,6 +13311,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/credential-isolation.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "extended-thinking": {
@@ -13141,6 +13581,15 @@
         "detailNote": "The native RPC exposes effort and model setters only. No separate thinking switch exists.\n\nClassified as an agent limit: the RPC method table of Command Code 1.74.1 has no thinking method. The changelog entry of 1.73.3 says that thinking can be disabled for DeepSeek models, which the effort selector already covers.",
         "spec": "frontend/tests/e2e/command-code/extended-thinking.spec.ts",
         "audit": "unsupported",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The MSP surface exposes setModel, setReasoningEffort, and setApprovalMode alone; no separate thinking toggle exists.",
+        "spec": "frontend/tests/e2e/muse-code/extended-thinking.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -13406,6 +13855,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The MSP surface exposes setModel, setReasoningEffort, and setApprovalMode alone; no serving-tier setting exists.",
+        "spec": "frontend/tests/e2e/muse-code/fast-mode.spec.ts",
+        "audit": "covered-negative",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "output-style": {
@@ -13667,6 +14125,15 @@
         "detailNote": "The CLI and RPC expose no native output-style setting.\n\nClassified as an agent limit: a search of dist/cli.mjs in Command Code 1.74.1 finds no output-style option or setting (checked 2026-10-05).",
         "spec": "frontend/tests/e2e/command-code/output-style.spec.ts",
         "audit": "unsupported",
+        "testStatus": "passed",
+        "verified": true
+      },
+      "muse-code": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The MSP surface exposes setModel, setReasoningEffort, and setApprovalMode alone; no response-style setting exists.",
+        "spec": "frontend/tests/e2e/muse-code/output-style.spec.ts",
+        "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
       }
@@ -13932,6 +14399,15 @@
         "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "The workflow tool runs deterministic JavaScript in the native host; children submit through submit_result.",
+        "detailNote": "The workflow tool runs deterministic JavaScript in the native host; children submit through submit_result.",
+        "spec": "frontend/tests/e2e/muse-code/code-execution.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     },
     "output-file-paths": {
@@ -14195,6 +14671,15 @@
         "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
+      },
+      "muse-code": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/muse-code/output-file-paths.spec.ts",
+        "audit": "source-verified",
+        "testStatus": "passed",
+        "verified": true
       }
     }
   }

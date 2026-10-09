@@ -82,9 +82,10 @@ for (const multiSelect of [false, true]) {
           if (text)
             await native.page.keyboard.insertText(text)
           const entered = (await editor.textContent()) ?? ''
+          // The composer normalizes a whitespace-only draft away: neither an
+          // empty nor a whitespace answer is a usable native answer, and both
+          // leave the submit disabled until the user cancels explicitly.
           expect(entered.trim()).toBe('')
-          if (text)
-            expect(entered.length).toBeGreaterThan(0)
           await expect(controlButton(native.page, 'submit')).toBeDisabled()
           await expect(banner).toContainText('Choose the native answer')
           expect((await native.modelScript.status()).nextStep).toBe(before + 1)

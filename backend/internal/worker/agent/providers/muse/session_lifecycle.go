@@ -2,13 +2,16 @@ package muse
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 func (a *Agent) openSession(resume string, timeout time.Duration) error {
@@ -140,5 +143,12 @@ func (a *Agent) CompactContext() error {
 		return agent.ErrAgentBusy
 	}
 	_, err := a.command(methodSessionCompact, map[string]any{"sessionId": id}, a.APITimeout(), nil)
+	// The installed host refuses a manual compaction it cannot run
+	// (`compaction_unavailable`), which states the same fact as an agent that
+	// offers no compaction: the command degrades to an ordinary message.
+	var responseError *providerkit.JSONRPCResponseError
+	if err != nil && errors.As(err, &responseError) && strings.Contains(string(responseError.Data), "compaction_unavailable") {
+		return agent.ErrCompactionUnsupported
+	}
 	return err
 }

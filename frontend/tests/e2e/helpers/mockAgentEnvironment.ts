@@ -108,6 +108,8 @@ export const MOCK_MODELS = {
   fastagent: 'fastagent-e2e',
   /** Muse Code uses the native Responses provider. */
   muse: 'muse-spark-1.2',
+  /** Muse Code's second bundled Spark route, which a settings spec switches to. */
+  museAlt: 'muse-spark-1.3',
 } as const
 
 /**
