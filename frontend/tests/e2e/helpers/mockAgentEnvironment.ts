@@ -382,7 +382,10 @@ export async function createMockAgentEnvironment(
       ...createFastAgentEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: FAST_AGENT_MOCK_MODEL, zaiModelID: MOCK_MODELS.zai }),
       ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),
       ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
-      ...createMuseEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.muse, mcpServers, searchPath: searchPathEnv.PATH ?? process.env.PATH ?? '' }),
+      // Muse's shared settings stay MCP-free: a live MCP server in the run-level
+      // settings blocks the host's asynchronous compaction path, so the Muse MCP
+      // spec registers its server for its own agent instead.
+      ...createMuseEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.muse, alternateModelID: MOCK_MODELS.museAlt, searchPath: searchPathEnv.PATH ?? process.env.PATH ?? '' }),
       ...createGeminiEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: GEMINI_MODEL_ID, mcpServers }),
       ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },

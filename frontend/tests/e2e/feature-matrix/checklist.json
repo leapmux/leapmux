@@ -257,7 +257,7 @@
       },
       {
         "userNote": "LeapMux drives Muse Code 1.4.4 over its Muse Session Protocol (MSP). Children run inside workflow scripts (host.agent with submit_result) and carry no session of their own; the four approval modes include the bypass preset (allowAll) and no assisted preset.",
-        "detailNote": "LeapMux uses the native MSP stdio host (muse serve). The installed 1.4.4 binary answers session/compact with compaction_unavailable, and its model/list serves the pinned settings model alone under a local endpoint.",
+        "detailNote": "LeapMux uses the native MSP stdio host (muse serve). The private settings declare a config model catalog (context limits included) so the native model switch and the /compact summarizer both resolve under a local endpoint; a live MCP server in the shared settings would block the asynchronous compaction path, so the MCP spec registers its server per agent.",
         "url": "https://muse.meta.ai/",
         "label": "Muse Code",
         "icon": "/icons/agents/muse-code.svg",
@@ -2433,11 +2433,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context, so no completed compaction boundary reaches the transcript.",
-        "detailNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context, so no completed compaction boundary reaches the transcript. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "support": "supported",
+        "userNote": "The private settings declare a config model catalog with context limits, so the host compaction thresholds resolve and /compact runs the native summarizer (generate_summary).",
+        "detailNote": "The private settings declare a config model catalog with context limits, so the host compaction thresholds resolve and /compact runs the native summarizer (generate_summary). The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/compaction-notice.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -2705,11 +2705,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context; LeapMux sends /compact to the model as an ordinary message instead.",
-        "detailNote": "The installed host (1.4.4) answers session/compact with compaction_unavailable even at 900k tokens of context; LeapMux sends /compact to the model as an ordinary message instead. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
+        "support": "supported",
+        "userNote": "The private settings declare a config model catalog with context limits, so the host compaction thresholds resolve and /compact runs the native summarizer (generate_summary).",
+        "detailNote": "The private settings declare a config model catalog with context limits, so the host compaction thresholds resolve and /compact runs the native summarizer (generate_summary). The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/manual-compaction.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -5698,8 +5698,8 @@
       },
       "muse-code": {
         "support": "supported",
-        "userNote": "Muse serves the model its settings pin: model/list holds that row alone under the local mock, so the provable selection is the pinned route itself.",
-        "detailNote": "Muse serves the model its settings pin: model/list holds that row alone under the local mock, so the provable selection is the pinned route itself.",
+        "userNote": "The config model catalog lists the bundled Spark routes beside the pinned model, so a native switch between them reaches the model request.",
+        "detailNote": "The config model catalog lists the bundled Spark routes beside the pinned model, so a native switch between them reaches the model request. The deciding evidence came from the binary itself: its exported MSP schema and a live muse serve probe under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/model.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",

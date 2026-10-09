@@ -142,7 +142,17 @@ func (a *Agent) CompactContext() error {
 	if busy {
 		return agent.ErrAgentBusy
 	}
-	_, err := a.command(methodSessionCompact, map[string]any{"sessionId": id}, a.APITimeout(), nil)
+	raw, err := a.command(methodSessionCompact, map[string]any{"sessionId": id}, a.APITimeout(), nil)
+	if err == nil {
+		// A noop compaction changed nothing and reports no item, so the compact
+		// turn the Worker opened ends with the acknowledgement itself.
+		var reply struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(raw, &reply) == nil && reply.Status == "noop" {
+			a.PublishTurnActive()
+		}
+	}
 	// The installed host refuses a manual compaction it cannot run
 	// (`compaction_unavailable`), which states the same fact as an agent that
 	// offers no compaction: the command degrades to an ordinary message.

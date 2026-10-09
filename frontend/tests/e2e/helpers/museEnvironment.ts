@@ -15,6 +15,8 @@ export interface MuseEnvironmentOptions {
   baseURL: string
   modelKey: string
   modelID: string
+  /** A second Spark route the catalog lists beside the pinned model, for a native model switch. */
+  alternateModelID?: string
   mcpServers?: readonly McpServerLaunch[]
   nativeBinary?: string
   searchPath?: string
@@ -28,10 +30,38 @@ function museSettings(options: MuseEnvironmentOptions): Record<string, unknown> 
   if (!options.modelKey.trim() || !options.modelID.trim())
     throw new Error('The Muse mock requires a model key and a model ID.')
   const servers = validatedMcpServers(options.mcpServers, 'Muse', 128)
+  // The config model catalog states the routes a local endpoint serves, with the
+  // context limit each compaction threshold resolves against: without a resolved
+  // window the host answers session/compact with compaction_unavailable, and its
+  // model/list serves the pinned model alone. The test window sits low enough
+  // that a seeded conversation crosses the soft compaction threshold, so the
+  // native summarizer actually runs.
+  const catalogRow = (model_id: string, is_default: boolean) => ({
+    model_id,
+    display_label: model_id,
+    provider_id: 'meta',
+    profile_id: 'tbh',
+    context_limit: 28000,
+    output_limit: 16384,
+    cost: null,
+    description: null,
+    release_date: null,
+    is_active: false,
+    is_default,
+    default_reasoning_effort: 'low',
+    variants: ['minimal', 'low', 'medium', 'high'],
+  })
   return {
     schema_version: 1,
     provider: 'meta',
     model: options.modelID,
+    model_catalog: [
+      catalogRow(options.modelID, true),
+      ...(options.alternateModelID ? [catalogRow(options.alternateModelID, false)] : []),
+    ],
+    compaction_strategy: 'auto',
+    context_compaction_soft_threshold: 0.5,
+    context_compaction_hard_threshold: 0.8,
     endpoint_transport: { base_url: endpoint.href.replace(/\/$/, ''), auth: 'bearer' },
     context: { foreign_personal_rules: false, foreign_personal_skills: false },
     telemetry: { enabled: false },

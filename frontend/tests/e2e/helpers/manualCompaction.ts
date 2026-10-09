@@ -1,4 +1,4 @@
-import type { MockModelMatcher, MockModelRequestRecord, MockModelUsage } from './mockModelScript'
+import type { MockModelMatcher, MockModelRequestRecord, MockModelStep, MockModelUsage } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
@@ -48,7 +48,7 @@ export const COMPACTION_SEED_TURNS: readonly { prompt: string, answer: string }[
 export type CompactionSummaryRoute
   = | { route: 'fallback', requestMarker: string }
     | { route: 'fallback', completionText: string }
-    | { route: 'rule', when: MockModelMatcher }
+    | { route: 'rule', when: MockModelMatcher, respond?: MockModelStep }
     | { route: 'queued' }
 
 /** The provider facts of one native compaction. Each provider states them once, for both compaction cells. */
@@ -116,7 +116,7 @@ export async function exerciseNativeCompaction(context: NativeScenarioContext, o
   if (route.route === 'fallback')
     await modelScript.fallback(summary)
   else if (route.route === 'rule')
-    await modelScript.rule({ name: ruleName, when: route.when, respond: summary })
+    await modelScript.rule({ name: ruleName, when: route.when, respond: route.respond ?? summary })
   else
     summaryStep = await modelScript.queue(summary)
   await sendMessage(page, '/compact')

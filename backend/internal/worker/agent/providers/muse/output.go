@@ -164,6 +164,11 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 			if err != nil {
 				slog.Warn("persist Muse compaction", "error", err)
 			}
+			// A compaction runs outside any model turn and the host reports no
+			// idle of its own, so the compact turn the Worker opened ends here.
+			if item.SessionID == a.sessionID {
+				a.PublishTurnActive()
+			}
 		}
 	} else if finished {
 		a.persistItem(state, existing, false)
